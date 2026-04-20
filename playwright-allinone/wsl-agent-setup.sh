@@ -49,7 +49,7 @@ AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-false}"
 CONTAINER_NAME="${CONTAINER_NAME:-dscore.ttc.playwright}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"     # e2e-pipeline/
+ROOT_DIR="$SCRIPT_DIR"                        # playwright-allinone/ (zero_touch_qa 의 부모)
 
 log()  { printf '[wsl-agent-setup] %s\n' "$*"; }
 err()  { printf '[wsl-agent-setup] ERROR: %s\n' "$*" >&2; exit 1; }
