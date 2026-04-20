@@ -2,7 +2,7 @@
 # ============================================================================
 # TTC 4-Pipeline All-in-One — 컨테이너 엔트리포인트
 #
-# 기존 e2e-pipeline/offline/entrypoint-allinone.sh 를 베이스로:
+# 동작:
 #   - 포트 28080/28081/50002/29000 적용
 #   - SonarQube 수동 start (PG 준비 후)
 #   - 파이프라인 1~3 용 Jenkins job seed 는 provision.sh 에서 처리

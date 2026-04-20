@@ -11,11 +11,7 @@
 #   - 이미지 사전 빌드 (ttc-allinone:mac-<tag>)
 #
 # 포트 매핑: 28080 / 28081 / 29000 / 50002 / 28090 / 28022
-#   (상세는 docker-compose.allinone.wsl2.yaml 참고)
-#
-# e2e-pipeline(Playwright) 연동:
-#   docker compose -f docker-compose.allinone.mac.yaml \
-#                  -f docker-compose.allinone.e2e-bridge.yaml up -d
+#   (상세는 docker-compose.wsl2.yaml 참고)
 #
 # 데이터 볼륨: ${HOME}/ttc-allinone-data
 # ============================================================================

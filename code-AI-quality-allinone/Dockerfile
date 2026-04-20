@@ -9,15 +9,15 @@
 #                              / gitlab_issue_creator
 #   4. AI 평가                — eval_runner (Ollama judge + Playwright local)
 #
-# 기존 e2e-pipeline/offline/Dockerfile.allinone (zero_touch_qa 전용) 을 베이스로
-# SonarQube / SonarScanner / 파이프라인 1~3 Python 스크립트를 추가. 기존 이미지와
-# 포트가 겹치지 않도록 28xxx / 50002 대역으로 이동:
+# Dify + Jenkins + PG/Redis/Qdrant 런타임 기반으로 SonarQube + SonarScanner +
+# 파이프라인 1~3 Python 스크립트 + 파이프라인 4 eval_runner 를 통합. 형제 스택
+# playwright-allinone/ 과 포트가 겹치지 않도록 28xxx / 50002 대역 사용:
 #
-#   기존 (건드리지 않음) → 본 이미지
-#     18080 Jenkins        → 28080
-#     18081 Dify gateway   → 28081
-#     50001 Jenkins agent  → 50002
-#     (신규) SonarQube     → 29000
+#   playwright-allinone (형제) → 본 이미지
+#     18080 Jenkins            → 28080
+#     18081 Dify gateway       → 28081
+#     50001 Jenkins agent      → 50002
+#     (신규) SonarQube         → 29000
 #
 # 호스트 하이브리드 설계 유지:
 #   - Ollama: 호스트에서 실행 (host.docker.internal:11434)
@@ -28,9 +28,9 @@
 # 옮긴 뒤 scripts/download-plugins.sh (온라인 필요) + scripts/build-{wsl2,mac}.sh
 # 한 번씩 돌리면 완성된 이미지가 생성된다.
 #
-# 멀티 아키: docker buildx build --platform linux/<amd64|arm64> \
-#   -f e2e-pipeline/offline/code-AI-quality-allinone/Dockerfile \
-#   e2e-pipeline/offline/code-AI-quality-allinone
+# 멀티 아키 (폴더 내부에서): \
+#   cd code-AI-quality-allinone && \
+#   docker buildx build --platform linux/<amd64|arm64> -f Dockerfile .
 #
 # 결과 이미지 크기 예상: 7-9GB (SonarQube 추가로 기존 대비 ~2GB 증가).
 # ============================================================================
@@ -117,12 +117,12 @@ RUN sed -i 's|"plugin_unique_identifier": plugin_unique_identifier|"PluginUnique
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Python 의존성 — eval_runner / 파이프라인 1~3 공통
-# (requirements-allinone.txt 는 기존 자산 재사용: requests, playwright, deepeval 등)
+# (requirements.txt: requests, playwright, deepeval 등)
 # ─────────────────────────────────────────────────────────────────────────────
-COPY requirements.txt /tmp/requirements-allinone.txt
+COPY requirements.txt /tmp/requirements.txt
 COPY scripts/requirements-pipelines.txt             /tmp/requirements-pipelines.txt
 RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
-        -r /tmp/requirements-allinone.txt && \
+        -r /tmp/requirements.txt && \
     pip3 install --no-cache-dir --break-system-packages --ignore-installed \
         -r /tmp/requirements-pipelines.txt && \
     pip3 install --no-cache-dir --break-system-packages --ignore-installed \
@@ -203,14 +203,14 @@ RUN set -eux; \
     sonar-scanner --version
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Jenkins 플러그인 seed + Dify 플러그인 seed (기존 offline 자산 재사용)
+# Jenkins 플러그인 seed + Dify 플러그인 seed (download-plugins.sh 로 준비)
 # ─────────────────────────────────────────────────────────────────────────────
 COPY jenkins-plugins/ /opt/seed/jenkins-plugins/
 COPY dify-plugins/    /opt/seed/dify-plugins/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PostgreSQL initdb + Dify/SonarQube DB 생성
-# (기존 pg-init-allinone.sh 는 dify/dify_plugin 만 생성 → sonar 추가한 확장본 사용)
+# (dify / dify_plugin / sonar 3 개 DB 를 pg-init.sh 가 생성)
 # ─────────────────────────────────────────────────────────────────────────────
 COPY scripts/pg-init.sh /opt/pg-init.sh
 RUN bash /opt/pg-init.sh
@@ -223,8 +223,7 @@ COPY scripts/nginx.conf       /etc/nginx/nginx.conf
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 파이프라인 1~3 Python 스크립트 + 파이프라인 4 eval_runner
-# (zero_touch_qa / e2e-pipeline/dify-chatflow.yaml 은 이 이미지에서 제거됨 —
-#  ZeroTouch-QA 는 기존 e2e-pipeline 스택이 담당)
+# (ZeroTouch-QA 는 형제 스택 playwright-allinone 이 담당)
 # ─────────────────────────────────────────────────────────────────────────────
 RUN mkdir -p /opt/pipeline-scripts
 COPY pipeline-scripts/repo_context_builder.py           /opt/pipeline-scripts/
@@ -240,12 +239,11 @@ RUN mkdir -p /opt/scripts-home && \
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4개 Jenkinsfile seed + URL/자격 치환
-# (원본은 기존 스택(compose 서비스명 api/sonarqube/gitlab)을 가정하므로
+# (원본은 compose 서비스명 api/sonarqube/gitlab 을 가정하므로
 #  통합 이미지 내부 주소(127.0.0.1) 로 치환. GitLab 만 별도 compose 서비스
 #  `gitlab` 을 쓰므로 호스트 그대로 유지, 포트는 기본 80 으로 정규화.
 #  하드코딩된 GitLab PAT 은 빈 문자열로 치환 — provision 단계에서 발급된
-#  PAT 을 Jenkins Credentials 'gitlab-pat' 으로 주입하고, withCredentials
-#  래핑은 Phase 6 에서 추가)
+#  PAT 을 Jenkins Credentials 'gitlab-pat' 으로 주입 + withCredentials 로 런타임 치환)
 # ─────────────────────────────────────────────────────────────────────────────
 COPY jenkinsfiles/ /opt/jenkinsfiles/
 COPY scripts/jenkins-seed/ /opt/seed/jenkins-home/
@@ -266,13 +264,13 @@ RUN set -eux; \
     fi; \
     echo "Jenkinsfile URL/PAT 치환 완료"
 
-# jenkins-init groovy 스크립트 (관리자 계정 등)도 기존 자산 재사용
+# jenkins-init groovy 스크립트 (관리자 계정 초기화)
 COPY jenkins-init /opt/jenkins-init
 RUN mkdir -p /opt/seed/jenkins-home/init.groovy.d && \
     cp /opt/jenkins-init/*.groovy /opt/seed/jenkins-home/init.groovy.d/ 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dify 자산 (Workflow DSL, Dataset 정의) — provision.allinone.sh 가 자동 import
+# Dify 자산 (Workflow DSL, Dataset 정의) — provision.sh 가 자동 import
 # ─────────────────────────────────────────────────────────────────────────────
 COPY scripts/dify-assets/ /opt/dify-assets/
 

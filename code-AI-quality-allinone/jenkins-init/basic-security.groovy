@@ -1,7 +1,7 @@
 #!groovy
 // Jenkins 부트스트랩 — All-in-One 오프라인 이미지 전용
-// Dockerfile.allinone: COPY jenkins-init → /opt/jenkins-init, 이후 /opt/seed/jenkins-home/init.groovy.d/
-// entrypoint-allinone.sh 가 seed 디렉토리를 $JENKINS_HOME 으로 복사 → Jenkins 기동 시 init.groovy.d/*.groovy 자동 실행
+// Dockerfile: COPY jenkins-init → /opt/jenkins-init, 이후 /opt/seed/jenkins-home/init.groovy.d/
+// entrypoint.sh 가 seed 디렉토리를 $JENKINS_HOME 으로 복사 → Jenkins 기동 시 init.groovy.d/*.groovy 자동 실행
 //
 // 동작:
 //   1. 로컬 계정 기반 SecurityRealm 생성 (admin / password)

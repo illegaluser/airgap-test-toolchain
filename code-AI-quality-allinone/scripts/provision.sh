@@ -28,7 +28,7 @@
 # ============================================================================
 set -uo pipefail
 
-LOG_PREFIX="[provision.allinone]"
+LOG_PREFIX="[provision]"
 log()  { printf '%s %s\n' "$LOG_PREFIX" "$*"; }
 warn() { printf '%s WARN:  %s\n' "$LOG_PREFIX" "$*" >&2; }
 err()  { printf '%s ERROR: %s\n' "$LOG_PREFIX" "$*" >&2; }
@@ -408,10 +408,10 @@ patch_jenkinsfile_gitlab_credentials
 
 # A (재실행). Jenkins 4개 Job 등록
 log "Jenkins 4개 Pipeline Job 등록..."
-jenkins_create_pipeline_job "DSCORE-TTC-코드-사전학습"                   "$JENKINSFILE_DIR/DSCORE-TTC 코드 사전학습.jenkinsPipeline" || true
-jenkins_create_pipeline_job "DSCORE-TTC-코드-정적분석"                   "$JENKINSFILE_DIR/DSCORE-TTC 코드 정적분석.jenkinsPipeline" || true
-jenkins_create_pipeline_job "DSCORE-TTC-정적분석-결과분석-이슈등록"      "$JENKINSFILE_DIR/DSCORE-TTC 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline" || true
-jenkins_create_pipeline_job "DSCORE-TTC-AI평가"                          "$JENKINSFILE_DIR/DSCORE-TTC AI평가.jenkinsPipeline" || true
+jenkins_create_pipeline_job "01-코드-사전학습"                   "$JENKINSFILE_DIR/01 코드 사전학습.jenkinsPipeline" || true
+jenkins_create_pipeline_job "02-코드-정적분석"                   "$JENKINSFILE_DIR/02 코드 정적분석.jenkinsPipeline" || true
+jenkins_create_pipeline_job "03-정적분석-결과분석-이슈등록"      "$JENKINSFILE_DIR/03 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline" || true
+jenkins_create_pipeline_job "04-AI평가"                          "$JENKINSFILE_DIR/04 AI평가.jenkinsPipeline" || true
 
 log "=========================================="
 log "자동 프로비저닝 완료."
