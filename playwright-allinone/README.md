@@ -146,13 +146,25 @@ ollama pull gemma4:e4b
 ```bash
 # D. WSL Ubuntu 안 — JDK 21 + Python 3.11+
 sudo apt update
-sudo apt install -y openjdk-21-jdk-headless python3.12 python3.12-venv
+
+# JDK 21 (Ubuntu 22.04 / 24.04 공통)
+sudo apt install -y openjdk-21-jdk-headless
+
+# Python 3.11+ — Ubuntu 기본 저장소는 배포판마다 다름:
+#   Ubuntu 24.04 (Noble) 기본: python3.12  → `sudo apt install -y python3.12 python3.12-venv`
+#   Ubuntu 22.04 (Jammy) 기본: python3.10  → `sudo apt install -y python3.11 python3.11-venv`
+# (→ 무엇이 가용한지 모르면 아래 단계 D 를 스킵하고 Step 3 에서 `AUTO_INSTALL_DEPS=true`
+#    로 agent-setup 을 돌리면 스크립트가 python3.12 → python3.11 → deadsnakes PPA
+#    순서로 자동 설치해 준다)
+sudo apt install -y python3.12 python3.12-venv    # 배포판에 맞는 버전으로 대체
 
 # 확인
 nvidia-smi             # Windows 드라이버가 WSL2 에 GPU 노출
 java -version
 python3 --version
 ```
+
+> **Playwright Chromium 의존 라이브러리** (libasound2 / libgbm1 / libnss3 등) 는 Step 3 의 `wsl-agent-setup.sh` 가 WSL2 를 감지해 `sudo playwright install-deps chromium` 으로 자동 설치한다. WSL 최소 이미지에서도 별도 작업 불필요.
 
 폐쇄망 Windows 오프라인 설치는 [§4.12](#412-windows-wsl2-오프라인-설치-폐쇄망) 참조.
 
@@ -343,6 +355,7 @@ Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분
 | `TARGET_PLATFORM` | `uname -m` 자동 감지 | Apple Silicon → `linux/arm64`, 그 외 → `linux/amd64`. override 시 qemu silent-fail 주의 |
 | `OLLAMA_MODEL` | `gemma4:e4b` | Dify provider 등록 시 사용될 모델 id |
 | `OUTPUT_TAR` | `dscore.ttc.playwright-<ts>.tar.gz` | 출력 tar.gz 파일명 |
+| `FORCE_PLUGIN_DOWNLOAD` | `false` | `true` 면 `jenkins-plugins/` / `dify-plugins/` 에 파일이 있어도 재다운로드 (버전 갱신 시). 기본은 기존 파일 재사용 — **airgap 환경에서 네트워크 없이 빌드 가능**. git 저장소에 플러그인 53 개 + Dify plugin 1 개가 동반된다 |
 | `--redeploy` | — | 빌드 후 기존 컨테이너 rm → run → NODE_SECRET 대기 (최대 15분) → agent-setup 자동 기동 |
 | `--fresh` | — | `--redeploy` 와 함께 — `dscore-data` 볼륨까지 삭제 (provision 재수행) |
 | `--no-agent` | — | `--redeploy` 와 함께 — 컨테이너만 재기동, agent 는 수동으로 |
