@@ -1,0 +1,301 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# TTC 4-Pipeline All-in-One Integrated Image
+#
+# 4개 파이프라인을 단일 컨테이너(오프라인/폐쇄망 전제)에서 실행:
+#   1. 코드 사전학습          — repo_context_builder.py → Dify KB
+#   2. 코드 정적분석           — SonarQube + SonarScanner
+#   3. 정적분석 결과분석+이슈등록 — sonar_issue_exporter / dify_sonar_issue_analyzer
+#                              / gitlab_issue_creator
+#   4. AI 평가                — eval_runner (Ollama judge + Playwright local)
+#
+# 기존 e2e-pipeline/offline/Dockerfile.allinone (zero_touch_qa 전용) 을 베이스로
+# SonarQube / SonarScanner / 파이프라인 1~3 Python 스크립트를 추가. 기존 이미지와
+# 포트가 겹치지 않도록 28xxx / 50002 대역으로 이동:
+#
+#   기존 (건드리지 않음) → 본 이미지
+#     18080 Jenkins        → 28080
+#     18081 Dify gateway   → 28081
+#     50001 Jenkins agent  → 50002
+#     (신규) SonarQube     → 29000
+#
+# 호스트 하이브리드 설계 유지:
+#   - Ollama: 호스트에서 실행 (host.docker.internal:11434)
+#   - GitLab: 외부 서비스 (API 호출만)
+#   - Jenkins agent: 호스트에서 JNLP 연결 (Playwright headed 테스트용)
+#
+# 빌드 컨텍스트: **레포 루트** (e2e-pipeline/offline/* 자산을 그대로 재사용).
+# 멀티 아키: docker buildx build --platform linux/<amd64|arm64> -f Dockerfile.allinone .
+#
+# 결과 이미지 크기 예상: 7-9GB (SonarQube 추가로 기존 대비 ~2GB 증가).
+# ============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: Dify 공식 이미지에서 애플리케이션 파일 확보
+# ─────────────────────────────────────────────────────────────────────────────
+FROM langgenius/dify-api:1.13.3               AS dify-api-src
+FROM langgenius/dify-web:1.13.3               AS dify-web-src
+FROM langgenius/dify-plugin-daemon:0.5.3-local AS dify-plugin-src
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: SonarQube Community 이미지에서 앱 디렉토리 추출
+# PoC: sonarqube:10.7.0-community 는 linux/amd64, linux/arm64 둘 다 공식 발매.
+# /opt/sonarqube 만 떠다 옮기면 OpenJDK 는 베이스의 JDK21 을 재사용.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM sonarqube:10.7.0-community AS sonarqube-src
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3: 최종 런타임 — Jenkins LTS (JDK 21) 기반
+# ─────────────────────────────────────────────────────────────────────────────
+FROM jenkins/jenkins:lts-jdk21
+
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OS 패키지 — PostgreSQL 15 (pgdg), redis, nginx, supervisor, Python,
+# Playwright 런타임 의존성, SonarQube 런타임 (unzip/fonts 등)
+# ─────────────────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates gnupg lsb-release && \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      supervisor \
+      postgresql-15 postgresql-client-15 \
+      redis-server \
+      nginx \
+      python3 python3-pip python3-venv python3-dev \
+      build-essential libssl-dev zlib1g-dev \
+      jq tini sudo unzip \
+      libgtk-3-0 libdbus-glib-1-2 libx11-xcb1 \
+      poppler-utils libreoffice-impress \
+      fonts-noto-cjk fonts-dejavu \
+      && (apt-get install -y --no-install-recommends libasound2t64 2>/dev/null \
+          || apt-get install -y --no-install-recommends libasound2) \
+      && rm -rf /var/lib/apt/lists/*
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Qdrant (벡터 스토어)
+# ─────────────────────────────────────────────────────────────────────────────
+ARG QDRANT_VERSION=v1.8.3
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) QDRANT_ARCH=x86_64-unknown-linux-gnu ;; \
+      arm64) QDRANT_ARCH=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fL -o /tmp/qdrant.tar.gz \
+      "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-${QDRANT_ARCH}.tar.gz"; \
+    tar xzf /tmp/qdrant.tar.gz -C /usr/local/bin; \
+    chmod +x /usr/local/bin/qdrant; \
+    rm /tmp/qdrant.tar.gz; \
+    /usr/local/bin/qdrant --version
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dify 바이너리/앱
+# ─────────────────────────────────────────────────────────────────────────────
+COPY --from=dify-api-src    /app              /opt/dify-api
+COPY --from=dify-web-src    /app              /opt/dify-web
+COPY --from=dify-plugin-src /app              /opt/dify-plugin-daemon
+COPY --from=dify-plugin-src /usr/local/bin/uv  /usr/local/bin/uv
+COPY --from=dify-plugin-src /usr/local/bin/uvx /usr/local/bin/uvx
+
+# dify-plugin-daemon 0.5.3-local query param binding 패치
+RUN sed -i 's|"plugin_unique_identifier": plugin_unique_identifier|"PluginUniqueIdentifier": plugin_unique_identifier|g' \
+    /opt/dify-api/api/core/plugin/impl/plugin.py && \
+    grep -c 'PluginUniqueIdentifier' /opt/dify-api/api/core/plugin/impl/plugin.py
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python 의존성 — eval_runner / 파이프라인 1~3 공통
+# (requirements-allinone.txt 는 기존 자산 재사용: requests, playwright, deepeval 등)
+# ─────────────────────────────────────────────────────────────────────────────
+COPY e2e-pipeline/offline/requirements-allinone.txt /tmp/requirements-allinone.txt
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/requirements-pipelines.txt             /tmp/requirements-pipelines.txt
+RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
+        -r /tmp/requirements-allinone.txt && \
+    pip3 install --no-cache-dir --break-system-packages --ignore-installed \
+        -r /tmp/requirements-pipelines.txt && \
+    pip3 install --no-cache-dir --break-system-packages --ignore-installed \
+        deepeval==1.3.5 --no-deps
+
+# Playwright Chromium
+RUN python3 -m playwright install --with-deps chromium
+
+# eval_runner 용 venv (TARGET_TYPE=ui_chat 일 때 browser_adapter 가 참조 가능)
+RUN /usr/bin/python3 -m venv --system-site-packages /opt/qa-venv && \
+    /opt/qa-venv/bin/python -c "import requests, playwright, PIL; print('qa-venv deps OK')"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dify 서비스 런타임 보강 (Python 3.12 + Node.js 22)
+# ─────────────────────────────────────────────────────────────────────────────
+COPY --from=dify-api-src /usr/local/bin/python3.12         /usr/local/bin/python3.12
+COPY --from=dify-api-src /usr/local/bin/python3.12-config  /usr/local/bin/python3.12-config
+COPY --from=dify-api-src /usr/local/lib/libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so.1.0
+COPY --from=dify-api-src /usr/local/lib/libpython3.so       /usr/local/lib/libpython3.so
+COPY --from=dify-api-src /usr/local/lib/python3.12          /usr/local/lib/python3.12
+RUN ln -sf python3.12 /usr/local/bin/python3 && \
+    ln -sf python3    /usr/local/bin/python && \
+    ln -sf python3.12-config /usr/local/bin/python3-config && \
+    ln -sf libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so && \
+    ldconfig
+
+ARG NODE_VERSION=22.22.1
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) NODE_ARCH=x64 ;; \
+      arm64) NODE_ARCH=arm64 ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+      --no-same-owner --wildcards '*/bin/node' '*/include/node'; \
+    rm /tmp/node.tar.xz; \
+    node --version
+
+# /app 호환 심볼릭 (dify entrypoint 가 하드코딩)
+RUN mkdir -p /app && \
+    ln -sfn /opt/dify-api/api       /app/api && \
+    ln -sfn /opt/dify-web/web       /app/web && \
+    ln -sfn /opt/dify-plugin-daemon /app/plugin_daemon
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SonarQube Community — 파이프라인 2 (정적분석 엔진)
+# PoC: sonarqube:10.7.0-community 는 /opt/sonarqube/ 에 모든 앱이 있고 Elasticsearch
+# 를 내장. sonar 사용자 (uid/gid 1000) 가 필요하지만, 기존 jenkins user(uid 1000)
+# 와 충돌하므로 별도 uid 1100 의 sonar 사용자로 소유권 재설정.
+# ─────────────────────────────────────────────────────────────────────────────
+COPY --from=sonarqube-src /opt/sonarqube /opt/sonarqube
+RUN groupadd -g 1100 sonar && \
+    useradd -u 1100 -g sonar -M -d /opt/sonarqube -s /bin/bash sonar && \
+    chown -R sonar:sonar /opt/sonarqube && \
+    sed -i 's|^#*sonar.web.port=.*|sonar.web.port=9000|' /opt/sonarqube/conf/sonar.properties || true && \
+    echo "sonar.es.bootstrap.checks.disable=true" >> /opt/sonarqube/conf/sonar.properties
+
+# Elasticsearch vm.max_map_count 요구를 런타임에 sysctl 가능한 호스트에서만 처리.
+# 오프라인 컨테이너에서는 sonar.search.javaAdditionalOpts 로 ES JVM 튜닝.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SonarScanner CLI — Jenkins 파이프라인 2 가 호출하는 클라이언트
+# ─────────────────────────────────────────────────────────────────────────────
+ARG SONAR_SCANNER_VERSION=5.0.1.3006
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) SS_ARCH=linux ;; \
+      arm64) SS_ARCH=linux-aarch64 ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fL -o /tmp/sonar-scanner.zip \
+      "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-${SS_ARCH}.zip"; \
+    unzip -q /tmp/sonar-scanner.zip -d /opt && \
+    mv /opt/sonar-scanner-${SONAR_SCANNER_VERSION}-${SS_ARCH} /opt/sonar-scanner && \
+    rm /tmp/sonar-scanner.zip && \
+    ln -sfn /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner && \
+    sonar-scanner --version
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Jenkins 플러그인 seed + Dify 플러그인 seed (기존 offline 자산 재사용)
+# ─────────────────────────────────────────────────────────────────────────────
+COPY e2e-pipeline/offline/jenkins-plugins/ /opt/seed/jenkins-plugins/
+COPY e2e-pipeline/offline/dify-plugins/    /opt/seed/dify-plugins/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PostgreSQL initdb + Dify/SonarQube DB 생성
+# (기존 pg-init-allinone.sh 는 dify/dify_plugin 만 생성 → sonar 추가한 확장본 사용)
+# ─────────────────────────────────────────────────────────────────────────────
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/pg-init.sh /opt/pg-init.sh
+RUN bash /opt/pg-init.sh
+
+# ─────────────────────────────────────────────────────────────────────────────
+# supervisord / nginx 설정 — 통합 이미지 전용 (포트 28080/28081/29000/50002)
+# ─────────────────────────────────────────────────────────────────────────────
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/supervisord.conf /etc/supervisor/supervisord.conf
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/nginx.conf       /etc/nginx/nginx.conf
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 파이프라인 1~3 Python 스크립트 + 파이프라인 4 eval_runner
+# (zero_touch_qa / e2e-pipeline/dify-chatflow.yaml 은 이 이미지에서 제거됨 —
+#  ZeroTouch-QA 는 기존 e2e-pipeline 스택이 담당)
+# ─────────────────────────────────────────────────────────────────────────────
+RUN mkdir -p /opt/pipeline-scripts
+COPY repo_context_builder.py           /opt/pipeline-scripts/
+COPY doc_processor.py                  /opt/pipeline-scripts/
+COPY sonar_issue_exporter.py           /opt/pipeline-scripts/
+COPY dify_sonar_issue_analyzer.py      /opt/pipeline-scripts/
+COPY gitlab_issue_creator.py           /opt/pipeline-scripts/
+COPY eval_runner                       /opt/eval_runner
+
+# SCRIPTS_HOME 심볼릭 (eval_runner 전용)
+RUN mkdir -p /opt/scripts-home && \
+    ln -sfn /opt/eval_runner /opt/scripts-home/eval_runner
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4개 Jenkinsfile seed + URL/자격 치환
+# (원본은 기존 스택(compose 서비스명 api/sonarqube/gitlab)을 가정하므로
+#  통합 이미지 내부 주소(127.0.0.1) 로 치환. GitLab 만 별도 compose 서비스
+#  `gitlab` 을 쓰므로 호스트 그대로 유지, 포트는 기본 80 으로 정규화.
+#  하드코딩된 GitLab PAT 은 빈 문자열로 치환 — provision 단계에서 발급된
+#  PAT 을 Jenkins Credentials 'gitlab-pat' 으로 주입하고, withCredentials
+#  래핑은 Phase 6 에서 추가)
+# ─────────────────────────────────────────────────────────────────────────────
+COPY "DSCORE-TTC 코드 사전학습.jenkinsPipeline" \
+     "DSCORE-TTC 코드 정적분석.jenkinsPipeline" \
+     "DSCORE-TTC 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline" \
+     "DSCORE-TTC AI평가.jenkinsPipeline" \
+     /opt/jenkinsfiles/
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/jenkins-seed/ /opt/seed/jenkins-home/
+
+RUN set -eux; \
+    cd /opt/jenkinsfiles; \
+    # Dify API 내부 주소 (컨테이너 local PG/Redis 옆에서 돌고 있음)
+    sed -i 's|http://api:5001|http://127.0.0.1:5001|g' *.jenkinsPipeline; \
+    # SonarQube 도 동일 컨테이너 내부
+    sed -i 's|http://sonarqube:9000|http://127.0.0.1:9000|g' *.jenkinsPipeline; \
+    # GitLab 은 별도 compose 서비스. 기본 external_url 80 포트 정규화
+    sed -i 's|http://gitlab:8929|http://gitlab:80|g' *.jenkinsPipeline; \
+    # 하드코딩된 PAT 제거 — Jenkins Credentials 로 이관 예정 (Phase 6)
+    sed -i "s|'glpat-M_J3Ze9BeZsbFcHd6GkuO286MQp1OjEH.01.0w013cs97'|''|g" *.jenkinsPipeline; \
+    sed -i 's|"glpat-M_J3Ze9BeZsbFcHd6GkuO286MQp1OjEH.01.0w013cs97"|""|g' *.jenkinsPipeline; \
+    if grep -l 'glpat-' *.jenkinsPipeline 2>/dev/null; then \
+        echo "[ERROR] GitLab PAT 잔존 — 빌드 중단" >&2; exit 1; \
+    fi; \
+    echo "Jenkinsfile URL/PAT 치환 완료"
+
+# jenkins-init groovy 스크립트 (관리자 계정 등)도 기존 자산 재사용
+COPY e2e-pipeline/jenkins-init /opt/jenkins-init
+RUN mkdir -p /opt/seed/jenkins-home/init.groovy.d && \
+    cp /opt/jenkins-init/*.groovy /opt/seed/jenkins-home/init.groovy.d/ 2>/dev/null || true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dify 자산 (Workflow DSL, Dataset 정의) — provision.allinone.sh 가 자동 import
+# ─────────────────────────────────────────────────────────────────────────────
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/dify-assets/ /opt/dify-assets/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# entrypoint + provisioner
+# ─────────────────────────────────────────────────────────────────────────────
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/entrypoint.sh /entrypoint.sh
+COPY e2e-pipeline/offline/code-AI-quality-allinone/scripts/provision.sh  /opt/provision.sh
+RUN chmod +x /entrypoint.sh /opt/provision.sh
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 환경 변수 (런타임 기본값)
+# ─────────────────────────────────────────────────────────────────────────────
+ENV OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+    OLLAMA_MODEL=gemma4:e4b \
+    JENKINS_PORT=28080 \
+    JENKINS_AGENT_PORT=50002 \
+    DIFY_GATEWAY_PORT=28081 \
+    SONARQUBE_PORT=29000 \
+    SONAR_HOST_URL=http://127.0.0.1:29000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 포트 / 볼륨 / 진입점
+# ─────────────────────────────────────────────────────────────────────────────
+EXPOSE 28080 28081 29000 50002
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/bin/tini","--","/entrypoint.sh"]
