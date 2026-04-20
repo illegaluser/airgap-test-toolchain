@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Hover</title>
+  <style>
+    .tooltip-parent { position: relative; display: inline-block; padding: 10px; border: 1px solid #999; }
+    .tooltip { display: none; position: absolute; top: 100%; left: 0; background: #333; color: #fff; padding: 4px 8px; }
+    .tooltip-parent:hover .tooltip { display: block; }
+
+    .menu { list-style: none; padding: 0; }
+    .menu-item { position: relative; display: inline-block; padding: 8px 16px; background: #eee; }
+    .submenu { display: none; position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid #999;
+               padding: 8px; min-width: 120px; }
+    .menu-item:hover .submenu { display: block; }
+
+    .always-hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Hover Test Page</h1>
+
+  <!-- Case 1: hover → tooltip 표시 -->
+  <div class="tooltip-parent" id="tooltip-trigger">
+    Hover me
+    <span class="tooltip" id="tooltip-content">Tooltip text</span>
+  </div>
+
+  <br><br>
+
+  <!-- Case 2: 메뉴 hover → submenu 노출 -->
+  <ul class="menu">
+    <li class="menu-item" id="menu-file">
+      File
+      <ul class="submenu" id="submenu-file">
+        <li>New</li>
+        <li>Open</li>
+        <li>Save</li>
+      </ul>
+    </li>
+  </ul>
+
+  <!-- Case 3: display:none 인 엘리먼트 — hover 타임아웃 -->
+  <div class="always-hidden" id="always-hidden">Invisible</div>
+</body>
+</html>

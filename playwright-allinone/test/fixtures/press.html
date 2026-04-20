@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Press</title>
+  <style>
+    #modal { display: none; position: fixed; top: 30%; left: 30%; padding: 20px;
+             background: #fff; border: 2px solid #333; }
+    #modal.open { display: block; }
+  </style>
+</head>
+<body>
+  <h1>Press Test Page</h1>
+
+  <!-- Case 1: form 제출 (Enter 누르면 submit 되는지) — 실제 서브밋 대신 URL hash 변경으로 대체 -->
+  <form id="search-form" onsubmit="location.hash='#submitted'; return false;">
+    <input id="search-box" type="text" name="q">
+    <button type="submit" id="submit-btn">Search</button>
+  </form>
+
+  <!-- Case 2: Escape 로 모달 닫기 -->
+  <button id="open-modal" onclick="document.getElementById('modal').classList.add('open')">Open Modal</button>
+  <div id="modal" tabindex="-1">
+    <p>Modal Content</p>
+    <p>Press Escape to close.</p>
+  </div>
+  <script>
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.getElementById('modal').classList.remove('open');
+      }
+    });
+  </script>
+
+  <!-- Case 3: Tab 으로 포커스 이동 -->
+  <input id="field-first" type="text" placeholder="first">
+  <input id="field-second" type="text" placeholder="second">
+</body>
+</html>

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Fill</title></head>
+<body>
+  <h1>Fill Test Page</h1>
+
+  <!-- Case 1: 일반 text input -->
+  <label>Name: <input id="input-name" type="text"></label><br>
+
+  <!-- Case 2: textarea — 여러 줄 -->
+  <label>Bio: <textarea id="input-bio" rows="3" cols="40"></textarea></label><br>
+
+  <!-- Case 3: readonly — Playwright fill 은 editable 이어야 가능, raise 예상 -->
+  <label>ReadOnly: <input id="input-readonly" type="text" value="locked" readonly></label><br>
+
+  <!-- Case 4: 특수문자 / 한글 / emoji -->
+  <label>Special: <input id="input-special" type="text"></label><br>
+</body>
+</html>

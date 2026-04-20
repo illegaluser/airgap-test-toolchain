@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Check</title></head>
+<body>
+  <h1>Check Test Page</h1>
+
+  <!-- Case 1: 일반 checkbox -->
+  <label><input id="cb-subscribe" type="checkbox"> Subscribe newsletter</label><br>
+
+  <!-- Case 2: radio group — 하나 체크하면 다른 건 자동 해제 -->
+  <fieldset>
+    <legend>Size</legend>
+    <label><input type="radio" name="size" id="size-sm" value="S"> Small</label>
+    <label><input type="radio" name="size" id="size-md" value="M"> Medium</label>
+    <label><input type="radio" name="size" id="size-lg" value="L"> Large</label>
+  </fieldset>
+
+  <!-- Case 3: 이미 checked 인 상태 — check() idempotent -->
+  <label><input id="cb-prechecked" type="checkbox" checked> Already Checked</label>
+</body>
+</html>

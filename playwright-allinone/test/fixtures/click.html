@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Click</title></head>
+<body>
+  <h1>Click Test Page</h1>
+
+  <!-- Case 1: id 로 찾는 일반 버튼 -->
+  <button id="btn-plain">Plain Button</button>
+  <div id="status-plain">idle</div>
+
+  <!-- Case 2: role=button, name=로그인 -->
+  <button aria-label="로그인">Login</button>
+  <div id="status-login">idle</div>
+
+  <!-- Case 3: 링크 클릭 후 navigate.html 로 이동 -->
+  <a href="navigate.html" id="nav-link">Go to Navigate</a>
+
+  <!-- Case 4: 첫 selector 는 없고, fallback 이 성공 -->
+  <!-- `#missing-btn` 은 존재하지 않음. `#fallback-btn` 이 alternative 로 작동. -->
+  <button id="fallback-btn">Fallback</button>
+  <div id="status-fallback">idle</div>
+
+  <script>
+    document.getElementById('btn-plain').addEventListener('click', () => {
+      document.getElementById('status-plain').textContent = 'clicked';
+    });
+    document.querySelector('[aria-label="로그인"]').addEventListener('click', () => {
+      document.getElementById('status-login').textContent = 'clicked';
+    });
+    document.getElementById('fallback-btn').addEventListener('click', () => {
+      document.getElementById('status-fallback').textContent = 'clicked';
+    });
+  </script>
+</body>
+</html>

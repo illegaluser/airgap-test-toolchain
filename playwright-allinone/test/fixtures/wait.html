@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Wait</title></head>
+<body>
+  <h1>Wait Test Page</h1>
+
+  <div id="static">I am here immediately.</div>
+
+  <!-- 500ms 후 동적으로 추가 — wait_for_selector 검증용 -->
+  <div id="container"></div>
+
+  <script>
+    setTimeout(() => {
+      const el = document.createElement('div');
+      el.id = 'delayed';
+      el.textContent = 'I appeared after 500ms.';
+      document.getElementById('container').appendChild(el);
+    }, 500);
+  </script>
+</body>
+</html>

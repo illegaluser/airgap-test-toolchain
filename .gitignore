@@ -4,3 +4,10 @@
 
 # macOS metadata
 .DS_Store
+
+# pytest cache
+.pytest_cache/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
