@@ -247,11 +247,7 @@ RUN mkdir -p /opt/scripts-home && \
 #  PAT 을 Jenkins Credentials 'gitlab-pat' 으로 주입하고, withCredentials
 #  래핑은 Phase 6 에서 추가)
 # ─────────────────────────────────────────────────────────────────────────────
-COPY "jenkinsfiles/DSCORE-TTC 코드 사전학습.jenkinsPipeline" \
-     "jenkinsfiles/DSCORE-TTC 코드 정적분석.jenkinsPipeline" \
-     "jenkinsfiles/DSCORE-TTC 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline" \
-     "jenkinsfiles/DSCORE-TTC AI평가.jenkinsPipeline" \
-     /opt/jenkinsfiles/
+COPY jenkinsfiles/ /opt/jenkinsfiles/
 COPY scripts/jenkins-seed/ /opt/seed/jenkins-home/
 
 RUN set -eux; \
