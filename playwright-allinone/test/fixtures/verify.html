@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Verify</title></head>
+<body>
+  <h1 id="page-title">Verify Test Page</h1>
+
+  <!-- Case 1: 보이는 엘리먼트 -->
+  <p id="visible-item">This element is visible.</p>
+
+  <!-- Case 2: display:none — 숨김 -->
+  <p id="hidden-item" style="display: none;">This element is hidden.</p>
+
+  <!-- Case 3: 값 일치 확인 — "검색결과 123" 텍스트 매칭 -->
+  <p id="result-text">검색결과 123 건</p>
+
+  <!-- Case 4: 영역 visibility — main 안에 자식 존재 -->
+  <main id="content-area">
+    <h2>Results</h2>
+    <p>첫 번째 결과</p>
+    <p>두 번째 결과</p>
+  </main>
+</body>
+</html>

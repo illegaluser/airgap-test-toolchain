@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Select</title></head>
+<body>
+  <h1>Select Test Page</h1>
+
+  <!-- Case 1: value 로 선택 -->
+  <label>Country:
+    <select id="country">
+      <option value="">-- 선택 --</option>
+      <option value="kr">Korea</option>
+      <option value="jp">Japan</option>
+      <option value="us">United States</option>
+    </select>
+  </label>
+
+  <!-- Case 2: label 로 선택 -->
+  <label>Language:
+    <select id="language">
+      <option value="en">English</option>
+      <option value="ko">한국어</option>
+      <option value="ja">日本語</option>
+    </select>
+  </label>
+
+  <!-- Case 3: 존재하지 않는 값으로 선택 → Playwright raise -->
+  <label>City:
+    <select id="city">
+      <option value="seoul">Seoul</option>
+      <option value="busan">Busan</option>
+    </select>
+  </label>
+</body>
+</html>
