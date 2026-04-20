@@ -63,16 +63,20 @@ while [ $# -gt 0 ]; do
   -h, --help   이 도움말
 
 주요 env:
-  IMAGE_TAG          dscore.ttc.playwright:latest (기본)
-  TARGET_PLATFORM    uname -m 자동 감지 (Mac arm64 → linux/arm64, 그 외 → linux/amd64)
-  OLLAMA_MODEL       gemma4:e4b (Dify provider 에 등록될 모델 id)
-  OUTPUT_TAR         dscore.ttc.playwright-<ts>.tar.gz
+  IMAGE_TAG                dscore.ttc.playwright:latest (기본)
+  TARGET_PLATFORM          uname -m 자동 감지 (Mac arm64 → linux/arm64, 그 외 → linux/amd64)
+  OLLAMA_MODEL             gemma4:e4b (Dify provider 에 등록될 모델 id)
+  OUTPUT_TAR               dscore.ttc.playwright-<ts>.tar.gz
+  FORCE_PLUGIN_DOWNLOAD    false (기본). true 면 jenkins-plugins/ dify-plugins/ 에
+                           파일이 있어도 재다운로드 (플러그인 버전 갱신 시만 사용).
+                           기본은 기존 파일 재사용 — airgap 환경에서 네트워크 없이 빌드 가능.
 
 예시:
-  ./e2e-pipeline/offline/playwright-allinone/build.sh                           # 빌드만 (tar.gz 산출)
-  ./e2e-pipeline/offline/playwright-allinone/build.sh --redeploy                # 빌드 + 기존 볼륨 재사용 재기동 + agent
-  ./e2e-pipeline/offline/playwright-allinone/build.sh --redeploy --fresh        # 빌드 + 볼륨 초기화 + agent
-  ./e2e-pipeline/offline/playwright-allinone/build.sh --redeploy --no-agent     # 빌드 + 컨테이너만 재기동
+  ./build.sh                           # 빌드만 (tar.gz 산출)
+  ./build.sh --redeploy                # 빌드 + 기존 볼륨 재사용 재기동 + agent
+  ./build.sh --redeploy --fresh        # 빌드 + 볼륨 초기화 + agent
+  ./build.sh --redeploy --no-agent     # 빌드 + 컨테이너만 재기동
+  FORCE_PLUGIN_DOWNLOAD=true ./build.sh    # 플러그인 강제 재다운로드
 USAGE
       exit 0
       ;;
@@ -141,54 +145,82 @@ log "빌드 대상: $IMAGE_TAG (platform=$TARGET_PLATFORM)"
 log "출력 파일: $OUTPUT_TAR"
 
 # ── 1. Jenkins 플러그인 hpi 다운로드 (의존성 재귀 해결) ──────────────────
-log "[1/4] Jenkins 플러그인 다운로드 (+의존성)"
+# 기본 정책: jenkins-plugins/ 에 파일이 이미 있으면 **네트워크 접근 없이 재사용**.
+# 저장소에 사전 수집된 플러그인이 git 으로 동반되므로, airgap / 폐쇄망 환경에서
+# 그대로 빌드 가능. 플러그인 버전을 갱신해야 할 때만 FORCE_PLUGIN_DOWNLOAD=true.
+log "[1/4] Jenkins 플러그인 준비"
 mkdir -p "$SCRIPT_DIR/jenkins-plugins"
-if [ ! -f "$SCRIPT_DIR/jenkins-plugin-manager.jar" ]; then
-  log "  jenkins-plugin-manager.jar 다운로드"
-  curl -fL -o "$SCRIPT_DIR/jenkins-plugin-manager.jar" "$JENKINS_PLUGIN_MANAGER_URL"
-fi
+EXISTING_PLUGIN_COUNT=$(find "$SCRIPT_DIR/jenkins-plugins" \( -name '*.hpi' -o -name '*.jpi' \) 2>/dev/null | wc -l | tr -d ' ')
 
-# 플러그인 매니저 설정: 각 플러그인을 :latest 로 요청. 의존성은 재귀 resolve.
-PLUGIN_LIST_TXT="$SCRIPT_DIR/.plugins.txt"
-: > "$PLUGIN_LIST_TXT"
-for p in "${JENKINS_PLUGINS[@]}"; do
-  echo "$p:latest" >> "$PLUGIN_LIST_TXT"
-done
-
-log "  플러그인 목록: ${JENKINS_PLUGINS[*]}"
-
-# 빌드 머신에서 실제 사용할 Jenkins 버전 추출 (jenkins/jenkins:lts-jdk21 현재 태그)
-if [ -n "$JENKINS_VERSION_OVERRIDE" ]; then
-  JENKINS_VERSION_DETECTED="$JENKINS_VERSION_OVERRIDE"
+if [ "${FORCE_PLUGIN_DOWNLOAD:-false}" != "true" ] && [ "$EXISTING_PLUGIN_COUNT" -gt 0 ]; then
+  log "  기존 플러그인 $EXISTING_PLUGIN_COUNT 개 재사용 (다운로드 스킵)."
+  log "  강제 재다운로드: FORCE_PLUGIN_DOWNLOAD=true ./build.sh"
 else
-  log "  jenkins/jenkins:lts-jdk21 버전 동적 추출 중..."
-  JENKINS_VERSION_DETECTED=$(docker run --rm --entrypoint java jenkins/jenkins:lts-jdk21 \
-    -jar /usr/share/jenkins/jenkins.war --version 2>/dev/null | head -n1 | tr -d '\r')
-fi
-[ -z "$JENKINS_VERSION_DETECTED" ] && err "Jenkins 버전 추출 실패 — JENKINS_VERSION 환경변수로 명시"
-log "  대상 Jenkins 버전: $JENKINS_VERSION_DETECTED"
+  if [ "$EXISTING_PLUGIN_COUNT" -eq 0 ]; then
+    log "  jenkins-plugins/ 비어 있음 — 다운로드 시작 (인터넷 필요)"
+  else
+    log "  FORCE_PLUGIN_DOWNLOAD=true — 기존 $EXISTING_PLUGIN_COUNT 개 무시하고 재다운로드"
+  fi
 
-java -jar "$SCRIPT_DIR/jenkins-plugin-manager.jar" \
-  --war "" \
-  --plugin-download-directory "$SCRIPT_DIR/jenkins-plugins" \
-  --plugin-file "$PLUGIN_LIST_TXT" \
-  --jenkins-version "$JENKINS_VERSION_DETECTED" \
-  --verbose || err "Jenkins 플러그인 다운로드 실패"
+  if [ ! -f "$SCRIPT_DIR/jenkins-plugin-manager.jar" ]; then
+    log "  jenkins-plugin-manager.jar 다운로드"
+    curl -fL -o "$SCRIPT_DIR/jenkins-plugin-manager.jar" "$JENKINS_PLUGIN_MANAGER_URL"
+  fi
+
+  # 플러그인 매니저 설정: 각 플러그인을 :latest 로 요청. 의존성은 재귀 resolve.
+  PLUGIN_LIST_TXT="$SCRIPT_DIR/.plugins.txt"
+  : > "$PLUGIN_LIST_TXT"
+  for p in "${JENKINS_PLUGINS[@]}"; do
+    echo "$p:latest" >> "$PLUGIN_LIST_TXT"
+  done
+
+  log "  플러그인 목록: ${JENKINS_PLUGINS[*]}"
+
+  # 빌드 머신에서 실제 사용할 Jenkins 버전 추출 (jenkins/jenkins:lts-jdk21 현재 태그)
+  if [ -n "$JENKINS_VERSION_OVERRIDE" ]; then
+    JENKINS_VERSION_DETECTED="$JENKINS_VERSION_OVERRIDE"
+  else
+    log "  jenkins/jenkins:lts-jdk21 버전 동적 추출 중..."
+    JENKINS_VERSION_DETECTED=$(docker run --rm --entrypoint java jenkins/jenkins:lts-jdk21 \
+      -jar /usr/share/jenkins/jenkins.war --version 2>/dev/null | head -n1 | tr -d '\r')
+  fi
+  [ -z "$JENKINS_VERSION_DETECTED" ] && err "Jenkins 버전 추출 실패 — JENKINS_VERSION 환경변수로 명시"
+  log "  대상 Jenkins 버전: $JENKINS_VERSION_DETECTED"
+
+  java -jar "$SCRIPT_DIR/jenkins-plugin-manager.jar" \
+    --war "" \
+    --plugin-download-directory "$SCRIPT_DIR/jenkins-plugins" \
+    --plugin-file "$PLUGIN_LIST_TXT" \
+    --jenkins-version "$JENKINS_VERSION_DETECTED" \
+    --verbose || err "Jenkins 플러그인 다운로드 실패"
+fi
 
 # PoC 2026-04-19: plugin-manager 는 .jpi 로 저장한다 (.hpi 와 동등, Jenkins 가 양쪽 모두 로드)
 PLUGIN_FILE_COUNT=$(find "$SCRIPT_DIR/jenkins-plugins" \( -name '*.hpi' -o -name '*.jpi' \) | wc -l | tr -d ' ')
-log "  다운로드된 플러그인 파일 개수: $PLUGIN_FILE_COUNT (hpi + jpi)"
+log "  최종 Jenkins 플러그인 파일 개수: $PLUGIN_FILE_COUNT (hpi + jpi)"
 
 # ── 2. Dify 플러그인 .difypkg 다운로드 ────────────────────────────────────
-log "[2/4] Dify 플러그인 다운로드 ($DIFY_PLUGIN_ID)"
+# Jenkins 플러그인과 동일 정책: 이미 있으면 재사용, FORCE_PLUGIN_DOWNLOAD=true 로 갱신.
+log "[2/4] Dify 플러그인 준비 ($DIFY_PLUGIN_ID)"
 mkdir -p "$SCRIPT_DIR/dify-plugins"
+EXISTING_DIFYPKG_COUNT=$(find "$SCRIPT_DIR/dify-plugins" -name '*.difypkg' 2>/dev/null | wc -l | tr -d ' ')
 
-PLUGIN_BATCH_RESP=$(curl -sS -X POST "$DIFY_PLUGIN_MARKETPLACE/api/v1/plugins/batch" \
-  -H "Content-Type: application/json" \
-  -H "X-Dify-Version: $DIFY_VERSION" \
-  -d "{\"plugin_ids\":[\"$DIFY_PLUGIN_ID\"]}")
+if [ "${FORCE_PLUGIN_DOWNLOAD:-false}" != "true" ] && [ "$EXISTING_DIFYPKG_COUNT" -gt 0 ]; then
+  log "  기존 Dify 플러그인 $EXISTING_DIFYPKG_COUNT 개 재사용 (다운로드 스킵)."
+  ls -lh "$SCRIPT_DIR/dify-plugins/" 2>/dev/null
+else
+  if [ "$EXISTING_DIFYPKG_COUNT" -eq 0 ]; then
+    log "  dify-plugins/ 비어 있음 — marketplace 조회 (인터넷 필요)"
+  else
+    log "  FORCE_PLUGIN_DOWNLOAD=true — 기존 $EXISTING_DIFYPKG_COUNT 개 무시하고 재다운로드"
+  fi
 
-PLUGIN_UID=$(echo "$PLUGIN_BATCH_RESP" | python3 -c "
+  PLUGIN_BATCH_RESP=$(curl -sS -X POST "$DIFY_PLUGIN_MARKETPLACE/api/v1/plugins/batch" \
+    -H "Content-Type: application/json" \
+    -H "X-Dify-Version: $DIFY_VERSION" \
+    -d "{\"plugin_ids\":[\"$DIFY_PLUGIN_ID\"]}")
+
+  PLUGIN_UID=$(echo "$PLUGIN_BATCH_RESP" | python3 -c "
 import json,sys
 try:
     d = json.load(sys.stdin)
@@ -197,20 +229,21 @@ try:
 except Exception:
     print('')
 ")
-[ -z "$PLUGIN_UID" ] && err "marketplace 조회 실패. 응답: $PLUGIN_BATCH_RESP"
+  [ -z "$PLUGIN_UID" ] && err "marketplace 조회 실패. 응답: $PLUGIN_BATCH_RESP"
 
-# unique_identifier 에서 버전 분리: "org/name:ver@sha"
-PLUGIN_VERSION=$(echo "$PLUGIN_UID" | sed -n 's#.*:\([^@]*\)@.*#\1#p')
-log "  최신 버전: $PLUGIN_VERSION (uid: ${PLUGIN_UID:0:60}...)"
+  # unique_identifier 에서 버전 분리: "org/name:ver@sha"
+  PLUGIN_VERSION=$(echo "$PLUGIN_UID" | sed -n 's#.*:\([^@]*\)@.*#\1#p')
+  log "  최신 버전: $PLUGIN_VERSION (uid: ${PLUGIN_UID:0:60}...)"
 
-# marketplace 에서 패키지 다운로드
-# endpoint: /api/v1/plugins/download?unique_identifier=...
-curl -fL -o "$SCRIPT_DIR/dify-plugins/${DIFY_PLUGIN_ID//\//-}-${PLUGIN_VERSION}.difypkg" \
-  "$DIFY_PLUGIN_MARKETPLACE/api/v1/plugins/download?unique_identifier=$PLUGIN_UID" \
-  || err "Dify 플러그인 다운로드 실패"
+  # marketplace 에서 패키지 다운로드
+  # endpoint: /api/v1/plugins/download?unique_identifier=...
+  curl -fL -o "$SCRIPT_DIR/dify-plugins/${DIFY_PLUGIN_ID//\//-}-${PLUGIN_VERSION}.difypkg" \
+    "$DIFY_PLUGIN_MARKETPLACE/api/v1/plugins/download?unique_identifier=$PLUGIN_UID" \
+    || err "Dify 플러그인 다운로드 실패"
 
-log "  저장: $SCRIPT_DIR/dify-plugins/"
-ls -lh "$SCRIPT_DIR/dify-plugins/"
+  log "  저장: $SCRIPT_DIR/dify-plugins/"
+  ls -lh "$SCRIPT_DIR/dify-plugins/"
+fi
 
 # ── 3. Docker 이미지 빌드 ─────────────────────────────────────────────────
 log "[3/4] Docker 이미지 빌드 ($TARGET_PLATFORM)"

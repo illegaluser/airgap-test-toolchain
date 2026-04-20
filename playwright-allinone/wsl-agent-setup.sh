@@ -381,8 +381,16 @@ log "  pip install: ${REQ_PKGS[*]}"
 if ls -d "$HOME/.cache/ms-playwright/chromium-"* >/dev/null 2>&1; then
   log "  Chromium 이미 설치됨 — 스킵"
 else
-  # playwright install --with-deps 는 sudo 가 필요 — 여기선 의존 deb 은 사용자가 사전에 깔아둔다고 가정
-  # Chromium 자체만 설치. Ubuntu 22.04 기본 이미지에 대부분 GTK/NSS/fonts 가 있음.
+  # WSL2 최소 Ubuntu 이미지는 libasound2 / libgbm1 / libnss3 / libatk-bridge2.0-0 /
+  # libgtk-3-0 등이 빠져 있을 수 있어 headed Chromium 기동이 실패한다.
+  # `playwright install-deps` 가 Playwright 가 요구하는 정확한 apt 패키지 목록을
+  # 알아서 설치해 주므로, WSL 감지 시 sudo 로 선행한다. sudo 가 NOPASSWD 가 아니면
+  # 사용자가 비번을 입력해야 함 — AUTO_INSTALL_DEPS=true 플로우와 동일 UX.
+  if [ "$IS_WSL" = "true" ] && command -v sudo >/dev/null 2>&1; then
+    log "  WSL2 감지 — Playwright Chromium 의존 apt 패키지 자동 설치 (sudo 필요)"
+    sudo "$VENV_PY" -m playwright install-deps chromium 2>&1 \
+      || warn "  install-deps 실패 — 이미 설치돼 있거나 수동 apt 필요. 계속 진행 (README §4.3)"
+  fi
   "$VENV_PY" -m playwright install chromium
 fi
 
