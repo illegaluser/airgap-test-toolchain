@@ -299,7 +299,7 @@ Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분
 
 > **왜 네이버인가?** Google 은 headless Chromium 을 적극적으로 차단 (captcha 또는 /sorry/ 리다이렉트) 해 검증에 부적합하다. 네이버는 차단이 약하다. 기본값 `https://www.google.com` 은 기동 확인용으로만 제공되며, 신뢰성 있는 검증에는 위 네이버 시나리오가 권장된다.
 >
-> **Planner Guard**: 내부의 `zero_touch_qa` 실행 엔진은 Dify Planner 가 생성한 시나리오의 첫 스텝이 `navigate` 가 아니면 `TARGET_URL` 로 자동으로 step 1 을 prepend 한다. 4B 모델이 가끔 navigate 지시를 놓쳐도 파이프라인이 실패하지 않도록 하는 방어 장치. 발동 시 콘솔에 `[Guard] scenario[0].action != navigate — TARGET_URL 로 navigate step 자동 prepend` 로그가 출력된다.
+> **LLM 비결정성 안전망**: 내부의 `zero_touch_qa` 는 Dify 응답을 받은 즉시 구조 검증 (9 대 액션 / target 존재) 하고, 실패 시 자동으로 **최대 3 회 재생성** 한다 (`[Retry N/3]` 로그). 재시도 후에도 step 1 이 navigate 가 아니면 Guard 가 `TARGET_URL` 로 자동 prepend. 4B 모델이 가끔 규칙을 놓쳐도 파이프라인이 실패하지 않도록 설계된 [4 계층 방어 스택](#llm-비결정성-방어-스택) 참조.
 
 접속 정보:
 
@@ -702,26 +702,35 @@ docker restart dscore.ttc.playwright
 **모델 선택 기준**:
 
 | 모델 | 크기 | 호스트 RAM | 용도 |
-|------|------|------------|------|
-| `gemma4:e4b` | ~4GB | 6-8GB | 기본 — 빠름. 단, 작은 모델 특성상 프롬프트의 일부 규칙(예: "step 1 은 navigate") 을 놓칠 수 있음 — [Planner Guard](#planner-guard-가-발동하는-이유) 참조 |
-| `llama3.1:8b` | ~4.7GB | 8-10GB | 품질↑ |
-| `qwen2.5:7b` | ~4.4GB | 8-10GB | 다국어 |
-| `gemma2:2b` | ~1.5GB | 4GB | 저사양 |
+| --- | --- | --- | --- |
+| `gemma4:e4b` | ~4GB | 6-8GB | 기본 — 빠르고 아래 [LLM 비결정성 방어 스택](#llm-비결정성-방어-스택) 덕에 단독으로도 안정적 |
+| `llama3.1:8b` | ~4.7GB | 8-10GB | 품질↑ — 복잡한 SRS 에서 한 번에 맞출 확률 ↑ |
+| `qwen2.5:7b` | ~4.4GB | 8-10GB | 다국어 (영/중 혼합 SRS 에 유리) |
+| `gemma2:2b` | ~1.5GB | 4GB | 저사양 — 방어 스택이 없다면 비추 |
 
-#### Planner Guard 가 발동하는 이유
+#### LLM 비결정성 방어 스택
 
-`zero_touch_qa/__main__.py` 는 Dify Planner 가 생성한 시나리오의 첫 스텝이 `navigate` 가 아니면 `TARGET_URL` 로 `{ step:1, action:"navigate", value:<TARGET_URL> }` 을 **자동 prepend** 한다. 콘솔 로그:
+Dify Planner (기본 gemma4:e4b, 4B 파라미터) 는 4 계층 안전망으로 보호돼 단독으로도 일관된 시나리오를 생성한다. 모델을 바꾸기 전에 **이 스택 전체를 먼저 이해**하자.
+
+| # | 계층 | 위치 | 하는 일 |
+| --- | --- | --- | --- |
+| 1 | **프롬프트 결정성** | `dify-chatflow.yaml` Planner 노드 | `temperature=0.1` + `[⚠️ 최우선 규칙 — STEP 1 은 예외 없이 navigate]` 섹션 + `[✅ 예시]` 블록 (few-shot) 로 출력 구조를 강제 |
+| 2 | **시나리오 검증 + 자동 재시도** | `zero_touch_qa/__main__.py` `_validate_scenario` / `_prepare_scenario` | Dify 응답을 받은 즉시 (a) 배열 비어있지 않음, (b) 모든 step 의 action 이 9 대 표준, (c) navigate/wait 이외는 target 존재 를 검증. 실패하면 **최대 3 회까지 재생성** (5s / 10s / 15s backoff) |
+| 3 | **Guard 자동 prepend** | `zero_touch_qa/__main__.py` line 77-88 | 3 회 재시도 성공 후에도 `scenario[0].action != "navigate"` 면 `TARGET_URL` 로 step 1 navigate 를 자동 prepend. 콘솔에 `[Guard] scenario[0].action != navigate — TARGET_URL 로 navigate step 자동 prepend` |
+| 4 | **Runtime healing** | `executor.py` LocalHealer + Dify `/v1/chat-messages` 치유 요청 | 실행 중 selector 가 실패하면 DOM 스냅샷을 Dify 에 보내 교정 target 을 받아 재시도. selector 수준 오류는 이 단계에서 대부분 복구 |
+
+**"더 큰 모델로 교체" 는 위 4 단계가 모두 막은 후에도 **같은 SRS 로 반복 재시도마다 FAIL** 할 때 비로소 고려.** 실무상 그 전에 "SRS 를 더 명시적으로 재작성" 만으로 해결되는 경우가 대부분.
+
+**재시도 로그 예시** (정상 케이스가 한 번 실패 후 복구되는 모습):
 
 ```text
-[Guard] scenario[0].action != navigate — TARGET_URL 로 navigate step 자동 prepend
+[Retry 1/3] 시나리오 수신/검증 실패 — step[1].action 이 유효하지 않음: None (다음 시도까지 5s 대기)
+[Dify] 시나리오 수신 (4스텝) — attempt 2/3 성공
+[Step 1] navigate -> PASS
+...
 ```
 
-**왜 필요한가?** Chatflow 프롬프트에는 "첫 스텝은 반드시 navigate" 지시가 최상단 ⚠️ 블록으로 있지만, `gemma4:e4b` 같은 작은 모델은 `<think>` 블록을 섞어 쓰면서 이 규칙을 놓치는 경우가 있다. Guard 가 없으면 브라우저가 `about:blank` 에서 시작해 step 2 부터 전부 실패한다.
-
-**Guard 가 너무 자주 발동하면**:
-
-- 모델을 더 큰 쪽으로 교체 (위 표 참조)
-- 또는 `SRS_TEXT` 를 명시적으로 — "`https://… 로 먼저 이동한 뒤 …`" — 작성하면 LLM 이 step 1 을 emit 할 확률이 올라간다
+3 회 모두 실패 시 Pipeline 은 "시나리오 구조 검증 실패 (3 회 재시도 모두 실패): …" 메시지와 함께 즉시 종료된다 (무한 대기 없음). 이 경우의 대응은 [§4.9](#49-pipeline-이-failure-로-끝나지만-실제로는-스텝이-pass-하는-것-같다) 참조.
 
 **Ollama 런타임 튜닝** (영구 상주 / 동시 로드):
 
@@ -884,6 +893,10 @@ docker image inspect dscore.ttc.playwright:latest --format '{{.Architecture}}'
 - **시나리오가 step 1 (navigate) 없이 시작** → Guard 가 prepend 해 복구. 콘솔 `[Guard]` 로그 확인
 - **Google.com 헤드리스 차단** → 시나리오 페이지가 `about:blank` / `/sorry/` 로 끝나 G-3 가드가 FAIL 처리. 검증은 [§1.4](#14-step-4-첫-pipeline-실행-검증) 의 네이버 시나리오 권장
 - **LLM 이 selector 에 `role=searchbox` 처럼 `name=` 없는 단독 role 을 넣음** → executor 의 LocatorResolver 가 false-positive 방지로 거부 → LocalHealer 치유 시도 → 실패 시 FAIL. 대부분 치유 성공하지만 드물게 타임아웃
+- **`[Retry N/3]` 후에도 "시나리오 구조 검증 실패"** → Dify 가 3 회 연속 무효 시나리오 반환 (배열 비거나 action 누락 등). Ollama 가 응답 중간에 끊기거나 프롬프트 시스템 변수가 깨진 케이스. 해결:
+  1. `docker exec dscore.ttc.playwright tail -50 /data/logs/dify-api.log` 로 실제 Dify 내부 에러 확인
+  2. `SRS_TEXT` 를 더 구체적이고 짧게 재작성 (LLM 이 혼란을 덜 겪음)
+  3. 그래도 반복되면 [§3.7 모델 선택 기준](#37-ollama-모델-관리-호스트) 에서 `llama3.1:8b` / `qwen2.5:7b` 같은 더 큰 모델로 교체 — **최후 수단**
 
 ### 4.10 Google.com 대상 시나리오가 계속 실패
 

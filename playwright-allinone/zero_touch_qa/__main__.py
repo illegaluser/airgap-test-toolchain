@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 
 from . import __version__
 from .config import Config
@@ -65,6 +66,13 @@ def main():
     except DifyConnectionError as e:
         log.error("Dify 연결 실패: %s", e)
         _generate_error_report(config.artifacts_dir, str(e))
+        sys.exit(1)
+    except ScenarioValidationError as e:
+        log.error("Dify 시나리오가 3 회 시도 후에도 유효하지 않음: %s", e)
+        _generate_error_report(
+            config.artifacts_dir,
+            f"시나리오 구조 검증 실패 (3 회 재시도 모두 실패): {e}",
+        )
         sys.exit(1)
     except FileNotFoundError as e:
         log.error("%s", e)
@@ -122,6 +130,46 @@ def main():
         sys.exit(1)
 
 
+class ScenarioValidationError(ValueError):
+    """Dify 가 반환한 scenario 가 구조적으로 무효."""
+
+
+# [9대 표준 액션] — dify-chatflow.yaml Planner system prompt 와 동기화
+_VALID_ACTIONS = frozenset(
+    {"navigate", "click", "fill", "press", "select", "check", "hover", "wait", "verify"}
+)
+
+
+def _validate_scenario(scenario) -> None:
+    """Dify 응답 scenario 의 구조적 유효성 검증. 실패 시 ScenarioValidationError.
+
+    LLM 비결정성으로 인해 드물게 발생하는 다음 케이스를 조기에 탐지:
+    - 빈 배열 / list 아닌 타입
+    - step 요소가 dict 아님 (문자열 / null 혼입)
+    - action 이 9대 표준 밖이거나 누락
+    - navigate/wait 이외 action 에서 target 이 비어 있음 (실행 시 locator 실패 확정)
+
+    이 검증을 통과해도 시맨틱상 잘못된 시나리오 (예: SRS 와 무관한 작업) 는 막을 수
+    없다. 그 경우는 executor 레벨의 Healer / Guard 가 후단에서 대응.
+    """
+    if not isinstance(scenario, list) or not scenario:
+        raise ScenarioValidationError("시나리오 배열이 비어 있음")
+    for i, step in enumerate(scenario):
+        if not isinstance(step, dict):
+            raise ScenarioValidationError(
+                f"step[{i}] 가 dict 아님 (타입={type(step).__name__})"
+            )
+        action = step.get("action")
+        if action not in _VALID_ACTIONS:
+            raise ScenarioValidationError(
+                f"step[{i}].action 이 유효하지 않음: {action!r}"
+            )
+        if action not in ("navigate", "wait") and not step.get("target"):
+            raise ScenarioValidationError(
+                f"step[{i}] action={action} 인데 target 이 비어 있음"
+            )
+
+
 def _prepare_scenario(
     args, config: Config, target_url: str, srs_text: str
 ) -> list[dict]:
@@ -170,14 +218,35 @@ def _prepare_scenario(
                 )
                 file_id = dify.upload_file(args.file)
 
-    scenario = dify.generate_scenario(
-        run_mode=args.mode,
-        srs_text=srs_text,
-        target_url=target_url,
-        file_id=file_id,
-    )
-    log.info("[Dify] 시나리오 수신 (%d스텝)", len(scenario))
-    return scenario
+    # LLM 비결정성 대비 — Dify 응답을 구조 검증 후, 무효면 최대 3 회까지 재생성.
+    # 가장 흔한 실패: (1) scenario 배열이 비었거나, (2) step.action 이 9대 표준 밖,
+    # (3) fill/click 등인데 target 이 비어있음. 이 조건들은 executor 로 넘기면
+    # selector 실패로 귀결되므로 여기서 조기 차단하고 재시도.
+    for attempt in range(1, 4):
+        try:
+            scenario = dify.generate_scenario(
+                run_mode=args.mode,
+                srs_text=srs_text,
+                target_url=target_url,
+                file_id=file_id,
+            )
+            _validate_scenario(scenario)
+            log.info(
+                "[Dify] 시나리오 수신 (%d스텝) — attempt %d/3 성공",
+                len(scenario), attempt,
+            )
+            return scenario
+        except (DifyConnectionError, ScenarioValidationError) as e:
+            if attempt < 3:
+                backoff = 5 * attempt  # 5s, 10s, 15s
+                log.warning(
+                    "[Retry %d/3] 시나리오 수신/검증 실패 — %s (다음 시도까지 %ds 대기)",
+                    attempt, e, backoff,
+                )
+                time.sleep(backoff)
+            else:
+                log.error("[Dify] 3 회 시도 모두 실패. 마지막 오류: %s", e)
+                raise
 
 
 def _copy_upload_to_artifacts(source_path: str | None, artifacts_dir: str) -> str | None:

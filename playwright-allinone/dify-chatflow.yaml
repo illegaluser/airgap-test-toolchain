@@ -223,7 +223,7 @@ workflow:
               size: 50
           model:
             completion_params:
-              temperature: 0.3
+              temperature: 0.1
               max_tokens: 2048
             mode: chat
             name: "gemma4:e4b"
@@ -240,6 +240,14 @@ workflow:
                 - 사용자 요구사항에 "이동" / "접속" 같은 단어가 없어도, "검색창 입력" 처럼 페이지 조작만 요구해도, 이 step 1 을 반드시 포함합니다.
                 - 대상 URL 은 입력 변수 target_url 값(하단 user 메시지의 "대상 URL: …")을 그대로 value 에 넣습니다.
                 - 이 규칙을 어기면 브라우저가 about:blank 에서 시작해 모든 후속 step 이 about:blank 위에서 실패합니다 — 가장 흔한 false-negative FAIL 패턴입니다.
+
+                [출력 구조 요구사항 — 엄격히 준수]:
+                응답은 오직 JSON 배열 하나 — 배열 내부 원소는 오직 object.
+                각 object 는 step 필드 (1 부터 순차 증가 정수), action 필드 (9 대 표준 중 하나),
+                target 필드 (navigate/wait 은 빈 문자열 허용, 그 외는 반드시 비어있지 않은 문자열),
+                value 필드 (액션별 규칙에 부합), description 필드 (짧은 한글 설명) 를 가진다.
+                선택적으로 fallback_targets (문자열 배열), action_alternatives (object 배열) 를 추가할 수 있다.
+                배열 첫 요소는 앞서 설명한 대로 반드시 step 1 navigate.
 
                 [9대 표준 액션]: navigate, click, fill, press, select, check, hover, wait, verify
 
