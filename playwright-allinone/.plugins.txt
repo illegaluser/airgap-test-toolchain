@@ -1,0 +1,4 @@
+workflow-aggregator:latest
+file-parameters:latest
+htmlpublisher:latest
+plain-credentials:latest
