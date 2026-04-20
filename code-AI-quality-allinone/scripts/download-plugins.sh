@@ -30,7 +30,7 @@ JENKINS_PLUGINS=(
   file-parameters
   htmlpublisher
   plain-credentials
-  # code-AI-quality 추가 요구 (Active Choices — DSCORE-TTC AI평가.jenkinsPipeline)
+  # code-AI-quality 추가 요구 (Active Choices — 04 AI평가.jenkinsPipeline)
   uno-choice
 )
 JENKINS_PLUGIN_MANAGER_URL="https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.13.2/jenkins-plugin-manager-2.13.2.jar"

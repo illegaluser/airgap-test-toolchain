@@ -19,10 +19,6 @@
 #   28090  GitLab HTTP
 #   28022  GitLab SSH
 #
-# e2e-pipeline(Playwright) 스택과 연동하려면:
-#   docker compose -f docker-compose.allinone.wsl2.yaml \
-#                  -f docker-compose.allinone.e2e-bridge.yaml up -d
-#
 # 데이터 볼륨: ${HOME}/ttc-allinone-data
 # ============================================================================
 
@@ -41,7 +37,7 @@ services:
       JENKINS_AGENT_PORT: "50002"
       DIFY_GATEWAY_PORT: "28081"
       SONARQUBE_PORT: "29000"
-      # provision.allinone.sh 가 GitLab root 비밀번호 설정 + PAT 발급에 사용
+      # provision.sh 가 GitLab root 비밀번호 설정 + PAT 발급에 사용
       GITLAB_URL_INTERNAL: "http://gitlab:80"
       GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}
     ports:

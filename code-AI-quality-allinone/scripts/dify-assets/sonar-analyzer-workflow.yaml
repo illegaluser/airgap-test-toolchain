@@ -1,8 +1,8 @@
 # =============================================================================
 # TTC 4-Pipeline — Sonar Issue Analyzer Workflow (Dify DSL v0.1.3)
 #
-# 파이프라인 3 (DSCORE-TTC 코드 정적분석 결과분석 및 이슈등록) 이 호출하는
-# Dify Workflow 정의. provision.allinone.sh 가 이 YAML 을 /console/api/apps/imports
+# 파이프라인 3 (03 코드 정적분석 결과분석 및 이슈등록) 이 호출하는
+# Dify Workflow 정의. provision.sh 가 이 YAML 을 /console/api/apps/imports
 # 로 자동 import 한다.
 #
 # 입력 (dify_sonar_issue_analyzer.py 가 POST 하는 body):

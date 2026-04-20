@@ -1,7 +1,7 @@
 # ============================================================================
-# Zero-Touch QA All-in-One — Python 의존성 통합 매니페스트
-# 원본: ../Dockerfile.jenkins 의 4단계 pip install 블록을 단일 파일로 합친 것.
-# 단일 이미지 빌드 시 한 번의 pip install -r 로 결정적 resolve 를 하기 위함이다.
+# TTC 4-Pipeline All-in-One — Python 의존성 통합 매니페스트
+# 파이프라인 1~4 공통 deps (requests/playwright/deepeval 등). 단일 이미지 빌드 시
+# 한 번의 pip install -r 로 결정적 resolve 를 하기 위해 모든 deps 를 한 파일로 통합.
 # ============================================================================
 
 # --- deepeval 선행 의존성 (grpcio 충돌 우회) ---
@@ -25,7 +25,7 @@ opentelemetry-sdk
 opentelemetry-exporter-otlp-proto-grpc
 grpcio
 
-# --- deepeval (--no-deps 로 별도 설치. Dockerfile.allinone 에서 두 번째 RUN 으로 처리) ---
+# --- deepeval (--no-deps 로 별도 설치. Dockerfile 에서 두 번째 RUN 으로 처리) ---
 # deepeval==1.3.5
 
 # --- AI / 크롤링 / 프레임워크 ---
