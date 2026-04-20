@@ -74,6 +74,19 @@ def main():
         log.error("시나리오가 비어 있습니다.")
         sys.exit(1)
 
+    # 방어: Planner LLM 이 step 1 navigate 를 drop 한 경우 자동 prepend.
+    # gemma4:e4b 같은 작은 모델이 Chatflow 의 navigate-first 지시를 무시할 때
+    # 브라우저가 about:blank 에서 시작해 모든 후속 step 이 실패하는 것을 막는다.
+    if target_url and scenario[0].get("action") != "navigate":
+        log.info("[Guard] scenario[0].action != navigate — TARGET_URL 로 navigate step 자동 prepend")
+        scenario.insert(0, {
+            "step": 1,
+            "action": "navigate",
+            "target": "",
+            "value": target_url,
+            "description": "대상 페이지 로드 (엔진 자동 보강)",
+        })
+
     # 원본 시나리오 저장
     save_scenario(scenario, config.artifacts_dir)
 
