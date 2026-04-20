@@ -1,0 +1,6 @@
+# Build artifacts — image tar.gz 는 2-3GB 로 커서 git 에 올리지 않는다.
+# 소스에서 `./build.sh` 로 재생성 가능.
+*.tar.gz
+
+# macOS metadata
+.DS_Store
