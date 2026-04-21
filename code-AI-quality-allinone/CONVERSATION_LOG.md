@@ -5961,3 +5961,87 @@ docker cp script`  — Apply fixed provision.sh + clear cache + full re-run
 - `memory/project_dify113_plugin_model.md` — Dify 1.13 플러그인 모델 등록 플로우
 - `memory/project_tree_sitter_version_pin.md` — tree-sitter<0.22 핀 이유
 
+
+---
+
+## Session 2026-04-22 — Step 0 (GitLab arm64) · Step 0.5 (런타임 복구) · Step R (이슈 렌더 개편)
+
+### 진입 맥락
+이전 세션 종료 시 Phase 0/1 코드가 디스크에 반영·커밋되고 "다음 세션에서 Phase 1.5 이어가기" 로 마무리. 본 세션은 그 계획을 승계하며 두 가지 선행 이슈를 해결한 뒤 사용자 피드백으로 Step R (이슈 본문 렌더 개편) 을 Phase 1.5 이전에 추가 실행.
+
+### 플랜 파일
+`~/.claude/plans/1-5-buzzing-fog.md` — Phase 1.5~5 집행 마스터 플랜. 집행 순서:
+`Step 0 → Step 0.5 → Step R → Step A (Phase 1.5) → Step B (Phase 2) → Step C (Phase 3, C₁·C₂ 분할) → Step D (Phase 4) → Step E (Phase 5)`
+
+### 작업 요약
+
+#### Step 0 — GitLab arch-native 분리
+macOS (Apple Silicon) 에서 공식 `gitlab/gitlab-ce` 가 amd64 전용 → Rosetta 경유 → gitaly 타임아웃·healthcheck race 빈발. arm64 네이티브 커뮤니티 포트로 전환.
+
+- `docker-compose.mac.yaml` — `yrzr/gitlab-ce-arm64v8:17.4.2-ce.0` + `platform: linux/arm64`
+- `docker-compose.wsl2.yaml` — 양 서비스 `platform: linux/amd64` 명시 (통일)
+- `scripts/offline-prefetch.sh` — `--arch arm64` 시 GITLAB_IMAGE 자동 전환 (`--gitlab-image` override 보존)
+- `scripts/offline-load.sh`, `README.md` — arm64 이미지 문서화
+
+#### Step 0.5 — 런타임 버그 근본 수정
+클린 재빌드 E2E 시도 중 발견한 5종 버그 전부 근본 수정.
+
+1. **Sonar ES watermark (호스트 디스크 95% → ES read-only)**
+   - 호스트 `/System/Volumes/Data` 96% 사용 → Docker VM 내 ES 가 flood_stage 95% 초과 감지 → SonarQube 3회 연속 기동 실패
+   - `scripts/entrypoint.sh` 에 `SONAR_DATA_HOST` env 분기 도입 — `/opt/sonarqube/data` 를 overlay (기본 `/var/lib/sonarqube_data`) 로 이전. `docker-compose.mac.yaml` 이 이 env 를 설정해 Mac 환경에서만 overlay 경로 사용
+   - 트레이드오프: overlay 는 `docker compose down` 시 휘발 → Sonar ES 인덱스 재생성. DB 메타는 PG 에 영속이라 복구 가능
+2. **Jenkins `withSonarQubeEnv` DSL 부재**
+   - `download-plugins.sh` 의 JENKINS_PLUGINS 에 `sonar` + `pipeline-build-step` 추가
+   - `provision.sh` 에 `jenkins_configure_sonar_integration()` + `jenkins_exec_groovy()` 신규 — SonarQube server "dscore-sonar" + scanner tool "SonarScanner-CLI" 를 Groovy 로 자동 등록. 9-arg SonarInstallation 생성자로 `credentialsId=sonarqube-token` 바인딩
+3. **Dify workflow draft 상태 (HTTP 400 "Workflow not published")**
+   - `provision.sh` 에 `dify_publish_workflow()` 신규 — import 직후 `/console/api/apps/{id}/workflows/publish` 자동 호출
+4. **Dify 1.13 pydantic `reranking_mode: null` 거부**
+   - `sonar-analyzer-workflow.yaml` 의 `reranking_mode: null` → `reranking_mode: ''`
+5. **첫 기동 Sonar ready 5분 부족**
+   - `provision.sh` 의 `sonar_wait_ready` timeout 5→10분
+6. **Jenkinsfile 02 의 잘못된 내부 포트**
+   - `gitlab:8929` → `gitlab:80` · `sonar.sources=.` 강제 override 제거
+
+#### Step R — GitLab Issue 본문 렌더 전면 개편
+사용자 피드백: "파일·라인·함수·commit 같은 사실 정보가 LLM 서술 안에 묻히고 GitLab blob 링크 자체가 없다 · 정보량은 늘리지 말고 배치를 개선하자".
+
+설계 원칙 — 역할 분담:
+- **creator deterministic**: TL;DR · 📍 위치 테이블 · 🔴 문제 코드 · 📖 Rule 상세 · 🔗 링크
+- **LLM 2 필드 집중**: `impact_analysis_markdown` (3~6줄, 헤딩 없음) · `suggested_fix_markdown` (코드펜스 1개, 빈값 허용)
+
+기존 자유서술 5 섹션 (`## 요약 / 영향 / 재현 / 수정 제안 / 참조`) 완전 제거. LLM 환각 여지·중복 정보 축소.
+
+파일별 변경:
+- `sonar-analyzer-workflow.yaml` — LLM output 3→4 필드 (`description_markdown` 제거, `impact_analysis_markdown` + `suggested_fix_markdown` 추가). start variables 에 `enclosing_function`/`enclosing_lines`/`commit_sha` 추가. 프롬프트에 "위치·코드·룰은 별도 렌더되니 본문에 반복 금지" 명시
+- `repo_context_builder.py` — 상단에 `__all__` 추가 (`sonar_issue_exporter` 에서 `extract_chunks_from_file` / `LANG_CONFIG` import 재사용)
+- `sonar_issue_exporter.py` — `--commit-sha` / `--repo-root` 인자. enriched 레코드에 `relative_path` / `enclosing_function` / `enclosing_lines` / `commit_sha` 필드. tree-sitter 로 이슈 라인 포함 청크의 symbol+lines 추출 (graceful)
+- `dify_sonar_issue_analyzer.py` — workflow inputs 에 `enclosing_*` + `commit_sha` 추가. out_row 에 creator 의 deterministic 렌더용 사실 정보 전부 passthrough (rule_description, code_snippet, relative_path 등)
+- `gitlab_issue_creator.py` — `render_issue_body()` 신규 7 섹션 조립. `_gitlab_blob_url` / `_gitlab_commit_url` / `_trim_code_snippet` / `_short_sha` 헬퍼. `_replace_sonar_url` 확장 (LLM 재구성 변형 `localhost:9000` 도 잡음). `--gitlab-public-url` / `--gitlab-branch` / `--commit-sha` 인자
+- `jenkinsfiles/03 코드 정적분석 결과분석 및 이슈등록` — 내부 URL 정규화 (`sonarqube:9000` → `127.0.0.1:9000`, `api:5001` → `127.0.0.1`). `SONAR_PUBLIC_URL` + `GITLAB_PUBLIC_URL` + `BRANCH` 파라미터. Stage (0) 에서 `git ls-remote` 로 commit SHA 해석 + 레포 얕은 clone (enclosing_function 추출용. Phase 1.5 에서 체인 Job 이 `COMMIT_SHA` 를 직접 전달하도록 대체될 임시 블록)
+
+### E2E 검증
+#### 파이프라인 정상동작 확인 (Step 0 + 0.5 직후)
+- `docker compose down -v` + `rm -rf ~/ttc-allinone-data` + 이미지 재빌드 + compose up
+- 프로비저닝 자동 완주 (Sonar 는 overlay 수정 반영 전이라 수동 복구 1회, 이후 Step 0.5 로 자동화)
+- `01 코드 사전학습` SUCCESS — tree-sitter 6 청크 → Dify Dataset 업로드
+- `02 코드 정적분석` SUCCESS — SonarScanner 5초 완료, `python:S5754 CRITICAL` 1건 Sonar 등록
+- `03 정적분석 결과분석 및 이슈등록` SUCCESS — Dify Workflow 실행 + GitLab Issue #3 자동 생성. RAG 기여 확인 (`src/session.py::check_session` 언급)
+- Sonar public URL 치환도 성공 (`localhost:29000/...`)
+
+#### Step R 렌더 개편 검증 (GitLab Issue #4)
+본문 7 섹션 전부 설계 템플릿대로 렌더:
+- **📍 위치 테이블**: 파일 `[src/auth.py:24](http://localhost:28090/.../blob/main/src/auth.py#L24)` · 함수 `login (line 19-25)` · Rule · Severity · Commit `[b4800d12](http://localhost:28090/.../commit/...)`
+- **🔴 문제 코드**: 이슈 라인 ±10줄, `>> 24 | except:` 마커 유지
+- **✅ 수정 제안**: LLM 이 코드펜스 생략해도 `_trim_code_snippet` 로 `\`\`\`python` 자동 감싸기
+- **📊 영향 분석**: RAG 가 `src/session.py::check_session` 호출 관계 정확히 집어내 LLM 본문에 반영
+- **📖 Rule 상세**: `<details>` 접기, Sonar rule description 원문 보존
+- **🔗 링크**: Sonar(29000) / GitLab blob(#L24) / GitLab commit — 모두 브라우저 직접 클릭 가능
+
+### 커밋 (이번 세션)
+- `1fee101` `fix(infra): Step 0 + 런타임 환경 — GitLab arm64 분리 + Sonar 기동 복구`
+- `f7309f7` `feat(issue-render): Step R — GitLab Issue 본문 템플릿 전면 개편`
+
+### 다음 세션 계획
+Step A (Phase 1.5) — `00 코드 분석 체인.jenkinsPipeline` 신규 + `COMMIT_SHA` / `ANALYSIS_MODE` 전파 + `/data/kb_manifest.json`. 이후 Step B (Phase 2 전처리), Step C (Phase 3 워크플로 강화 — C₁·C₂ 분할), Step D (Phase 4 FP 전이 + affected_locations), Step E (Phase 5 E2E).
+
+Step C 는 사용자 피드백 반영해 **LLM 조언 실효성 강화** 를 범위에 포함 — 5 축 (① 출력 스키마 확장 ② 입력 컨텍스트 강화 ③ 프롬프트 구조 리엔지니어링 ④ deterministic 컨텐츠 추가 ⑤ 렌더 섹션 재배치) 중 ①③ 을 C₁, ②④-b 를 C₂ 로 분할해 Step B 자산 재사용 흐름 구성.
