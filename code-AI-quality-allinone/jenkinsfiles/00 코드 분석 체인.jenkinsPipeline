@@ -169,66 +169,56 @@ pipeline {
 
         stage('5. Chain Summary') {
             steps {
-                // Step D — P3 의 gitlab_issues_created.json 을 읽어 created/fp 카운트를
-                // chain summary 에 합산. P3 빌드 artifact 에서 copy (copyArtifacts plugin
-                // 없이 Jenkins 내장 Run 객체로 직접 workspace 에 export).
-                script {
-                    def p3Num = env.P3_BUILD?.isInteger() ? env.P3_BUILD.toInteger() : null
-                    def p3Summary = [created: 0, skipped: 0, failed: 0,
-                                     fp_transitioned: 0, fp_transition_failed: 0]
-                    if (p3Num) {
-                        try {
-                            def p3Job = Jenkins.instance.getItemByFullName('03-정적분석-결과분석-이슈등록')
-                            def p3Run = p3Job?.getBuildByNumber(p3Num)
-                            def artifact = p3Run?.getArtifactManager()?.root()?.child('gitlab_issues_created.json')
-                            if (artifact?.exists()) {
-                                def txt = artifact.open().getText('UTF-8')
-                                def parsed = new groovy.json.JsonSlurper().parseText(txt)
-                                p3Summary.created              = (parsed.created ?: []).size()
-                                p3Summary.skipped              = (parsed.skipped ?: []).size()
-                                p3Summary.failed               = (parsed.failed ?: []).size()
-                                p3Summary.fp_transitioned      = (parsed.fp_transitioned ?: []).size()
-                                p3Summary.fp_transition_failed = (parsed.fp_transition_failed ?: []).size()
-                            }
-                        } catch (e) {
-                            echo "[Chain] P3 artifact 읽기 실패 (무시): ${e}"
-                        }
-                    }
-                    env.P3_CREATED              = p3Summary.created.toString()
-                    env.P3_SKIPPED              = p3Summary.skipped.toString()
-                    env.P3_FAILED               = p3Summary.failed.toString()
-                    env.P3_FP_TRANSITIONED      = p3Summary.fp_transitioned.toString()
-                    env.P3_FP_TRANSITION_FAILED = p3Summary.fp_transition_failed.toString()
-                }
+                // Step D — P3 의 gitlab_issues_created.json 을 읽어 created/fp 카운트 추출.
+                // pipeline-utility-steps (readFile/readJSON) 플러그인 의존을 피하기 위해
+                // sh 블록 안에서 파싱 + JSON 쓰기를 한 번에 완료.
                 sh '''
                     set -e
                     mkdir -p "${STATE_DIR}"
+                    JH="${JENKINS_HOME:-/var/jenkins_home}"
+                    P3_ARTIFACT="${JH}/jobs/03-정적분석-결과분석-이슈등록/builds/${P3_BUILD}/archive/gitlab_issues_created.json"
+
+                    if [ -f "${P3_ARTIFACT}" ]; then
+                        echo "[Chain] P3 artifact: ${P3_ARTIFACT}"
+                    else
+                        echo "[Chain:WARN] P3 artifact not found at ${P3_ARTIFACT} — counts=0"
+                    fi
+
                     ENDED_AT=$(date +%s)
-                    cat > "${STATE_DIR}/chain_${RESOLVED_SHA}.json" <<JSON
-{
-  "mode": "${ANALYSIS_MODE}",
-  "commit_sha": "${RESOLVED_SHA}",
-  "repo_url": "${REPO_URL_ENV}",
-  "branch": "${BRANCH_ENV}",
-  "p1_build": "${P1_BUILD}",
-  "p1_result": "${P1_RESULT}",
-  "p2_build": "${P2_BUILD}",
-  "p2_result": "${P2_RESULT}",
-  "p3_build": "${P3_BUILD}",
-  "p3_result": "${P3_RESULT}",
-  "p3_summary": {
-    "created": ${P3_CREATED:-0},
-    "skipped": ${P3_SKIPPED:-0},
-    "failed": ${P3_FAILED:-0},
-    "fp_transitioned": ${P3_FP_TRANSITIONED:-0},
-    "fp_transition_failed": ${P3_FP_TRANSITION_FAILED:-0}
-  },
-  "started_at": ${CHAIN_STARTED_AT:-0},
-  "ended_at": ${ENDED_AT}
+                    OUTPUT="${STATE_DIR}/chain_${RESOLVED_SHA}.json"
+                    python3 - > "${OUTPUT}" <<PY
+import json, os
+p3_path = "${P3_ARTIFACT}"
+counts = {"created": 0, "skipped": 0, "failed": 0, "fp_transitioned": 0, "fp_transition_failed": 0}
+if os.path.isfile(p3_path):
+    try:
+        with open(p3_path) as f:
+            d = json.load(f)
+        for k in counts:
+            counts[k] = len(d.get(k, []))
+    except Exception as e:
+        print(f"// P3 artifact parse fail: {e}", flush=True)
+
+summary = {
+    "mode":        "${ANALYSIS_MODE}",
+    "commit_sha":  "${RESOLVED_SHA}",
+    "repo_url":    "${REPO_URL_ENV}",
+    "branch":      "${BRANCH_ENV}",
+    "p1_build":    "${P1_BUILD}",
+    "p1_result":   "${P1_RESULT}",
+    "p2_build":    "${P2_BUILD}",
+    "p2_result":   "${P2_RESULT}",
+    "p3_build":    "${P3_BUILD}",
+    "p3_result":   "${P3_RESULT}",
+    "p3_summary":  counts,
+    "started_at":  ${CHAIN_STARTED_AT:-0},
+    "ended_at":    ${ENDED_AT},
 }
-JSON
-                    echo "[Chain] summary written: ${STATE_DIR}/chain_${RESOLVED_SHA}.json"
-                    cp "${STATE_DIR}/chain_${RESOLVED_SHA}.json" "${WORKSPACE}/chain_summary.json"
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+PY
+                    echo "[Chain] summary written: ${OUTPUT}"
+                    cat "${OUTPUT}"
+                    cp "${OUTPUT}" "${WORKSPACE}/chain_summary.json"
                 '''
             }
             post {
