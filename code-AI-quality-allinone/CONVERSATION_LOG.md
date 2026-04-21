@@ -5905,3 +5905,59 @@ docker cp script`  — Apply fixed provision.sh + clear cache + full re-run
 #### 🤖 어시스턴트 응답 #942 — 2026-04-21 06:39:13 UTC
 
 [TOOL Bash] `python "c:/Users/csr68/AppData/Local/Temp/build_conversation_md.py"`  — Run parser to build conversation md
+
+
+---
+
+## ▦ 세션 `0bd223e8` — 2026-04-21 (Phase 0 + Phase 1 구현·검증·커밋)
+
+### 세션 요약
+기존 CONVERSATION_LOG 의 자동 파싱 로그 이후 진행된 Phase 0/Phase 1 실제 구현·런타임 검증·커밋 흐름. 사용자가 `P1 구현완료했나?` 로 상태를 물은 뒤 클린 재빌드 → E2E → 커밋 경로를 선택, 두 차례의 실패(substring 버그, tree-sitter 버전 불일치) 를 근본 원인 분석으로 해결한 후 최종 성공.
+
+### 주요 사용자 지시
+1. "이것 정말 독립빌드 및 실행이 가능하도록 구성되어 있는지 … 세밀하게 검토해줄 필요가 있다."
+2. "틀린 내용은 모두 수정해서 현행화하자. … 젠킨스 파이프라인명을 모두 수정하자."
+3. "가이드대로 맥에 빌그하고 서비스 구동해봐"
+4. "각각의 파이프라인을 테스트해볼 수 있나?"
+5. "해당 파이프라인에 연관된 모든 파이썬코드 리뷰하고 분석해. … 무작정 고쳐대지 말고 일단 원인분석부터 해."
+6. "현재 저장소 코드의 사전학습 방식이 정적분석 이후 LLM 분석을 하는데 있어 실질적으로 도움이 되는지 객관적으로 판단하고 분석해줘."
+7. "P1이 실질적으로 도움이 될 수 있도록 전면재구성하는 방안에 대해 연구해보자."
+8. "폐쇄망에서 구현가능한 효과적인 방안을 최대한 조합해보자"
+9. "P1→P3을 전부 연계해서 효과적인 분석성과를 내는게 목표다."
+10. "P1 구현완료했나?" → (선택지 제시) "클린 재빌드 검증 → E2E → 커밋"
+11. "e2e 테스트 통과하면 커밋 & 푸시하고, 다음 작업부터는 새로운 세션에서 진행하자."
+
+### 발견한 근본 원인 (전부 근본 분석 후 해결)
+- **RAG 기여도 0%**: `sonar-analyzer-workflow.yaml` 에 `knowledge-retrieval` 노드 자체가 없었음. Phase 1 에서 노드 추가 + `{{#knowledge_retrieval.result#}}` LLM 프롬프트 주입.
+- **Dify 1.13 플러그인 모델 체계**: Ollama provider 는 `.difypkg` 를 `plugin/upload/pkg` → `plugin/install/pkg` 로 설치해야 존재. 기존 provision 은 이 단계 없이 `/models` 에 POST → success 반환하지만 실제 등록 안됨. 엔드포인트도 `/models/credentials` 가 올바른 것 (기존 `/models` 는 load-balancing 전용).
+- **workspace default model 필수**: high_quality Dataset 생성 전 `default-model` POST 가 빠지면 "Default model not found for text-embedding" 400.
+- **bash substring 비호환**: Jenkinsfile 의 `${COMMIT_SHA:0:8}` 가 `/bin/sh` (dash) 에서 "Bad substitution" — POSIX `echo | cut` 로 교정.
+- **tree-sitter 버전 불일치**: `tree-sitter==0.25.2` vs `tree-sitter-languages==1.10.2` 호환 안 됨. `TypeError: __init__() takes exactly 1 argument (2 given)` 로 파싱 조용히 0건 실패. Dockerfile 에 `tree-sitter<0.22` 핀.
+- **contextual_enricher.py COPY 누락**: Dockerfile 이 파일별 하드코딩 COPY 여서 신규 파일이 빠져 있었음.
+
+### 구현 산출물
+- Phase 0 (커밋 `0babbcc`): Dockerfile pip 순서 수정, entrypoint.sh 경로 보장, Jenkinsfile 01 env + clone 자격, doc_processor OLLAMA_API_URL env override.
+- Phase 1 (커밋 `bd68da9`): 8 파일 변경 +980/-215
+  - `pipeline-scripts/repo_context_builder.py` 전면 재작성 — tree-sitter AST 청킹 (Python/Java/TS/TSX/JS)
+  - `pipeline-scripts/contextual_enricher.py` 신규 — gemma4:e4b 기반 역할 요약 prepend
+  - `pipeline-scripts/doc_processor.py` — JSONL 라인 단위 다중 document 업로드 + 메타데이터
+  - `scripts/dify-assets/code-context-dataset.json` — high_quality + bge-m3 + hybrid_search
+  - `scripts/dify-assets/sonar-analyzer-workflow.yaml` — knowledge_retrieval 노드 추가
+  - `scripts/provision.sh` — `dify_install_ollama_plugin` 신규, `/models/credentials` 엔드포인트 교정, `dify_set_default_models`, `dify_patch_workflow_dataset_id` fallback
+  - `jenkinsfiles/01 코드 사전학습.jenkinsPipeline` — env 주입 + withCredentials + Stage 2.5 enricher + POSIX 호환 commit SHA 표기
+  - `Dockerfile` — tree-sitter<0.22 핀 + contextual_enricher COPY 추가
+
+### E2E 검증 결과
+- sample-app (4 파일, Python) → `files=4 chunks=10`
+- enricher: 10/10 enriched (15.4s)
+- Dify Dataset: document_count=11 (JSONL 10 + legacy MD 1), 전부 indexing_status=completed
+- Workflow draft: `knowledge_retrieval.dataset_ids` = 실제 dataset id 주입 확인
+- 클린 재빌드 1회 기동으로 provision 전 과정 수동 개입 0 완료
+
+### 플랜 파일
+`~/.claude/plans/agile-sprouting-zebra.md` — "Option B++" 플랜 (Phase 0/1/1.5/2/3/4/5). Phase 1.5 (P1↔P3 체인 Job + commit SHA 추적 + KB manifest) 는 다음 세션에서 이어가기.
+
+### 저장된 메모리 (신규)
+- `memory/project_dify113_plugin_model.md` — Dify 1.13 플러그인 모델 등록 플로우
+- `memory/project_tree_sitter_version_pin.md` — tree-sitter<0.22 핀 이유
+
