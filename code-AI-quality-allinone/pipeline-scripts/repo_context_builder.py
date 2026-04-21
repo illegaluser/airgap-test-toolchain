@@ -27,6 +27,18 @@ except Exception as e:
     raise SystemExit(f"[repo_context_builder] tree_sitter_languages import 실패: {e}")
 
 
+# Step R 에서 외부 스크립트 (sonar_issue_exporter) 가 enclosing_function 추출에
+# 이 모듈의 청킹 로직을 재사용할 수 있도록 공개 심볼을 명시. 리팩터 없이
+# `from repo_context_builder import extract_chunks_from_file, LANG_CONFIG` 가능.
+__all__ = [
+    "LANG_CONFIG",
+    "EXCLUDE_DIRS",
+    "extract_chunks_from_file",
+    "scan_repo",
+    "resolve_commit_sha",
+]
+
+
 # ─ 언어별 AST 노드 매핑 ────────────────────────────────────────────────────
 # node_types: tree-sitter 노드 타입 → 논리적 "kind" (function/class/method 등)
 # name_field: child_by_field_name 으로 이름을 뽑는 필드 (없으면 identifier 자식 탐색)

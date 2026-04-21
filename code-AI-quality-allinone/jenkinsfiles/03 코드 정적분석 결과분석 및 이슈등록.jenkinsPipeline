@@ -7,29 +7,75 @@ pipeline {
     string(name: 'STATUSES', defaultValue: 'OPEN,REOPENED,CONFIRMED', description: 'Sonar statuses')
     string(name: 'MAX_ISSUES', defaultValue: '1', description: 'PoC: Dify에 보낼 이슈 건수(기본 1)')
     string(name: 'GITLAB_PROJECT', defaultValue: 'root/dscore-ttc-sample', description: 'GitLab project path (예: group/project)')
+    string(name: 'BRANCH', defaultValue: 'main', description: 'Git 브랜치 (commit SHA 해석 + GitLab blob/commit URL 구성)')
+    // GitLab Issue 본문 내 외부 링크용 — 사용자 브라우저가 실제 접근할 주소.
+    // 기본값은 docker-compose 호스트 포트 매핑. 운영 환경에 맞게 override.
+    string(name: 'SONAR_PUBLIC_URL',  defaultValue: 'http://localhost:29000', description: 'GitLab Issue 본문에 렌더링될 SonarQube 외부 URL')
+    string(name: 'GITLAB_PUBLIC_URL', defaultValue: 'http://localhost:28090', description: 'GitLab Issue 본문의 blob/commit 링크에 쓸 GitLab 외부 URL')
   }
 
   environment {
-    SONAR_HOST_URL  = 'http://sonarqube:9000'
-    DIFY_API_BASE   = 'http://api:5001/v1'
-    GITLAB_HOST_URL = 'http://gitlab:8929'
+    // 통합 all-in-one 이미지 내부: SonarQube · Dify API 모두 localhost 포트.
+    // (Dify gateway nginx 는 28081 이지만 console/v1 API 는 5001 direct.)
+    SONAR_HOST_URL  = 'http://127.0.0.1:9000'
+    DIFY_API_BASE   = 'http://127.0.0.1:5001/v1'
+    GITLAB_HOST_URL = 'http://gitlab:80'
     SCRIPTS_DIR     = '/var/jenkins_home/scripts'
     // GitLab PAT — provision.sh 가 런타임에 credentials('gitlab-pat') 으로 치환
     GITLAB_PAT      = ''
   }
 
   stages {
+    // Step R 신규 — GitLab branch HEAD SHA 를 git ls-remote 로 해석해 전 단계에
+    // 일관 전달. 또한 enclosing_function 추출을 위해 레포를 /var/knowledges/codes
+    // 아래에 얕게 clone (Step R 임시 — Phase 1.5 에서 체인 Job 이 COMMIT_SHA 와
+    // 코드 경로를 직접 전달하도록 대체될 예정).
+    stage('(0) Resolve Commit SHA + Fetch Repo') {
+      steps {
+        withCredentials([string(credentialsId: 'gitlab-pat', variable: 'GITLAB_PAT')]) {
+          script {
+            def shaOut = sh(
+              script: "git ls-remote http://oauth2:\${GITLAB_PAT}@gitlab:80/${params.GITLAB_PROJECT}.git refs/heads/${params.BRANCH} | head -1 | awk '{print \$1}'",
+              returnStdout: true
+            ).trim()
+            env.COMMIT_SHA = shaOut
+            echo "[Resolve] commit_sha=${env.COMMIT_SHA}"
+          }
+          sh '''
+            set -e
+            REPO_NAME=$(basename "${GITLAB_PROJECT}")
+            REPO_ROOT="/var/knowledges/codes/${REPO_NAME}"
+            # 레포가 없거나 현재 HEAD 가 commit_sha 와 다르면 얕게 clone/fetch.
+            # enclosing_function 추출용 — P1 이 이미 clone 해 두었으면 재사용.
+            if [ ! -d "${REPO_ROOT}/.git" ]; then
+                mkdir -p "$(dirname ${REPO_ROOT})"
+                rm -rf "${REPO_ROOT}"
+                git clone --depth 50 --branch "${BRANCH}" \
+                    "http://oauth2:${GITLAB_PAT}@gitlab:80/${GITLAB_PROJECT}.git" \
+                    "${REPO_ROOT}"
+            else
+                (cd "${REPO_ROOT}" && git fetch --depth 50 origin "${BRANCH}" && git checkout -f "origin/${BRANCH}")
+            fi
+            echo "[Resolve] repo_root=${REPO_ROOT}"
+          '''
+        }
+      }
+    }
+
     stage('(1) Export Sonar Issues') {
       steps {
         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
           sh """
             set -e
+            REPO_NAME=\$(basename "${params.GITLAB_PROJECT}")
             python3 ${SCRIPTS_DIR}/sonar_issue_exporter.py \
               --sonar-host-url "${SONAR_HOST_URL}" \
               --sonar-token "${SONAR_TOKEN}" \
               --project-key "${params.SONAR_PROJECT_KEY}" \
               --severities "${params.SEVERITIES}" \
               --statuses "${params.STATUSES}" \
+              --commit-sha "${env.COMMIT_SHA}" \
+              --repo-root "/var/knowledges/codes/\${REPO_NAME}" \
               --output "sonar_issues.json"
           """
         }
@@ -50,6 +96,7 @@ pipeline {
               --response-mode "blocking" \
               --timeout 1000 \
               --max-issues ${params.MAX_ISSUES} \
+              --commit-sha "${env.COMMIT_SHA}" \
               --print-first-errors 5
           """
         }
@@ -69,10 +116,13 @@ pipeline {
             --gitlab-host-url "${GITLAB_HOST_URL}" \
             --gitlab-token "\$GITLAB_TOKEN" \
             --gitlab-project "${params.GITLAB_PROJECT}" \
+            --gitlab-public-url "${params.GITLAB_PUBLIC_URL}" \
+            --gitlab-branch "${params.BRANCH}" \
+            --commit-sha "${env.COMMIT_SHA}" \
             --input "llm_analysis.jsonl" \
             --output "gitlab_issues_created.json" \
             --sonar-host-url "${SONAR_HOST_URL}" \
-            --sonar-public-url "http://localhost:9000"
+            --sonar-public-url "${params.SONAR_PUBLIC_URL}"
         """
       }
     }
