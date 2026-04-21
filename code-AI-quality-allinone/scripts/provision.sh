@@ -881,8 +881,9 @@ log "Jenkins Credentials 주입..."
 # I. Jenkinsfile credentials 참조 치환 (Credentials 주입 후)
 patch_jenkinsfile_gitlab_credentials
 
-# A (재실행). Jenkins 4개 Job 등록
-log "Jenkins 4개 Pipeline Job 등록..."
+# A (재실행). Jenkins 5개 Job 등록 — 00 은 Phase 1.5 체인 오케스트레이터
+log "Jenkins 5개 Pipeline Job 등록..."
+jenkins_create_pipeline_job "00-코드-분석-체인"                  "$JENKINSFILE_DIR/00 코드 분석 체인.jenkinsPipeline" || true
 jenkins_create_pipeline_job "01-코드-사전학습"                   "$JENKINSFILE_DIR/01 코드 사전학습.jenkinsPipeline" || true
 jenkins_create_pipeline_job "02-코드-정적분석"                   "$JENKINSFILE_DIR/02 코드 정적분석.jenkinsPipeline" || true
 jenkins_create_pipeline_job "03-정적분석-결과분석-이슈등록"      "$JENKINSFILE_DIR/03 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline" || true

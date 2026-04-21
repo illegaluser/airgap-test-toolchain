@@ -4,6 +4,10 @@ pipeline {
     parameters {
         string(name: 'REPO_URL', defaultValue: '', description: 'Git 레포지토리 URL (예: http://gitlab:80/root/repo.git)')
         booleanParam(name: 'ENRICH_CONTEXT', defaultValue: true, description: 'Contextual Retrieval (gemma4 청크 요약 prepend) 적용 여부. false 시 skip.')
+        // Phase 1.5: 체인 Job 이 전달. 빈 값이면 HEAD 자동 해석 (수동 실행 하위호환).
+        string(name: 'COMMIT_SHA', defaultValue: '', description: '특정 커밋 SHA 지정 (체인 Job 용). 빈 값이면 레포 HEAD 사용.')
+        choice(name: 'ANALYSIS_MODE', choices: ['full', 'commit'], description: 'KB manifest 기록용 메타 — full: 전수 재빌드, commit: 해당 SHA 스냅샷')
+        string(name: 'BRANCH', defaultValue: 'main', description: 'kb_manifest 기록용 브랜치 (실제 clone 대상과 독립)')
     }
     
     environment {
@@ -40,16 +44,26 @@ pipeline {
         
         stage('2. Build Context (AST chunks)') {
             steps {
+                script {
+                    // Phase 1.5: params.COMMIT_SHA override 우선, 없으면 HEAD 자동 해석.
+                    def shaOverride = (params.COMMIT_SHA ?: '').trim()
+                    if (shaOverride) {
+                        env.COMMIT_SHA = shaOverride
+                    } else {
+                        def repoName = sh(script: "basename '${params.REPO_URL}' .git", returnStdout: true).trim()
+                        env.COMMIT_SHA = sh(
+                            script: "cd ${WORKSPACE_CODES}/${repoName} 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo ''",
+                            returnStdout: true
+                        ).trim()
+                    }
+                    echo "[Build] commit=${env.COMMIT_SHA?.take(8) ?: '(none)'} mode=${params.ANALYSIS_MODE}"
+                }
                 echo "[Build] tree-sitter AST 청킹 시작"
                 sh '''
                 set -e
                 REPO_NAME=$(basename "${REPO_URL}" .git)
                 # 이전 결과물(JSONL/MD) 완전 제거 후 새로 생성 — Dify 중복 upload 방지
                 rm -rf ${RESULT_DIR}/* 2>/dev/null || true
-
-                # 현재 HEAD 커밋 SHA (Phase 1.5 에서 체인 Job 이 override 가능)
-                COMMIT_SHA=$(cd ${WORKSPACE_CODES}/$REPO_NAME && git rev-parse HEAD 2>/dev/null || echo "")
-                echo "[Build] repo=$REPO_NAME commit=$(echo "$COMMIT_SHA" | cut -c1-8)"
 
                 python3 ${SCRIPTS_DIR}/repo_context_builder.py \
                     --repo_root ${WORKSPACE_CODES}/$REPO_NAME \
@@ -87,6 +101,11 @@ pipeline {
                     set -e
                     # doc_processor.py 는 RESULT_DIR 내 *.jsonl 각 line 을 1 document 로 업로드.
                     # JSONL 이 없으면 레거시 *.md 로 자동 폴백.
+                    # upload 성공 후 /data/kb_manifest.json 기록 (env 로 repo/branch/commit 전달).
+                    export KB_MANIFEST_REPO_URL="${REPO_URL}"
+                    export KB_MANIFEST_BRANCH="${BRANCH}"
+                    export KB_MANIFEST_COMMIT_SHA="${COMMIT_SHA:-}"
+                    export KB_MANIFEST_ANALYSIS_MODE="${ANALYSIS_MODE:-full}"
                     python3 ${SCRIPTS_DIR}/doc_processor.py upload \
                         "$DIFY_API_KEY" \
                         "$DIFY_DATASET_ID" \

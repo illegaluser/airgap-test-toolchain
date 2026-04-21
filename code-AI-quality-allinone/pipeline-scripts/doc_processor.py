@@ -663,6 +663,31 @@ def upload_jsonl_chunks(
     return success, fail
 
 
+def _write_kb_manifest(dataset_id: str, doc_count: int, path: str = "/data/kb_manifest.json") -> None:
+    """Phase 1.5 — KB freshness 판정용 manifest.
+
+    P2/P3 의 Stage 0 가 이 파일의 commit_sha 를 읽어 현재 요청된 SHA 와 비교한다.
+    필드는 모두 env 에서 읽는다 (Jenkinsfile 가 export):
+      KB_MANIFEST_REPO_URL, KB_MANIFEST_BRANCH, KB_MANIFEST_COMMIT_SHA, KB_MANIFEST_ANALYSIS_MODE
+    """
+    try:
+        payload = {
+            "repo_url":      os.getenv("KB_MANIFEST_REPO_URL", ""),
+            "branch":        os.getenv("KB_MANIFEST_BRANCH", ""),
+            "commit_sha":    os.getenv("KB_MANIFEST_COMMIT_SHA", ""),
+            "analysis_mode": os.getenv("KB_MANIFEST_ANALYSIS_MODE", "full"),
+            "uploaded_at":   int(time.time()),
+            "document_count": int(doc_count),
+            "dataset_id":    dataset_id,
+        }
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        log(f"[KB-Manifest] written: {path} commit={payload['commit_sha'][:12]} docs={doc_count}")
+    except Exception as e:
+        log(f"[KB-Manifest:WARN] write failed: {e}")
+
+
 def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str) -> int:
     """RESULT_DIR 의 *.jsonl (AST 청크) + fallback *.md (레거시) 를 Dify 로 업로드."""
     log("=== [Hybrid Doc Processor] Upload Start ===")
@@ -708,6 +733,12 @@ def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str) 
         f"Success={total_success} (jsonl={jsonl_success}, md={md_success}), "
         f"Fail={total_fail} ==="
     )
+
+    # Phase 1.5: 업로드 성공 후 kb_manifest 기록 (P2/P3 freshness assert 근거).
+    # 실패도 일부 있을 수 있으니 total_success > 0 기준.
+    if total_success > 0:
+        _write_kb_manifest(dataset_id, total_success)
+
     log("=== [Hybrid Doc Processor] Upload Done ===")
     return total_fail
 
