@@ -15,7 +15,7 @@
 // =============================================================================
 
 pipeline {
-    agent { label 'mac-ui-tester' }
+    agent { label 'mac-ui-tester || wsl-ui-tester' }
 
     parameters {
         choice(
