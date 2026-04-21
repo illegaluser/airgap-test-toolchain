@@ -32,7 +32,54 @@
 
 **시나리오**: 폐쇄망에 있는 GitLab 의 소스 코드를 자동으로 품질 분석하고 싶다. 인터넷 없이도.
 
-**제공 기능**:
+### 1.1 해결하고자 하는 문제
+
+정적분석 도구(SonarQube 등) 기반 코드 품질 프로세스가 실무에서 흔히 부딪히는 한계:
+
+- 대규모 레포 1 회 스캔으로 **수백~수천 건의 이슈**가 발생. 우선순위 판단이 불가능.
+- 각 이슈는 규칙 위반 사실만 기술할 뿐, **실제 시스템에 미치는 영향**이나 **호출 관계상의 파급도**를 제공하지 않음.
+- 상당한 비율의 이슈가 **오탐(False Positive)** 이지만, 판정을 위해 사람이 하나씩 코드 맥락을 추적해야 함.
+- 이슈 상태 관리가 **SonarQube 대시보드 / GitLab Issue / 사내 메신저**로 분산되어 추적성이 떨어짐.
+
+### 1.2 해결 접근
+
+본 스택은 상기 문제를 **4 개 파이프라인의 단계적 자동 처리**로 해소합니다.
+
+| 파이프라인 | 역할 | 산출물 |
+|------------|------|--------|
+| **00 코드 분석 체인** | 오케스트레이션 — 단일 커밋 SHA 를 기준으로 01→02→03 파이프라인을 순차 실행하고 결과를 집계 | `chain_<sha>.json` |
+| **01 코드 사전학습** | 분석 대상 레포의 소스를 **함수/메서드 단위로 의미 청킹**하고, 각 청크에 자연어 요약을 부착하여 **RAG용 Knowledge Base** 에 적재 | Dify Dataset `code-context-kb`, `kb_manifest.json` |
+| **02 코드 정적분석** | 지정 커밋 스냅샷에 대해 SonarQube 스캐너 실행. 규칙 위반 사항을 SonarQube 서버에 등록 | SonarQube 대시보드의 이슈 레코드 |
+| **03 정적분석 결과분석 이슈등록** | SonarQube 이슈를 수집 → **사실 정보 보강**(파일/함수/호출관계/커밋 이력) → **Knowledge Base 기반 RAG 질의** → **LLM 분석**(Dify Workflow) → **GitLab Issue 생성**. 오탐 판정 건은 **SonarQube 자동 전이(false positive)** 를 시도, 실패 시 라벨로 구분하여 Issue 를 생성(Dual-path) | GitLab Issues, `gitlab_issues_created.json` |
+
+이 외에 **04 AI 평가** 파이프라인은 운영 중인 LLM 서비스의 응답 품질을 Golden Dataset 기반으로 정기 검증하는 독립 도구입니다.
+
+### 1.3 최종 산출물 — GitLab Issue 한 건의 구성
+
+해결자가 단일 Issue 페이지에서 판단·조치에 필요한 모든 정보를 확인할 수 있도록 본문을 결정적(deterministic) 섹션 + LLM 생성 섹션으로 분리·표준화:
+
+| 섹션 | 내용 | 생성 주체 |
+|------|------|:---------:|
+| TL;DR | 위치 + Sonar 메시지를 1 줄로 요약 | 템플릿 |
+| 위치 테이블 | 파일 / 함수 / 규칙 / Severity / 커밋 (클릭 가능 링크) | 사실 정보 |
+| 문제 코드 | 해당 라인 ±10 줄, 문제 라인에 `>>` 마커 | Sonar 원본 |
+| 수정 제안 | 구체적 수정 방안의 자연어 설명 | LLM |
+| 수정 Diff | unified diff 형식의 기계 적용 가능한 패치 | LLM |
+| 영향 분석 | 호출 관계 및 프로젝트 관행 기반 파급효과 해석 | LLM (RAG 기반) |
+| 동일 패턴 다른 위치 | clustering 으로 묶인 동일 규칙 위반 목록 | 자동 집계 |
+| 규칙 상세 | SonarQube 규칙 설명 원문 (접기) | Sonar |
+| 링크 | SonarQube / GitLab 파일 / GitLab 커밋 | URL 조합 |
+| 라벨 | `severity:<level>`, `classification:<tp\|fp\|wontfix>`, `confidence:<high\|medium\|low>` 등 | LLM + 자동 |
+
+### 1.4 외부 AI 서비스 미사용 — 에어갭 적합성
+
+- ChatGPT, Gemini 등 외부 LLM API 를 사용하지 않으며, 소스 코드가 외부로 반출되지 않음.
+- 모든 LLM 추론은 **호스트 Ollama 데몬**에서 수행 (`gemma4:e4b`, `bge-m3`, `qwen3-coder:30b`).
+- 초기 자산 반입 완료 후 **인터넷 접근이 차단된 환경**에서 무제한 반복 사용.
+- LLM 호출 비용은 발생하지 않으며, 호스트 하드웨어(Apple Metal / NVIDIA CUDA) 자원으로 처리.
+
+### 1.5 기술적 제공 기능 요약
+
 1. **Jenkins Pipeline 00 코드 분석 체인** 을 1회 클릭하면
 2. 자동으로 (a) 커밋 SHA 해석 → (b) tree-sitter 로 **함수 단위 청킹** → Ollama bge-m3 임베딩 → Dify Knowledge Base 적재 → (c) **SonarQube 스캔** → (d) 각 Sonar 이슈를 Dify Workflow 로 **LLM 분석** (멀티쿼리 RAG + severity 라우팅) → (e) **GitLab Issue 자동 등록** (위치·코드·수정제안·영향분석·링크 포함) → (f) LLM 이 오탐 판정한 건은 Sonar 자동 전이 + 실패 시 `classification:false_positive` 라벨로 GitLab Issue 생성 (Dual-path).
 3. **모든 LLM 추론은 호스트 Ollama** 가 담당 — 외부 API 의존 없음.
@@ -669,57 +716,364 @@ status: SUCCESS
 | `ANALYSIS_MODE` | `full` | `full` = KB 강제 재빌드 · `commit` = manifest 일치 시 재사용 |
 | `COMMIT_SHA` | `(빈 값)` | 지정 시 그 커밋 고정, 빈 값이면 BRANCH HEAD |
 
-### 8.2 `01-코드-사전학습` (P1)
+**Stage 구조** (총 5 단계, 각 Stage 는 wait+propagate 로 순차 실행):
 
-1. Git clone → `/var/knowledges/codes/<repo>`
-2. `repo_context_builder.py` — tree-sitter AST 청킹 (py/java/ts/tsx/js), 청크별 `path`/`symbol`/`lines`/`callers`/`callees`
-3. `contextual_enricher.py` — gemma4:e4b 로 청크 요약 prepend (선택, 기본 ON)
-4. `doc_processor.py` — Dify Dataset `code-context-kb` 에 bge-m3 임베딩으로 업로드
-5. `/data/kb_manifest.json` 기록 (commit_sha 포함)
+1. Resolve Commit SHA — `git ls-remote` 로 BRANCH HEAD 해석하거나 파라미터값 사용
+2. Trigger P1 — `01-코드-사전학습` 을 `build job:` 로 호출 (COMMIT_SHA 전달)
+3. Trigger P2 — `02-코드-정적분석` 호출
+4. Trigger P3 — `03-정적분석-결과분석-이슈등록` 호출 (MODE=`full` → `incremental` 매핑)
+5. Chain Summary — P3 artifact 에서 `gitlab_issues_created.json` 을 읽어 `p3_summary` 집계 → `/var/knowledges/state/chain_<sha>.json` 에 저장 + `archiveArtifacts`
 
-### 8.3 `02-코드-정적분석` (P2)
+---
 
-1. **(0) KB Bootstrap Guard** — full 모드 + 체인 경로 → manifest 검증만 (불일치 시 fail loud). commit 모드 + 단독 실행 + manifest 불일치 → P1 자동 트리거.
-2. Git checkout `${COMMIT_SHA}` 로 고정
-3. Node.js 준비 (SonarJS 용)
-4. SonarScanner 실행 → Sonar 서버에 리포트 전송
+### 8.2 `01-코드-사전학습` (P1) — RAG 지식 창고 구축
 
-### 8.4 `03-정적분석-결과분석-이슈등록` (P3)
+**목표**: 분석 대상 레포의 모든 함수를 **검색 가능한 청크**로 쪼개서 Dify Knowledge Base 에 적재. 이후 P3 에서 "비슷한 코드 / 호출 관계" 를 RAG 로 검색할 때 근거가 됩니다.
 
-가장 복잡한 파이프라인. 3 스테이지:
+#### 8.2.1 Step 1 — Git Clone
 
-#### (1) Export Sonar Issues — `sonar_issue_exporter.py`
+`${REPO_URL}` 를 `/var/knowledges/codes/<repo>` 로 clone. `withCredentials[gitlab-pat]` 로 oauth 주입.
 
-Sonar API 수집 + 대대적 보강:
+#### 8.2.2 Step 2 — tree-sitter AST 청킹 (`repo_context_builder.py`)
 
-| 필드 | 설명 |
-|------|------|
-| `enclosing_function` / `enclosing_lines` | tree-sitter 로 이슈 라인을 포함하는 함수 추출 |
-| `git_context` | `git blame -L` + `git log` 요약 3줄 |
-| `direct_callers` | P1 JSONL 에서 callgraph 역인덱스 → 최대 10 caller |
-| `cluster_key` | sha1(rule + function + dir) 묶기용 |
-| `affected_locations` | clustering 으로 묶인 나머지 이슈 (대표에 부착) |
-| `judge_model` / `skip_llm` | severity 라우팅 (BLOCKER/CRITICAL→qwen3, MAJOR→gemma4, 그 외→skip) |
+레포를 순회하며 **언어별 구문 트리** 를 파싱해 함수/메서드/클래스 단위로 청크를 생성:
 
-**diff-mode** — `--mode incremental` 시 `last_scan.json` 과 symmetric diff.
+| 언어 | 확장자 | 추출 대상 노드 |
+|------|--------|-----------|
+| Python | `.py` | `function_definition`, `async_function_definition`, `class_definition` |
+| Java | `.java` | `method_declaration`, `constructor_declaration`, `class_declaration`, `interface_declaration`, `enum_declaration` |
+| TypeScript | `.ts` | `function_declaration`, `method_definition`, `class_declaration`, `interface_declaration`, `arrow_function` |
+| TSX | `.tsx` | `function_declaration`, `method_definition`, `class_declaration` |
+| JavaScript | `.js` | `function_declaration`, `method_definition`, `class_declaration`, `arrow_function` |
 
-#### (2) Analyze by Dify Workflow — `dify_sonar_issue_analyzer.py`
+각 청크에 메타데이터 부착:
 
-각 이슈를 Dify `Sonar Issue Analyzer` 에 전달:
+```json
+{
+  "path": "src/auth.py",
+  "symbol": "login",
+  "kind": "function",
+  "lang": "python",
+  "lines": "16-23",
+  "commit_sha": "e38bd123...",
+  "code": "def login(username, password, user_store): ...",
+  "callees": ["verify_password", "dict.__getitem__"],
+  "callers": [],
+  "test_for": ""
+}
+```
 
-- **Multi-query kb_query**: 코드창 + function + path + rule name 4줄 → RAG 적중률 향상.
-- **skip_llm 분기**: MINOR/INFO 는 Dify 호출 생략 + 템플릿 응답.
-- **LLM 출력 8필드**: `title`, `labels`, `impact_analysis_markdown`, `suggested_fix_markdown`, `classification` (true_positive|false_positive|wont_fix), `fp_reason`, `confidence`, `suggested_diff`.
+- **`callees`**: 이 함수 안에서 호출하는 다른 함수들 (tree-sitter 가 call site 를 재귀 순회해 수집). 파이썬은 `call` 노드, Java 는 `method_invocation`, JS/TS 는 `call_expression`.
+- **`callers`**: P1 단계에선 빈 배열. P3 의 exporter 가 JSONL 전체를 역인덱스로 처리해 `direct_callers` 필드를 별도 계산.
 
-#### (3) Create GitLab Issues — `gitlab_issue_creator.py`
+> **왜 함수 단위인가?** 파일 전체를 하나의 문서로 넣으면 임베딩 품질이 떨어지고, "이 이슈가 어떤 함수에서 발생하는지" 검색이 어려워집니다. 함수 단위가 "맥락 일관성 + 검색 정확성" 의 최적 균형점입니다.
 
-- **Dual-path FP**: `classification == "false_positive"` → Sonar 전이 시도 → 성공 시 GitLab Issue skip / 실패 시 라벨링 후 생성.
-- **Dedup**: 같은 Sonar key 기존 Issue 있으면 skip.
-- **Deterministic 본문 렌더** — 다음 섹션 참조.
+#### 8.2.3 Step 2.5 — Contextual Enrichment (`contextual_enricher.py`, 선택)
 
-### 8.5 `04-AI평가` (선택)
+**Anthropic Contextual Retrieval** 기법 적용: 각 청크의 코드 앞에 **"이 함수가 무슨 일을 하는지 1~2 줄 요약"** 을 붙입니다.
 
-DeepEval + Ollama judge + Playwright. UI 자동화 내장. 본 문서 범위 외.
+실행 조건: `ENRICH_CONTEXT=true` (기본값). Ollama `gemma4:e4b` 로 청크당 1회 호출 (temperature=0.2, num_predict=120).
+
+요약 prepend 포맷 예시:
+
+```
+[src/auth.py:16-23] 역할: 사용자 이름/비밀번호로 로그인 검증. bare except 로 모든 예외를 삼키는 문제가 있음.
+
+def login(username: str, password: str, user_store: dict) -> bool:
+    try:
+        stored = user_store[username]
+        return verify_password(password, stored)
+    except:
+        return False
+```
+
+**실패 정책**: 요약 생성 실패 (Ollama 장애 등) 해도 청크는 요약 없이 원본 코드 그대로 보존 (graceful fallback). 전체 파이프라인은 계속 진행.
+
+> **왜 이 과정이 필요한가?** 임베딩 검색은 "의미 유사성" 만 봅니다. 코드 자체는 변수명·문법 기호로 이루어져 임베딩이 약합니다. 앞에 "자연어 요약" 을 붙이면 **"로그인 검증"** 같은 질의어로도 이 청크가 검색됩니다 — RAG 적중률 20~40% 개선 (Anthropic 보고).
+
+#### 8.2.4 Step 3 — Dify Dataset 업로드 (`doc_processor.py`)
+
+JSONL 각 라인 (= 1 청크) 을 **Dify 의 1 document** 로 업로드:
+
+- **Dataset**: `code-context-kb` (provision.sh 가 자동 생성)
+- **인덱싱 모드**: `high_quality` — Dify 1.13+ 의 개선된 청킹 + 청크 오버랩. 경제 모드보다 저장 용량·시간은 늘지만 검색 정확성 우선.
+- **임베딩**: **`bge-m3`** — 다국어(한글 포함) 지원 SOTA 임베딩. 코드 주석/식별자에 한국어 섞여도 대응.
+- **검색 모드**: **`hybrid_search`** (BM25 + 벡터) — 코드는 **정확 키워드 매칭 (BM25)** 이 중요한 동시에 **의미 유사성 (벡터)** 도 필요. Dify 가 두 점수를 가중합.
+
+업로드 완료 후 `/data/kb_manifest.json` 기록:
+
+```json
+{
+  "repo_url": "http://gitlab:80/root/dscore-ttc-sample.git",
+  "branch": "main",
+  "commit_sha": "e38bd123e0630db4cb5cff78272c4710707eeab3",
+  "analysis_mode": "full",
+  "uploaded_at": 1776796293,
+  "document_count": 5,
+  "dataset_id": "5156d41f-6e9b-4c43-ae51-0b3b34c1a33d"
+}
+```
+
+P2/P3 가 이 파일로 KB freshness 를 검증합니다.
+
+---
+
+### 8.3 `02-코드-정적분석` (P2) — SonarQube 스캔
+
+#### 8.3.1 Step 0 — KB Bootstrap Guard
+
+COMMIT_SHA 가 전달된 경우에만 작동:
+
+| 실행 경로 | ANALYSIS_MODE | manifest 상태 | 동작 |
+|:----:|:----:|:---:|:---|
+| 체인 경유 | `full` | 일치 | 진행 |
+| 체인 경유 | `full` | 불일치 | **fail loud** (체인 Stage 2 P1 실패 의심 — 원인 제공) |
+| 단독 실행 | `commit` | 일치 | 진행 |
+| 단독 실행 | `commit` | 불일치/부재 | **P1 자동 트리거** (wait+propagate) |
+| (COMMIT_SHA 빈 값) | — | — | Guard skip (하위호환) |
+
+> **왜 full 모드는 재트리거 대신 fail 로 끝내나?** full 모드 체인은 이미 Stage 2 에서 P1 을 wait 하며 executor 1 개를 잡고 있습니다. 여기서 또 wait 로 P1 을 호출하면 Jenkins 기본 executor 2 개를 모두 소진해 deadlock. 체인을 신뢰하고 guard 는 검증만 담당.
+
+#### 8.3.2 Step 1~4 — Checkout + Sonar 분석
+
+1. Git clone → `git checkout ${COMMIT_SHA}` 로 고정 (분석 스냅샷 확정)
+2. Node.js v22 준비 (SonarJS 용, 최초 1 회 캐시)
+3. `withSonarQubeEnv('dscore-sonar')` + `tool 'SonarScanner-CLI'` 로 SonarScanner 실행
+4. Sonar 서버에 분석 리포트 전송 → [http://localhost:29000/dashboard?id=dscore-ttc-sample](http://localhost:29000/dashboard?id=dscore-ttc-sample)
+
+---
+
+### 8.4 `03-정적분석-결과분석-이슈등록` (P3) — LLM 분석 + Issue 생성
+
+가장 복잡한 파이프라인. 3 개 Python 스크립트가 릴레이로 실행.
+
+#### 8.4.1 Stage (1) Export — `sonar_issue_exporter.py`
+
+**역할**: Sonar API 에서 이슈를 수집한 뒤 RAG·LLM 이 활용할 수 있도록 **대대적 보강**.
+
+처리 순서:
+
+1. Sonar `/api/issues/search` 페이지네이션 순회 (severity / status 필터)
+2. 각 이슈의 `rule` 을 `/api/rules/show` 로 조회 (캐싱)
+3. 각 이슈 라인 ±50 줄 코드를 `/api/sources/lines` 로 가져와 `>>` 마커 부착
+4. **보강 필드 추가**:
+
+| 필드 | 공식 / 소스 | 용도 |
+|------|-----------|------|
+| `relative_path` | `component` 에서 프로젝트키 prefix 제거 | 이슈 위치 표시 |
+| `enclosing_function` / `enclosing_lines` | P1 의 `extract_chunks_from_file` 재사용 → 이슈 라인을 포함하는 함수의 symbol/lines | "어느 함수인지" 식별 |
+| `git_context` | `git blame -L <line>,<line> --porcelain` + `git log -1 --format='%an\|%ar\|%s'` | "누가 언제 썼는지" 맥락 |
+| `direct_callers` | P1 JSONL 전체를 로딩해 `callees` 역인덱스 → `symbol` 을 호출하는 `path::symbol` 목록 (최대 10) | "이 함수가 어디서 호출되는지" 파급효과 분석 |
+| `cluster_key` | `sha1(rule_key + enclosing_function + dirname(component))[:16]` | 같은 패턴 이슈 묶기 |
+| `judge_model` | severity 라우팅 맵 | 어떤 LLM 을 쓸지 |
+| `skip_llm` | severity 가 MINOR/INFO/UNKNOWN 이면 `true` | Dify 호출 생략 여부 |
+| `affected_locations` | clustering 결과 — 대표 이슈에 다른 위치 리스트 부착 | 중복 이슈 1건으로 통합 |
+
+**Severity 라우팅** 매핑:
+
+| Sonar Severity | judge_model | skip_llm | 의미 |
+|----------------|-------------|:--------:|------|
+| `BLOCKER` | `qwen3-coder:30b` | false | 가장 심각 — 정밀 모델로 분석 |
+| `CRITICAL` | `qwen3-coder:30b` | false | 위와 동일 |
+| `MAJOR` | `gemma4:e4b` | false | 빠른 모델로 분석 |
+| `MINOR` / `INFO` / 기타 | `skip_llm` | true | LLM 호출 생략, 템플릿 응답으로 GitLab Issue 생성 |
+
+**Clustering** — 같은 `cluster_key` 이슈들을 묶음:
+
+- 대표 1건만 top-level 로 emit → 나머지는 대표의 `affected_locations` 배열로 접힘
+- 대표 선정: severity 가장 심각 → line 번호 작은 순
+- **효과**: 같은 함수 안의 같은 규칙 위반 여러 건이 1 개 GitLab Issue + 테이블로 정리 → LLM 호출 비용 절감 + 이슈 가독성 향상
+
+**Diff-mode** (`--mode incremental`):
+
+- `/var/knowledges/state/last_scan.json` 에 저장된 직전 스냅샷 이슈 키 집합과 symmetric diff
+- 기존 키는 emit 건너뛰고 신규 이슈만 처리 → **반복 실행 시 이미 본 이슈 재분석 방지**
+- 실행 끝에 현재 이슈 키 집합으로 `last_scan.json` 덮어씀 (다음 실행의 baseline)
+
+#### 8.4.2 Stage (2) Analyze — `dify_sonar_issue_analyzer.py`
+
+**역할**: 각 이슈를 Dify `Sonar Issue Analyzer` Workflow 에 전달해 LLM 판단 결과를 받음.
+
+**Multi-query `kb_query` 구성** — 4 줄 조합:
+
+```
+<이슈 라인 ±3~4 줄 코드창>
+function: <enclosing_function>
+path: <relative_path>
+<rule_name>
+```
+
+예시:
+```
+      19 |         stored = user_store[username]
+      20 |         return verify_password(password, stored)
+>>    21 |     except:
+      22 |         return False
+function: login
+path: src/auth.py
+"SystemExit" should be re-raised
+```
+
+이 쿼리가 Dify knowledge_retrieval 노드에서 hybrid_search 로 KB 청크를 끌어옵니다. **단일 rule 이름만 넣던 것보다 RAG 적중률이 크게 향상** — "login 함수 근처 / auth.py 파일 / SystemExit 처리" 의 다중 관점으로 매칭.
+
+**Dify Workflow 노드 구성** (`sonar-analyzer-workflow.yaml`):
+
+```
+start
+  ↓ (10 inputs: sonar_issue_key, code_snippet, kb_query, enclosing_function, commit_sha, ...)
+knowledge_retrieval   [code-context-kb dataset, retrieval_mode=multiple, top_k=6, hybrid]
+  ↓ (result — 검색된 청크 top-6)
+llm_analyzer          [gemma4:e4b, temperature=0.1, max_tokens=2048]
+  ↓ (JSON text)
+parameter_extractor   [8 필드 추출: title/labels/impact/fix/classification/fp_reason/confidence/diff]
+  ↓
+end                   [8 outputs 반환]
+```
+
+**LLM 출력 8 필드**:
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `title` | string (80자) | GitLab Issue 제목 |
+| `labels` | array[string] | 도메인 라벨 (예: Authentication, Code Smell) |
+| `impact_analysis_markdown` | string (3~6줄) | **RAG 결과 녹여 작성 — 호출 관계 기반 해석** |
+| `suggested_fix_markdown` | string | 수정안. 코드펜스 1개. 불명확하면 빈 값 |
+| `classification` | enum | `true_positive` / `false_positive` / `wont_fix` |
+| `fp_reason` | string | classification=false_positive 시만 이유 기록 |
+| `confidence` | enum | `high` / `medium` / `low` — 본 판정 확신도 |
+| `suggested_diff` | string | unified diff (있을 때만). `suggested_fix_markdown` 과 별개 |
+
+**skip_llm 분기** — `skip_llm=true` 이슈는 Dify 호출 자체 생략:
+
+```python
+outputs = {
+    "title": f"[{severity}] {sonar_message}",
+    "labels": [f"severity:{severity}", "classification:true_positive",
+               "confidence:low", "auto_template:true"],
+    "impact_analysis_markdown": "(자동 템플릿 — MINOR/INFO Severity. 수동 리뷰 권장.)",
+    "suggested_fix_markdown": "",
+    "classification": "true_positive",
+    "fp_reason": "",
+    "confidence": "low",
+    "suggested_diff": "",
+}
+```
+
+→ 콘솔에 `[SKIP_LLM] {key}` 출력 + `out_row["llm_skipped"] = True`.
+
+결과물: `llm_analysis.jsonl` — 이슈당 1 줄 JSON (exporter 의 사실 정보 + LLM outputs 통합).
+
+#### 8.4.3 Stage (3) Create — `gitlab_issue_creator.py`
+
+**역할**: `llm_analysis.jsonl` 를 읽어 GitLab Issue 로 자동 등록.
+
+**Dual-path FP 처리**:
+
+```
+classification == "false_positive" ?
+  │
+  ├─ Yes → Sonar POST /api/issues/do_transition?transition=falsepositive
+  │         ├─ 성공 → GitLab Issue 생성 skip. fp_transitioned++
+  │         └─ 실패 → GitLab Issue 는 생성하되 `fp_transition_failed` 라벨 추가.
+  │                     fp_transition_failed++
+  │
+  └─ No → 정상 GitLab Issue 생성
+```
+
+**Dedup**: 같은 Sonar key 를 가진 기존 Issue 가 있으면 skip (`p3_summary.skipped++`).
+
+**Labels 병합**:
+
+```
+LLM 제안 라벨 + severity:<sev> + classification:<cls> + confidence:<conf>
+  + (skip_llm 이면) auto_template:true
+  + (FP 전이 실패 시) fp_transition_failed
+  → 중복 제거 → GitLab 에 쉼표 구분 문자열로 POST
+```
+
+**본문 렌더 — `render_issue_body()` 8 섹션 구조** (고정 순서, 조건부 생략):
+
+| 순서 | 섹션 | 생성 조건 | 내용 출처 |
+|:---:|------|-----------|:---------:|
+| 1 | TL;DR callout (`> **TL;DR** — ...`) | **항상** | row 의 사실 정보 |
+| 2 | 📍 위치 테이블 | **항상** | row + 공개 URL 조합 |
+| 3 | 🔴 문제 코드 | `snippet != "(Code not found)"` | exporter snippet (±10줄로 trim) |
+| 4 | ✅ 수정 제안 | `outputs.suggested_fix_markdown` 비어있지 않음 | LLM |
+| 5 | 💡 Suggested Diff | `outputs.suggested_diff` 가 null/empty/"none" 아님 | LLM |
+| 6 | 📊 영향 분석 | **항상** (LLM 값 없으면 placeholder) | LLM |
+| 7 | 🧭 Affected Locations | `row.affected_locations` 비어있지 않음 (최대 20건 표) | exporter clustering |
+| 8 | 📖 Rule 상세 | `rule_description` 비어있지 않음 (`<details>` 접기) | Sonar rule detail |
+| 9 | 🔗 링크 | 공개 URL 구성 가능 시 | 자동 조합 |
+| footer | `commit: <sha> (<mode> scan) · sonar: <url>` | `commit_sha` 있을 때 | row |
+
+**결과물**: `gitlab_issues_created.json`:
+
+```json
+{
+  "created": [{"key": "...", "title": "..."}],
+  "skipped": [{"key": "...", "reason": "Dedup"}],
+  "failed": [],
+  "fp_transitioned": [],
+  "fp_transition_failed": []
+}
+```
+
+00 체인의 Stage 5 가 이 파일을 읽어 `p3_summary` 로 집계합니다.
+
+---
+
+### 8.5 `04-AI평가` — 골든 데이터셋 기반 LLM 응답 평가 (선택)
+
+**용도**: 이 파이프라인은 **"LLM 서비스 자체의 응답 품질" 을 평가** 하는 별도 도구입니다. P1~P3 와 다른 별개 기능 — "우리가 운영하는 챗봇/API 가 기대대로 답하는가?" 를 자동 검증합니다.
+
+#### 8.5.1 구성
+
+```
+eval_runner/
+├── runner.py              # DeepEval 엔트리포인트
+├── adapters/
+│   ├── ollama_adapter.py      # TARGET_MODE=local_ollama_wrapper → 호스트 Ollama 직접 호출
+│   ├── browser_adapter.py     # TARGET_TYPE=ui_chat → Playwright 로 웹 UI 조작
+│   ├── openai_adapter.py      # (placeholder)
+│   └── gemini_adapter.py      # (placeholder)
+├── metrics/
+│   ├── answer_relevancy.py    # DeepEval AnswerRelevancy (0~1 점수)
+│   └── llm_judge.py           # Ollama judge 모델로 pass/fail 분류
+└── datasets/
+    └── golden_<project>.csv   # 질문 ↔ 기대답변 쌍 (수동 작성)
+```
+
+#### 8.5.2 주요 파라미터
+
+| 이름 | 예시 | 의미 |
+|------|------|------|
+| `TARGET_TYPE` | `http_api` / `ui_chat` | 평가 대상이 API 엔드포인트인가, 웹 UI 챗봇인가 |
+| `TARGET_MODE` | `local_ollama_wrapper` / `direct` / (미구현 openai/gemini) | 어떤 어댑터로 호출하는가 |
+| `TARGET_URL` | `http://api.example.com/chat` | 대상 URL (TARGET_TYPE 에 따라 해석 다름) |
+| `JUDGE_MODEL` | `qwen3-coder:30b` | LLM-as-Judge 로 쓸 Ollama 모델 이름 |
+| `GOLDEN_DATASET` | `datasets/golden_myproject.csv` | 질문-기대답변 시험지 경로 |
+| `BUILD_NUMBER` | Jenkins 자동 | 리포트 디렉터리 suffix |
+
+#### 8.5.3 처리 흐름
+
+```
+1. Golden Dataset 로드 (CSV: question, expected_answer)
+2. 각 행에 대해:
+   ├─ adapter 로 TARGET 에 question 전송 → actual_answer 수집
+   ├─ metrics/answer_relevancy.py — 의미 유사도 0~1 점수
+   └─ metrics/llm_judge.py — "actual 이 expected 와 같은 의도인가" pass/fail
+3. 결과를 /var/knowledges/eval/reports/build-${BUILD_NUMBER}/{report.json,report.html} 로 저장
+4. archiveArtifacts 로 Jenkins 에 보관
+```
+
+#### 8.5.4 UI 자동화 (ui_chat)
+
+통합 이미지에 **Chromium + Playwright** 가 사전 설치되어 있어 headless 모드 웹 자동화가 즉시 동작:
+
+- `TARGET_TYPE=ui_chat` + `TARGET_URL=https://chatbot.example.com` 지정 시
+- `browser_adapter.py` 가 페이지 열기 → 입력창 찾기 → question 타이핑 → 응답 수신까지 자동화
+
+**이 파이프라인은 P1~P3 와 독립** 입니다. 본 문서는 주로 P1~P3 의 코드 품질 파이프라인을 다루며, P4 상세 운영 가이드는 `eval_runner/` 내부 문서를 참고하세요.
 
 ---
 
