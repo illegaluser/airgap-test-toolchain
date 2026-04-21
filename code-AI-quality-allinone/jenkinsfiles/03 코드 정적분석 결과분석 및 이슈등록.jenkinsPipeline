@@ -117,6 +117,9 @@ pipeline {
               --statuses "${params.STATUSES}" \
               --commit-sha "${env.COMMIT_SHA}" \
               --repo-root "/var/knowledges/codes/\${REPO_NAME}" \
+              --mode "${params.MODE}" \
+              --state-dir "/var/knowledges/state" \
+              --callgraph-dir "/var/knowledges/docs/result" \
               --output "sonar_issues.json"
           """
         }
