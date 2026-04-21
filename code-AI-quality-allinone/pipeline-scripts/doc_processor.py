@@ -60,13 +60,14 @@ RESULT_DIR = "/var/knowledges/docs/result"
 DIFY_API_BASE = os.getenv("DIFY_API_BASE", "http://api:5001/v1")
 
 # Ollama Vision API 설정
-# Jenkins는 컨테이너 내부에서 돌고, Ollama는 호스트 머신(Mac 등)에서 실행 중입니다.
-# 따라서 'localhost' 대신 'host.docker.internal'을 사용하여 호스트로 통신합니다.
-OLLAMA_API_URL = "http://host.docker.internal:11434/api/generate"
+# Jenkins는 컨테이너 내부에서 돌고, Ollama는 호스트 머신(Mac 등)에서 실행 중.
+# Mac Docker Desktop: host.docker.internal 자동 해석.
+# Linux: docker-compose 의 extra_hosts 로 매핑 필요. 환경 상이 시 OLLAMA_API_URL env 로 override.
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://host.docker.internal:11434/api/generate")
 
-# 사용할 Vision 모델명
-# 사전에 호스트 머신에서 'ollama pull llama3.2-vision' 명령어로 모델을 받아둬야 합니다.
-VISION_MODEL = "llama3.2-vision:latest"
+# 사용할 Vision 모델명 (override 가능)
+# 사전에 호스트 머신에서 'ollama pull llama3.2-vision' 명령어로 모델을 받아둬야 함.
+VISION_MODEL = os.getenv("VISION_MODEL", "llama3.2-vision:latest")
 
 # ============================================================================
 # [유틸리티] 공통 헬퍼 함수

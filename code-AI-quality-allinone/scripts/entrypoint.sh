@@ -11,7 +11,7 @@ set -euo pipefail
 
 DATA=/data
 SEED=/opt/seed
-LOG_PREFIX="[entrypoint.allinone]"
+LOG_PREFIX="[entrypoint]"
 
 log()  { printf '%s %s\n' "$LOG_PREFIX" "$*"; }
 err()  { printf '%s ERROR: %s\n' "$LOG_PREFIX" "$*" >&2; }
@@ -73,6 +73,29 @@ else
         fi
     done
 fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 1-b. Jenkins job 경로 매핑 + 공용 작업 디렉터리 (Phase 0 런타임 버그 수정)
+#   - Jenkinsfile 이 /var/jenkins_home/scripts, /var/jenkins_home/tools/node/bin/node,
+#     /var/knowledges/** 를 가정하지만 실제 자산은 /opt/pipeline-scripts,
+#     /opt/eval_runner, /usr/local/bin/node 에 있음. 심볼릭 + mkdir 로 매핑.
+# ────────────────────────────────────────────────────────────────────────────
+mkdir -p /var/jenkins_home/scripts /var/jenkins_home/tools/node/bin
+for f in /opt/pipeline-scripts/*.py; do
+    [ -f "$f" ] && ln -sfn "$f" "/var/jenkins_home/scripts/$(basename "$f")"
+done
+ln -sfn /opt/eval_runner /var/jenkins_home/scripts/eval_runner
+ln -sfn /usr/local/bin/node /var/jenkins_home/tools/node/bin/node
+
+mkdir -p \
+    /var/knowledges/codes \
+    /var/knowledges/docs/org \
+    /var/knowledges/docs/result \
+    /var/knowledges/eval/data \
+    /var/knowledges/eval/reports \
+    /var/knowledges/state
+chown -R jenkins:jenkins /var/knowledges /var/jenkins_home/scripts /var/jenkins_home/tools 2>/dev/null || true
+log "Jenkins scripts 경로 매핑 + /var/knowledges 부트스트랩 완료"
 
 # ────────────────────────────────────────────────────────────────────────────
 # 2. supervisord 백그라운드 기동

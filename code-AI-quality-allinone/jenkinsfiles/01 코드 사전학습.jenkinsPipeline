@@ -11,22 +11,29 @@ pipeline {
         RESULT_DIR = '/var/knowledges/docs/result'
         DOC_FORM = 'text_model'
         DOC_LANGUAGE = 'Korean'
+        // 통합 이미지 내부 Dify API / Ollama 주소. 스크립트 env override 로 사용.
+        DIFY_API_BASE = 'http://127.0.0.1:5001/v1'
+        OLLAMA_API_URL = 'http://host.docker.internal:11434/api/generate'
     }
-    
+
     stages {
         stage('1. Git Clone') {
             when { expression { params.REPO_URL != '' } }
             steps {
                 echo "[Clone] Git 레포지토리 클론 시작: ${params.REPO_URL}"
-                sh '''
-                set -e
-                REPO_NAME=$(basename "${REPO_URL}" .git)
-                # 기존 코드 디렉터리 초기화
-                rm -rf ${WORKSPACE_CODES}/*
-                # Git 클론 (실제 저장소 이름으로 디렉터리 생성)
-                git clone "${REPO_URL}" ${WORKSPACE_CODES}/$REPO_NAME
-                echo "[Clone] 완료"
-                '''
+                withCredentials([string(credentialsId: 'gitlab-pat', variable: 'GITLAB_PAT')]) {
+                    sh '''
+                    set -e
+                    REPO_NAME=$(basename "${REPO_URL}" .git)
+                    # REPO_URL 에 oauth2:${GITLAB_PAT}@ 주입. public/private 모두 작동.
+                    AUTH_URL=$(echo "${REPO_URL}" | sed -E "s|^(https?)://|\\1://oauth2:${GITLAB_PAT}@|")
+                    # 기존 코드 디렉터리 초기화
+                    rm -rf ${WORKSPACE_CODES}/*
+                    # Git 클론 (실제 저장소 이름으로 디렉터리 생성)
+                    git clone "${AUTH_URL}" ${WORKSPACE_CODES}/$REPO_NAME
+                    echo "[Clone] 완료"
+                    '''
+                }
             }
         }
         
