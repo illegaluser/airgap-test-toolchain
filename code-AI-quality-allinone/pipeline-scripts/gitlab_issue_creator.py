@@ -25,7 +25,7 @@
 #
 # [실행 예시]
 # python3 gitlab_issue_creator.py \
-#   --gitlab-host-url http://gitlab:8929 \
+#   --gitlab-host-url http://gitlab:80 \
 #   --gitlab-token glpat-xxxxx \
 #   --gitlab-project mygroup/myproject \
 #   --input llm_analysis.jsonl \
