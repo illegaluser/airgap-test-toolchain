@@ -63,6 +63,127 @@ def truncate_text(text, max_chars=1000):
     if len(text) <= max_chars: return text
     return text[:max_chars] + "... (Rule Truncated)"
 
+def build_kb_query(row):
+    """Step C — multi-query kb_query 구성.
+
+    기존 `f"{rule} {msg}"` 1줄 → 4줄 조합:
+      1) 이슈 라인 근처 코드 창 (>>` 마커 앞뒤 3~4줄)
+      2) function: enclosing_function
+      3) path: relative_path
+      4) rule name / rule key
+    이렇게 하면 RAG 가 rule 이름뿐 아니라 "이 함수 근처에서 어떤 코드가 돌고 있는지"
+    까지 고려해 유사 청크를 꺼낸다.
+    """
+    snippet = row.get("code_snippet", "") or ""
+    lines = snippet.splitlines()
+    marker_idx = 0
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith(">>"):
+            marker_idx = i
+            break
+    window = "\n".join(lines[max(0, marker_idx - 3): marker_idx + 4]) if lines else ""
+
+    enclosing = row.get("enclosing_function", "") or ""
+    rel_path = row.get("relative_path", "") or ""
+    rule_detail = row.get("rule_detail", {}) or {}
+    rule_name = rule_detail.get("name") or row.get("sonar_rule_key", "") or ""
+
+    parts = [window]
+    if enclosing:
+        parts.append(f"function: {enclosing}")
+    if rel_path:
+        parts.append(f"path: {rel_path}")
+    if rule_name:
+        parts.append(rule_name)
+    return "\n".join([p for p in parts if p])
+
+
+# Step C — skip_llm 이슈 (MINOR/INFO) 에 대한 템플릿 응답 생성.
+# Dify 호출 없이 analyzer 가 직접 outputs 를 구성해 llm_analysis.jsonl 에 기록.
+def build_skip_llm_outputs(severity: str, msg: str) -> dict:
+    return {
+        "title": f"[{severity}] {msg}",
+        "labels": [
+            f"severity:{severity}",
+            "classification:true_positive",
+            "confidence:low",
+            "auto_template:true",
+        ],
+        "impact_analysis_markdown": (
+            "(자동 템플릿 — MINOR/INFO Severity 로 LLM 호출 skip. "
+            "수동 리뷰 권장.)"
+        ),
+        "suggested_fix_markdown": "",
+        "classification": "true_positive",
+        "fp_reason": "",
+        "confidence": "low",
+        "suggested_diff": "",
+    }
+
+
+# Step C — outputs 스키마 안전 기본값 주입.
+# Dify parameter-extractor 가 신규 필드를 못 뽑은 경우에도 creator 쪽이 KeyError
+# 없이 돌도록 보장. `classification` 빈 값이면 true_positive 로 간주.
+def normalize_outputs(outputs: dict) -> dict:
+    out = dict(outputs or {})
+    defaults = {
+        "title": "",
+        "labels": [],
+        "impact_analysis_markdown": "",
+        "suggested_fix_markdown": "",
+        "classification": "true_positive",
+        "fp_reason": "",
+        "confidence": "medium",
+        "suggested_diff": "",
+    }
+    for k, v in defaults.items():
+        if k not in out or out[k] is None or out[k] == "":
+            # classification 만 빈값 → true_positive 로 강제 기본값
+            if k == "classification":
+                out[k] = "true_positive"
+            else:
+                out[k] = v
+    return out
+
+
+def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln,
+                   commit_sha, rule, rule_detail, final_code, outputs, llm_skipped: bool):
+    """Step C — out_row 공통 빌더. Dify 성공 경로 / skip_llm 경로 모두 같은 포맷.
+
+    creator 가 기대하는 사실 정보 passthrough + outputs (정규화된 8 필드) +
+    Step B 에서 exporter 가 넣어둔 clustering/routing 필드도 보존.
+    """
+    normalized = normalize_outputs(outputs)
+    return {
+        "sonar_issue_key": key,
+        "severity": severity,
+        "sonar_message": msg,
+        "sonar_issue_url": item.get("sonar_issue_url", ""),
+        # 위치 정보 (creator header 렌더용)
+        "relative_path": item.get("relative_path", "") or "",
+        "line": line,
+        "enclosing_function": enclosing_fn,
+        "enclosing_lines": enclosing_ln,
+        "commit_sha": commit_sha,
+        # Rule 정보 (creator '📖 Rule 상세' 섹션용)
+        "rule_key": rule,
+        "rule_name": rule_detail.get("name", ""),
+        "rule_description": rule_detail.get("description", ""),
+        # 문제 코드 블록 (creator '🔴 문제 코드' 섹션용)
+        "code_snippet": final_code,
+        # Step B passthrough — creator 의 Affected Locations 섹션 + FP 전이 라우팅
+        "cluster_key": item.get("cluster_key", ""),
+        "affected_locations": item.get("affected_locations", []) or [],
+        "direct_callers": item.get("direct_callers", []) or [],
+        "git_context": item.get("git_context", "") or "",
+        "judge_model": item.get("judge_model", ""),
+        "llm_skipped": llm_skipped,
+        # LLM 생성 — 정규화된 8 필드 outputs
+        "outputs": normalized,
+        "generated_at": int(time.time()),
+    }
+
+
 def send_dify_request(url, api_key, payload):
     """
     Dify Workflow API에 HTTP POST 요청을 전송합니다.
@@ -202,21 +323,41 @@ def main():
 
         print(f"\n[DEBUG] >>> Sending Issue {key}")
 
+        # Step C — exporter 가 severity routing 으로 skip_llm=True 로 태깅한 이슈는
+        # Dify 호출 자체를 건너뛰고 템플릿 응답으로 out_row 를 구성. MINOR/INFO
+        # 이하 이슈에서 LLM 비용을 줄이는 경로.
+        skip_llm = bool(item.get("skip_llm"))
+        if skip_llm:
+            print(f"[SKIP_LLM] {key} — template response generated")
+            rd = item.get("rule_detail", {}) or {}
+            templated = build_skip_llm_outputs(severity, msg)
+            out_row = _build_out_row(
+                item=item, key=key, severity=severity, msg=msg,
+                line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
+                commit_sha=commit_sha, rule=rule, rule_detail=rd,
+                final_code=final_code, outputs=templated, llm_skipped=True,
+            )
+            out_fp.write(json.dumps(out_row, ensure_ascii=False) + "\n")
+            continue
+
         # --- 3-d. Dify 워크플로우 입력 데이터 구성 ---
-        # kb_query: Dify Knowledge Base 검색용 쿼리 (룰 ID + 이슈 메시지)
-        # 이를 통해 LLM이 지식 베이스에서 관련 정보를 RAG로 검색할 수 있습니다.
+        # Step C: kb_query 는 multi-query 로 확장 (기존 `rule + msg` 1줄 대신
+        # 이슈 라인 근처 코드 + enclosing function + path + rule name 4줄).
+        # 이렇게 하면 RAG 가 rule 이름뿐 아니라 "이 함수/파일 맥락의 유사 청크"
+        # 까지 꺼낸다.
         # Step R: exporter 가 추출한 enclosing_function / enclosing_lines /
         # commit_sha 를 LLM 에 추가 힌트로 전달 (프롬프트에 "위치 사실은 별도
         # 렌더되므로 본문에 반복하지 말 것" 명시).
         enclosing_fn = item.get("enclosing_function", "") or ""
         enclosing_ln = item.get("enclosing_lines", "") or ""
         commit_sha = item.get("commit_sha", "") or args.commit_sha or ""
+        kb_query = build_kb_query(item)
         inputs = {
             "sonar_issue_key": key,
             "sonar_project_key": project,
             "code_snippet": final_code,
             "sonar_issue_url": item.get("sonar_issue_url", ""),
-            "kb_query": f"{rule} {msg}",
+            "kb_query": kb_query,
             "sonar_issue_json": safe_issue_json,
             "sonar_rule_json": safe_rule_json,
             # Step R 신규 inputs
@@ -249,33 +390,18 @@ def main():
                     res = json.loads(body)
                     # Dify 워크플로우 내부 실행이 성공했는지 확인합니다.
                     if res.get("data", {}).get("status") == "succeeded":
-                        # 분석 결과를 JSONL 형식으로 기록합니다.
-                        # Step R 이후 outputs 는 4 필드: title, labels,
-                        # impact_analysis_markdown, suggested_fix_markdown.
-                        # out_row 에는 creator 의 deterministic 렌더가 필요로 하는
-                        # 사실 정보 (위치·Rule·commit·코드 스니펫) 를 passthrough.
+                        # Step C — out_row 는 공통 헬퍼로 구성. outputs 는 8 필드
+                        # (title/labels/impact/fix + classification/fp_reason/confidence/diff)
+                        # 로 정규화되어 creator 가 기본값 안전 접근 가능.
                         rd = item.get("rule_detail", {}) or {}
-                        out_row = {
-                            "sonar_issue_key": key,
-                            "severity": severity,
-                            "sonar_message": msg,
-                            "sonar_issue_url": item.get("sonar_issue_url", ""),
-                            # 위치 정보 (creator header 렌더용)
-                            "relative_path": item.get("relative_path", "") or "",
-                            "line": line,
-                            "enclosing_function": enclosing_fn,
-                            "enclosing_lines": enclosing_ln,
-                            "commit_sha": commit_sha,
-                            # Rule 정보 (creator '📖 Rule 상세' 섹션용)
-                            "rule_key": rule,
-                            "rule_name": rd.get("name", ""),
-                            "rule_description": rd.get("description", ""),
-                            # 문제 코드 블록 (creator '🔴 문제 코드' 섹션용)
-                            "code_snippet": final_code,
-                            # LLM 생성 — 2 필드로 축소된 outputs
-                            "outputs": res["data"]["outputs"],
-                            "generated_at": int(time.time())
-                        }
+                        out_row = _build_out_row(
+                            item=item, key=key, severity=severity, msg=msg,
+                            line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
+                            commit_sha=commit_sha, rule=rule, rule_detail=rd,
+                            final_code=final_code,
+                            outputs=res["data"].get("outputs", {}),
+                            llm_skipped=False,
+                        )
                         out_fp.write(json.dumps(out_row, ensure_ascii=False) + "\n")
                         success = True
                         print(f"   -> Success.")
