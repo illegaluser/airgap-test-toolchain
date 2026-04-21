@@ -145,7 +145,7 @@ RUN /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages
     /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
         deepeval==1.3.5 --no-deps && \
     /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
-        tree-sitter tree-sitter-languages jedi
+        "tree-sitter<0.22" "tree-sitter-languages==1.10.2" jedi
 
 # Playwright Chromium (python3.12 쪽 playwright 로 설치)
 RUN /usr/local/bin/python3 -m playwright install --with-deps chromium
@@ -246,6 +246,7 @@ COPY scripts/nginx.conf       /etc/nginx/nginx.conf
 # ─────────────────────────────────────────────────────────────────────────────
 RUN mkdir -p /opt/pipeline-scripts
 COPY pipeline-scripts/repo_context_builder.py           /opt/pipeline-scripts/
+COPY pipeline-scripts/contextual_enricher.py            /opt/pipeline-scripts/
 COPY pipeline-scripts/doc_processor.py                  /opt/pipeline-scripts/
 COPY pipeline-scripts/sonar_issue_exporter.py           /opt/pipeline-scripts/
 COPY pipeline-scripts/dify_sonar_issue_analyzer.py      /opt/pipeline-scripts/

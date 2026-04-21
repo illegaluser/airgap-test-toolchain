@@ -214,10 +214,63 @@ _dify_auth_args() {
 }
 
 # ─ Dify: Ollama provider 등록 ──────────────────────────────────────────────
+# ─ Dify 1.13+: Ollama 모델 provider 는 플러그인으로 설치. 최초 1 회 seed .difypkg
+# 를 upload/pkg → install/pkg 로 등록해야 이후 customizable-model API 가 의미를 가진다.
+# 멱등: 이미 설치된 provider 는 model-providers 목록으로 확인 후 skip.
+dify_install_ollama_plugin() {
+    local cached="$STATE_DIR/ollama_plugin.ok"
+    [ -f "$cached" ] && { log "  Ollama 플러그인 이미 설치됨 — skip"; return 0; }
+
+    local pkg="/opt/seed/dify-plugins/langgenius-ollama-0.1.3.difypkg"
+    [ -f "$pkg" ] || { warn "  Ollama 플러그인 .difypkg 없음 ($pkg)"; return 1; }
+
+    log "Dify Ollama 플러그인 설치 (offline pkg)"
+    mapfile -t _auth < <(_dify_auth_args)
+
+    # 이미 등록된 경우 skip
+    local existing; existing=$(curl -sS "$DIFY_URL/console/api/workspaces/current/model-providers" \
+        "${_auth[@]}" 2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(any(p.get('provider','').endswith('/ollama') for p in d.get('data',[])))" 2>/dev/null || echo "False")
+    if [ "$existing" = "True" ]; then
+        log "  Ollama provider 이미 등록됨 — 플러그인 재설치 skip"
+        touch "$cached"
+        return 0
+    fi
+
+    # 1) .difypkg 업로드 → unique_identifier 획득
+    local up_resp
+    up_resp=$(curl -sS -X POST "$DIFY_URL/console/api/workspaces/current/plugin/upload/pkg" \
+        "${_auth[@]}" \
+        -F "pkg=@$pkg" 2>/dev/null)
+    local uid
+    uid=$(echo "$up_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('unique_identifier',''))" 2>/dev/null)
+    [ -z "$uid" ] && { warn "  플러그인 upload 실패 — 응답: $(echo "$up_resp" | head -c 300)"; return 1; }
+
+    # 2) install/pkg → task_id 생성 후 비동기 완료 대기
+    local payload; payload=$(python3 -c "import json; print(json.dumps({'plugin_unique_identifiers':['$uid']}))")
+    local inst_resp
+    inst_resp=$(curl -sS -X POST "$DIFY_URL/console/api/workspaces/current/plugin/install/pkg" \
+        "${_auth[@]}" -H "Content-Type: application/json" -d "$payload" 2>/dev/null)
+    echo "$inst_resp" | grep -q '"task_id"' || { warn "  플러그인 install 실패 — 응답: $(echo "$inst_resp" | head -c 300)"; return 1; }
+
+    # 3) provider 목록에 나타날 때까지 최대 60s 대기
+    local _w=0
+    until [ $_w -ge 60 ]; do
+        sleep 3; _w=$((_w + 3))
+        local ok; ok=$(curl -sS "$DIFY_URL/console/api/workspaces/current/model-providers" \
+            "${_auth[@]}" 2>/dev/null \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(any(p.get('provider','').endswith('/ollama') for p in d.get('data',[])))" 2>/dev/null || echo "False")
+        [ "$ok" = "True" ] && { touch "$cached"; log "  Ollama 플러그인 설치 완료 (${_w}s)"; return 0; }
+    done
+    warn "  Ollama 플러그인 설치 60s 내 미완료"
+    return 1
+}
+
 dify_register_ollama_provider() {
     log "Dify Ollama provider 등록 ($OLLAMA_BASE_URL, 모델=$OLLAMA_MODEL)"
     local payload
-    # Dify 1.13 은 최상위 model_type 필드를 필수로 요구 (pydantic missing 400).
+    # Dify 1.13 custom model 등록은 /models/credentials 엔드포인트. /models 는 load-balancing
+    # 전용이며 200 을 반환하지만 실제 모델은 등록되지 않음.
     payload=$(python3 <<PY
 import json
 print(json.dumps({
@@ -226,23 +279,98 @@ print(json.dumps({
     "credentials": {
         "base_url": "$OLLAMA_BASE_URL",
         "mode": "chat",
-        "model_name": "$OLLAMA_MODEL",
         "context_size": "8192",
-        "max_tokens": "4096",
-        "completion_type": "chat_completion"
-    }
+        "max_tokens": "4096"
+    },
+    "name": "$OLLAMA_MODEL-default"
 }))
 PY
 )
     mapfile -t _auth < <(_dify_auth_args)
-    curl -sS -X POST "$DIFY_URL/console/api/workspaces/current/model-providers/ollama/models" \
+    curl -sS -X POST "$DIFY_URL/console/api/workspaces/current/model-providers/langgenius/ollama/ollama/models/credentials" \
         "${_auth[@]}" \
         -H "Content-Type: application/json" \
         -d "$payload" \
         -o /tmp/dify-provider.json 2>/dev/null
-    grep -q 'error\|exception' /tmp/dify-provider.json \
-        && warn "  Ollama provider 등록 경고 — 수동 확인: $DIFY_URL/console/api/workspaces/current/model-providers" \
-        || log "  Ollama provider 등록 완료"
+    if grep -qE '"error"|exception|"code":"[^s]' /tmp/dify-provider.json; then
+        warn "  Ollama provider 등록 경고 — 응답: $(head -c 300 /tmp/dify-provider.json)"
+    else
+        log "  Ollama provider 등록 완료 ($OLLAMA_MODEL)"
+    fi
+}
+
+# ─ Dify: Ollama embedding provider 등록 (bge-m3) ───────────────────────────
+# Dataset high_quality 모드 (벡터 검색) 은 임베딩 모델이 Dify provider 에 등록되어
+# 있어야 함. 호스트 Ollama 에 미리 받아둔 bge-m3 를 text-embedding 모델로 등록.
+# 멱등: state cache 확인 후 skip.
+dify_register_ollama_embedding() {
+    local emb_model="${OLLAMA_EMBEDDING_MODEL:-bge-m3}"
+    local cached="$STATE_DIR/ollama_embedding.ok"
+    [ -f "$cached" ] && { log "  Ollama embedding provider 이미 등록됨 — skip"; return 0; }
+
+    log "Dify Ollama embedding 등록 ($OLLAMA_BASE_URL, 모델=$emb_model)"
+    local payload
+    payload=$(python3 <<PY
+import json
+print(json.dumps({
+    "model": "$emb_model",
+    "model_type": "text-embedding",
+    "credentials": {
+        "base_url": "$OLLAMA_BASE_URL",
+        "context_size": "8192"
+    },
+    "name": "$emb_model-default"
+}))
+PY
+)
+    mapfile -t _auth < <(_dify_auth_args)
+    curl -sS -X POST "$DIFY_URL/console/api/workspaces/current/model-providers/langgenius/ollama/ollama/models/credentials" \
+        "${_auth[@]}" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        -o /tmp/dify-embedding.json 2>/dev/null
+    if grep -qE '"error"|exception|"code":"[^s]' /tmp/dify-embedding.json; then
+        warn "  Ollama embedding 등록 경고 — 응답: $(head -c 300 /tmp/dify-embedding.json)"
+        return 1
+    fi
+    touch "$cached"
+    log "  Ollama embedding 등록 완료 ($emb_model)"
+}
+
+# ─ Dify: workspace default model 설정 (LLM + embedding) ───────────────────
+# Dify 1.13 은 Dataset high_quality 생성 시 "workspace 기본 embedding 모델" 을 요구.
+# model-provider 등록과 별개로 이 설정이 비어있으면 "Default model not found" 400.
+# LLM 기본도 함께 설정해 workflow LLM 노드가 기본값으로 동작하도록 보장.
+dify_set_default_models() {
+    local cached="$STATE_DIR/default_models.ok"
+    [ -f "$cached" ] && { log "  기본 모델 설정 이미 완료됨 — skip"; return 0; }
+
+    local emb_model="${OLLAMA_EMBEDDING_MODEL:-bge-m3}"
+    log "Dify workspace 기본 모델 설정 (llm=$OLLAMA_MODEL, embedding=$emb_model)"
+
+    local payload
+    payload=$(python3 <<PY
+import json
+print(json.dumps({
+    "model_settings": [
+        {"model_type": "llm", "provider": "langgenius/ollama/ollama", "model": "$OLLAMA_MODEL"},
+        {"model_type": "text-embedding", "provider": "langgenius/ollama/ollama", "model": "$emb_model"}
+    ]
+}))
+PY
+)
+    mapfile -t _auth < <(_dify_auth_args)
+    local resp
+    resp=$(curl -sS -X POST "$DIFY_URL/console/api/workspaces/current/default-model" \
+        "${_auth[@]}" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>/dev/null)
+    if echo "$resp" | grep -qE '"error"|exception|"code":"'; then
+        warn "  기본 모델 설정 경고 — 응답: $(echo "$resp" | head -c 300)"
+        return 1
+    fi
+    touch "$cached"
+    log "  기본 모델 설정 완료"
 }
 
 # ─ Dify: Knowledge Dataset 생성 (또는 기존 재사용) → dataset_id ────────────
@@ -323,14 +451,92 @@ print(items[0]['token'] if items else '')" 2>/dev/null || true)
 }
 
 # ─ Dify: Sonar Analyzer Workflow import → app_id ──────────────────────────
-dify_import_workflow() {
-    local cached="$STATE_DIR/workflow_app_id"
-    [ -f "$cached" ] && { cat "$cached"; return 0; }
+# ─ Dify: 기존 workflow draft 의 knowledge-retrieval 노드에 dataset_id 주입 ─────
+# provision 재실행 race: workflow_app_id 캐시는 있는데 과거 실패로 dataset_ids 가
+# 비어 있는 상태 → GET draft → patch nodes → hash 포함 POST. import 함수와 분리해
+# 안전망으로 동작.
+dify_patch_workflow_dataset_id() {
+    local app_id="$1" dataset_id="$2"
+    [ -z "$app_id" ] || [ -z "$dataset_id" ] && return 0
 
-    local yaml_content; yaml_content=$(cat "$DIFY_ASSETS_DIR/sonar-analyzer-workflow.yaml")
+    mapfile -t _auth < <(_dify_auth_args)
+    local draft_file; draft_file=$(mktemp --suffix=.json)
+    curl -sS "$DIFY_URL/console/api/apps/$app_id/workflows/draft" "${_auth[@]}" -o "$draft_file" 2>/dev/null
+    [ ! -s "$draft_file" ] && { rm -f "$draft_file"; return 1; }
+
+    local needs_patch; needs_patch=$(DRAFT_FILE="$draft_file" python3 <<'PY' 2>/dev/null
+import json, os, sys
+d = json.load(open(os.environ["DRAFT_FILE"]))
+g = d.get("graph", {})
+for n in g.get("nodes", []):
+    dd = n.get("data", {})
+    if dd.get("type") == "knowledge-retrieval" and not dd.get("dataset_ids"):
+        print("yes"); sys.exit(0)
+print("no")
+PY
+)
+    if [ "$needs_patch" != "yes" ]; then
+        rm -f "$draft_file"
+        log "  Workflow dataset_ids 이미 주입됨 — skip"
+        return 0
+    fi
+
+    log "  Workflow draft 에 dataset_id fallback 주입 ($dataset_id)"
+    local payload_file; payload_file=$(mktemp --suffix=.json)
+    DRAFT_FILE="$draft_file" DATASET_ID="$dataset_id" python3 <<'PY' > "$payload_file"
+import json, os
+d = json.load(open(os.environ["DRAFT_FILE"]))
+g = d.get("graph", {})
+for n in g.get("nodes", []):
+    if n.get("data", {}).get("type") == "knowledge-retrieval":
+        n["data"]["dataset_ids"] = [os.environ["DATASET_ID"]]
+out = {
+    "graph": g,
+    "features": d.get("features", {}),
+    "environment_variables": d.get("environment_variables", []),
+    "conversation_variables": d.get("conversation_variables", []),
+    "hash": d.get("hash") or d.get("unique_hash"),
+}
+print(json.dumps(out))
+PY
+    rm -f "$draft_file"
+    local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/apps/$app_id/workflows/draft" \
+        "${_auth[@]}" -H "Content-Type: application/json" -d @"$payload_file" 2>/dev/null)
+    rm -f "$payload_file"
+    if echo "$resp" | grep -q '"result":"success"'; then
+        log "  Workflow dataset_id fallback 주입 완료"
+    else
+        warn "  Workflow fallback 주입 실패 — 응답: $(echo "$resp" | head -c 200)"
+        return 1
+    fi
+}
+
+dify_import_workflow() {
+    local dataset_id="${1:-}"  # Phase 1: knowledge-retrieval 노드의 dataset_ids 채우기
+    local cached="$STATE_DIR/workflow_app_id"
+    if [ -f "$cached" ]; then
+        local existing_id; existing_id=$(cat "$cached")
+        # 캐시 히트 — 기존 draft 의 dataset_ids 비었으면 fallback 패치
+        [ -n "$dataset_id" ] && dify_patch_workflow_dataset_id "$existing_id" "$dataset_id" || true
+        echo "$existing_id"
+        return 0
+    fi
+
+    # Phase 1: YAML 의 `dataset_ids: []` 를 실제 dataset_id 로 치환하여 RAG 노드가
+    # 현재 워크스페이스의 code-context-kb 를 조회하도록 보장.
+    local tmp_yaml; tmp_yaml=$(mktemp --suffix=.yaml)
+    cp "$DIFY_ASSETS_DIR/sonar-analyzer-workflow.yaml" "$tmp_yaml"
+    if [ -n "$dataset_id" ]; then
+        # sed 로 'dataset_ids: []' → 'dataset_ids: ["<id>"]' 치환.
+        # yaml 의 inline list 문법 사용 (Dify 가 array of string 파싱).
+        sed -i.bak "s|dataset_ids: \[\]|dataset_ids: ['$dataset_id']|g" "$tmp_yaml"
+        rm -f "${tmp_yaml}.bak"
+        log "  Workflow yaml 에 dataset_id 주입: $dataset_id"
+    fi
+
     local payload; payload=$(python3 <<PY
 import json
-with open("$DIFY_ASSETS_DIR/sonar-analyzer-workflow.yaml", encoding="utf-8") as f:
+with open("$tmp_yaml", encoding="utf-8") as f:
     yc = f.read()
 print(json.dumps({"mode": "yaml-content", "yaml_content": yc}))
 PY
@@ -340,6 +546,7 @@ PY
         "${_auth[@]}" \
         -H "Content-Type: application/json" \
         -d "$payload" 2>/dev/null)
+    rm -f "$tmp_yaml"
     local id; id=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('app_id') or d.get('id') or '')" 2>/dev/null || true)
     if [ -n "$id" ]; then
         echo "$id" > "$cached"
@@ -531,10 +738,16 @@ if dify_setup_admin; then
     DIFY_TOKEN=$(dify_login)
     if [ -n "$DIFY_TOKEN" ]; then
         log "  Dify 로그인 성공 (cookie jar: $DIFY_COOKIE_JAR)"
+        # Phase 1: Dify 1.13 plugin-model 체계 — 먼저 ollama 플러그인 설치
+        dify_install_ollama_plugin || true
         dify_register_ollama_provider || true
+        # high_quality Dataset 생성 전 반드시 embedding provider 등록 + 기본 모델 지정
+        dify_register_ollama_embedding || true
+        dify_set_default_models || true
         DATASET_ID=$(dify_create_dataset || echo "")
         [ -n "$DATASET_ID" ] && KNOWLEDGE_KEY=$(dify_issue_dataset_api_key "$DATASET_ID" || echo "")
-        WORKFLOW_APP_ID=$(dify_import_workflow || echo "")
+        # Phase 1: workflow import 시 dataset_id 를 yaml 에 주입해 knowledge-retrieval 노드 활성화
+        WORKFLOW_APP_ID=$(dify_import_workflow "$DATASET_ID" || echo "")
         [ -n "$WORKFLOW_APP_ID" ] && WORKFLOW_KEY=$(dify_issue_app_api_key "$WORKFLOW_APP_ID" || echo "")
     else
         warn "Dify 로그인 실패 — 수동 확인 필요"

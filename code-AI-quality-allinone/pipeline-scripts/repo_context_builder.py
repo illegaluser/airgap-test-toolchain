@@ -1,156 +1,286 @@
 #!/usr/bin/env python3
+# Tree-sitter AST 기반 코드 청커 — Dify RAG 용 파일/심볼 단위 JSONL 생성.
+#
+# 입력: --repo_root (분석 대상 레포 경로), --out (결과 디렉터리), --commit-sha (옵션)
+# 출력: out/<repo>/<path_safe>.jsonl  (각 line = 하나의 symbol 청크)
+# 추가: out/<repo>/_repo_summary.md   (기존 context_<repo>.md 대체, 사람이 보는 요약)
+#
+# 청크 필드:
+#   path, symbol, kind (function/method/class/...), lang,
+#   lines ("start-end"), code, commit_sha,
+#   callers (빈 배열, Phase 1.5 에서 채움), callees (본 청크 안 호출), test_for (추정)
+#
+# 호출 그래프 (callers) 는 Phase 1 에선 빈 배열 유지 — Phase 1.5 에서 jedi 로 레포 전역 인덱스
+# 한 번에 돌려 채운다. 이 스크립트는 단일 파일 AST 만 보므로 callees 만 로컬 추출.
+#
+# 실패 정책: 파서 실패·바이너리·비지원 확장자는 조용히 skip, 전체 흐름 중단 없음.
 import argparse
+import json
 import os
+import subprocess
 from pathlib import Path
-from datetime import datetime
 
-# 목적: readme.md의 DSCORE-Code-Knowledge-Sync(Job #4)에서 리포지토리 트리와 핵심 설정 파일을 Markdown으로 요약해 RAG/Dify 업로드용 컨텍스트를 만든다.
-# 원칙:
-# - 생성된 Markdown은 RAG 컨텍스트로 활용되어, 정적 분석 결과를 LLM이 해석하고
-#   개선 방안을 제시할 때 사전 정보(트리/README/패키지 매니페스트 등)로 쓰인다.
-# - readme.md에서 설명한 Job #4(DSCORE-Code-Knowledge-Sync) 흐름을 지원해,
-#   코드 컨텍스트를 Dify 지식베이스로 올리기 전에 요약본을 만든다.
-# - Jenkins/CI 자동화에서 호출하는 것을 전제로 하며, 대규모 리포에서도 안전하게
-#   동작하도록 출력 라인/바이트 제한을 둔다.
-# - LLM이 코드 품질 이슈를 설명하거나 제안할 때, “프로젝트 전반 구조/주요 설정”을
-#   빠르게 참고하도록 돕는 사전 자료 역할을 한다.
-# - 출력은 Markdown 하나로 끝나므로 Jenkins 아티팩트나 로그에 남겨 두었다가
-#   다른 스크립트/워크플로(Dify 업로드 등)에서 바로 재사용할 수 있다.
-# 기대결과: 트리 + 주요 파일 내용을 담은 Markdown이 생성되어, 코드 컨텍스트 지식베이스로 바로 업로드하거나 Jenkins 아티팩트로 활용된다.
+try:
+    from tree_sitter_languages import get_language, get_parser
+except Exception as e:
+    # 빌드 환경에 tree-sitter-languages 가 없으면 즉시 실패 (Dockerfile 이 보장)
+    raise SystemExit(f"[repo_context_builder] tree_sitter_languages import 실패: {e}")
 
-# 트리 생성 시 스킵할 디렉터리 목록.
-# (빌드 산출물, IDE 설정, 가상환경, 캐시 등은 컨텍스트 가치가 낮으므로 제외)
-# - readme.md에서 다루지 않는 노이즈 디렉터리를 걸러 RAG 입력 크기와 노이즈를 줄인다.
-# - node_modules/.venv/.gradle처럼 용량이 큰 폴더는 탐색하지 않아 속도도 확보한다.
+
+# ─ 언어별 AST 노드 매핑 ────────────────────────────────────────────────────
+# node_types: tree-sitter 노드 타입 → 논리적 "kind" (function/class/method 등)
+# name_field: child_by_field_name 으로 이름을 뽑는 필드 (없으면 identifier 자식 탐색)
+LANG_CONFIG = {
+    ".py": {
+        "lang": "python",
+        "node_types": {
+            "function_definition": "function",
+            "class_definition": "class",
+            "async_function_definition": "function",
+        },
+        "name_field": "name",
+    },
+    ".java": {
+        "lang": "java",
+        "node_types": {
+            "method_declaration": "method",
+            "constructor_declaration": "method",
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "enum_declaration": "enum",
+        },
+        "name_field": "name",
+    },
+    ".ts": {
+        "lang": "typescript",
+        "node_types": {
+            "function_declaration": "function",
+            "method_definition": "method",
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "arrow_function": "function",
+        },
+        "name_field": "name",
+    },
+    ".tsx": {
+        "lang": "tsx",
+        "node_types": {
+            "function_declaration": "function",
+            "method_definition": "method",
+            "class_declaration": "class",
+        },
+        "name_field": "name",
+    },
+    ".js": {
+        "lang": "javascript",
+        "node_types": {
+            "function_declaration": "function",
+            "method_definition": "method",
+            "class_declaration": "class",
+            "arrow_function": "function",
+        },
+        "name_field": "name",
+    },
+}
+
+
 EXCLUDE_DIRS = {
     ".git", ".scannerwork", "node_modules", "build", "dist", "out", "target",
     ".idea", ".vscode", ".gradle", ".next", ".nuxt", ".cache", ".venv", "venv",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 
-# 트리 외에 본문에 포함할 핵심 파일 목록.
-# 존재하는 항목만 읽어와 Markdown 섹션으로 추가한다.
-# - readme.md에서 강조한 패키지 매니페스트, 빌드 스크립트, 환경 예시를 그대로 반영했다.
-# - LLM이 “언어/프레임워크/빌드 시스템”을 빠르게 추정하도록 돕는 의도다.
+
 KEY_FILES = [
-    "README.md",
-    "README.txt",
-    "package.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "package-lock.json",
-    "requirements.txt",
-    "pyproject.toml",
-    "Pipfile",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "go.mod",
-    "Cargo.toml",
-    ".env.example",
+    "README.md", "README.txt",
+    "package.json", "requirements.txt", "pyproject.toml", "Pipfile",
+    "pom.xml", "build.gradle", "build.gradle.kts",
+    "go.mod", "Cargo.toml", ".env.example",
 ]
 
-def safe_read_text(path: Path, max_bytes: int) -> str:
+
+# ─ 언어별 "call site" 추출 — callees 필드용 ──────────────────────────────────
+def collect_callees(node, lang: str) -> list:
+    """node 서브트리에서 호출된 symbol 이름들을 수집 (중복 제거·정렬)."""
+    callees = set()
+
+    def walk(n):
+        if lang == "python":
+            if n.type == "call":
+                fn = n.child_by_field_name("function")
+                if fn is not None:
+                    txt = fn.text.decode("utf-8", errors="replace")
+                    # attribute 형태 (obj.method) 에서 메서드명만 추출
+                    if "." in txt:
+                        txt = txt.rsplit(".", 1)[-1]
+                    if txt.isidentifier():
+                        callees.add(txt)
+        elif lang in ("java",):
+            if n.type == "method_invocation":
+                name = n.child_by_field_name("name")
+                if name is not None:
+                    callees.add(name.text.decode("utf-8", errors="replace"))
+        elif lang in ("javascript", "typescript", "tsx"):
+            if n.type == "call_expression":
+                fn = n.child_by_field_name("function")
+                if fn is not None:
+                    txt = fn.text.decode("utf-8", errors="replace")
+                    if "." in txt:
+                        txt = txt.rsplit(".", 1)[-1]
+                    if txt.replace("_", "").isalnum():
+                        callees.add(txt)
+        for ch in n.children:
+            walk(ch)
+
+    walk(node)
+    return sorted(callees)
+
+
+def get_symbol_name(node, name_field: str):
+    """child_by_field_name(name_field) 우선, 실패 시 첫 identifier 자식."""
+    n = node.child_by_field_name(name_field)
+    if n is not None:
+        return n.text.decode("utf-8", errors="replace")
+    for ch in node.children:
+        if ch.type == "identifier":
+            return ch.text.decode("utf-8", errors="replace")
+    return None
+
+
+def walk_symbols(node, node_types: dict):
+    """AST 를 순회하며 관심 노드 yield."""
+    if node.type in node_types:
+        yield (node, node_types[node.type])
+    for ch in node.children:
+        yield from walk_symbols(ch, node_types)
+
+
+def guess_test_for(rel_path: str, symbol: str):
+    """테스트 심볼이면 타깃 심볼명 추정 (test_foo → foo).
+
+    경로 기준으로 tests/ test/ __tests__/ 하위이거나, 파일명이 test_X / X_test.py 이거나,
+    심볼명이 test_X 로 시작하면 X 를 반환. 일반 코드면 None.
     """
-    주어진 파일을 최대 max_bytes만 읽어 UTF-8 문자열로 반환한다.
-    - 바이너리 파일이나 권한 오류가 있으면 빈 문자열을 반환해 전체 흐름이 중단되지 않도록 한다.
-    - decode errors는 무시하고 진행해 부분 정보라도 얻는다.
-    - readme.md에 명시된 핵심 설정/매니페스트 파일들을 다루기 때문에,
-      파일이 크더라도 상한을 두어 파이프라인이 멈추지 않게 한다.
-    - lock 파일처럼 수십 MB가 될 수 있는 파일도 상한을 적용해 안전하게 잘라낸다.
-    - 실패해도 호출부는 빈 문자열을 그대로 넣어 섹션을 비워 두는 식으로 진행한다.
-    """
+    p = Path(rel_path)
+    parts_lower = {x.lower() for x in p.parts}
+    in_test_dir = bool(parts_lower & {"tests", "test", "__tests__", "spec"})
+    fname = p.name.lower()
+    is_test_file = (
+        fname.startswith("test_")
+        or fname.endswith("_test.py")
+        or fname.endswith(".test.ts")
+        or fname.endswith(".spec.ts")
+        or fname.endswith(".test.js")
+    )
+    if not (in_test_dir or is_test_file):
+        return None
+
+    if symbol.startswith("test_"):
+        return symbol[5:]
+    if symbol.startswith("test"):
+        rest = symbol[4:]
+        if rest and rest[0].isupper():
+            return rest[0].lower() + rest[1:]
+    return None
+
+
+def path_to_safe_filename(rel_path: str) -> str:
+    """레포 상대경로 → 파일시스템 안전한 단일 파일명 (슬래시 → __)."""
+    return rel_path.replace(os.sep, "__").replace("/", "__")
+
+
+def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
+    """한 파일의 함수/클래스 청크 리스트 반환. 비지원/파싱실패는 [] 반환."""
+    ext = file_path.suffix.lower()
+    cfg = LANG_CONFIG.get(ext)
+    if cfg is None:
+        return []
+
     try:
-        data = path.read_bytes()
-        data = data[:max_bytes]
-        return data.decode("utf-8", errors="ignore")
+        source = file_path.read_bytes()
+    except Exception:
+        return []
+
+    try:
+        lang = get_language(cfg["lang"])
+        parser = get_parser(cfg["lang"])
+    except Exception:
+        # 특정 언어 파서 로드 실패 시 빈 결과 (레포 전체는 계속 진행)
+        return []
+
+    try:
+        tree = parser.parse(source)
+    except Exception:
+        return []
+
+    rel_path = str(file_path.relative_to(repo_root))
+    chunks = []
+    for node, kind in walk_symbols(tree.root_node, cfg["node_types"]):
+        symbol = get_symbol_name(node, cfg["name_field"])
+        if not symbol:
+            continue
+
+        code = source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        # 과도하게 큰 심볼 (예: 1000라인 God class) 은 상한 절단
+        if len(code) > 30000:
+            code = code[:30000] + "\n# ... [truncated]\n"
+
+        chunks.append({
+            "path": rel_path,
+            "symbol": symbol,
+            "kind": kind,
+            "lang": cfg["lang"],
+            "lines": f"{node.start_point[0] + 1}-{node.end_point[0] + 1}",
+            "code": code,
+            "commit_sha": commit_sha,
+            "callers": [],  # Phase 1.5 에서 레포 전역 인덱싱으로 채움
+            "callees": collect_callees(node, cfg["lang"]),
+            "test_for": guess_test_for(rel_path, symbol),
+        })
+
+    return chunks
+
+
+# ─ 레포 요약 (사람이 읽는 MD, P1 Stage 2 가 Sonar 기반 인간 리뷰에 유용) ──────
+def safe_read_text(path: Path, max_bytes: int) -> str:
+    try:
+        return path.read_bytes()[:max_bytes].decode("utf-8", errors="ignore")
     except Exception:
         return ""
 
+
 def build_tree(repo_root: Path, max_lines: int = 3000) -> str:
-    """
-    repo_root 이하의 디렉터리/파일 트리를 문자열로 만든다.
-    - EXCLUDE_DIRS에 정의된 폴더는 탐색에서 제외한다.
-    - max_lines를 넘기면 [TRUNCATED] 표시 후 중단해 너무 긴 출력으로 인한 성능 저하를 막는다.
-    - readme.md 기준으로 코드/문서/인프라 파일을 한눈에 볼 수 있는 요약을 만드는 단계다.
-    - 숨김 파일(.DS_Store 등)이나 노이즈 디렉터리를 제외해 RAG 품질을 높인다.
-    """
     lines = []
     count = 0
-
     for root, dirs, files in os.walk(repo_root):
         rel_root = Path(root).relative_to(repo_root)
-        # 노이즈 디렉터리는 여기서 바로 제외해 하위 탐색도 건너뛴다.
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
-
         depth = len(rel_root.parts)
         indent = "  " * depth
-
         if str(rel_root) == ".":
             lines.append(f"{repo_root.name}/")
         else:
             lines.append(f"{indent}{rel_root.name}/")
         count += 1
         if count >= max_lines:
-            # 너무 길어지면 잘랐다는 표시를 남기고 종료한다.
             lines.append("[TRUNCATED] tree lines limit reached")
             break
-
-        # 파일은 알파벳 순으로 정렬해 출력 안정성을 높인다.
         for f in sorted(files):
-            if f in (".DS_Store",):
+            if f == ".DS_Store":
                 continue
             lines.append(f"{indent}  {f}")
             count += 1
             if count >= max_lines:
                 lines.append("[TRUNCATED] tree lines limit reached")
                 break
-
         if count >= max_lines:
             break
-
     return "\n".join(lines) + "\n"
 
-def main() -> int:
-    """
-    CLI 엔트리포인트.
-    - --repo_root: 트리를 만들 리포지토리 루트 경로
-    - --out: 저장 경로 (파일명은 내부에서 context-yymmdd-.md로 자동 변경됨)
-    - --max_key_file_bytes: KEY_FILES 개별 파일을 읽을 때의 최대 바이트 수 (기본 30KB)
-    동작:
-    1) 현재 날짜(yymmdd)를 기반으로 파일명 생성
-    2) KEY_FILES 중 존재하는 파일을 순회하며 본문 섹션을 추가
-    3) 결과를 out 경로에 저장
-    추가 설명:
-    - 출력 포맷은 Markdown 코드블록을 포함한 간단한 보고서 형태로,
-      이후 Dify 지식베이스 업로드나 LLM 프롬프트에 바로 붙여 넣기 쉽게 만든다.
-    - KEY_FILES 목록은 readme.md에서 강조한 패키지 매니페스트(패키지 매니저별),
-      빌드 스크립트, 환경 예시(.env.example) 등을 포함해 구성했다.
-    - max_key_file_bytes를 줄이면 대형 lock 파일도 안전하게 스킵/절단할 수 있다.
-    - Jenkins에서 아티팩트로 남기거나, Dify 지식베이스에 업로드할 때 그대로 활용할 수 있다.
-    - readme.md의 Code-Knowledge-Sync 파이프라인에서 이 파일을 upstream 입력으로 사용한다.
-    """
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--repo_root", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--max_key_file_bytes", type=int, default=30000)
-    args = ap.parse_args()
 
-    repo_root = Path(args.repo_root).resolve()
-    
-    # [수정] 저장소 이름을 포함한 파일명 생성 (context_저장소이름.md)
-    target_filename = f"context_{repo_root.name}.md"
-    
-    out_arg = Path(args.out).resolve()
-    if out_arg.is_dir():
-        out_path = out_arg / target_filename
-    else:
-        out_path = out_arg.parent / target_filename
-
-    parts = []
-    # 헤더: 보고서 제목
-    parts.append("# Repository Context")
-    parts.append("")
-    # (1) 트리 섹션: 프로젝트 전체 구조를 텍스트 트리로 보여준다.
+def write_repo_summary(repo_root: Path, out_dir: Path, max_key_bytes: int = 30000):
+    """사람이 읽는 _repo_summary.md 생성 (기존 context_<repo>.md 역할)."""
+    parts = ["# Repository Summary", ""]
     parts.append("## Tree")
     parts.append("")
     parts.append("```text")
@@ -158,7 +288,6 @@ def main() -> int:
     parts.append("```")
     parts.append("")
 
-    # (2) 핵심 파일 섹션: 설정/매니페스트 내용을 그대로 첨부한다.
     parts.append("## Key Files")
     parts.append("")
     for k in KEY_FILES:
@@ -168,36 +297,92 @@ def main() -> int:
         parts.append(f"### {k}")
         parts.append("")
         parts.append("```")
-        parts.append(safe_read_text(p, args.max_key_file_bytes))
+        parts.append(safe_read_text(p, max_key_bytes))
         parts.append("```")
         parts.append("")
 
-    # (3) 추가 문서 섹션: 리포지토리 내의 모든 .md 파일을 찾아 내용을 첨부한다.
-    # - KEY_FILES에 이미 포함된 파일은 중복 방지를 위해 제외한다.
-    # - EXCLUDE_DIRS에 포함된 경로는 탐색하지 않는다.
-    additional_md_parts = []
-    for root, dirs, files in os.walk(repo_root):
-        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
-        for f in files:
-            if f.lower().endswith(".md"):
-                full_p = Path(root) / f
-                rel_p = full_p.relative_to(repo_root)
-                
-                # 이미 KEY_FILES에서 처리했거나, 현재 생성 중인 출력 파일인 경우 제외
-                if str(rel_p) in KEY_FILES or full_p == out_path:
-                    continue
-                
-                additional_md_parts.append(f"### {rel_p}\n\n```markdown\n{safe_read_text(full_p, args.max_key_file_bytes)}\n```\n")
+    out = out_dir / "_repo_summary.md"
+    out.write_text("\n".join(parts), encoding="utf-8")
 
-    if additional_md_parts:
-        parts.append("## Additional Documentation (.md files)")
-        parts.append("")
-        parts.extend(additional_md_parts)
 
-    # 최종 Markdown 저장
-    out_path.write_text("\n".join(parts), encoding="utf-8")
-    print(f"[Saved] {out_path}")
+# ─ 메인 ─────────────────────────────────────────────────────────────────────
+def resolve_commit_sha(repo_root: Path, explicit: str) -> str:
+    if explicit:
+        return explicit
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(repo_root),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return ""
+
+
+def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # 기존 JSONL/summary 삭제 (재실행 시 잔재 방지)
+    for old in out_dir.glob("*.jsonl"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    for old in out_dir.glob("_repo_summary.md"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+
+    total_chunks = 0
+    total_files = 0
+    for file_path in sorted(repo_root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        if any(part in EXCLUDE_DIRS for part in file_path.parts):
+            continue
+        if file_path.suffix.lower() not in LANG_CONFIG:
+            continue
+
+        try:
+            chunks = extract_chunks_from_file(file_path, repo_root, commit_sha)
+        except Exception as e:
+            print(f"[skip:{file_path.relative_to(repo_root)}] {e}")
+            continue
+        if not chunks:
+            continue
+
+        safe_name = path_to_safe_filename(str(file_path.relative_to(repo_root)))
+        out_file = out_dir / f"{safe_name}.jsonl"
+        with out_file.open("w", encoding="utf-8") as fh:
+            for ch in chunks:
+                fh.write(json.dumps(ch, ensure_ascii=False) + "\n")
+
+        total_files += 1
+        total_chunks += len(chunks)
+
+    # 사람이 읽는 요약 MD 병행 생성
+    write_repo_summary(repo_root, out_dir)
+
+    print(f"[repo_context_builder] files={total_files} chunks={total_chunks} commit={commit_sha[:8] or 'n/a'} → {out_dir}")
+    return total_chunks
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Tree-sitter based code chunker")
+    ap.add_argument("--repo_root", required=True, help="레포 루트 경로")
+    ap.add_argument("--out", required=True, help="JSONL 출력 디렉터리 (파일당 1 JSONL)")
+    ap.add_argument("--commit-sha", default="", help="커밋 SHA (미지정 시 git rev-parse HEAD)")
+    args = ap.parse_args()
+
+    repo_root = Path(args.repo_root).resolve()
+    out_dir = Path(args.out).resolve()
+
+    if not repo_root.is_dir():
+        raise SystemExit(f"[repo_context_builder] repo_root 없음: {repo_root}")
+
+    commit_sha = resolve_commit_sha(repo_root, args.commit_sha)
+    scan_repo(repo_root, out_dir, commit_sha)
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

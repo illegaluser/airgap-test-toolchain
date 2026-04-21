@@ -46,14 +46,24 @@ workflow:
 
   graph:
     edges:
-      - id: edge-start-to-llm
+      - id: edge-start-to-retrieval
         source: start
+        sourceHandle: source
+        target: knowledge_retrieval
+        targetHandle: target
+        type: custom
+        data:
+          sourceType: start
+          targetType: knowledge-retrieval
+
+      - id: edge-retrieval-to-llm
+        source: knowledge_retrieval
         sourceHandle: source
         target: llm_analyzer
         targetHandle: target
         type: custom
         data:
-          sourceType: start
+          sourceType: knowledge-retrieval
           targetType: llm
 
       - id: edge-llm-to-extractor
@@ -126,12 +136,41 @@ workflow:
               max_length: 8000
 
       # ────────────────────────────────────────────────────────────────────
+      # Knowledge Retrieval — code-context-kb (bge-m3 hybrid) 에서 top_k=6 조회
+      # Phase 1 에서 신규 추가. 이전에는 RAG 노드 자체가 없어 kb_query 가 프롬프트
+      # 문자열로만 들어갔고 벡터 검색은 일어나지 않아 P1 기여도 0% 였음.
+      # ────────────────────────────────────────────────────────────────────
+      - id: knowledge_retrieval
+        type: custom
+        position:
+          x: 380
+          y: 200
+        data:
+          type: knowledge-retrieval
+          title: Code KB 검색
+          query_variable_selector:
+            - start
+            - kb_query
+          dataset_ids: []  # provision.sh 가 import 후 code-context-kb dataset id 를 주입
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 6
+            score_threshold_enabled: false
+            score_threshold: 0.0
+            reranking_enable: false
+            reranking_mode: null
+            reranking_model:
+              provider: ''
+              model: ''
+
+      # ────────────────────────────────────────────────────────────────────
       # LLM — 이슈 분석 및 구조화 응답 생성
+      # (retrieval 결과를 {{#knowledge_retrieval.result#}} 로 주입)
       # ────────────────────────────────────────────────────────────────────
       - id: llm_analyzer
         type: custom
         position:
-          x: 480
+          x: 680
           y: 200
         data:
           type: llm
@@ -158,6 +197,8 @@ workflow:
 
                 규칙:
                 - description_markdown 에는 반드시 코드 블록으로 해당 라인(>>) 포함
+                - description_markdown '## 영향' 섹션에는 아래 '프로젝트 컨텍스트' 의 관련 함수/테스트 를
+                  명시적으로 언급 (예: "src/auth/session.py::validate_token 이 이 함수를 호출함")
                 - description_markdown 마지막 '## 참조' 에 SonarQube 이슈 URL 명시
                 - labels 는 최소 2개 (severity, type), 추가 도메인 태그 자유
             - role: user
@@ -166,7 +207,7 @@ workflow:
                 - issue key       : {{#start.sonar_issue_key#}}
                 - project key     : {{#start.sonar_project_key#}}
                 - sonar URL       : {{#start.sonar_issue_url#}}
-                - RAG query (참고): {{#start.kb_query#}}
+                - RAG query       : {{#start.kb_query#}}
 
                 ## Sonar Issue JSON
                 ```json
@@ -183,9 +224,15 @@ workflow:
                 {{#start.code_snippet#}}
                 ```
 
+                ## 프로젝트 컨텍스트 (같은 레포 RAG 검색 결과, top-6)
+                {{#knowledge_retrieval.result#}}
+
                 위 정보를 바탕으로 JSON 응답만 생성하세요.
           context:
-            enabled: false
+            enabled: true
+            variable_selector:
+              - knowledge_retrieval
+              - result
           vision:
             enabled: false
 
