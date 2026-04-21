@@ -505,75 +505,211 @@ def ensure_doc_form_matches(api_key: str, dataset_id: str, expected_doc_form: st
     except Exception as e:
         log(f"[Warn] 사전 검증 중 오류 발생: {e}. 검증 없이 진행합니다.")
 
-def upload_text_document(api_key: str, dataset_id: str, name: str, text: str, doc_form: str, doc_language: str) -> Tuple[bool, str]:
-    """
-    Dify의 '텍스트로 문서 만들기' API를 호출합니다.
+def _get_dataset_indexing_technique(api_key: str, dataset_id: str) -> str:
+    """Dataset 에서 indexing_technique 을 조회. high_quality/economy 중 하나. 실패 시 economy."""
+    url = f"{DIFY_API_BASE}/datasets/{dataset_id}"
+    try:
+        r = requests.get(url, headers=dify_headers(api_key), timeout=30)
+        if r.status_code == 200:
+            val = r.json().get("indexing_technique", "")
+            if val in ("high_quality", "economy"):
+                return val
+    except Exception:
+        pass
+    return "economy"
+
+
+def upload_text_document(
+    api_key: str,
+    dataset_id: str,
+    name: str,
+    text: str,
+    doc_form: str,
+    doc_language: str,
+    indexing_technique: str = None,
+) -> Tuple[bool, str]:
+    """Dify 의 '텍스트로 문서 만들기' API 호출.
+
+    indexing_technique 미지정 시 Dataset 설정에서 조회 (high_quality / economy 지원).
     """
     url = f"{DIFY_API_BASE}/datasets/{dataset_id}/document/create-by-text"
-    
-    # API 요청 페이로드
+
+    if not indexing_technique:
+        indexing_technique = _get_dataset_indexing_technique(api_key, dataset_id)
+
     payload = {
-        "name": name, 
-        "text": text, 
-        "indexing_technique": "economy",  # 벡터 DB 비용 절약을 위해 economy 모드 사용
-        "doc_form": doc_form,             # text_model(문서형) 또는 qa_model(Q&A형)
-        "doc_language": doc_language,     # Korean 등
+        "name": name,
+        "text": text,
+        "indexing_technique": indexing_technique,
+        "doc_form": doc_form,
+        "doc_language": doc_language,
         "process_rule": {
-            "mode": "automatic",  # 청킹(Chunking)을 자동으로 수행
-            "rules": {"remove_extra_spaces": True},  # 불필요한 공백 제거
-            "remove_urls_emails": False              # URL/이메일은 보존
+            "mode": "automatic",
+            "rules": {"remove_extra_spaces": True},
+            "remove_urls_emails": False,
         },
     }
-    
-    # 문서 생성 요청
-    r = requests.post(url, headers={**dify_headers(api_key), "Content-Type": "application/json"}, json=payload, timeout=300)
-    
+
+    r = requests.post(
+        url,
+        headers={**dify_headers(api_key), "Content-Type": "application/json"},
+        json=payload,
+        timeout=300,
+    )
 
     if r.status_code >= 400:
-        return False, f"HTTP {r.status_code} - {r.text}"
+        return False, f"HTTP {r.status_code} - {r.text[:200]}"
 
     try:
         res_data = r.json()
-        # Dify API 응답에서 생성된 문서의 ID를 추출하여 반환합니다.
         doc_id = res_data.get("document", {}).get("id") or res_data.get("id", "Unknown ID")
         return True, f"OK (ID: {doc_id})"
     except Exception:
         return True, "OK"
 
+
+def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
+    """JSONL 청크 → (document_name, document_text).
+
+    document_name: "<path>::<symbol>" (Dify UI 에서 파일별 그룹핑 보기 좋음)
+    document_text: 청크의 code 본문 + metadata footer (retrieval 시 BM25/임베딩 매칭 대상 확장)
+    """
+    path = chunk.get("path", "unknown")
+    symbol = chunk.get("symbol", "?")
+    kind = chunk.get("kind", "")
+    lang = chunk.get("lang", "")
+    lines = chunk.get("lines", "")
+    commit_sha = chunk.get("commit_sha", "")
+    callers = chunk.get("callers") or []
+    callees = chunk.get("callees") or []
+    test_for = chunk.get("test_for") or ""
+
+    name = f"{path}::{symbol}"
+    # Dify document name 길이 제한 대비 (100자 내외)
+    if len(name) > 120:
+        name = name[:117] + "..."
+
+    # 본문 footer 에 metadata 추가 — retrieval 쿼리 매칭 면적 확대
+    meta_lines = [
+        "",
+        "---",
+        f"path: {path}",
+        f"symbol: {symbol}",
+        f"kind: {kind}",
+        f"lang: {lang}",
+        f"lines: {lines}",
+    ]
+    if commit_sha:
+        meta_lines.append(f"commit_sha: {commit_sha[:12]}")
+    if test_for:
+        meta_lines.append(f"test_for: {test_for}")
+    if callees:
+        meta_lines.append(f"callees: {', '.join(callees[:20])}")
+    if callers:
+        meta_lines.append(f"callers: {', '.join(callers[:20])}")
+
+    text = chunk.get("code", "") + "\n" + "\n".join(meta_lines)
+    return name, text
+
+
+def upload_jsonl_chunks(
+    api_key: str,
+    dataset_id: str,
+    doc_form: str,
+    doc_language: str,
+    indexing_technique: str,
+) -> Tuple[int, int]:
+    """RESULT_DIR 내 *.jsonl 각 line → 하나의 Dify document 로 업로드.
+
+    반환: (success_count, fail_count)
+    """
+    result_root = Path(RESULT_DIR)
+    jsonl_files = sorted(result_root.glob("*.jsonl"))
+    if not jsonl_files:
+        return 0, 0
+
+    import json as _json
+    success = 0
+    fail = 0
+    for jp in jsonl_files:
+        try:
+            lines = jp.read_text(encoding="utf-8").splitlines()
+        except Exception as e:
+            log(f"[JSONL:READ-FAIL] {jp.name}: {e}")
+            continue
+        for ln in lines:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                chunk = _json.loads(ln)
+            except Exception as e:
+                log(f"[JSONL:PARSE-FAIL] {jp.name}: {e}")
+                fail += 1
+                continue
+
+            name, text = _chunk_to_document(chunk)
+            ok, detail = upload_text_document(
+                api_key, dataset_id, name, text, doc_form, doc_language, indexing_technique
+            )
+            if ok:
+                success += 1
+                # 긴 로그 방지 — 10 의 배수만 출력
+                if success % 10 == 1 or success <= 5:
+                    log(f"[Upload:SUCCESS] {name} | {detail}")
+            else:
+                fail += 1
+                log(f"[Upload:FAIL] {name} | {detail}")
+    return success, fail
+
+
 def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str) -> int:
-    """RESULT_DIR에 있는 변환된 Markdown 파일들을 Dify로 업로드합니다."""
+    """RESULT_DIR 의 *.jsonl (AST 청크) + fallback *.md (레거시) 를 Dify 로 업로드."""
     log("=== [Hybrid Doc Processor] Upload Start ===")
-    
-    # 1. Dataset 설정 검증 (안전장치)
     ensure_doc_form_matches(api_key, dataset_id, doc_form)
-    
+
     result_root = Path(RESULT_DIR)
     if not result_root.exists():
-        log("[FAIL] 변환 결과 디렉터리가 없습니다. 먼저 convert를 실행하세요.")
+        log("[FAIL] 변환 결과 디렉터리가 없습니다. 먼저 convert/repo_context_builder 를 실행하세요.")
         return 1
-        
-    # 2. 결과 파일 순회 및 업로드
-    success_count = 0
-    fail_count = 0
-    
-    for p in sorted(result_root.glob("*.md")):
-        text = safe_read_text(p)
-        if not text:
-            continue
-            
-        log(f"Attempting upload: {p.name} (Dataset: {dataset_id})")
-        ok, detail = upload_text_document(api_key, dataset_id, p.name, text, doc_form, doc_language)
-        
-        if ok:
-            log(f"[Upload:SUCCESS] {p.name} | {detail}")
-            success_count += 1
-        else:
-            log(f"[Upload:FAIL] {p.name} | Reason: {detail}")
-            fail_count += 1
-            
-    log(f"=== [Hybrid Doc Processor] Upload Summary: Success={success_count}, Fail={fail_count} ===")
+
+    indexing_technique = _get_dataset_indexing_technique(api_key, dataset_id)
+    log(f"Dataset indexing_technique: {indexing_technique}")
+
+    # 1) JSONL (AST 청크) 모드 우선 — repo_context_builder 가 만든 파일당 여러 document
+    jsonl_success, jsonl_fail = upload_jsonl_chunks(
+        api_key, dataset_id, doc_form, doc_language, indexing_technique
+    )
+
+    # 2) fallback: 레거시 *.md 업로드 (JSONL 이 없을 때만)
+    md_success = 0
+    md_fail = 0
+    if jsonl_success == 0 and jsonl_fail == 0:
+        log("[Upload] JSONL 없음 — 레거시 *.md 업로드로 폴백")
+        for p in sorted(result_root.glob("*.md")):
+            text = safe_read_text(p)
+            if not text:
+                continue
+            log(f"Attempting upload: {p.name} (Dataset: {dataset_id})")
+            ok, detail = upload_text_document(
+                api_key, dataset_id, p.name, text, doc_form, doc_language, indexing_technique
+            )
+            if ok:
+                log(f"[Upload:SUCCESS] {p.name} | {detail}")
+                md_success += 1
+            else:
+                log(f"[Upload:FAIL] {p.name} | Reason: {detail}")
+                md_fail += 1
+
+    total_success = jsonl_success + md_success
+    total_fail = jsonl_fail + md_fail
+    log(
+        f"=== [Hybrid Doc Processor] Upload Summary: "
+        f"Success={total_success} (jsonl={jsonl_success}, md={md_success}), "
+        f"Fail={total_fail} ==="
+    )
     log("=== [Hybrid Doc Processor] Upload Done ===")
-    return fail_count
+    return total_fail
 
 # ============================================================================
 # [메인] 프로그램 진입점 (CLI 파서)

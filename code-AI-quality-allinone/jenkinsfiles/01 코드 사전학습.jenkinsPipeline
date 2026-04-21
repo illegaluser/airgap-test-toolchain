@@ -2,7 +2,8 @@ pipeline {
     agent any
     
     parameters {
-        string(name: 'REPO_URL', defaultValue: '', description: 'Git 레포지토리 URL (예: http://gitlab:8929/root/repo.git)')
+        string(name: 'REPO_URL', defaultValue: '', description: 'Git 레포지토리 URL (예: http://gitlab:80/root/repo.git)')
+        booleanParam(name: 'ENRICH_CONTEXT', defaultValue: true, description: 'Contextual Retrieval (gemma4 청크 요약 prepend) 적용 여부. false 시 skip.')
     }
     
     environment {
@@ -37,34 +38,55 @@ pipeline {
             }
         }
         
-        stage('2. Build Context') {
+        stage('2. Build Context (AST chunks)') {
             steps {
-                echo "[Build] 레포지토리 컨텍스트 생성 시작"
+                echo "[Build] tree-sitter AST 청킹 시작"
                 sh '''
                 set -e
                 REPO_NAME=$(basename "${REPO_URL}" .git)
-                # Dify 중복 업로드 에러 방지를 위해 이전 결과물 삭제
-                rm -rf ${RESULT_DIR}/*
-                
-                # 스크립트 실행 (내부에서 context_저장소이름.md로 자동 생성됨)
+                # 이전 결과물(JSONL/MD) 완전 제거 후 새로 생성 — Dify 중복 upload 방지
+                rm -rf ${RESULT_DIR}/* 2>/dev/null || true
+
+                # 현재 HEAD 커밋 SHA (Phase 1.5 에서 체인 Job 이 override 가능)
+                COMMIT_SHA=$(cd ${WORKSPACE_CODES}/$REPO_NAME && git rev-parse HEAD 2>/dev/null || echo "")
+                echo "[Build] repo=$REPO_NAME commit=$(echo "$COMMIT_SHA" | cut -c1-8)"
+
                 python3 ${SCRIPTS_DIR}/repo_context_builder.py \
                     --repo_root ${WORKSPACE_CODES}/$REPO_NAME \
-                    --out ${RESULT_DIR}
-                echo "[Build] 완료"
+                    --out ${RESULT_DIR} \
+                    --commit-sha "${COMMIT_SHA}"
+
+                JSONL_COUNT=$(ls ${RESULT_DIR}/*.jsonl 2>/dev/null | wc -l)
+                CHUNK_COUNT=$(cat ${RESULT_DIR}/*.jsonl 2>/dev/null | wc -l)
+                echo "[Build] JSONL 파일 ${JSONL_COUNT} 개, 총 청크 ${CHUNK_COUNT} 개"
                 '''
             }
         }
-        
+
+        stage('2.5 Contextual Enrichment (optional)') {
+            when { expression { params.ENRICH_CONTEXT != 'false' } }
+            steps {
+                echo "[Enrich] Contextual Retrieval 요약 생성 — gemma4:e4b"
+                sh '''
+                set -e
+                # 실패해도 파이프라인 통과 (graceful). 요약 없이 원본 청크 유지.
+                python3 ${SCRIPTS_DIR}/contextual_enricher.py --in ${RESULT_DIR} || \
+                    echo "[Enrich:WARN] enricher 일부 실패 — 원본 청크로 계속"
+                '''
+            }
+        }
+
         stage('3. Upload Context') {
             steps {
                 withCredentials([
                     string(credentialsId: 'dify-knowledge-key', variable: 'DIFY_API_KEY'),
                     string(credentialsId: 'dify-dataset-id', variable: 'DIFY_DATASET_ID')
                 ]) {
-                    echo "[Upload] 코드 컨텍스트 전송 시작"
+                    echo "[Upload] JSONL 청크 → Dify Dataset (high_quality 모드)"
                     sh '''
                     set -e
-                    # doc_processor.py는 RESULT_DIR 내의 모든 .md 파일을 찾아 업로드함
+                    # doc_processor.py 는 RESULT_DIR 내 *.jsonl 각 line 을 1 document 로 업로드.
+                    # JSONL 이 없으면 레거시 *.md 로 자동 폴백.
                     python3 ${SCRIPTS_DIR}/doc_processor.py upload \
                         "$DIFY_API_KEY" \
                         "$DIFY_DATASET_ID" \
