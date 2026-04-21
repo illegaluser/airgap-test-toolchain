@@ -44,6 +44,16 @@ case "$ARCH" in
     *) echo "unsupported arch: $ARCH (amd64|arm64)" >&2; exit 2 ;;
 esac
 
+# arch 기본 GitLab 이미지 매핑. 사용자가 --gitlab-image 로 명시 override 한
+# 경우(= 기본값과 다른 값) 는 그대로 보존. 공식 gitlab-ce 는 arm64 manifest 가
+# 없어 Apple Silicon 에서는 Rosetta 경유가 되므로 커뮤니티 arm64 포트로 전환.
+if [ "${GITLAB_IMAGE}" = "gitlab/gitlab-ce:17.4.2-ce.0" ]; then
+    case "$ARCH" in
+        amd64) GITLAB_IMAGE="gitlab/gitlab-ce:17.4.2-ce.0" ;;
+        arm64) GITLAB_IMAGE="yrzr/gitlab-ce-arm64v8:17.4.2-ce.0" ;;
+    esac
+fi
+
 IMAGE="ttc-allinone:${ARCH}-${TAG}"
 OUT_DIR="$ALLINONE_DIR/offline-assets/${ARCH}"
 OUT_FILE="${OUT_DIR}/ttc-allinone-${ARCH}-${TAG}.tar.gz"

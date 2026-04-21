@@ -26,7 +26,7 @@ pipeline {
         SONARQUBE_SERVER = 'dscore-sonar'
 
         // 컨테이너 내부에서 접근할 GitLab URL
-        GITLAB_HTTP_URL = 'http://gitlab:8929'
+        GITLAB_HTTP_URL = 'http://gitlab:80'
 
         // GitLab 계정
         GITLAB_USER = 'root'
@@ -51,7 +51,7 @@ pipeline {
                 echo "[Checkout] GitLab에서 코드 체크아웃 (git clone)"
 
                 set +x
-                git clone -b "${BRANCH}" "http://${GITLAB_USER}:${GITLAB_PAT}@gitlab:8929/${GITLAB_PROJECT_PATH}.git" .
+                git clone -b "${BRANCH}" "http://${GITLAB_USER}:${GITLAB_PAT}@gitlab:80/${GITLAB_PROJECT_PATH}.git" .
                 set -x
 
                 echo "[Checkout] 현재 작업 디렉터리"
@@ -141,12 +141,14 @@ pipeline {
                           exit 1
                         fi
 
+                        # sonar.sources/sonar.tests 는 레포 sonar-project.properties 존중.
+                        # 파일에 없으면 기본 '.' 로 동작. CLI override 가 properties 를 덮어쓰지
+                        # 않도록 sources/tests 는 여기서 지정하지 않는다.
                         "${scannerHome}/bin/sonar-scanner" \\
                           -Dsonar.host.url=${SONAR_HOST_URL} \\
                           -Dsonar.token=${SONAR_AUTH_TOKEN} \\
                           -Dsonar.projectKey=${SONAR_PROJECT_KEY} \\
                           -Dsonar.projectName=${SONAR_PROJECT_KEY} \\
-                          -Dsonar.sources=. \\
                           -Dsonar.exclusions=**/node_modules/**,**/build/**,**/dist/**,**/.git/** \\
                           -Dsonar.nodejs.executable=\${NODE_BIN}
                         """
