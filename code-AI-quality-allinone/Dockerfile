@@ -116,27 +116,9 @@ RUN sed -i 's|"plugin_unique_identifier": plugin_unique_identifier|"PluginUnique
     grep -c 'PluginUniqueIdentifier' /opt/dify-api/api/core/plugin/impl/plugin.py
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Python 의존성 — eval_runner / 파이프라인 1~3 공통
-# (requirements.txt: requests, playwright, deepeval 등)
-# ─────────────────────────────────────────────────────────────────────────────
-COPY requirements.txt /tmp/requirements.txt
-COPY scripts/requirements-pipelines.txt             /tmp/requirements-pipelines.txt
-RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
-        -r /tmp/requirements.txt && \
-    pip3 install --no-cache-dir --break-system-packages --ignore-installed \
-        -r /tmp/requirements-pipelines.txt && \
-    pip3 install --no-cache-dir --break-system-packages --ignore-installed \
-        deepeval==1.3.5 --no-deps
-
-# Playwright Chromium
-RUN python3 -m playwright install --with-deps chromium
-
-# eval_runner 용 venv (TARGET_TYPE=ui_chat 일 때 browser_adapter 가 참조 가능)
-RUN /usr/bin/python3 -m venv --system-site-packages /opt/qa-venv && \
-    /opt/qa-venv/bin/python -c "import requests, playwright, PIL; print('qa-venv deps OK')"
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Dify 서비스 런타임 보강 (Python 3.12 + Node.js 22)
+# → pip install 보다 먼저 심볼릭을 걸어 /usr/local/bin/python3 = python3.12 로 고정.
+#   이후 pip 명령이 python3.12 site-packages 로 설치되도록 보장 (인터프리터 분기 방지).
 # ─────────────────────────────────────────────────────────────────────────────
 COPY --from=dify-api-src /usr/local/bin/python3.12         /usr/local/bin/python3.12
 COPY --from=dify-api-src /usr/local/bin/python3.12-config  /usr/local/bin/python3.12-config
@@ -147,7 +129,30 @@ RUN ln -sf python3.12 /usr/local/bin/python3 && \
     ln -sf python3    /usr/local/bin/python && \
     ln -sf python3.12-config /usr/local/bin/python3-config && \
     ln -sf libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so && \
-    ldconfig
+    ldconfig && \
+    /usr/local/bin/python3 -m ensurepip --upgrade
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python 의존성 — eval_runner / 파이프라인 1~3 공통 (python3.12 타겟)
+# + tree-sitter / jedi: Phase 1 AST 청킹·호출그래프용
+# ─────────────────────────────────────────────────────────────────────────────
+COPY requirements.txt /tmp/requirements.txt
+COPY scripts/requirements-pipelines.txt             /tmp/requirements-pipelines.txt
+RUN /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+        -r /tmp/requirements.txt && \
+    /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+        -r /tmp/requirements-pipelines.txt && \
+    /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+        deepeval==1.3.5 --no-deps && \
+    /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+        tree-sitter tree-sitter-languages jedi
+
+# Playwright Chromium (python3.12 쪽 playwright 로 설치)
+RUN /usr/local/bin/python3 -m playwright install --with-deps chromium
+
+# eval_runner 용 venv (TARGET_TYPE=ui_chat 일 때 browser_adapter 가 참조 가능)
+RUN /usr/local/bin/python3 -m venv --system-site-packages /opt/qa-venv && \
+    /opt/qa-venv/bin/python -c "import requests, playwright, PIL; print('qa-venv deps OK')"
 
 ARG NODE_VERSION=22.22.1
 RUN set -eux; \
@@ -201,10 +206,10 @@ RUN groupadd -g 1100 sonar && \
 # ─────────────────────────────────────────────────────────────────────────────
 # SonarScanner CLI — Jenkins 파이프라인 2 가 호출하는 클라이언트
 # ─────────────────────────────────────────────────────────────────────────────
-ARG SONAR_SCANNER_VERSION=5.0.1.3006
+ARG SONAR_SCANNER_VERSION=6.2.1.4610
 RUN set -eux; \
     case "${TARGETARCH}" in \
-      amd64) SS_ARCH=linux ;; \
+      amd64) SS_ARCH=linux-x64 ;; \
       arm64) SS_ARCH=linux-aarch64 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
