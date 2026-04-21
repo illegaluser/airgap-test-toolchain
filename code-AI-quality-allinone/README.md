@@ -56,12 +56,13 @@
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  ① 온라인 준비 머신  (인터넷 필요)                              │
+│  ① 온라인 준비 머신  (인터넷 필요, 최초 1회)                    │
 │  ────────────────────────────────                              │
 │  · 이 레포 clone                                                │
-│  · Docker 베이스 이미지 5종 pull (Dockerfile 의 FROM)           │
-│  · scripts/download-plugins.sh (Jenkins + Dify 플러그인)        │
-│  · scripts/offline-prefetch.sh (통합 이미지 빌드 + tarball)      │
+│  · scripts/download-plugins.sh   (Jenkins + Dify 플러그인 번들) │
+│  · scripts/offline-prefetch.sh   ← 통합 이미지 1개로 빌드       │
+│      ├─ Dockerfile FROM 의 베이스 이미지 5종을 모두 흡수        │
+│      └─ ttc-allinone + gitlab tarball 2개만 산출                │
 │  · Ollama 모델 3종 반출 (gemma4:e4b, bge-m3, qwen3-coder:30b)   │
 │  · Docker Desktop / Ollama installer 도 함께 받아둠             │
 └────────┬───────────────────────────────────────────────────────┘
@@ -147,7 +148,11 @@ chmod +x installers/ollama-linux-amd64
 
 ### 3.4 Step 3: Ollama 모델 3종 다운로드
 
-운영 머신에 그대로 옮길 수 있도록 준비 머신에 설치해서 모델을 받고, `~/.ollama/models/` 디렉터리 통째로 반출합니다.
+> **역할 분담 한 줄 정리**
+> — **사용자 책임**: Ollama 데몬에 모델 바이너리가 있어야 함 (추론을 실제로 수행).
+> — **자동 처리**: Dify 에 Ollama 플러그인 설치 + provider 등록 + embedding 등록 + workspace 기본 모델 지정 + workflow publish — 이 전부를 `scripts/provision.sh` 가 최초 기동 시 자동 수행합니다. 사용자는 Dify UI 에서 별도로 모델 이름을 입력할 필요가 없습니다.
+
+운영 머신에 그대로 옮길 수 있도록 준비 머신에 Ollama 를 설치해 모델을 받고, `~/.ollama/models/` 디렉터리를 통째로 반출합니다.
 
 ```bash
 # 준비 머신에 Ollama 가 없다면 설치 후
@@ -195,37 +200,7 @@ bash scripts/download-plugins.sh
 
 > **왜 이게 필요한가?** 빌드 시 Dockerfile 이 이 파일들을 COPY 합니다. 오프라인 빌드는 불가능하지만, 온라인에서 한 번 받아두면 이후 반복 빌드는 캐시 재사용이 빠릅니다.
 
-### 3.6 Step 5: Docker 베이스 이미지 pre-pull (선택, 권장)
-
-`offline-prefetch.sh` 는 빌드 중에 베이스 이미지를 자동 pull 하지만, 네트워크가 느리면 미리 받아두는 게 안정적입니다.
-
-```bash
-# amd64 운영 용
-PLATFORM=linux/amd64
-for img in \
-    langgenius/dify-api:1.13.3 \
-    langgenius/dify-web:1.13.3 \
-    langgenius/dify-plugin-daemon:0.5.3-local \
-    sonarqube:10.7.0-community \
-    jenkins/jenkins:lts-jdk21 \
-    gitlab/gitlab-ce:17.4.2-ce.0 ; do
-    docker pull --platform "$PLATFORM" "$img"
-done
-
-# arm64 운영 용 (GitLab 만 교체)
-PLATFORM=linux/arm64
-for img in \
-    langgenius/dify-api:1.13.3 \
-    langgenius/dify-web:1.13.3 \
-    langgenius/dify-plugin-daemon:0.5.3-local \
-    sonarqube:10.7.0-community \
-    jenkins/jenkins:lts-jdk21 \
-    yrzr/gitlab-ce-arm64v8:17.4.2-ce.0 ; do
-    docker pull --platform "$PLATFORM" "$img"
-done
-```
-
-### 3.7 Step 6: 통합 이미지 빌드 + tarball 산출
+### 3.6 Step 5: 통합 이미지 빌드 + tarball 산출
 
 ```bash
 # arm64 운영용 (macOS Apple Silicon)
@@ -235,13 +210,20 @@ bash scripts/offline-prefetch.sh --arch arm64
 bash scripts/offline-prefetch.sh --arch amd64
 ```
 
+이 스크립트가 내부적으로 수행하는 것:
+1. `docker buildx build` 로 `Dockerfile` 기준 통합 이미지 빌드. 빌드 중 `FROM` 의 **베이스 이미지 5종** (`langgenius/dify-api:1.13.3`, `langgenius/dify-web:1.13.3`, `langgenius/dify-plugin-daemon:0.5.3-local`, `sonarqube:10.7.0-community`, `jenkins/jenkins:lts-jdk21`) 을 자동 pull 해서 최종 이미지 layer 안에 모두 흡수.
+2. `docker save` 로 통합 이미지를 tarball 로 저장.
+3. GitLab 런타임 이미지 (`gitlab-ce:17.4.2-ce.0` / arm64 는 `yrzr/gitlab-ce-arm64v8`) 를 별도로 pull 후 tarball 저장.
+
+**핵심**: 베이스 이미지들은 **통합 tarball 안에 이미 포함**되므로 오프라인 머신에 따로 반출할 필요가 없습니다. 아래 두 tarball 만으로 완전합니다.
+
 산출물:
 
 ```
 offline-assets/<arch>/
-├── ttc-allinone-<arch>-dev.tar.gz          (~10 GB, gzip 압축)
+├── ttc-allinone-<arch>-dev.tar.gz          (~10 GB — 베이스 5종 포함 통합 이미지)
 ├── ttc-allinone-<arch>-dev.meta            (sha256 + built_at)
-├── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.tar.gz    (~1.5 GB)
+├── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.tar.gz    (~1.5 GB — 별도 런타임)
 └── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.meta
 ```
 
@@ -403,6 +385,8 @@ ollama run gemma4:e4b "hello"
 curl http://localhost:11434/api/generate \
   -d '{"model":"gemma4:e4b","prompt":"hi","stream":false}' | python3 -m json.tool
 ```
+
+> **여기까지가 사용자 책임의 끝** — Ollama 에 모델만 적재되어 있으면 됩니다. 이후 §6 에서 스택을 기동하면 `provision.sh` 가 자동으로 Dify 에 Ollama 플러그인을 설치하고 `gemma4:e4b` / `bge-m3` 을 provider/embedding 으로 등록하며 workspace 기본 모델까지 지정합니다. Dify UI 에서 수동 설정은 필요 없습니다.
 
 **Docker 컨테이너에서 호스트 Ollama 로 도달 가능한지**:
 
@@ -806,19 +790,34 @@ docker exec ttc-allinone cat /data/.provision/sonar_token
 
 ## 11. 자동 프로비저닝 내부 동작
 
-`scripts/provision.sh` 가 최초 기동 시 자동 수행 (멱등, `/data/.provision/*.ok` 마커):
+`scripts/provision.sh` 가 최초 기동 시 자동 수행 (멱등, `/data/.provision/*.ok` 마커로 재실행 안전).
 
-| 대상 | 작업 |
-|------|------|
-| **Dify** | 관리자 setup → 로그인 → Ollama 플러그인 설치 (`.difypkg`) → Ollama provider 등록 (gemma4:e4b) → embedding 등록 (bge-m3) → 기본 모델 설정 → `code-context-kb` Dataset 생성 (high_quality + bge-m3 + hybrid_search) → `Sonar Issue Analyzer` Workflow import → Workflow publish → Dataset/App API 키 2종 발급 |
-| **GitLab** | reconfigure 대기 → oauth password grant → root PAT 발급 |
-| **SonarQube** | ready 대기 → admin 비밀번호 변경 → user token `jenkins-auto` 발급 |
-| **Jenkins** | 5 Credentials 주입 → SonarQube server + SonarScanner tool Groovy 등록 → 5 Pipeline Job 등록 → Jenkinsfile 의 `GITLAB_PAT = ''` → `credentials('gitlab-pat')` sed 치환 |
+### 11.1 자동으로 처리되는 것
 
-### 자동화되지 않는 잔존 작업
+| 대상 | 세부 작업 | 관련 함수 |
+|------|---------|----------|
+| **Dify 관리자** | 초기 setup (이메일+비밀번호) → 로그인 (base64 password + cookie jar + X-CSRF-Token) | `dify_setup`, `dify_login` |
+| **Dify Ollama 플러그인** | `/opt/dify-assets/langgenius-ollama-*.difypkg` 를 `/plugin/upload/pkg` → `/plugin/install/pkg` 로 설치 | `dify_install_ollama_plugin` |
+| **Dify LLM provider** | Ollama provider 를 `gemma4:e4b` 모델명으로 등록 (`http://host.docker.internal:11434`) | `dify_register_ollama_provider` |
+| **Dify embedding** | Ollama embedding provider 를 `bge-m3` 로 등록 | `dify_register_ollama_embedding` |
+| **Dify 기본 모델** | workspace default model 설정 (llm=gemma4:e4b, embedding=bge-m3) — **이게 없으면 high_quality Dataset 생성 시 400 에러** | `dify_set_default_models` |
+| **Dify Dataset** | `code-context-kb` 생성 (high_quality + bge-m3 + hybrid_search) | `dify_create_dataset` |
+| **Dify Workflow** | `sonar-analyzer-workflow.yaml` 을 `/console/api/apps/imports` 로 import → Dataset ID 주입 → `/workflows/publish` | `dify_import_workflow` + `dify_patch_workflow_dataset_id` + `dify_publish_workflow` |
+| **Dify API 키 2종** | Dataset API key (`dataset-*`) + App API key (Sonar Analyzer Workflow 용) | `dify_create_dataset_key` + `dify_create_app_key` |
+| **GitLab root PAT** | reconfigure 대기 → oauth password grant → `/users/1/personal_access_tokens` (유효 364일) | `gitlab_wait_ready` + `gitlab_issue_root_pat` |
+| **SonarQube** | ready 대기 → admin 비밀번호 변경 (`admin` → `SONAR_ADMIN_NEW_PASSWORD`) → user token `jenkins-auto` 발급 | `sonar_wait_ready` + `sonar_change_admin_password` + `sonar_issue_token` |
+| **Jenkins Credentials 5종** | `dify-dataset-id`, `dify-knowledge-key`, `dify-workflow-key`, `gitlab-pat`, `sonarqube-token` | `jenkins_upsert_string_credential` |
+| **Jenkins Sonar 통합** | SonarQube server `dscore-sonar` 등록 + SonarScanner-CLI tool 등록 (Groovy 스크립트) | `jenkins_configure_sonar_integration` |
+| **Jenkins Jobs 5종** | 00 체인 + 01~04 Pipeline Job 등록 | `jenkins_create_pipeline_job` |
+| **Jenkinsfile patch** | `GITLAB_PAT = ''` → `credentials('gitlab-pat')` / `GITLAB_TOKEN=""` → `GITLAB_TOKEN="${GITLAB_PAT}"` 런타임 sed 치환 | `patch_jenkinsfile_gitlab_credentials` |
 
-- **GitLab 프로젝트 생성 + push** — §7.1~7.2 참고 (팀 정책 차이).
-- **첫 Job의 Parameter discovery** — Declarative pipeline 특성상 최초 1회는 "Build Now" 실패 후 "Build with Parameters" 가능.
+### 11.2 자동화되지 않는 잔존 수동 작업
+
+| 작업 | 빈도 | 참고 |
+|------|-----|------|
+| **Ollama 에 모델 바이너리 배포** | 운영 머신 최초 설정 1회 | §5.4 (Dify 쪽 등록은 자동) |
+| **GitLab 프로젝트 생성 + 소스 push** | 분석 대상 레포마다 1회 | §7.1 ~ §7.2 |
+| **첫 Job 의 Parameter Discovery** | Jenkins Job 최초 1회 | §7.3 (최초는 "Build Now" 실패 후 "Build with Parameters") |
 
 ---
 
