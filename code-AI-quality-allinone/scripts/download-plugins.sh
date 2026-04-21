@@ -32,6 +32,11 @@ JENKINS_PLUGINS=(
   plain-credentials
   # code-AI-quality 추가 요구 (Active Choices — 04 AI평가.jenkinsPipeline)
   uno-choice
+  # SonarQube 분석 — 02 코드 정적분석.jenkinsPipeline 의 `withSonarQubeEnv` DSL.
+  # 플러그인 + tool 'SonarScanner-CLI' 를 global tool 로 사용.
+  sonar
+  # pipeline 간 체인 트리거 (00 코드 분석 체인 Job 이 build job: 로 호출)
+  pipeline-build-step
 )
 JENKINS_PLUGIN_MANAGER_URL="https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.13.2/jenkins-plugin-manager-2.13.2.jar"
 JENKINS_VERSION_OVERRIDE="${JENKINS_VERSION:-}"

@@ -120,6 +120,74 @@ PY
     return $rc
 }
 
+# ─ Jenkins: Groovy 스크립트를 scriptText 엔드포인트로 실행 ─────────────────
+# 주 용도: SonarQube server/tool 등 XML 직접 편집이 번거로운 global config 주입.
+jenkins_exec_groovy() {
+    local script="$1"
+    local crumb; crumb=$(jenkins_crumb)
+    [ -z "$crumb" ] && { warn "crumb 없음 — groovy 실행 스킵"; return 1; }
+    local tmp; tmp=$(mktemp)
+    printf '%s' "$script" > "$tmp"
+    local resp; resp=$(curl -sS -X POST \
+        -u "$JENKINS_USER:$JENKINS_PASSWORD" -H "$crumb" \
+        --data-urlencode "script@$tmp" \
+        "$JENKINS_URL/scriptText" 2>/dev/null)
+    rm -f "$tmp"
+    echo "$resp"
+}
+
+# ─ Jenkins: SonarQube server + scanner tool 자동 등록 ──────────────────────
+# 02 코드 정적분석.jenkinsPipeline 의 `withSonarQubeEnv('dscore-sonar')` +
+# `tool 'SonarScanner-CLI'` 가 의존. sonar Jenkins plugin 설치 후 (download-plugins.sh)
+# global config 에 server/tool 을 명시 등록. credentialsId 는 'sonarqube-token'
+# (jenkins_upsert_string_credential 이 먼저 주입).
+jenkins_configure_sonar_integration() {
+    local sonar_url="${1:-http://127.0.0.1:9000}"
+    local state="$STATE_DIR/jenkins_sonar_integration.ok"
+    [ -f "$state" ] && return 0
+
+    local script; script=$(cat <<'GROOVY'
+import jenkins.model.Jenkins
+import hudson.plugins.sonar.SonarGlobalConfiguration
+import hudson.plugins.sonar.SonarInstallation
+import hudson.plugins.sonar.SonarRunnerInstallation
+
+def inst = Jenkins.get()
+
+// Server: name 'dscore-sonar', URL = 인자, credentialsId 'sonarqube-token'.
+// 9-arg constructor 로 credentialsId 전달.
+def sonarCfg = inst.getDescriptorByType(SonarGlobalConfiguration.class)
+def server = new SonarInstallation(
+    "dscore-sonar", "__SONAR_URL__", "sonarqube-token",
+    null, "", "", "", "", null
+)
+sonarCfg.setInstallations(server)
+sonarCfg.save()
+
+// Scanner tool: name 'SonarScanner-CLI', home '/opt/sonar-scanner' (이미지 번들)
+def scannerDesc = inst.getDescriptorByType(SonarRunnerInstallation.DescriptorImpl.class)
+def scanner = new SonarRunnerInstallation("SonarScanner-CLI", "/opt/sonar-scanner", new ArrayList())
+scannerDesc.setInstallations(scanner)
+scannerDesc.save()
+inst.save()
+
+println("Registered: Sonar server=" + sonarCfg.getInstallations().collect{it.name} +
+        ", scanner=" + scannerDesc.getInstallations().collect{it.name})
+GROOVY
+)
+    # 인자 주입 (placeholder 치환)
+    script="${script//__SONAR_URL__/$sonar_url}"
+
+    local resp; resp=$(jenkins_exec_groovy "$script")
+    if echo "$resp" | grep -q "Registered:"; then
+        touch "$state"
+        log "  Jenkins SonarQube server/tool 등록 완료 (dscore-sonar, SonarScanner-CLI)"
+    else
+        warn "  Jenkins SonarQube 설정 실패 — 응답: $(echo $resp | head -c 300)"
+        return 1
+    fi
+}
+
 # ─ Jenkins Credentials: Secret text 생성/갱신 ──────────────────────────────
 jenkins_upsert_string_credential() {
     local id="$1" secret="$2" description="${3:-auto-provisioned}"
@@ -558,6 +626,29 @@ PY
     fi
 }
 
+# ─ Dify: Workflow publish (draft → published) ────────────────────────────
+# import 만 하면 workflow 는 draft 상태. `/v1/workflows/run` 엔드포인트로 호출
+# 하려면 publish 필수 — 그렇지 않으면 "Workflow not published" 400 반환.
+# (발견 경위: 첫 실 파이프라인 실행에서 03 Job 의 Dify 호출이 400 으로 실패)
+dify_publish_workflow() {
+    local app_id="$1"
+    [ -z "$app_id" ] && return 0
+    local state="$STATE_DIR/workflow_published.ok"
+    [ -f "$state" ] && return 0
+
+    mapfile -t _auth < <(_dify_auth_args)
+    local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/apps/$app_id/workflows/publish" \
+        "${_auth[@]}" -H "Content-Type: application/json" -d '{}' 2>/dev/null)
+    local ok; ok=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result','') == 'success')" 2>/dev/null || echo "False")
+    if [ "$ok" = "True" ]; then
+        touch "$state"
+        log "  Workflow publish 완료 ($app_id)"
+    else
+        warn "  Workflow publish 실패 — 응답: $resp"
+        return 1
+    fi
+}
+
 # ─ Dify: App API key 발급 ──────────────────────────────────────────────────
 dify_issue_app_api_key() {
     local app_id="$1"
@@ -629,9 +720,10 @@ gitlab_issue_root_pat() {
 }
 
 # ─ SonarQube: ready 대기 ────────────────────────────────────────────────────
+# 첫 기동은 ES 인덱스 bootstrap 때문에 3-8분 소요. 여유롭게 10분 timeout.
 sonar_wait_ready() {
-    log "SonarQube 헬스 대기 (최대 5분)..."
-    local w=0 limit=300 status=""
+    log "SonarQube 헬스 대기 (최대 10분)..."
+    local w=0 limit=600 status=""
     while [ $w -lt $limit ]; do
         status=$(curl -sS --max-time 5 "$SONAR_URL/api/system/status" 2>/dev/null \
             | python3 -c "import json,sys;
@@ -641,7 +733,7 @@ except Exception: print('')" 2>/dev/null || true)
         sleep 5; w=$((w + 5))
         [ $((w % 30)) -eq 0 ] && log "  SonarQube 대기 중... (${w}s, status=${status:-init})"
     done
-    err "SonarQube 5분 내 준비되지 않음. 로그: /data/logs/sonarqube.log"
+    err "SonarQube 10분 내 준비되지 않음. 로그: /data/sonarqube/logs/{sonar,es}.log"
     return 1
 }
 
@@ -748,7 +840,11 @@ if dify_setup_admin; then
         [ -n "$DATASET_ID" ] && KNOWLEDGE_KEY=$(dify_issue_dataset_api_key "$DATASET_ID" || echo "")
         # Phase 1: workflow import 시 dataset_id 를 yaml 에 주입해 knowledge-retrieval 노드 활성화
         WORKFLOW_APP_ID=$(dify_import_workflow "$DATASET_ID" || echo "")
-        [ -n "$WORKFLOW_APP_ID" ] && WORKFLOW_KEY=$(dify_issue_app_api_key "$WORKFLOW_APP_ID" || echo "")
+        if [ -n "$WORKFLOW_APP_ID" ]; then
+            WORKFLOW_KEY=$(dify_issue_app_api_key "$WORKFLOW_APP_ID" || echo "")
+            # Phase 1 런타임 버그 fix: import 한 draft 를 publish 해야 /v1/workflows/run 호출 가능
+            dify_publish_workflow "$WORKFLOW_APP_ID" || true
+        fi
     else
         warn "Dify 로그인 실패 — 수동 확인 필요"
     fi
@@ -777,6 +873,10 @@ log "Jenkins Credentials 주입..."
 [ -n "${WORKFLOW_KEY:-}" ]   && jenkins_upsert_string_credential "dify-workflow-key" "$WORKFLOW_KEY"  "Dify Sonar Analyzer Workflow API Key"
 [ -n "$GITLAB_PAT" ]         && jenkins_upsert_string_credential "gitlab-pat"        "$GITLAB_PAT"    "GitLab root PAT (auto-issued)"
 [ -n "$SONAR_TOKEN" ]        && jenkins_upsert_string_credential "sonarqube-token"   "$SONAR_TOKEN"   "SonarQube User Token (auto-issued)"
+
+# H-1. Jenkins SonarQube server/tool 등록 (sonar plugin + sonarqube-token credential 의존)
+# 02 Jenkinsfile 의 `withSonarQubeEnv('dscore-sonar')` + `tool 'SonarScanner-CLI'` 바인딩.
+[ -n "$SONAR_TOKEN" ] && jenkins_configure_sonar_integration "$SONAR_URL" || true
 
 # I. Jenkinsfile credentials 참조 치환 (Credentials 주입 후)
 patch_jenkinsfile_gitlab_credentials

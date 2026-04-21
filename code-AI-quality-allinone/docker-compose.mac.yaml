@@ -32,6 +32,12 @@ services:
       SONARQUBE_PORT: "29000"
       GITLAB_URL_INTERNAL: "http://gitlab:80"
       GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}
+      # macOS Docker Desktop 의 grpcfuse bind mount 는 호스트 디스크 사용량을
+      # 그대로 반영 → 호스트가 95% 이상일 때 ES flood_stage watermark 에 걸려
+      # SonarQube 가 기동 중 사망한다. Sonar ES 인덱스만 overlay 로 이전해
+      # 호스트 디스크 영향에서 분리. PG 에 있는 Sonar metadata 는 영속.
+      # overlay 이므로 `docker compose down` 후 인덱스는 재생성.
+      SONAR_DATA_HOST: "${SONAR_DATA_HOST:-/var/lib/sonarqube_data}"
     ports:
       - "28080:28080"
       - "28081:28081"
@@ -57,13 +63,14 @@ services:
         condition: service_started
 
   gitlab:
-    image: ${GITLAB_IMAGE:-gitlab/gitlab-ce:17.4.2-ce.0}
+    image: ${GITLAB_IMAGE:-yrzr/gitlab-ce-arm64v8:17.4.2-ce.0}
     container_name: ttc-gitlab
     restart: unless-stopped
     hostname: gitlab
-    # Apple Silicon: 공식 gitlab-ce 는 linux/amd64 (Rosetta 경유, 성능 감수).
-    # arm64 원한다면 대체 이미지 필요 (예: zengxs/gitlab). 기본은 공식.
-    platform: linux/amd64
+    # Apple Silicon arm64 네이티브 포트 (yrzr/gitlab-ce-arm64v8).
+    # 공식 gitlab-ce 와 동일한 17.4.2-ce.0 태그 유지. amd64 Rosetta 경유가
+    # 필요하면 GITLAB_IMAGE=gitlab/gitlab-ce:17.4.2-ce.0 로 env override.
+    platform: linux/arm64
     environment:
       TZ: Asia/Seoul
       GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}

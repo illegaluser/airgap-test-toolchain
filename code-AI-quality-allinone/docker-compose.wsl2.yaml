@@ -27,6 +27,7 @@ services:
     image: ${IMAGE:-ttc-allinone:wsl2-dev}
     container_name: ttc-allinone
     restart: unless-stopped
+    platform: linux/amd64
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -69,6 +70,7 @@ services:
     container_name: ttc-gitlab
     restart: unless-stopped
     hostname: gitlab
+    platform: linux/amd64
     # GitLab 초기화는 5-10분 소요. healthcheck 로 준비 상태 노출.
     environment:
       TZ: Asia/Seoul

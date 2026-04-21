@@ -23,6 +23,14 @@ JENKINS_AGENT_PORT="${JENKINS_AGENT_PORT:-50002}"
 DIFY_GATEWAY_PORT="${DIFY_GATEWAY_PORT:-28081}"
 SONARQUBE_PORT="${SONARQUBE_PORT:-29000}"
 
+# SonarQube ES `path.data` 경로. 기본값은 /data 볼륨 (Linux/WSL2 에서 안전).
+# macOS Docker Desktop 처럼 호스트 bind 가 grpcfuse 로 매핑되고 호스트 디스크
+# 사용량이 ES flood_stage watermark (95%) 에 걸릴 수 있는 환경에서는
+# docker-compose.mac.yaml 에서 /var/lib/sonarqube_data (overlay) 로 override.
+# overlay 는 컨테이너 lifecycle 에 묶여 휘발 — SonarQube metadata 는 PG 에 있어
+# ES 인덱스만 재생성하면 복구. 영속 필요 시 volume mount 로 별도 관리.
+SONAR_DATA_HOST="${SONAR_DATA_HOST:-$DATA/sonarqube/data}"
+
 log "container time: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -34,7 +42,8 @@ if [ ! -f "$DATA/.initialized" ]; then
       "$DATA/pg" "$DATA/redis" "$DATA/qdrant" \
       "$DATA/jenkins/plugins" \
       "$DATA/dify/storage" "$DATA/dify/plugins/cwd" \
-      "$DATA/sonarqube/data" "$DATA/sonarqube/logs" "$DATA/sonarqube/extensions" "$DATA/sonarqube/temp" \
+      "$DATA/sonarqube/logs" "$DATA/sonarqube/extensions" "$DATA/sonarqube/temp" \
+      "$SONAR_DATA_HOST" \
       "$DATA/logs"
 
     [ -d "$SEED/jenkins-plugins" ] && cp -a "$SEED/jenkins-plugins/." "$DATA/jenkins/plugins/"
@@ -53,26 +62,28 @@ if [ ! -f "$DATA/.initialized" ]; then
     chown -R jenkins:jenkins   "$DATA/jenkins"       || true
     chown -R redis:redis       "$DATA/redis"         || true
     chown -R sonar:sonar       "$DATA/sonarqube"     || true
-
-    # SonarQube 는 /opt/sonarqube/{data,logs,extensions,temp} 를 쓰므로 /data 하위로 심볼릭
-    for sub in data logs extensions temp; do
-        rm -rf "/opt/sonarqube/$sub"
-        ln -sfn "$DATA/sonarqube/$sub" "/opt/sonarqube/$sub"
-    done
-    chown -h sonar:sonar /opt/sonarqube/{data,logs,extensions,temp} || true
+    chown -R sonar:sonar       "$SONAR_DATA_HOST"    || true
 
     touch "$DATA/.initialized"
     log "seed 완료."
 else
     log "기존 볼륨 감지 — seed 건너뜀."
-    # 심볼릭은 런타임마다 재적용 (이미지 내 /opt/sonarqube 는 실제 디렉토리)
-    for sub in data logs extensions temp; do
-        if [ ! -L "/opt/sonarqube/$sub" ]; then
-            rm -rf "/opt/sonarqube/$sub"
-            ln -sfn "$DATA/sonarqube/$sub" "/opt/sonarqube/$sub"
-        fi
-    done
+    # SONAR_DATA_HOST 가 기본 /data 경로 밖이면 overlay 라 재기동 시 휘발.
+    # 없으면 새로 만들고 소유권 부여 (Sonar ES 인덱스 rebuild 됨).
+    mkdir -p "$SONAR_DATA_HOST"
+    chown -R sonar:sonar "$SONAR_DATA_HOST" 2>/dev/null || true
 fi
+
+# 심볼릭은 매 기동마다 재적용 (이미지 내 /opt/sonarqube 는 실제 디렉토리).
+# data 는 SONAR_DATA_HOST (env override 가능), 나머지는 /data/sonarqube/ 하위.
+rm -rf /opt/sonarqube/data
+ln -sfn "$SONAR_DATA_HOST" /opt/sonarqube/data
+chown -h sonar:sonar /opt/sonarqube/data || true
+for sub in logs extensions temp; do
+    rm -rf "/opt/sonarqube/$sub"
+    ln -sfn "$DATA/sonarqube/$sub" "/opt/sonarqube/$sub"
+    chown -h sonar:sonar "/opt/sonarqube/$sub" || true
+done
 
 # ────────────────────────────────────────────────────────────────────────────
 # 1-b. Jenkins job 경로 매핑 + 공용 작업 디렉터리 (Phase 0 런타임 버그 수정)

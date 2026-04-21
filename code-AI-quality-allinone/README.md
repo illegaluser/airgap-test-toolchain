@@ -32,7 +32,7 @@ airgap-test-toolchain/
 ```
 docker compose -f docker-compose.{wsl2|mac}.yaml up -d
 ├── ttc-allinone  (통합 이미지: Jenkins + Dify + SonarQube + PG/Redis/Qdrant)
-└── gitlab        (gitlab/gitlab-ce:17.4.2-ce.0)
+└── gitlab        (amd64: gitlab/gitlab-ce:17.4.2-ce.0 · arm64: yrzr/gitlab-ce-arm64v8:17.4.2-ce.0)
 ```
 
 ### 포트 배정 (형제 스택과 격리)
@@ -82,7 +82,7 @@ bash scripts/offline-prefetch.sh --arch amd64  # 빌드 + tarball 산출 (ttc-al
 # → offline-assets/<arch>/ttc-allinone-<arch>-<tag>.tar.gz
 # → offline-assets/<arch>/gitlab-gitlab-ce-<ver>-<arch>.tar.gz
 ```
-`offline-prefetch.sh` 가 **두 이미지 모두** save 합니다 — `ttc-allinone` (통합) + `gitlab/gitlab-ce` (분리 런타임). compose 는 후자를 별도 컨테이너로 실행하므로 폐쇄망 반입이 필수입니다.
+`offline-prefetch.sh` 가 **두 이미지 모두** save 합니다 — `ttc-allinone` (통합) + GitLab (분리 런타임). compose 는 후자를 별도 컨테이너로 실행하므로 폐쇄망 반입이 필수입니다. `--arch arm64` 지정 시 GitLab 이미지는 `yrzr/gitlab-ce-arm64v8:17.4.2-ce.0` (arm64 네이티브 커뮤니티 포트) 로 자동 전환됩니다. `--gitlab-image <이미지>` 로 임의 이미지 override 가능.
 
 오프라인 머신에서 (`offline-assets/` 전체를 함께 반입):
 ```bash

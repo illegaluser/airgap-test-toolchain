@@ -44,7 +44,7 @@ done
 echo ""
 echo "[offline-load] 완료. 설치된 이미지:"
 docker images --format '  {{.Repository}}:{{.Tag}}\t{{.Size}}' \
-    | grep -E 'ttc-allinone|gitlab/gitlab-ce' || true
+    | grep -E 'ttc-allinone|gitlab/gitlab-ce|yrzr/gitlab-ce-arm64v8' || true
 
 echo ""
 echo "[offline-load] 다음: 폐쇄망에서 compose up"
