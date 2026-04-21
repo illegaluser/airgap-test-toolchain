@@ -17,6 +17,7 @@
 #       - dify-workflow-key
 #       - gitlab-pat
 #   I. Jenkinsfile 사본에 credentials('gitlab-pat') 참조 삽입
+#   J. SonarQube 초기 비번 변경 + 토큰 발급 → Jenkins 'sonarqube-token' 주입
 #
 # 필수 환경변수 (docker-compose 에서 주입):
 #   JENKINS_URL             http://127.0.0.1:${JENKINS_PORT:-28080}
@@ -29,7 +30,9 @@
 set -uo pipefail
 
 LOG_PREFIX="[provision]"
-log()  { printf '%s %s\n' "$LOG_PREFIX" "$*"; }
+# log 도 stderr 로 보낸다. stdout 은 함수의 "순수 반환값" 전용이다 — 함수 내부에서
+# log "..." 를 찍으면 $(fn_call) 로 받는 caller 변수가 로그로 오염된다.
+log()  { printf '%s %s\n' "$LOG_PREFIX" "$*" >&2; }
 warn() { printf '%s WARN:  %s\n' "$LOG_PREFIX" "$*" >&2; }
 err()  { printf '%s ERROR: %s\n' "$LOG_PREFIX" "$*" >&2; }
 
@@ -49,6 +52,10 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
 
 GITLAB_URL="${GITLAB_URL_INTERNAL:-http://gitlab:80}"
 GITLAB_ROOT_PASSWORD="${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}"
+
+SONAR_URL="${SONAR_URL:-http://127.0.0.1:9000}"
+SONAR_ADMIN_NEW_PASSWORD="${SONAR_ADMIN_NEW_PASSWORD:-TtcAdmin!2026}"
+SONAR_TOKEN_NAME="${SONAR_TOKEN_NAME:-jenkins-auto}"
 
 DIFY_ASSETS_DIR="${DIFY_ASSETS_DIR:-/opt/dify-assets}"
 STATE_DIR="${STATE_DIR:-/data/.provision}"
@@ -170,24 +177,52 @@ dify_setup_admin() {
         || { err "Dify setup 실패"; return 1; }
 }
 
-# ─ Dify: 로그인 → access_token ─────────────────────────────────────────────
+# ─ Dify: 로그인 → access_token (Dify 1.13+) ──────────────────────────────
+# Dify 1.13.x 의 /console/api/login 은 다음 두 변화를 적용했다:
+#   1) password 필드를 base64 로 "obfuscation" (libs/encryption.py = b64decode).
+#      plaintext 를 보내면 "Invalid encrypted data" 로 401.
+#   2) 응답 body 는 {"result":"success"} 뿐이며 access_token/csrf_token/
+#      refresh_token 은 HTTP 쿠키로 전달된다.
+# 후속 콘솔 API 호출은:
+#   Authorization: Bearer <access_token>  +  X-CSRF-Token: <csrf_token>  +  쿠키 3종
+# 을 모두 요구한다. 쿠키는 $DIFY_COOKIE_JAR 에 저장해 재사용.
+DIFY_COOKIE_JAR="${DIFY_COOKIE_JAR:-/tmp/dify-provision-cookies.txt}"
+
 dify_login() {
-    curl -sS -X POST "$DIFY_URL/console/api/login" \
+    local pw_b64
+    pw_b64=$(printf '%s' "$DIFY_ADMIN_PASSWORD" | base64 | tr -d '\n')
+    rm -f "$DIFY_COOKIE_JAR"
+    curl -sS -c "$DIFY_COOKIE_JAR" -X POST "$DIFY_URL/console/api/login" \
         -H "Content-Type: application/json" \
-        -d "$(python3 -c "import json; print(json.dumps({'email':'$DIFY_ADMIN_EMAIL','password':'$DIFY_ADMIN_PASSWORD','language':'ko-KR','remember_me':True}))")" \
-        2>/dev/null \
-        | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',{}).get('access_token',''))" 2>/dev/null \
-        || echo ""
+        -d "$(python3 -c "import json,sys; print(json.dumps({'email':sys.argv[1],'password':sys.argv[2],'language':'ko-KR','remember_me':True}))" "$DIFY_ADMIN_EMAIL" "$pw_b64")" \
+        -o /dev/null 2>/dev/null || return 1
+    _dify_extract_cookie access_token
+}
+
+_dify_extract_cookie() {
+    # 쿠키 jar 에서 지정 쿠키값 추출 (netscape 포맷: 이름 컬럼은 탭 구분 6번째)
+    local name="$1"
+    awk -v name="$name" 'BEGIN{FS="\t"} $6==name {print $7}' "$DIFY_COOKIE_JAR" 2>/dev/null | tail -n1
+}
+
+# 모든 console API 호출이 써야 할 인증 인자들. 배열로 받아서 curl 에 전달.
+_dify_auth_args() {
+    local token csrf
+    token=$(_dify_extract_cookie access_token)
+    csrf=$(_dify_extract_cookie csrf_token)
+    printf '%s\n' "-b" "$DIFY_COOKIE_JAR" "-H" "Authorization: Bearer $token" "-H" "X-CSRF-Token: $csrf"
 }
 
 # ─ Dify: Ollama provider 등록 ──────────────────────────────────────────────
 dify_register_ollama_provider() {
-    local token="$1"
     log "Dify Ollama provider 등록 ($OLLAMA_BASE_URL, 모델=$OLLAMA_MODEL)"
     local payload
+    # Dify 1.13 은 최상위 model_type 필드를 필수로 요구 (pydantic missing 400).
     payload=$(python3 <<PY
 import json
 print(json.dumps({
+    "model": "$OLLAMA_MODEL",
+    "model_type": "llm",
     "credentials": {
         "base_url": "$OLLAMA_BASE_URL",
         "mode": "chat",
@@ -199,8 +234,9 @@ print(json.dumps({
 }))
 PY
 )
+    mapfile -t _auth < <(_dify_auth_args)
     curl -sS -X POST "$DIFY_URL/console/api/workspaces/current/model-providers/ollama/models" \
-        -H "Authorization: Bearer $token" \
+        "${_auth[@]}" \
         -H "Content-Type: application/json" \
         -d "$payload" \
         -o /tmp/dify-provider.json 2>/dev/null
@@ -209,15 +245,32 @@ PY
         || log "  Ollama provider 등록 완료"
 }
 
-# ─ Dify: Knowledge Dataset 생성 → dataset_id ───────────────────────────────
+# ─ Dify: Knowledge Dataset 생성 (또는 기존 재사용) → dataset_id ────────────
 dify_create_dataset() {
-    local token="$1"
     local cached="$STATE_DIR/dataset_id"
     [ -f "$cached" ] && { cat "$cached"; return 0; }
 
+    local ds_name; ds_name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$DIFY_ASSETS_DIR/code-context-dataset.json")
+
+    # 이름 중복이면 동일 이름의 기존 Dataset id 를 재사용 (provision 이 과거에
+    # 생성한 레코드를 state cache 유실 후에도 재사용 가능해야 함).
+    mapfile -t _auth < <(_dify_auth_args)
+    local existing; existing=$(curl -sS -G "$DIFY_URL/console/api/datasets" \
+        --data-urlencode "page=1" --data-urlencode "limit=100" \
+        "${_auth[@]}" 2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin);
+ds=[x for x in d.get('data',[]) if x.get('name')==sys.argv[1]];
+print(ds[0]['id'] if ds else '')" "$ds_name" 2>/dev/null || true)
+    if [ -n "$existing" ]; then
+        echo "$existing" > "$cached"
+        log "  Dataset 기존 재사용: $existing ($ds_name)"
+        echo "$existing"
+        return 0
+    fi
+
     local payload; payload=$(cat "$DIFY_ASSETS_DIR/code-context-dataset.json" | python3 -c "import json,sys; d=json.load(sys.stdin); d.pop('_comment',None); print(json.dumps(d))")
     local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/datasets" \
-        -H "Authorization: Bearer $token" \
+        "${_auth[@]}" \
         -H "Content-Type: application/json" \
         -d "$payload" 2>/dev/null)
     local id; id=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || true)
@@ -231,14 +284,33 @@ dify_create_dataset() {
     fi
 }
 
-# ─ Dify: Dataset API key 발급 ───────────────────────────────────────────────
+# ─ Dify: Dataset API key 발급 (workspace-level, Dify 1.13+) ───────────────
+# Dify 1.13 은 Dataset API key 를 workspace 단위로 관리하며 dataset_id 가 경로에
+# 포함되지 않는다. /console/api/datasets/api-keys POST 로 생성, GET 으로 조회.
+# 기존 key 가 있으면 재사용 (workspace 당 max 10개 제한 존재).
 dify_issue_dataset_api_key() {
-    local token="$1" dataset_id="$2"
+    local _unused_dataset_id="${1:-}"   # 시그니처 호환 유지 (이전 per-dataset 엔드포인트 흔적)
     local cached="$STATE_DIR/dataset_api_key"
     [ -f "$cached" ] && { cat "$cached"; return 0; }
 
-    local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/datasets/$dataset_id/api-keys" \
-        -H "Authorization: Bearer $token" 2>/dev/null)
+    mapfile -t _auth < <(_dify_auth_args)
+
+    # 기존 workspace-level key 재사용
+    local existing; existing=$(curl -sS "$DIFY_URL/console/api/datasets/api-keys" \
+        "${_auth[@]}" 2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin);
+items=d.get('items',[]);
+print(items[0]['token'] if items else '')" 2>/dev/null || true)
+    if [ -n "$existing" ]; then
+        echo "$existing" > "$cached"
+        log "  Dataset API key 기존 재사용"
+        echo "$existing"
+        return 0
+    fi
+
+    # 신규 발급 (Dify 1.13: POST /console/api/datasets/api-keys — dataset_id 불필요)
+    local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/datasets/api-keys" \
+        "${_auth[@]}" 2>/dev/null)
     local key; key=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null || true)
     if [ -n "$key" ]; then
         echo "$key" > "$cached"
@@ -252,7 +324,6 @@ dify_issue_dataset_api_key() {
 
 # ─ Dify: Sonar Analyzer Workflow import → app_id ──────────────────────────
 dify_import_workflow() {
-    local token="$1"
     local cached="$STATE_DIR/workflow_app_id"
     [ -f "$cached" ] && { cat "$cached"; return 0; }
 
@@ -264,8 +335,9 @@ with open("$DIFY_ASSETS_DIR/sonar-analyzer-workflow.yaml", encoding="utf-8") as 
 print(json.dumps({"mode": "yaml-content", "yaml_content": yc}))
 PY
 )
+    mapfile -t _auth < <(_dify_auth_args)
     local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/apps/imports" \
-        -H "Authorization: Bearer $token" \
+        "${_auth[@]}" \
         -H "Content-Type: application/json" \
         -d "$payload" 2>/dev/null)
     local id; id=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('app_id') or d.get('id') or '')" 2>/dev/null || true)
@@ -281,12 +353,13 @@ PY
 
 # ─ Dify: App API key 발급 ──────────────────────────────────────────────────
 dify_issue_app_api_key() {
-    local token="$1" app_id="$2"
+    local app_id="$1"
     local cached="$STATE_DIR/workflow_api_key"
     [ -f "$cached" ] && { cat "$cached"; return 0; }
 
+    mapfile -t _auth < <(_dify_auth_args)
     local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/apps/$app_id/api-keys" \
-        -H "Authorization: Bearer $token" 2>/dev/null)
+        "${_auth[@]}" 2>/dev/null)
     local key; key=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null || true)
     if [ -n "$key" ]; then
         echo "$key" > "$cached"
@@ -329,10 +402,13 @@ gitlab_issue_root_pat() {
     fi
 
     # 2. root (id=1) 에 대해 personal_access_token 발급 (admin API)
+    # GitLab 17.x 는 PAT 만료일을 최대 365일 이내로 강제 (기본 정책). 오늘 + 364일
+    # 로 계산해 정책 상한에 걸리지 않도록 한다.
+    local expires_at; expires_at=$(date -u -d '+364 days' '+%Y-%m-%d' 2>/dev/null || date -u -v+364d '+%Y-%m-%d')
     local pat_resp; pat_resp=$(curl -sS -X POST "$GITLAB_URL/api/v4/users/1/personal_access_tokens" \
         -H "Authorization: Bearer $access_token" \
         -H "Content-Type: application/json" \
-        -d "$(python3 -c "import json; print(json.dumps({'name':'ttc-auto','scopes':['api','read_repository','write_repository'],'expires_at':'2099-12-31'}))")" \
+        -d "$(python3 -c "import json,sys; print(json.dumps({'name':'ttc-auto','scopes':['api','read_repository','write_repository'],'expires_at':sys.argv[1]}))" "$expires_at")" \
         2>/dev/null)
     local pat; pat=$(echo "$pat_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null || true)
     if [ -n "$pat" ]; then
@@ -341,6 +417,83 @@ gitlab_issue_root_pat() {
         echo "$pat"
     else
         warn "GitLab PAT 발급 실패 — 응답: $pat_resp"
+        return 1
+    fi
+}
+
+# ─ SonarQube: ready 대기 ────────────────────────────────────────────────────
+sonar_wait_ready() {
+    log "SonarQube 헬스 대기 (최대 5분)..."
+    local w=0 limit=300 status=""
+    while [ $w -lt $limit ]; do
+        status=$(curl -sS --max-time 5 "$SONAR_URL/api/system/status" 2>/dev/null \
+            | python3 -c "import json,sys;
+try: print(json.load(sys.stdin).get('status',''))
+except Exception: print('')" 2>/dev/null || true)
+        [ "$status" = "UP" ] && { log "SonarQube ready (${w}s)"; return 0; }
+        sleep 5; w=$((w + 5))
+        [ $((w % 30)) -eq 0 ] && log "  SonarQube 대기 중... (${w}s, status=${status:-init})"
+    done
+    err "SonarQube 5분 내 준비되지 않음. 로그: /data/logs/sonarqube.log"
+    return 1
+}
+
+# ─ SonarQube: 초기 비밀번호 변경 (멱등) ───────────────────────────────────
+# 주의: /api/authentication/validate 는 잘못된 비번에도 HTTP 200 + {"valid":false}
+#       를 반환하므로 HTTP 코드로 판정 불가. admin 권한 endpoint /api/users/search
+#       로 판정한다 (잘못된 비번이면 401).
+sonar_change_initial_password() {
+    # 이미 새 비번으로 변경된 상태인지 검증
+    if curl -sf -u "admin:$SONAR_ADMIN_NEW_PASSWORD" -o /dev/null \
+        "$SONAR_URL/api/users/search"; then
+        log "  SonarQube admin 비번 이미 변경됨 — 건너뜀"
+        return 0
+    fi
+    # 기본 비번(admin/admin)으로 변경 시도
+    local code
+    code=$(curl -sS -u "admin:admin" -X POST "$SONAR_URL/api/users/change_password" \
+        --data-urlencode "login=admin" \
+        --data-urlencode "previousPassword=admin" \
+        --data-urlencode "password=$SONAR_ADMIN_NEW_PASSWORD" \
+        -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+    if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+        # 변경 직후 재검증 (새 비번으로 admin endpoint 호출)
+        if curl -sf -u "admin:$SONAR_ADMIN_NEW_PASSWORD" -o /dev/null \
+            "$SONAR_URL/api/users/search"; then
+            log "  SonarQube admin 비밀번호 변경 완료"
+            return 0
+        fi
+        warn "  SonarQube 비번 변경 API 는 성공(status=$code) 이나 재검증 실패"
+        return 1
+    fi
+    warn "  SonarQube 비번 변경 실패 (status=$code)"
+    return 1
+}
+
+# ─ SonarQube: 토큰 발급 (멱등: 동일 이름 revoke 후 재발급) ──────────────────
+sonar_generate_token() {
+    local cached="$STATE_DIR/sonar_token"
+    [ -f "$cached" ] && { cat "$cached"; return 0; }
+
+    # 기존 동일 이름 토큰 revoke (첫 실행 시엔 404/skip)
+    curl -sS -u "admin:$SONAR_ADMIN_NEW_PASSWORD" -X POST \
+        "$SONAR_URL/api/user_tokens/revoke" \
+        --data-urlencode "login=admin" \
+        --data-urlencode "name=$SONAR_TOKEN_NAME" \
+        -o /dev/null 2>/dev/null || true
+
+    local resp; resp=$(curl -sS -u "admin:$SONAR_ADMIN_NEW_PASSWORD" -X POST \
+        "$SONAR_URL/api/user_tokens/generate" \
+        --data-urlencode "name=$SONAR_TOKEN_NAME" 2>/dev/null)
+    local token; token=$(echo "$resp" | python3 -c "import json,sys;
+try: print(json.load(sys.stdin).get('token',''))
+except Exception: print('')" 2>/dev/null || true)
+    if [ -n "$token" ]; then
+        echo "$token" > "$cached"
+        log "  SonarQube 토큰 발급: $SONAR_TOKEN_NAME"
+        echo "$token"
+    else
+        warn "  SonarQube 토큰 발급 실패 — 응답: $resp"
         return 1
     fi
 }
@@ -377,12 +530,12 @@ log "Dify 자동화 시작..."
 if dify_setup_admin; then
     DIFY_TOKEN=$(dify_login)
     if [ -n "$DIFY_TOKEN" ]; then
-        log "  Dify 로그인 성공"
-        dify_register_ollama_provider "$DIFY_TOKEN" || true
-        DATASET_ID=$(dify_create_dataset "$DIFY_TOKEN" || echo "")
-        [ -n "$DATASET_ID" ] && KNOWLEDGE_KEY=$(dify_issue_dataset_api_key "$DIFY_TOKEN" "$DATASET_ID" || echo "")
-        WORKFLOW_APP_ID=$(dify_import_workflow "$DIFY_TOKEN" || echo "")
-        [ -n "$WORKFLOW_APP_ID" ] && WORKFLOW_KEY=$(dify_issue_app_api_key "$DIFY_TOKEN" "$WORKFLOW_APP_ID" || echo "")
+        log "  Dify 로그인 성공 (cookie jar: $DIFY_COOKIE_JAR)"
+        dify_register_ollama_provider || true
+        DATASET_ID=$(dify_create_dataset || echo "")
+        [ -n "$DATASET_ID" ] && KNOWLEDGE_KEY=$(dify_issue_dataset_api_key "$DATASET_ID" || echo "")
+        WORKFLOW_APP_ID=$(dify_import_workflow || echo "")
+        [ -n "$WORKFLOW_APP_ID" ] && WORKFLOW_KEY=$(dify_issue_app_api_key "$WORKFLOW_APP_ID" || echo "")
     else
         warn "Dify 로그인 실패 — 수동 확인 필요"
     fi
@@ -396,12 +549,21 @@ if gitlab_wait_ready; then
     GITLAB_PAT=$(gitlab_issue_root_pat || echo "")
 fi
 
+# J. SonarQube 초기 비번 변경 + 토큰 발급
+SONAR_TOKEN=""
+if sonar_wait_ready; then
+    if sonar_change_initial_password; then
+        SONAR_TOKEN=$(sonar_generate_token || echo "")
+    fi
+fi
+
 # H. Jenkins Credentials 주입
 log "Jenkins Credentials 주입..."
 [ -n "${DATASET_ID:-}" ]     && jenkins_upsert_string_credential "dify-dataset-id"   "$DATASET_ID"     "Dify Code Context Dataset ID"
 [ -n "${KNOWLEDGE_KEY:-}" ]  && jenkins_upsert_string_credential "dify-knowledge-key" "$KNOWLEDGE_KEY" "Dify Knowledge API Key"
 [ -n "${WORKFLOW_KEY:-}" ]   && jenkins_upsert_string_credential "dify-workflow-key" "$WORKFLOW_KEY"  "Dify Sonar Analyzer Workflow API Key"
 [ -n "$GITLAB_PAT" ]         && jenkins_upsert_string_credential "gitlab-pat"        "$GITLAB_PAT"    "GitLab root PAT (auto-issued)"
+[ -n "$SONAR_TOKEN" ]        && jenkins_upsert_string_credential "sonarqube-token"   "$SONAR_TOKEN"   "SonarQube User Token (auto-issued)"
 
 # I. Jenkinsfile credentials 참조 치환 (Credentials 주입 후)
 patch_jenkinsfile_gitlab_credentials
@@ -417,10 +579,11 @@ log "=========================================="
 log "자동 프로비저닝 완료."
 log "  Jenkins    : $JENKINS_URL ($JENKINS_USER / $JENKINS_PASSWORD)"
 log "  Dify       : $DIFY_URL ($DIFY_ADMIN_EMAIL / $DIFY_ADMIN_PASSWORD)"
-log "  SonarQube  : http://localhost:29000 (admin / admin, 최초 로그인 시 변경)"
+log "  SonarQube  : http://localhost:29000 (admin / $SONAR_ADMIN_NEW_PASSWORD)"
 log "  GitLab     : http://localhost:28090 (root / $GITLAB_ROOT_PASSWORD)"
 log "  Ollama     : $OLLAMA_BASE_URL (호스트)"
-log ""
-log "수동 확인: SonarQube 토큰 발급 후 Jenkins 'sonarqube-token' Credential 등록"
-log "  (추후 Phase 에서 자동화 예정)"
+if [ -z "$SONAR_TOKEN" ]; then
+    log ""
+    log "수동 확인: SonarQube 토큰 자동 발급 실패 — Jenkins 'sonarqube-token' Credential 수동 등록 필요"
+fi
 log "=========================================="

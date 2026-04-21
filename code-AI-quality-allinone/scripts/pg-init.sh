@@ -53,7 +53,10 @@ chown ${PG_USER}:${PG_USER} /var/run/postgresql
 su ${PG_USER} -c "${PG_BIN}/pg_ctl -D $PG_SEED -l /tmp/pg-init.log -w -o '-k /var/run/postgresql -h 127.0.0.1' start"
 
 run_sql() {
-    su ${PG_USER} -c "PGPASSWORD='${PG_PASSWORD}' ${PG_BIN}/psql -h 127.0.0.1 -U ${PG_USER} -v ON_ERROR_STOP=1 $*"
+    # su -c 는 인자를 단일 쉘 문자열로 재평가해 따옴표 경계가 소실된다
+    # (예: -c "CREATE DATABASE x;" → -c CREATE DATABASE x;). runuser + env 로 argv 보존.
+    runuser -u ${PG_USER} -- env PGPASSWORD="${PG_PASSWORD}" \
+        ${PG_BIN}/psql -h 127.0.0.1 -U ${PG_USER} -v ON_ERROR_STOP=1 "$@"
 }
 
 # Dify 본체 + plugin daemon

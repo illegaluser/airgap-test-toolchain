@@ -10,11 +10,14 @@
 # Usage:
 #   bash scripts/offline-prefetch.sh --arch amd64  (WSL2/Linux)
 #   bash scripts/offline-prefetch.sh --arch arm64  (macOS Apple Silicon)
+#   bash scripts/offline-prefetch.sh --arch amd64 --gitlab-image gitlab/gitlab-ce:17.4.2-ce.0
 #
 # 선행:
 #   bash scripts/download-plugins.sh   # 플러그인 바이너리 준비 (온라인)
 #
-# 산출물: offline-assets/<arch>/ttc-allinone-<arch>-<tag>.tar.gz
+# 산출물:
+#   offline-assets/<arch>/ttc-allinone-<arch>-<tag>.tar.gz
+#   offline-assets/<arch>/gitlab-gitlab-ce-<version>-<arch>.tar.gz
 # ============================================================================
 set -euo pipefail
 
@@ -24,11 +27,13 @@ cd "$ALLINONE_DIR"
 
 ARCH="amd64"
 TAG="${TAG:-dev}"
+GITLAB_IMAGE="${GITLAB_IMAGE:-gitlab/gitlab-ce:17.4.2-ce.0}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --arch) ARCH="$2"; shift 2 ;;
-        --tag)  TAG="$2";  shift 2 ;;
+        --arch)         ARCH="$2"; shift 2 ;;
+        --tag)          TAG="$2";  shift 2 ;;
+        --gitlab-image) GITLAB_IMAGE="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -80,6 +85,32 @@ sha256: $SHA
 built_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 META
 
-echo "[prefetch] 완료: $OUT_FILE ($SIZE, sha256=$SHA)"
-echo "[prefetch] 오프라인 머신 복원:"
+# GitLab 런타임 이미지도 반드시 함께 반출해야 폐쇄망에서 compose up 가능
+# (docker-compose.{wsl2|mac}.yaml 은 gitlab/gitlab-ce:17.4.2-ce.0 을 참조)
+GITLAB_TAG_SAFE=$(echo "$GITLAB_IMAGE" | sed 's#[/:]#-#g')
+GITLAB_OUT_FILE="${OUT_DIR}/${GITLAB_TAG_SAFE}-${ARCH}.tar.gz"
+
+echo "[prefetch] GitLab 이미지 pull + save: $GITLAB_IMAGE"
+docker pull --platform "$PLATFORM" "$GITLAB_IMAGE"
+docker save "$GITLAB_IMAGE" | gzip > "$GITLAB_OUT_FILE"
+
+GITLAB_SIZE=$(du -h "$GITLAB_OUT_FILE" | cut -f1)
+GITLAB_SHA=$(sha256sum "$GITLAB_OUT_FILE" | cut -d' ' -f1)
+cat > "${OUT_DIR}/${GITLAB_TAG_SAFE}-${ARCH}.meta" <<META
+image: $GITLAB_IMAGE
+arch: $ARCH
+platform: $PLATFORM
+tarball: $(basename "$GITLAB_OUT_FILE")
+size: $GITLAB_SIZE
+sha256: $GITLAB_SHA
+built_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+META
+
+echo "[prefetch] 완료:"
+echo "  ttc-allinone : $OUT_FILE ($SIZE, sha256=$SHA)"
+echo "  gitlab       : $GITLAB_OUT_FILE ($GITLAB_SIZE, sha256=$GITLAB_SHA)"
+echo ""
+echo "[prefetch] 오프라인 머신 복원 (두 tarball 모두 load 필요):"
 echo "    docker load -i $OUT_FILE"
+echo "    docker load -i $GITLAB_OUT_FILE"
+echo "  또는 일괄: bash scripts/offline-load.sh --arch $ARCH"
