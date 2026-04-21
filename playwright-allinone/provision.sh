@@ -635,56 +635,67 @@ PYEOF
   fi
 fi
 
-# 3-4. mac-ui-tester 노드 등록 — 호스트 agent 전제 (Mac / Windows 공용)
+# 3-4. 호스트 agent 노드 등록 — 빌드한 플랫폼에 맞는 단일 Node 만 등록
 #
-# Node 레이블은 Pipeline 파일과의 호환성 때문에 'mac-ui-tester' 를 그대로 사용한다
-# (루트 DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline 의 `agent { label 'mac-ui-tester' }`).
-# 실제 실행 호스트는 Mac / Windows 모두 가능.
+# Node 이름은 docker run 이 넘겨준 AGENT_NAME env 로 결정 (build.sh 가 호스트 감지해서 주입):
+#   - Mac 호스트  : AGENT_NAME=mac-ui-tester
+#   - WSL2 / Linux: AGENT_NAME=wsl-ui-tester
+# env 없으면 wsl-ui-tester 로 fallback (이 이미지의 기본 타겟).
+# 반대편 플랫폼 Node 를 미리 만들어 두지 않는다 — "WSL 빌드인데 왜 mac Node 가?" 방지.
+#
+# Pipeline 라벨은 `agent { label 'mac-ui-tester || wsl-ui-tester' }` 로 OR 매칭 — 어느 쪽이
+# 등록되어 있든 파이프라인은 그대로 동작.
 #
 # 하이브리드 설계: Jenkins controller 는 컨테이너, agent 는 호스트 (JDK21 + Playwright).
 # remoteFS 는 호스트 사용자의 홈 기준 절대 경로. agent 는 Jenkins 에게 이 경로를
 # 워크스페이스 루트로 알린다. SCRIPTS_HOME 환경변수는 Node 에 **설정하지 않는다** —
-# 호스트 agent 의 setup 스크립트 (mac-agent-setup.sh / windows-agent-setup.ps1) 가
-# 실행 env 로 주입한다 (각 사용자의 e2e-pipeline clone 경로가 달라 컨테이너가 예측 불가).
-log "3-4. mac-ui-tester 에이전트 노드 등록 (호스트 JNLP — Mac/Windows 공용)"
-NODE_GROOVY=$(cat << 'GROOVY_EOF'
+# 호스트 agent 의 setup 스크립트 (mac-agent-setup.sh / wsl-agent-setup.sh) 가
+# 실행 env 로 주입한다 (각 사용자의 playwright-allinone clone 경로가 달라 컨테이너가 예측 불가).
+AGENT_NODE_NAME="${AGENT_NAME:-wsl-ui-tester}"
+case "$AGENT_NODE_NAME" in
+  mac-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Mac, headed Playwright)' ;;
+  wsl-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Windows/WSL2, headed Playwright via WSLg)' ;;
+  *)             AGENT_NODE_DESC="Host-side JNLP Agent ($AGENT_NODE_NAME)" ;;
+esac
+log "3-4. 에이전트 노드 등록 ('$AGENT_NODE_NAME' — 호스트 JNLP)"
+NODE_GROOVY=$(cat <<GROOVY_EOF
 import jenkins.model.*
 import hudson.model.*
 import hudson.slaves.*
 
 def instance = Jenkins.getInstance()
-def existingNode = instance.getNode('mac-ui-tester')
-def node
+def nodeName = '${AGENT_NODE_NAME}'
+def nodeDesc = '${AGENT_NODE_DESC}'
 
 // 하이브리드 설계: remoteFS 를 호스트 사용자의 ~/.dscore.ttc.playwright-agent 기준 절대 경로로.
-// mac-agent-setup.sh 가 이 디렉토리를 생성하므로 Node 는 prescriptive 값을 사용.
+// agent-setup 이 이 디렉토리를 생성하므로 Node 는 prescriptive 값을 사용.
 // Jenkins master 입장에선 텍스트일 뿐이고 실제 해석은 agent 쪽.
 def REMOTE_FS = System.getenv('MAC_AGENT_WORKDIR') ?: '~/.dscore.ttc.playwright-agent'
 
+def existingNode = instance.getNode(nodeName)
+def node
 if (existingNode != null) {
     node = existingNode
-    println "[node] mac-ui-tester 기존 노드 발견 — 호스트 agent 전제로 갱신"
+    println "[node] \${nodeName} 기존 노드 발견 — 호스트 agent 전제로 갱신"
 } else {
     def launcher = new JNLPLauncher(true)
     def strategy = new RetentionStrategy.Always()
-    node = new DumbSlave('mac-ui-tester', REMOTE_FS, launcher)
-    node.setNodeDescription('Host-side JNLP Agent (Mac/Windows, headed Playwright)')
+    node = new DumbSlave(nodeName, REMOTE_FS, launcher)
+    node.setNodeDescription(nodeDesc)
     node.setNumExecutors(1)
-    node.setLabelString('mac-ui-tester')
+    node.setLabelString(nodeName)
     node.setMode(Node.Mode.EXCLUSIVE)
     node.setRetentionStrategy(strategy)
     instance.addNode(node)
-    println "[node] mac-ui-tester 생성 완료 (remoteFS=" + REMOTE_FS + ")"
+    println "[node] \${nodeName} 생성 완료 (remoteFS=" + REMOTE_FS + ")"
 }
-
 // 환경변수 갱신 — Node 에는 SCRIPTS_HOME 을 세팅하지 않는다. 호스트 agent 측에서
 // 실행 env 로 주입하는 쪽이 사용자별 clone 경로 차이를 수용하기 좋다.
-// 기존 EnvironmentVariablesNodeProperty 가 있으면 (과거 brands 의 잔재) 제거.
 node.getNodeProperties().removeAll { it instanceof hudson.slaves.EnvironmentVariablesNodeProperty }
 // Jenkins 2.479+ 는 instance.save() 만으로 Node config.xml 에 디스크 flush 가 되지
 // 않는다. updateNode() 가 명시적으로 nodes/<name>/config.xml 을 재작성한다.
 instance.updateNode(node)
-println "[node] 호스트 agent 연결 대기 중 (remoteFS=" + REMOTE_FS + ")"
+println "[node] \${nodeName} 호스트 agent 연결 대기 중 (remoteFS=" + REMOTE_FS + ")"
 GROOVY_EOF
 )
 NODE_RESP=$(jkpost --max-time 30 -X POST "${JENKINS_URL}/scriptText" \

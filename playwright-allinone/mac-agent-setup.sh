@@ -99,10 +99,18 @@ if [ -z "${NODE_SECRET:-}" ]; then
   log "[0-B] NODE_SECRET 미지정 — docker logs '$CONTAINER_NAME' 에서 자동 추출 시도"
   if command -v docker >/dev/null 2>&1 && \
      docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
+    # 두 Node 가 공존하므로 AGENT_NAME 태그가 붙은 라인만 추출
     NODE_SECRET=$(docker logs "$CONTAINER_NAME" 2>&1 \
-      | grep -oE 'NODE_SECRET: [a-f0-9]{64}' \
+      | grep -oE "NODE_SECRET: [a-f0-9]{64}   \($AGENT_NAME\)" \
       | tail -n1 \
       | awk '{print $2}' || true)
+    # 구 이미지 호환: 태그 없는 `NODE_SECRET: <hex>` 형태 fallback
+    if [ -z "$NODE_SECRET" ]; then
+      NODE_SECRET=$(docker logs "$CONTAINER_NAME" 2>&1 \
+        | grep -oE 'NODE_SECRET: [a-f0-9]{64}' \
+        | tail -n1 \
+        | awk '{print $2}' || true)
+    fi
   fi
   if [ -z "${NODE_SECRET:-}" ]; then
     cat >&2 <<EOT

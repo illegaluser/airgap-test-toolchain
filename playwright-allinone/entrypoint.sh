@@ -203,29 +203,32 @@ if [ -f "$DATA/.app_provisioned" ]; then
     [ $_waited -ge 120 ] && { warn "Jenkins 2분 내 응답 없음 — agent secret 추출 스킵"; break; }
   done
 
+  AGENT_NODE_NAME="${AGENT_NAME:-wsl-ui-tester}"
+  case "$AGENT_NODE_NAME" in
+    mac-ui-tester) AGENT_SETUP_SCRIPT="./mac-agent-setup.sh" ;;
+    wsl-ui-tester) AGENT_SETUP_SCRIPT="./wsl-agent-setup.sh" ;;
+    *)             AGENT_SETUP_SCRIPT="./<mac|wsl>-agent-setup.sh" ;;
+  esac
   SECRET=$(curl -sS -u admin:password \
-    "http://127.0.0.1:18080/computer/mac-ui-tester/slave-agent.jnlp" 2>/dev/null \
+    "http://127.0.0.1:18080/computer/${AGENT_NODE_NAME}/slave-agent.jnlp" 2>/dev/null \
     | sed -n 's/.*<argument>\([a-f0-9]\{64\}\)<\/argument>.*/\1/p' | head -n1 || true)
   if [ -n "$SECRET" ]; then
     log "=========================================================================="
     log "Jenkins agent 연결 정보 (호스트 bash 셸에서 setup 스크립트로 연결)"
-    log "  NODE_SECRET: $SECRET"
-    log "  AGENT_NAME : mac-ui-tester   (Node 레이블 — Mac / WSL2 공용)"
+    log "  NODE_SECRET: $SECRET   ($AGENT_NODE_NAME)"
+    log "  AGENT_NAME : $AGENT_NODE_NAME"
     log "  JENKINS_URL: http://localhost:18080   (호스트 기준)"
+    log "  Pipeline 라벨: 'mac-ui-tester || wsl-ui-tester' — 연결된 Node 가 실행"
     log "=========================================================================="
-    log "호스트 Mac (macOS Terminal):"
-    log "  cd <e2e-pipeline 위치>"
-    log "  NODE_SECRET=$SECRET ./offline/mac-agent-setup.sh"
-    log ""
-    log "호스트 WSL2 Ubuntu (Windows 11):"
-    log "  cd <e2e-pipeline 위치>"
-    log "  NODE_SECRET=$SECRET ./offline/wsl-agent-setup.sh"
+    log "연결 명령:"
+    log "  cd <playwright-allinone 위치>"
+    log "  NODE_SECRET=$SECRET $AGENT_SETUP_SCRIPT"
     log ""
     log "첫 실행 시 JDK21 + Python venv + Playwright Chromium 설치 후 agent 연결 → headed Chromium 창이 호스트에 뜸"
     log "(WSL2 는 WSLg 경유로 Windows 데스크탑에 창이 뜬다.)"
     log "=========================================================================="
   else
-    warn "Jenkins Node 'mac-ui-tester' 미등록 또는 응답 불가. 수동 복구: docker exec <container> bash /opt/provision.sh"
+    warn "Jenkins Node '$AGENT_NODE_NAME' 미등록 또는 응답 불가. 수동 복구: docker exec <container> bash /opt/provision.sh"
   fi
 fi
 

@@ -41,7 +41,7 @@ set -euo pipefail
 
 AGENT_DIR="${WSL_AGENT_WORKDIR:-$HOME/.dscore.ttc.playwright-agent}"
 JENKINS_URL="${JENKINS_URL:-http://localhost:18080}"
-AGENT_NAME="${AGENT_NAME:-mac-ui-tester}"
+AGENT_NAME="${AGENT_NAME:-wsl-ui-tester}"
 PY_VERSION_MIN="${PY_VERSION_MIN:-3.11}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-false}"
@@ -137,10 +137,18 @@ if [ -z "${NODE_SECRET:-}" ]; then
   log "[0-B] NODE_SECRET 미지정 — docker logs '$CONTAINER_NAME' 에서 자동 추출 시도"
   if command -v docker >/dev/null 2>&1 && \
      docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
+    # 두 Node 가 공존하므로 AGENT_NAME 태그가 붙은 라인만 추출
     NODE_SECRET=$(docker logs "$CONTAINER_NAME" 2>&1 \
-      | grep -oE 'NODE_SECRET: [a-f0-9]{64}' \
+      | grep -oE "NODE_SECRET: [a-f0-9]{64}   \($AGENT_NAME\)" \
       | tail -n1 \
       | awk '{print $2}' || true)
+    # 구 이미지 호환: 태그 없는 `NODE_SECRET: <hex>` 형태 fallback
+    if [ -z "$NODE_SECRET" ]; then
+      NODE_SECRET=$(docker logs "$CONTAINER_NAME" 2>&1 \
+        | grep -oE 'NODE_SECRET: [a-f0-9]{64}' \
+        | tail -n1 \
+        | awk '{print $2}' || true)
+    fi
   fi
   if [ -z "${NODE_SECRET:-}" ]; then
     cat >&2 <<EOT

@@ -287,14 +287,23 @@ if [ "$REDEPLOY" = "true" ]; then
     log "  [5-1] 볼륨 '$DATA_VOLUME' 유지 (--fresh 없음 — 기존 provision 재사용)"
   fi
 
-  # 5-2. 컨테이너 기동
-  log "  [5-2] docker run (Ollama 는 호스트 → host.docker.internal 로 경유)"
+  # 5-2. 컨테이너 기동 — 호스트 플랫폼 감지해 provision.sh 가 올바른 Jenkins Node 를
+  # 등록하도록 AGENT_NAME 을 env 로 주입 (Mac: mac-ui-tester / WSL2/Linux: wsl-ui-tester).
+  case "$(uname -s)" in
+    Darwin) HOST_AGENT_NAME="mac-ui-tester" ;;
+    Linux)  HOST_AGENT_NAME="wsl-ui-tester" ;;
+    *)      HOST_AGENT_NAME="wsl-ui-tester" ;;   # fallback
+  esac
+  # 사용자가 명시적으로 env 로 덮어쓴 경우 그대로 존중
+  HOST_AGENT_NAME="${AGENT_NAME:-$HOST_AGENT_NAME}"
+  log "  [5-2] docker run (Ollama 는 호스트 → host.docker.internal 로 경유, Jenkins Node = $HOST_AGENT_NAME)"
   docker run -d --name "$CONTAINER_NAME" \
     -p 18080:18080 -p 18081:18081 -p 50001:50001 \
     -v "$DATA_VOLUME":/data \
     --add-host host.docker.internal:host-gateway \
     -e OLLAMA_BASE_URL="http://host.docker.internal:11434" \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \
+    -e AGENT_NAME="$HOST_AGENT_NAME" \
     --restart unless-stopped \
     "$IMAGE_TAG" >/dev/null
   log "  [5-2] 컨테이너 기동: docker ps --filter name=$CONTAINER_NAME"
@@ -345,7 +354,8 @@ if [ "$REDEPLOY" = "true" ]; then
         sleep 3
         log "  [5-4] 로그 위치: /tmp/dscore-agent.log  (tail -f 로 진행 관찰 가능)"
         log "  [5-4] Jenkins Node online 확인: "
-        log "        curl -sf -u admin:password $JENKINS_URL/computer/mac-ui-tester/api/json | grep offline"
+        log "        curl -sf -u admin:password \$JENKINS_URL/computer/mac-ui-tester/api/json | grep offline   # Mac"
+        log "        curl -sf -u admin:password \$JENKINS_URL/computer/wsl-ui-tester/api/json | grep offline   # Windows(WSL2)"
       fi
     fi
   else
@@ -385,14 +395,16 @@ log "  B. WSL2 Ubuntu 안 — JDK 21:  sudo apt install -y openjdk-21-jdk-headle
 log "  C. WSL2 Ubuntu 안 — Python:  sudo apt install -y python3.12 python3.12-venv"
 log "  D. Docker:  Docker Desktop (WSL2 백엔드) 또는 WSL native Docker Engine"
 log ""
-log "[이미지 로드 및 컨테이너 기동 — Mac / WSL2 동일]"
+log "[이미지 로드 및 컨테이너 기동 — 호스트 플랫폼에 맞는 AGENT_NAME 주입]"
 log "  docker load -i $OUTPUT_TAR"
+log "  # Mac 에선 AGENT_NAME=mac-ui-tester, WSL2/Linux 에선 AGENT_NAME=wsl-ui-tester"
 log "  docker run -d --name dscore.ttc.playwright \\"
 log "    -p 18080:18080 -p 18081:18081 -p 50001:50001 \\"
 log "    -v dscore-data:/data \\"
 log "    --add-host host.docker.internal:host-gateway \\"
 log "    -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \\"
 log "    -e OLLAMA_MODEL=${OLLAMA_MODEL} \\"
+log "    -e AGENT_NAME=wsl-ui-tester   # Mac 이면 mac-ui-tester \\"
 log "    --restart unless-stopped \\"
 log "    $IMAGE_TAG"
 log ""
