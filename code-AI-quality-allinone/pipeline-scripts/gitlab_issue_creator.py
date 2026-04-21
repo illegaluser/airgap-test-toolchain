@@ -82,12 +82,15 @@ def _replace_sonar_url(text: str, sonar_host_url: str, sonar_public_url: str) ->
     """
     LLM이 생성한 마크다운 설명 내의 SonarQube URL을 외부 접근 가능한 URL로 치환합니다.
 
-    Jenkins 컨테이너 안에서는 SonarQube를 'http://sonarqube:9000'(Docker 내부 호스트명)으로
-    접근하지만, GitLab 이슈를 읽는 사용자는 'http://localhost:9000' 등 외부 URL을 사용합니다.
-    이 함수는 세 가지 케이스를 모두 처리합니다:
-    1. sonar_host_url 파라미터로 전달된 내부 URL 치환
-    2. 하드코딩된 'http://sonarqube:9000' 치환
-    3. 호스트명 없이 상대경로로 시작하는 '/project/issues?' 패턴에 호스트 추가
+    컨테이너 내부 URL 과 LLM 이 임의 재구성한 변형 (예: 포트는 내부값 그대로 인데
+    호스트명만 localhost 로 바꾼 경우) 을 모두 잡아 실제 사용자가 접근 가능한
+    public URL (예: docker-compose 호스트 매핑 포트) 로 정규화합니다.
+
+    치환 대상 패턴 (모두 동일 public base 로 치환):
+      1. sonar_host_url 파라미터 (예: http://127.0.0.1:9000, http://sonarqube:9000)
+      2. 흔한 내부 hostname 변형: http://sonarqube:9000, http://127.0.0.1:9000, http://localhost:9000
+         (LLM 이 context 기반 재구성 시 흔히 생성)
+      3. 호스트명 없이 상대경로로 시작하는 '/project/issues?' → public host 붙임
 
     Args:
         text: LLM이 생성한 마크다운 텍스트 (이슈 설명)
@@ -99,14 +102,220 @@ def _replace_sonar_url(text: str, sonar_host_url: str, sonar_public_url: str) ->
     """
     if not text: return text
     target_base = (sonar_public_url or "http://localhost:9000").rstrip("/")
+    # 명시된 내부 URL + 흔한 변형 모두 정규화
+    internal_variants = set()
     if sonar_host_url:
-        text = text.replace(sonar_host_url.rstrip("/"), target_base)
-    text = text.replace("http://sonarqube:9000", target_base)
+        internal_variants.add(sonar_host_url.rstrip("/"))
+    # LLM 이 자주 재구성하는 변형 — hostname 만 바꾸고 내부 포트 그대로 쓰는 경우
+    internal_variants.update([
+        "http://sonarqube:9000",
+        "http://127.0.0.1:9000",
+        "http://localhost:9000",
+    ])
+    # 자기 자신으로 치환하지 않도록 target 은 제외
+    internal_variants.discard(target_base)
+    for variant in internal_variants:
+        text = text.replace(variant, target_base)
     # 상대경로 형태의 SonarQube 링크에 호스트를 붙여줍니다.
     # lookbehind로 이미 http: 또는 https:가 앞에 있는 경우는 제외합니다.
     pattern = r"(?<!http:)(?<!https:)(?<![a-zA-Z0-9])(/project/issues\?)"
     text = re.sub(pattern, f"{target_base}\\1", text)
     return text
+
+
+def _gitlab_blob_url(public_base: str, project: str, branch: str, path: str, line: int) -> str:
+    """GitLab 파일 직접 링크 구성. 라인 앵커 포함.
+
+    예: http://localhost:28090/root/dscore-ttc-sample/-/blob/main/src/auth.py#L24
+    """
+    if not public_base or not project or not path:
+        return ""
+    base = public_base.rstrip("/")
+    anchor = f"#L{line}" if isinstance(line, int) and line > 0 else ""
+    return f"{base}/{project}/-/blob/{branch or 'main'}/{path}{anchor}"
+
+
+def _gitlab_commit_url(public_base: str, project: str, sha: str) -> str:
+    """GitLab commit 링크 구성.
+
+    예: http://localhost:28090/root/dscore-ttc-sample/-/commit/abc1234
+    """
+    if not public_base or not project or not sha:
+        return ""
+    base = public_base.rstrip("/")
+    return f"{base}/{project}/-/commit/{sha}"
+
+
+def _short_sha(sha: str, n: int = 8) -> str:
+    return sha[:n] if sha else ""
+
+
+def _trim_code_snippet(snippet: str, target_line: int, context: int = 10) -> str:
+    """exporter 가 ±50줄로 가져온 스니펫을 이슈 라인 ±context 줄로 축소.
+
+    스니펫 라인 포맷: "{marker}{lineno:>5} | {code}" (sonar_issue_exporter 가 생성).
+    본문 가독성을 위해 전체 101줄을 21줄 내외로 줄인다.
+    """
+    if not snippet:
+        return snippet
+    lines = snippet.splitlines()
+    if not lines:
+        return snippet
+    # target_line 포함 라인 index 찾기 (lineno 파싱)
+    target_idx = None
+    for i, ln in enumerate(lines):
+        try:
+            # "   24 | code" 에서 24 뽑기
+            parts = ln.split("|", 1)[0].strip().split()
+            num = int(parts[-1])
+            if num == target_line:
+                target_idx = i
+                break
+        except Exception:
+            continue
+    if target_idx is None:
+        return snippet  # 라인 못 찾으면 원본 유지
+    lo = max(0, target_idx - context)
+    hi = min(len(lines), target_idx + context + 1)
+    return "\n".join(lines[lo:hi])
+
+
+def render_issue_body(row: dict, args) -> str:
+    """Step R 에서 도입된 deterministic 본문 렌더링.
+
+    구조 (모두 섹션 제목에 이모지):
+      1. TL;DR callout
+      2. 📍 위치 테이블
+      3. 🔴 문제 코드
+      4. ✅ 수정 제안 (LLM, optional — 빈 문자열이면 섹션 생략)
+      5. 📊 영향 분석 (LLM)
+      6. 📖 Rule 상세 (<details> 접기)
+      7. 🔗 링크 섹션
+
+    LLM 출력 (`outputs`) 은 `impact_analysis_markdown`, `suggested_fix_markdown`
+    두 필드. 나머지는 creator 가 row 의 사실 정보로 직접 렌더.
+    """
+    outputs = row.get("outputs") or {}
+    rel_path = row.get("relative_path", "") or ""
+    line = row.get("line") or 0
+    try:
+        line_int = int(line) if line else 0
+    except Exception:
+        line_int = 0
+    enclosing_fn = row.get("enclosing_function", "") or ""
+    enclosing_ln = row.get("enclosing_lines", "") or ""
+    rule_key = row.get("rule_key", "") or ""
+    rule_name = row.get("rule_name", "") or ""
+    rule_desc = row.get("rule_description", "") or ""
+    severity = row.get("severity", "") or ""
+    commit_sha = row.get("commit_sha", "") or ""
+    sonar_msg = row.get("sonar_message", "") or ""
+    sonar_issue_url = row.get("sonar_issue_url", "") or ""
+
+    # URL 구성 (public url 치환 포함)
+    sonar_public_url = _replace_sonar_url(
+        sonar_issue_url, args.sonar_host_url, args.sonar_public_url
+    )
+    blob_url = _gitlab_blob_url(
+        args.gitlab_public_url, args.gitlab_project, args.gitlab_branch,
+        rel_path, line_int,
+    )
+    commit_url = _gitlab_commit_url(
+        args.gitlab_public_url, args.gitlab_project, commit_sha
+    )
+
+    # 1. TL;DR
+    location_hint = f"`{rel_path}:{line_int}`" if rel_path and line_int else "이슈 위치"
+    fn_hint = f" `{enclosing_fn}` 함수" if enclosing_fn else ""
+    tldr = f"> **TL;DR** — {location_hint}{fn_hint} · {sonar_msg or rule_name}"
+
+    # 2. 위치 테이블
+    file_cell = f"[`{rel_path}:{line_int}`]({blob_url})" if blob_url else (
+        f"`{rel_path}:{line_int}`" if rel_path else "(unknown)"
+    )
+    fn_cell = f"`{enclosing_fn}`" + (f" *(line {enclosing_ln})*" if enclosing_ln else "") if enclosing_fn else "—"
+    rule_cell = f"`{rule_key}`" + (f" · {rule_name}" if rule_name else "")
+    commit_cell = f"[`{_short_sha(commit_sha)}`]({commit_url})" if commit_url and commit_sha else (
+        f"`{_short_sha(commit_sha)}`" if commit_sha else "—"
+    )
+    location_table = (
+        "### 📍 위치\n\n"
+        "| 항목 | 값 |\n"
+        "|------|-----|\n"
+        f"| 파일 | {file_cell} |\n"
+        f"| 함수 | {fn_cell} |\n"
+        f"| Rule | {rule_cell} |\n"
+        f"| Severity | `{severity or '—'}` |\n"
+        f"| Commit | {commit_cell} |"
+    )
+
+    # 3. 문제 코드
+    snippet = _trim_code_snippet(
+        row.get("code_snippet", "") or "", line_int, context=10
+    )
+    if snippet and snippet != "(Code not found in SonarQube)":
+        code_section = (
+            "### 🔴 문제 코드\n\n"
+            "```\n"
+            f"{snippet}\n"
+            "```"
+        )
+    else:
+        code_section = ""
+
+    # 4. 수정 제안 (optional) — LLM 이 코드펜스 없이 코드만 준 경우 자동으로 감싸 가독성 유지.
+    suggested_fix = (outputs.get("suggested_fix_markdown") or "").strip()
+    fix_section = ""
+    if suggested_fix:
+        # 코드펜스(```) 없으면 python/diff 로 자동 감싸기 (LLM 의 흔한 실수 보완).
+        if "```" not in suggested_fix:
+            lines = suggested_fix.splitlines()
+            # 간단 휴리스틱: diff 마커(+/-) 가 라인 시작에 2개 이상이면 diff.
+            diff_count = sum(1 for ln in lines if ln.startswith(("+ ", "- ", "+", "-")))
+            lang = "diff" if diff_count >= 2 else "python"
+            suggested_fix = f"```{lang}\n{suggested_fix}\n```"
+        fix_section = f"### ✅ 수정 제안\n\n{suggested_fix}"
+
+    # 5. 영향 분석 (required from LLM)
+    impact = (outputs.get("impact_analysis_markdown") or "").strip()
+    if impact:
+        impact_section = f"### 📊 영향 분석\n\n{impact}"
+    else:
+        impact_section = "### 📊 영향 분석\n\n_(LLM 이 영향 분석을 제공하지 않음)_"
+
+    # 6. Rule 상세 (접기)
+    rule_section = ""
+    if rule_desc:
+        rule_desc_safe = rule_desc.strip()
+        rule_section = (
+            "### 📖 Rule 상세\n\n"
+            f"<details><summary>{rule_key or 'Rule'} 전체 설명</summary>\n\n"
+            f"{rule_desc_safe}\n\n"
+            "</details>"
+        )
+
+    # 7. 링크 섹션
+    link_lines = []
+    if sonar_public_url:
+        link_lines.append(f"- [SonarQube 이슈 상세]({sonar_public_url})")
+    if blob_url:
+        line_suffix = f" (line {line_int})" if line_int else ""
+        link_lines.append(f"- [GitLab 파일{line_suffix}]({blob_url})")
+    if commit_url:
+        link_lines.append(f"- [GitLab 커밋 `{_short_sha(commit_sha)}`]({commit_url})")
+    link_section = ""
+    if link_lines:
+        link_section = "### 🔗 링크\n\n" + "\n".join(link_lines)
+
+    # 조립 (섹션 사이 빈 줄 유지)
+    sections = [tldr, location_table]
+    for s in (code_section, fix_section, impact_section, rule_section, link_section):
+        if s:
+            sections.append(s)
+    body = "\n\n---\n\n".join([sections[0]] + sections[1:])
+    # LLM 본문에 섞여 나올 수 있는 내부 URL 을 public 으로 최종 한 번 더 정규화
+    body = _replace_sonar_url(body, args.sonar_host_url, args.sonar_public_url)
+    return body
 
 
 def _find_existing_by_sonar_key(gitlab_host_url: str, headers: dict, project: str, key: str) -> bool:
@@ -154,7 +363,7 @@ def main() -> int:
     # [1단계] CLI 인자 파싱
     # ---------------------------------------------------------------
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gitlab-host-url", required=True)   # GitLab 호스트 URL
+    ap.add_argument("--gitlab-host-url", required=True)   # GitLab 내부 호스트 URL (API 호출용)
     ap.add_argument("--gitlab-token", required=True)       # GitLab Personal Access Token
     ap.add_argument("--gitlab-project", required=True)     # 대상 프로젝트 경로
     ap.add_argument("--input", default="llm_analysis.jsonl")     # 입력 파일 (LLM 분석 결과)
@@ -162,6 +371,11 @@ def main() -> int:
     ap.add_argument("--sonar-host-url", default="")        # SonarQube 내부 URL (치환 원본)
     ap.add_argument("--sonar-public-url", default="")      # SonarQube 외부 URL (치환 대상)
     ap.add_argument("--timeout", type=int, default=60)     # API 요청 타임아웃 (초)
+    # Step R 신규 — 본문 blob/commit 링크용 public URL.
+    # 기본값은 docker-compose 호스트 매핑 (28090:80).
+    ap.add_argument("--gitlab-public-url", default="http://localhost:28090")
+    ap.add_argument("--gitlab-branch", default="main")
+    ap.add_argument("--commit-sha", default="")            # row 에 없을 때 fallback
     args = ap.parse_args()
 
     # GitLab API 인증 헤더
@@ -191,9 +405,7 @@ def main() -> int:
         outputs = row.get("outputs") or {}  # Dify 워크플로우가 생성한 LLM 출력
 
         # --- 3-a. 이슈 제목 결정 ---
-        # SonarQube 원본 메시지를 최우선으로 사용합니다.
-        # SonarQube 메시지가 없을 경우에만 LLM이 생성한 제목을 사용합니다.
-        # 이유: 원본 메시지가 가장 정확하고, 개발자에게 익숙한 표현이기 때문입니다.
+        # SonarQube 원본 메시지를 최우선으로 사용. 없으면 LLM 제목 사용.
         msg = row.get("sonar_message") or ""
         llm_title = outputs.get("title") or ""
         main_title = msg if msg else llm_title
@@ -202,15 +414,15 @@ def main() -> int:
         severity = row.get("severity") or ""
         final_title = f"[{severity}] {main_title}" if severity else main_title
 
-        # --- 3-b. 이슈 설명(description) 가공 ---
-        # LLM이 마크다운 형식으로 생성한 상세 설명을 가져옵니다.
-        desc = outputs.get("description_markdown") or ""
-        # 내부 SonarQube URL을 외부 접근 가능 URL로 치환합니다.
-        desc = _replace_sonar_url(desc, args.sonar_host_url, args.sonar_public_url)
+        # --- 3-b. Step R 이후: deterministic 렌더로 본문 조립 ---
+        # row 에 --commit-sha (CLI) 가 비어있으면 덮어쓰기
+        if not row.get("commit_sha"):
+            row["commit_sha"] = args.commit_sha or ""
+        desc = render_issue_body(row, args)
 
-        # 제목이나 설명이 비어있으면 유효한 이슈를 생성할 수 없으므로 실패 처리합니다.
-        if not final_title or not desc:
-            failed.append({"key": sonar_key, "reason": "Empty title/desc"})
+        # 제목이 비어있으면 생성 불가. 본문은 render 가 최소 섹션은 보장 (위치 + 영향).
+        if not final_title:
+            failed.append({"key": sonar_key, "reason": "Empty title"})
             continue
 
         # --- 3-c. 중복 이슈 검사 ---

@@ -37,9 +37,22 @@ import base64
 import json
 import sys
 import html
+import os
 import re
+from pathlib import Path
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
+
+# Step R 에서 enclosing_function 추출을 위해 repo_context_builder 의 청킹
+# 로직 재사용. 같은 /opt/pipeline-scripts/ (entrypoint.sh 가 scripts 로 심볼릭
+# 링크) 안에 형제 모듈이므로 직접 import. 실패 시 graceful — enclosing_function
+# 추출만 skip 되고 나머지 파이프라인은 동작.
+try:
+    from repo_context_builder import extract_chunks_from_file, LANG_CONFIG  # type: ignore
+    _TS_AVAILABLE = True
+except Exception as _e:  # noqa: BLE001
+    _TS_AVAILABLE = False
+    _TS_IMPORT_ERR = str(_e)
 
 
 def _clean_html_tags(text: str) -> str:
@@ -167,6 +180,63 @@ def _get_rule_details(host: str, headers: dict, rule_key: str) -> dict:
     except:
         return fallback
 
+def _relative_path_from_component(component: str, project_key: str) -> str:
+    """Sonar component (예: 'dscore-ttc-sample:src/auth.py') 에서 프로젝트 prefix 를
+    제거해 레포 상대 경로를 얻는다. 예상 패턴이 아니면 원문 유지.
+    """
+    if not component:
+        return ""
+    prefix = f"{project_key}:"
+    if component.startswith(prefix):
+        return component[len(prefix):]
+    # 프로젝트키 없이 그냥 'src/...' 로 들어온 경우 그대로
+    return component
+
+
+def _enclosing_function(repo_root: str, rel_path: str, target_line: int) -> tuple:
+    """레포 루트·상대경로·이슈 라인을 받아 해당 라인을 포함하는 함수/메서드의
+    (symbol, lines_str) 튜플을 반환. 실패 시 ("", "").
+
+    repo_context_builder 의 `extract_chunks_from_file` 가 이미 LANG_CONFIG 에 맞춰
+    AST 청크를 만들므로, 그중 `lines` 범위가 target_line 을 포함하는 청크의
+    `symbol` 을 가져온다. 리팩터 대신 재사용.
+    """
+    if not _TS_AVAILABLE or not repo_root or not rel_path or target_line <= 0:
+        return ("", "")
+    abs_path = Path(repo_root) / rel_path
+    if not abs_path.is_file():
+        return ("", "")
+    # 지원 확장자 필터 (LANG_CONFIG 에 없으면 skip)
+    if abs_path.suffix.lower() not in LANG_CONFIG:
+        return ("", "")
+    try:
+        chunks = extract_chunks_from_file(abs_path, Path(repo_root), commit_sha="")
+    except Exception:
+        return ("", "")
+    # 가장 좁은 범위(= 이슈 라인에 가장 가까운) 청크 선택. class 가 전체 파일을
+    # 감쌀 수 있으므로 function/method 를 우선, 없으면 class 도 수용.
+    best = None
+    best_span = float("inf")
+    for ch in chunks:
+        lines = ch.get("lines", "")
+        try:
+            s, e = map(int, lines.split("-", 1))
+        except Exception:
+            continue
+        if s <= target_line <= e:
+            span = e - s
+            kind = ch.get("kind", "")
+            # function/method 는 class 보다 선호 (span tie-break 전에 kind 우선)
+            pref = 0 if kind in ("function", "method") else 1
+            key = (pref, span)
+            if best is None or key < best_span:
+                best = ch
+                best_span = key
+    if best is None:
+        return ("", "")
+    return (best.get("symbol", ""), best.get("lines", ""))
+
+
 def _get_code_lines(host: str, headers: dict, component: str, target_line: int) -> str:
     """
     이슈가 발생한 소스 코드의 전후 50줄(총 101줄)을 텍스트로 추출합니다.
@@ -241,6 +311,12 @@ def main():
     ap.add_argument("--severities", default="")           # 심각도 필터 (미사용, 하위 호환)
     ap.add_argument("--statuses", default="")             # 상태 필터 (미사용, 하위 호환)
     ap.add_argument("--sonar-public-url", default="")     # 외부 접근용 URL (미사용, 하위 호환)
+    # Step R 신규 — GitLab Issue 본문 렌더 및 RAG 검색의 스냅샷 고정에 사용.
+    # 03 Jenkinsfile 이 git ls-remote 로 해석해 전달 (Phase 1.5 정식 도입 전 임시).
+    ap.add_argument("--commit-sha", default="")
+    # Step R 신규 — enclosing_function 추출용 레포 루트. 보통 /var/knowledges/codes/<repo>.
+    # 비어있으면 enclosing_function 생략 (파이프라인은 정상 동작).
+    ap.add_argument("--repo-root", default="")
     args, _ = ap.parse_known_args()
 
     # SonarQube API 인증 헤더 (Basic Auth)
@@ -298,7 +374,13 @@ def main():
         snippet = _get_code_lines(args.sonar_host_url, headers, component, line)
         if not snippet: snippet = "(Code not found in SonarQube)"
 
-        # --- 3-c. 통합 객체 생성 ---
+        # --- 3-c. Step R: 위치 메타 보강 (relative_path + enclosing_function) ---
+        rel_path = _relative_path_from_component(component, args.project_key)
+        enclosing_symbol, enclosing_lines = _enclosing_function(
+            args.repo_root, rel_path, line
+        )
+
+        # --- 3-d. 통합 객체 생성 ---
         # 이 객체가 dify_sonar_issue_analyzer.py의 입력으로 사용됩니다.
         enriched.append({
             "sonar_issue_key": key,           # 이슈 고유 키
@@ -308,7 +390,13 @@ def main():
             "issue_search_item": issue,       # /api/issues/search 원본 응답 항목
             "rule_detail": rule_cache[rule_key],  # 규칙 상세 (이름, 설명, 심각도)
             "code_snippet": snippet,          # 이슈 전후 소스 코드 (">>" 마커 포함)
-            "component": component            # 파일 컴포넌트 키
+            "component": component,           # 파일 컴포넌트 키
+            # Step R 신규 필드 — creator 의 deterministic 렌더에 사용
+            "relative_path": rel_path,        # 예: "src/auth.py"
+            "line": line,                     # 정수 라인 번호
+            "enclosing_function": enclosing_symbol,   # 예: "login" (tree-sitter, 실패 시 "")
+            "enclosing_lines": enclosing_lines,       # 예: "22-27"
+            "commit_sha": args.commit_sha,            # 빈 문자열이면 본문에 commit 섹션 생략
         })
 
     # ---------------------------------------------------------------

@@ -116,6 +116,9 @@ def main():
     parser.add_argument("--response-mode", default="")       # 응답 모드 (미사용, 하위 호환)
     parser.add_argument("--timeout", type=int, default=0)    # 타임아웃 (미사용, 하위 호환)
     parser.add_argument("--print-first-errors", type=int, default=0)  # 에러 출력 수 제한
+    # Step R 신규 — creator 가 deterministic 본문 렌더에 쓸 commit 정보 전달용.
+    # 비어있으면 out_row 의 commit_sha 도 빈 문자열 (creator 가 commit 섹션 생략).
+    parser.add_argument("--commit-sha", default="")
     args, _ = parser.parse_known_args()
 
     # ---------------------------------------------------------------
@@ -202,6 +205,12 @@ def main():
         # --- 3-d. Dify 워크플로우 입력 데이터 구성 ---
         # kb_query: Dify Knowledge Base 검색용 쿼리 (룰 ID + 이슈 메시지)
         # 이를 통해 LLM이 지식 베이스에서 관련 정보를 RAG로 검색할 수 있습니다.
+        # Step R: exporter 가 추출한 enclosing_function / enclosing_lines /
+        # commit_sha 를 LLM 에 추가 힌트로 전달 (프롬프트에 "위치 사실은 별도
+        # 렌더되므로 본문에 반복하지 말 것" 명시).
+        enclosing_fn = item.get("enclosing_function", "") or ""
+        enclosing_ln = item.get("enclosing_lines", "") or ""
+        commit_sha = item.get("commit_sha", "") or args.commit_sha or ""
         inputs = {
             "sonar_issue_key": key,
             "sonar_project_key": project,
@@ -209,7 +218,11 @@ def main():
             "sonar_issue_url": item.get("sonar_issue_url", ""),
             "kb_query": f"{rule} {msg}",
             "sonar_issue_json": safe_issue_json,
-            "sonar_rule_json": safe_rule_json
+            "sonar_rule_json": safe_rule_json,
+            # Step R 신규 inputs
+            "enclosing_function": enclosing_fn,
+            "enclosing_lines": enclosing_ln,
+            "commit_sha": commit_sha,
         }
 
         # 디버깅용: 실제로 전송되는 코드 내용을 확인합니다.
@@ -237,11 +250,29 @@ def main():
                     # Dify 워크플로우 내부 실행이 성공했는지 확인합니다.
                     if res.get("data", {}).get("status") == "succeeded":
                         # 분석 결과를 JSONL 형식으로 기록합니다.
-                        # outputs에는 LLM이 생성한 title, description_markdown, labels 등이 포함됩니다.
+                        # Step R 이후 outputs 는 4 필드: title, labels,
+                        # impact_analysis_markdown, suggested_fix_markdown.
+                        # out_row 에는 creator 의 deterministic 렌더가 필요로 하는
+                        # 사실 정보 (위치·Rule·commit·코드 스니펫) 를 passthrough.
+                        rd = item.get("rule_detail", {}) or {}
                         out_row = {
                             "sonar_issue_key": key,
                             "severity": severity,
                             "sonar_message": msg,
+                            "sonar_issue_url": item.get("sonar_issue_url", ""),
+                            # 위치 정보 (creator header 렌더용)
+                            "relative_path": item.get("relative_path", "") or "",
+                            "line": line,
+                            "enclosing_function": enclosing_fn,
+                            "enclosing_lines": enclosing_ln,
+                            "commit_sha": commit_sha,
+                            # Rule 정보 (creator '📖 Rule 상세' 섹션용)
+                            "rule_key": rule,
+                            "rule_name": rd.get("name", ""),
+                            "rule_description": rd.get("description", ""),
+                            # 문제 코드 블록 (creator '🔴 문제 코드' 섹션용)
+                            "code_snippet": final_code,
+                            # LLM 생성 — 2 필드로 축소된 outputs
                             "outputs": res["data"]["outputs"],
                             "generated_at": int(time.time())
                         }
