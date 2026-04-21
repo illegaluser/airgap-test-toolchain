@@ -11,3 +11,14 @@
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Claude Code 로컬 세션 상태
+.claude/
+
+# code-AI-quality-allinone 빌드 산출물 (README §9 에 gitignored 로 명시)
+# 형제 폴더 playwright-allinone/ 은 별도 정책으로 플러그인을 리포에 포함한다.
+code-AI-quality-allinone/.plugins.txt
+code-AI-quality-allinone/jenkins-plugin-manager.jar
+code-AI-quality-allinone/jenkins-plugins/
+code-AI-quality-allinone/dify-plugins/
+code-AI-quality-allinone/offline-assets/
