@@ -14,6 +14,8 @@ pipeline {
     DIFY_API_BASE   = 'http://api:5001/v1'
     GITLAB_HOST_URL = 'http://gitlab:8929'
     SCRIPTS_DIR     = '/var/jenkins_home/scripts'
+    // GitLab PAT — provision.sh 가 런타임에 credentials('gitlab-pat') 으로 치환
+    GITLAB_PAT      = ''
   }
 
   stages {
@@ -58,9 +60,10 @@ pipeline {
       steps {
         sh """
           set -e
-          # PoC: PAT 하드코딩 유지
+          # GITLAB_TOKEN 은 런타임에 provision.sh 가 동일 라인을
+          # "\${GITLAB_PAT}" (credentials('gitlab-pat')) 참조로 치환한다.
           set +x
-          GITLAB_TOKEN="glpat-M_J3Ze9BeZsbFcHd6GkuO286MQp1OjEH.01.0w013cs97"
+          GITLAB_TOKEN=""
 
           python3 ${SCRIPTS_DIR}/gitlab_issue_creator.py \
             --gitlab-host-url "${GITLAB_HOST_URL}" \

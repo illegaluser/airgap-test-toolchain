@@ -87,7 +87,7 @@ services:
         redis_exporter['enable'] = false
         postgres_exporter['enable'] = false
         alertmanager['enable'] = false
-        grafana['enable'] = false
+        # grafana['enable'] = false  # GitLab 16.3+ 에서 grafana 옵션 제거됨 (#383951)
     ports:
       - "28090:80"
       - "28022:22"

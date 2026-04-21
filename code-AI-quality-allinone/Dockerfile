@@ -175,6 +175,20 @@ RUN mkdir -p /app && \
 # 와 충돌하므로 별도 uid 1100 의 sonar 사용자로 소유권 재설정.
 # ─────────────────────────────────────────────────────────────────────────────
 COPY --from=sonarqube-src /opt/sonarqube /opt/sonarqube
+# SonarQube 10.7 은 Java 17 필수 (Java 21 은 SecurityManager 제거로 기동 시
+# UnsupportedOperationException). 공식 이미지가 번들한 jres/ tarball 에서 호스트
+# 아키텍처용 JRE 17 을 추출하고 /opt/sonarqube/jres/current 안정 경로로 심볼릭.
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) JRE_TAR="OpenJDK17U-jre_x64_linux_hotspot_17.0.11_9.tar.gz" ;; \
+      arm64) JRE_TAR="OpenJDK17U-jre_aarch64_linux_hotspot_17.0.11_9.tar.gz" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    cd /opt/sonarqube/jres && \
+    tar -xzf "$JRE_TAR" && \
+    JRE_DIR=$(ls -d jdk-17*/ | head -n1 | sed 's#/$##'); \
+    ln -sfn "/opt/sonarqube/jres/$JRE_DIR" /opt/sonarqube/jres/current && \
+    /opt/sonarqube/jres/current/bin/java -version
 RUN groupadd -g 1100 sonar && \
     useradd -u 1100 -g sonar -M -d /opt/sonarqube -s /bin/bash sonar && \
     chown -R sonar:sonar /opt/sonarqube && \
@@ -256,9 +270,11 @@ RUN set -eux; \
     sed -i 's|http://sonarqube:9000|http://127.0.0.1:9000|g' *.jenkinsPipeline; \
     # GitLab 은 별도 compose 서비스. 기본 external_url 80 포트 정규화
     sed -i 's|http://gitlab:8929|http://gitlab:80|g' *.jenkinsPipeline; \
-    # 하드코딩된 PAT 제거 — Jenkins Credentials 로 이관 예정 (Phase 6)
-    sed -i "s|'glpat-M_J3Ze9BeZsbFcHd6GkuO286MQp1OjEH.01.0w013cs97'|''|g" *.jenkinsPipeline; \
-    sed -i 's|"glpat-M_J3Ze9BeZsbFcHd6GkuO286MQp1OjEH.01.0w013cs97"|""|g' *.jenkinsPipeline; \
+    # 하드코딩된 GitLab PAT 방어선 — 소스에서 이미 제거되어 있어야 하며, provision.sh
+    # 가 런타임에 credentials('gitlab-pat') 으로 재치환한다. 이 grep 은 향후 커밋에서
+    # 실수로 실제 PAT 가 섞여 들어오는 것을 빌드 타임에 차단하는 belt-and-suspenders.
+    sed -i -E "s|'glpat-[A-Za-z0-9._-]+'|''|g" *.jenkinsPipeline; \
+    sed -i -E 's|"glpat-[A-Za-z0-9._-]+"|""|g' *.jenkinsPipeline; \
     if grep -l 'glpat-' *.jenkinsPipeline 2>/dev/null; then \
         echo "[ERROR] GitLab PAT 잔존 — 빌드 중단" >&2; exit 1; \
     fi; \

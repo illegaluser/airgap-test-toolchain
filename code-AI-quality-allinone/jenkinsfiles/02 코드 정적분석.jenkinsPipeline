@@ -28,11 +28,13 @@ pipeline {
         // 컨테이너 내부에서 접근할 GitLab URL
         GITLAB_HTTP_URL = 'http://gitlab:8929'
 
-        // GitLab 계정 (PoC)
+        // GitLab 계정
         GITLAB_USER = 'root'
 
-        // PoC: PAT 하드코딩
-        GITLAB_PAT = 'glpat-M_J3Ze9BeZsbFcHd6GkuO286MQp1OjEH.01.0w013cs97'
+        // GitLab PAT — 기본값은 빈 문자열. 런타임에 provision.sh 가 동일 라인을
+        // credentials('gitlab-pat') 으로 치환한다 (Jenkins Credentials Binding).
+        // 리포에는 실제 토큰을 절대 커밋하지 말 것.
+        GITLAB_PAT = ''
     }
 
     stages {
