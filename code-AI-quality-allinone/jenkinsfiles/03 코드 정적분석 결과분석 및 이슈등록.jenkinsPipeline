@@ -149,25 +149,31 @@ pipeline {
 
     stage('(3) Create GitLab Issues (Dedup)') {
       steps {
-        sh """
-          set -e
-          # GITLAB_TOKEN 은 런타임에 provision.sh 가 동일 라인을
-          # "\${GITLAB_PAT}" (credentials('gitlab-pat')) 참조로 치환한다.
-          set +x
-          GITLAB_TOKEN=""
+        // Step D — sonarqube-token 을 별도 withCredentials 스코프로 바인딩.
+        // withSonarQubeEnv (Stage 2 에서 사용) 와 독립적으로 FP 전이 API 호출용.
+        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_PRIVATE')]) {
+          sh """
+            set -e
+            # GITLAB_TOKEN 은 런타임에 provision.sh 가 동일 라인을
+            # "\${GITLAB_PAT}" (credentials('gitlab-pat')) 참조로 치환한다.
+            set +x
+            GITLAB_TOKEN=""
 
-          python3 ${SCRIPTS_DIR}/gitlab_issue_creator.py \
-            --gitlab-host-url "${GITLAB_HOST_URL}" \
-            --gitlab-token "\$GITLAB_TOKEN" \
-            --gitlab-project "${params.GITLAB_PROJECT}" \
-            --gitlab-public-url "${params.GITLAB_PUBLIC_URL}" \
-            --gitlab-branch "${params.BRANCH}" \
-            --commit-sha "${env.COMMIT_SHA}" \
-            --input "llm_analysis.jsonl" \
-            --output "gitlab_issues_created.json" \
-            --sonar-host-url "${SONAR_HOST_URL}" \
-            --sonar-public-url "${params.SONAR_PUBLIC_URL}"
-        """
+            python3 ${SCRIPTS_DIR}/gitlab_issue_creator.py \
+              --gitlab-host-url "${GITLAB_HOST_URL}" \
+              --gitlab-token "\$GITLAB_TOKEN" \
+              --gitlab-project "${params.GITLAB_PROJECT}" \
+              --gitlab-public-url "${params.GITLAB_PUBLIC_URL}" \
+              --gitlab-branch "${params.BRANCH}" \
+              --commit-sha "${env.COMMIT_SHA}" \
+              --input "llm_analysis.jsonl" \
+              --output "gitlab_issues_created.json" \
+              --sonar-host-url "${SONAR_HOST_URL}" \
+              --sonar-public-url "${params.SONAR_PUBLIC_URL}" \
+              --sonar-token "\${SONAR_TOKEN_PRIVATE}" \
+              --analysis-mode "${params.ANALYSIS_MODE}"
+          """
+        }
       }
     }
   }
