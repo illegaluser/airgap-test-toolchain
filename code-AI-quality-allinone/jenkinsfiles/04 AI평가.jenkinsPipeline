@@ -388,6 +388,28 @@ PY
                 echo "Evaluation raw json: ${env.BUILD_URL ?: ''}artifact/${artifactDir}/summary.json"
                 echo "Report build folder: ${env.REPORT_DIR}"
 
+                // Phase 2.6 R6 — summary.html 이 missing 이면 명시적 placeholder 를 생성해
+                // 탭 접근 시 "왜 빈지" 이유를 보여준다. publishHTML 은 allowMissing=false 로
+                // 강제해 Jenkins 가 누락 자체를 실패로 집계하게 함.
+                sh """
+                if [ ! -f '${artifactDir}/summary.html' ]; then
+                    cat > '${artifactDir}/summary.html' <<HTMLEOF
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>AI Eval Summary (empty)</title></head><body>
+<h1>AI Eval Summary — 데이터 없음</h1>
+<p>이 빌드에서 <code>summary.html</code> 이 생성되지 않았습니다.
+아래를 확인하세요:</p>
+<ul>
+<li>Stage 1-2 의 Ollama wrapper 기동 로그</li>
+<li>Stage 2 의 pytest 종료 코드 + <code>results.xml</code></li>
+<li>REPORT_DIR(<code>${env.REPORT_DIR}</code>) 내 artifacts</li>
+</ul>
+<p>Jenkins 빌드 페이지의 <em>Console Output</em> 과 아래 <em>Artifacts</em> 를
+먼저 확인하세요.</p></body></html>
+HTMLEOF
+                fi
+                """
+
                 try {
                     publishHTML(
                         target: [
@@ -396,7 +418,7 @@ PY
                             reportFiles: 'summary.html',
                             keepAll: true,
                             alwaysLinkToLastBuild: true,
-                            allowMissing: true
+                            allowMissing: false
                         ]
                     )
                 } catch (ignored) {

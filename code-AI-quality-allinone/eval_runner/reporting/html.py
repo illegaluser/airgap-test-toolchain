@@ -219,6 +219,197 @@ def _build_deepeval_metrics_display(turn: dict):
     return display_metrics
 
 
+# ============================================================================
+# Phase 2.2 R2 — 11지표 카드 대시보드
+# ============================================================================
+
+# 11지표 표시 순서 + 이름 (번호는 REPORT_SPEC §1.1 정본 기준)
+INDICATOR_ORDER = [
+    ("①", "PolicyCheck", "Policy Violation", "Fail-Fast"),
+    ("②", "SchemaValidation", "Format Compliance", "Fail-Fast"),
+    ("③", "TaskCompletion", "Task Completion", "과제"),
+    ("④", "AnswerRelevancyMetric", "Answer Relevancy", "심층"),
+    ("⑤", "ToxicityMetric", "Toxicity", "심층"),
+    ("⑥", "FaithfulnessMetric", "Faithfulness", "심층 · RAG"),
+    ("⑦", "ContextualRecallMetric", "Contextual Recall", "심층 · RAG"),
+    ("⑧", "ContextualPrecisionMetric", "Contextual Precision", "심층 · RAG"),
+    ("⑨", "MultiTurnConsistency", "Multi-turn Consistency", "다중턴"),
+    ("⑩", "Latency", "Latency", "운영"),
+    ("⑪", "TokenUsage", "Token Usage", "운영"),
+]
+
+
+def _render_indicator_cards(state: dict) -> str:
+    """
+    R2 — 11지표 카드 그리드. state["indicators"] 에서 읽음.
+    각 카드: 배지(🟢/🔴/🟡/⚪), pass/total, threshold, 실패 case_id 최대 3개.
+    Latency/TokenUsage 는 정보성 — 점수 대신 stats 요약.
+    R2.1 (기본 off): state["aggregate"]["indicator_narratives"][name] 이 있으면
+    카드 하단에 1줄 해설 추가.
+    """
+    indicators = state.get("indicators") or {}
+    narratives = (state.get("aggregate") or {}).get("indicator_narratives") or {}
+
+    cards = []
+    for symbol, name, label, stage in INDICATOR_ORDER:
+        data = indicators.get(name) or {}
+        cards.append(_render_one_indicator_card(symbol, name, label, stage, data, narratives.get(name)))
+
+    return (
+        "<section class='section'>"
+        "<div class='section-header'><h2>11 지표 대시보드</h2>"
+        "<span class='meta-inline'>단계별 카드 · 🟢 PASS / 🔴 FAIL / 🟡 WARN / ⚪ N/A</span>"
+        "</div>"
+        f"<div class='indicator-grid'>{''.join(cards)}</div>"
+        "</section>"
+    )
+
+
+def _render_one_indicator_card(symbol: str, name: str, label: str, stage: str,
+                                data: dict, narrative: dict | None) -> str:
+    """11지표 카드 1개."""
+    kind = data.get("kind")
+    passed = int(data.get("pass") or 0)
+    failed = int(data.get("fail") or 0)
+    skipped = int(data.get("skipped") or 0)
+    total = passed + failed
+
+    # 배지 + 색상 결정
+    if kind == "informational":
+        # ⑩ Latency, ⑪ TokenUsage — 정보성
+        stats = data.get("stats") or {}
+        badge_class = "skip"
+        badge_text = "INFO"
+        if name == "Latency":
+            p50 = stats.get("p50")
+            p95 = stats.get("p95")
+            body = (
+                f"<div class='ind-metric'>P50 <strong>{_fmt_num(p50)}ms</strong></div>"
+                f"<div class='ind-metric'>P95 <strong>{_fmt_num(p95)}ms</strong></div>"
+                f"<div class='ind-metric'>count <strong>{stats.get('count', 0)}</strong></div>"
+            )
+        else:  # TokenUsage
+            body = (
+                f"<div class='ind-metric'>합계 <strong>{stats.get('total', 0):,}</strong></div>"
+                f"<div class='ind-metric'>입력 <strong>{stats.get('prompt', 0):,}</strong></div>"
+                f"<div class='ind-metric'>출력 <strong>{stats.get('completion', 0):,}</strong></div>"
+            )
+    elif total == 0 and skipped == 0:
+        # 적용된 case 0 → N/A
+        badge_class = "skip"
+        badge_text = "⚪ N/A"
+        body = "<div class='ind-metric'>적용된 case 가 없습니다.</div>"
+    elif total == 0 and skipped > 0:
+        # 모두 SKIPPED
+        badge_class = "skip"
+        badge_text = "⚪ SKIP"
+        body = f"<div class='ind-metric'>SKIPPED <strong>{skipped}</strong></div>"
+    else:
+        pass_rate = round(passed / total * 100, 1) if total else 0.0
+        if failed == 0:
+            badge_class, badge_text = "ok", "🟢 PASS"
+        elif passed == 0:
+            badge_class, badge_text = "fail", "🔴 FAIL"
+        else:
+            badge_class, badge_text = "warn", "🟡 WARN"
+        threshold = data.get("threshold")
+        threshold_line = (
+            f"<div class='ind-metric'>threshold <strong>{threshold}</strong></div>"
+            if threshold is not None else ""
+        )
+        failed_case_ids = data.get("failed_case_ids") or []
+        fail_line = ""
+        if failed_case_ids:
+            shown = ", ".join(escape(cid) for cid in failed_case_ids[:3])
+            more = f" 외 {len(failed_case_ids) - 3}" if len(failed_case_ids) > 3 else ""
+            fail_line = f"<div class='ind-metric fail-ids'>실패: {shown}{more}</div>"
+        body = (
+            f"<div class='ind-metric'>pass <strong>{passed}/{total}</strong> ({pass_rate}%)</div>"
+            f"{threshold_line}"
+            f"{fail_line}"
+        )
+
+    # R2.1 narrative (opt-in)
+    narrative_html = ""
+    if narrative and isinstance(narrative, dict) and narrative.get("text"):
+        source = str(narrative.get("source") or "fallback").lower()
+        badge = {"llm": "🤖", "cached": "🤖", "fallback": "📋"}.get(source, "📋")
+        narrative_html = (
+            f"<div class='ind-narrative'>{badge} {escape(narrative['text'])}</div>"
+        )
+
+    return (
+        "<div class='ind-card'>"
+        "<div class='ind-head'>"
+        f"<span class='ind-symbol'>{symbol}</span> "
+        f"<strong>{escape(label)}</strong> "
+        f"<span class='meta-inline'>({escape(stage)})</span>"
+        f"<span class='badge {badge_class}'>{escape(badge_text)}</span>"
+        "</div>"
+        f"<div class='ind-body'>{body}</div>"
+        f"{narrative_html}"
+        "</div>"
+    )
+
+
+def _fmt_num(value) -> str:
+    """None → '-', 숫자 → 그대로."""
+    if value is None:
+        return "-"
+    return str(value)
+
+
+# Phase 2.4 R4 — 임시 문자열 패턴 매칭. Phase 3 Q1 에서 UniversalEvalOutput.error_type
+# 구조화 필드로 교체 예정.
+_SYSTEM_ERROR_PATTERNS = (
+    "Adapter Error",
+    "Connection Error",
+    "HTTP 5",
+    "Timeout",
+    "timeout",
+    "Wrapper startup failed",
+)
+
+
+def _classify_error_type(turn: dict) -> str:
+    """
+    실패 turn 의 에러를 'system' vs 'quality' 로 분류.
+    - Phase 3 이후: `turn['error_type']` enum 우선 사용 (아직 미구현)
+    - 현재: failure_message 키워드 매칭으로 추정
+    반환: 'system' | 'quality' | '' (passed turn)
+    """
+    status = str(turn.get("status") or "")
+    if status != "failed":
+        return ""
+    # 선행: Phase 3 에서 주입될 구조화 필드
+    explicit = str(turn.get("error_type") or "").lower()
+    if explicit in ("system", "quality"):
+        return explicit
+    # 임시 휴리스틱
+    failure = str(turn.get("failure_message") or "")
+    for pattern in _SYSTEM_ERROR_PATTERNS:
+        if pattern in failure:
+            return "system"
+    return "quality"
+
+
+def classify_failure_buckets(state: dict) -> dict:
+    """
+    R4 집계 — 전체 실패를 {system, quality} 로 나눈 카운트.
+    R1 헤더·exec_summary 섹션 외부 노출용.
+    """
+    system = 0
+    quality = 0
+    for conversation in state.get("conversations") or []:
+        for turn in conversation.get("turns") or []:
+            kind = _classify_error_type(turn)
+            if kind == "system":
+                system += 1
+            elif kind == "quality":
+                quality += 1
+    return {"system": system, "quality": quality}
+
+
 def _render_exec_summary_block(exec_summary: dict | None) -> str:
     """
     R1.1 — 🤖 LLM 임원 요약 섹션. `exec_summary` 는 `reporting.narrative.generate_exec_summary`
@@ -297,8 +488,19 @@ def render_summary_html(state: dict) -> str:
             return "-"
         return text if len(text) <= limit else f"{text[:limit]}..."
 
-    def _easy_explanation(turn: dict) -> str:
-        """비전공자도 이해하기 쉬운 요약 문장을 생성합니다."""
+    def _easy_explanation_with_provenance(turn: dict):
+        """
+        R3.1: turn 에 미리 주입된 `easy_explanation` dict 사용. 없으면 legacy
+        하드코딩 로직으로 fallback (test_runner 미갱신 배포 호환).
+        반환: (text, source) 튜플.
+        """
+        injected = turn.get("easy_explanation")
+        if isinstance(injected, dict) and injected.get("text"):
+            return injected["text"], str(injected.get("source") or "fallback").lower()
+        return _legacy_easy_explanation(turn), "fallback"
+
+    def _legacy_easy_explanation(turn: dict) -> str:
+        """Legacy 하드코딩 경로 (Phase 2.0 narrative.py fallback 과 동일 규칙)."""
         status = str(turn.get("status") or "")
         failure = translate_text_to_korean(str(turn.get("failure_message") or ""))
         task_completion = turn.get("task_completion") or {}
@@ -384,7 +586,26 @@ def render_summary_html(state: dict) -> str:
             failure_raw = str(turn.get("failure_message") or "-")
             failure_localized = escape_with_linebreaks(translate_text_to_korean(failure_raw))
             failure_raw_escaped = escape_with_linebreaks(failure_raw)
-            easy_explanation = translate_text_to_korean(_easy_explanation(turn))
+            # R3.1 — 주입된 narrative (fallback 포함) + provenance 배지
+            easy_text, easy_source = _easy_explanation_with_provenance(turn)
+            easy_badge = {"llm": "🤖 LLM", "cached": "🤖 LLM (캐시)", "fallback": "📋"}.get(easy_source, "📋")
+
+            # R3.2 — remediation (기본 off → text 비움 → 섹션 숨김)
+            remediation = turn.get("remediation") if isinstance(turn.get("remediation"), dict) else None
+            remediation_html = ""
+            if remediation and remediation.get("text"):
+                rem_source = str(remediation.get("source") or "fallback").lower()
+                rem_badge = {"llm": "🤖 LLM", "cached": "🤖 LLM (캐시)", "fallback": "📋"}.get(rem_source, "📋")
+                remediation_html = (
+                    f"<p><strong>조치 권장 <span class='provenance {rem_source}'>{escape(rem_badge)}</span></strong>"
+                    f"<br>{escape_with_linebreaks(remediation['text'], max_line_len=80)}</p>"
+                )
+
+            # R4 — 실패 사유의 에러 분류 (임시 문자열 매칭; Phase 3 Q1 이 error_type enum 도입 시 교체)
+            err_type = _classify_error_type(turn)
+            err_class = {"system": "system-err", "quality": "quality-err"}.get(err_type, "")
+            err_label = {"system": "시스템 에러", "quality": "품질 실패"}.get(err_type, "")
+
             _, status_class, status_label = _turn_status_meta(turn.get("status"))
 
             if turn.get("status") == "failed":
@@ -399,7 +620,9 @@ def render_summary_html(state: dict) -> str:
                 f"<p><strong>입력값</strong><pre>{input_full}</pre></p>"
                 f"<p><strong>기대값</strong><pre>{expected_output_full}</pre></p>"
                 f"<p><strong>성공조건</strong><pre>{success_criteria_full}</pre></p>"
-                f"<p><strong>쉬운 해설</strong><br>{escape_with_linebreaks(easy_explanation, max_line_len=80)}</p>"
+                f"<p><strong>쉬운 해설 <span class='provenance {easy_source}'>{escape(easy_badge)}</span></strong>"
+                f"<br>{escape_with_linebreaks(easy_text, max_line_len=80)}</p>"
+                f"{remediation_html}"
                 f"<p><strong>사전 검사</strong><br>{fail_fast}</p>"
                 f"<p><strong>과업 달성도</strong><br>{task_completion_html}</p>"
                 f"<p><strong>품질 지표</strong><br>{metrics_html}</p>"
@@ -409,11 +632,17 @@ def render_summary_html(state: dict) -> str:
                 "</details>"
             )
 
+            # R4: 실패 시 에러 분류 배지를 판정 배지 옆에 병기
+            err_badge_html = (
+                f"<span class='badge {err_class}'>{escape(err_label)}</span>"
+                if err_class else ""
+            )
+
             rows.append(
                 "<tr>"
                 f"<td>{escape(str(turn.get('case_id') or ''))}</td>"
                 f"<td>{escape(str(turn.get('expected_outcome') or 'pass'))}</td>"
-                f"<td><span class='badge {status_class}'>{escape(status_label)}</span></td>"
+                f"<td><span class='badge {status_class}'>{escape(status_label)}</span> {err_badge_html}</td>"
                 f"<td>{escape(str(turn.get('latency_ms') or '-'))}</td>"
                 f"<td>{token_usage_html}</td>"
                 f"<td>{input_preview}</td>"
@@ -461,6 +690,18 @@ def render_summary_html(state: dict) -> str:
     # R1.1: LLM 임원 요약 — test_runner._write_summary_report 가 미리 state 에 주입.
     #        LLM 호출 중복 방지를 위해 여기서는 read-only.
     exec_summary_html = _render_exec_summary_block(state.get("aggregate", {}).get("exec_summary"))
+
+    # R2: 11지표 카드 대시보드. 지표별 aggregation 은 _recompute_summary_totals 가 생성.
+    indicator_cards_html = _render_indicator_cards(state)
+
+    # R4: 시스템 vs 품질 에러 breakdown
+    err_breakdown = classify_failure_buckets(state)
+    error_breakdown_html = (
+        f"<div class='error-breakdown'>"
+        f"<span class='badge system-err'>시스템 {err_breakdown['system']}</span>"
+        f"<span class='badge quality-err'>품질 {err_breakdown['quality']}</span>"
+        f"</div>"
+    ) if (err_breakdown["system"] + err_breakdown["quality"]) > 0 else ""
 
     metric_average_rows = "".join(
         f"<tr><td>{escape(METRIC_DISPLAY_NAMES.get(name, name))}</td><td>{value}</td></tr>"
@@ -522,6 +763,19 @@ def render_summary_html(state: dict) -> str:
     .provenance.llm {{ background: #cffafe; color: #0e7490; }}
     .provenance.cached {{ background: #e0e7ff; color: #3730a3; }}
     .provenance.fallback {{ background: #fef3c7; color: #92400e; }}
+    .indicator-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-top: 8px; }}
+    .ind-card {{ background: #ffffff; border: 1px solid #dbe2ea; border-radius: 12px; padding: 12px; }}
+    .ind-head {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 14px; }}
+    .ind-symbol {{ font-size: 18px; color: #475569; }}
+    .ind-head .badge {{ margin-left: auto; }}
+    .ind-body {{ margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }}
+    .ind-metric {{ font-size: 13px; color: #334155; }}
+    .ind-metric strong {{ color: #0f172a; }}
+    .ind-metric.fail-ids {{ color: #991b1b; }}
+    .ind-narrative {{ margin-top: 8px; padding-top: 8px; border-top: 1px dashed #cbd5e1; font-size: 12px; color: #334155; line-height: 1.5; }}
+    .badge.system-err {{ background: #e0e7ff; color: #3730a3; }}
+    .badge.quality-err {{ background: #fee2e2; color: #991b1b; }}
+    .error-breakdown {{ display: inline-flex; gap: 6px; font-size: 12px; }}
   </style>
 </head>
 <body>
@@ -544,6 +798,8 @@ def render_summary_html(state: dict) -> str:
     <div class="card"><div class="label">실행된 턴 수</div><div class="value">{totals.get('turns', 0)}</div></div>
     <div class="card"><div class="label">턴 통과율</div><div class="value">{totals.get('turn_pass_rate', 0)}%</div></div>
   </div>
+  {error_breakdown_html}
+  {indicator_cards_html}
   <section class="section">
     <div class="section-header">
       <h2>멀티턴 대화 결과</h2>
