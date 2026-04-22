@@ -82,6 +82,34 @@ def _turn_sort_key(value):
         return (0, str(value))
 
 
+_TRUTHY_FLAG_VALUES = {"true", "1", "yes", "y", "t", "on", "calib"}
+
+
+def _is_truthy_flag(value) -> bool:
+    """
+    Phase 5.1 Q7-a — CSV 의 `calib` 컬럼 같은 boolean-like 문자열 정규화.
+    None/NaN/빈문자열 → False. "true"/"1"/"yes"/"y"/"t"/"on"/"calib" → True.
+    bool/int 직접 수락. 그 외 문자열은 False.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            if pd.isna(value):
+                return False
+        except (TypeError, ValueError):
+            pass
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if not token:
+            return False
+        return token in _TRUTHY_FLAG_VALUES
+    return False
+
+
 # ============================================================================
 # 로딩
 # ============================================================================

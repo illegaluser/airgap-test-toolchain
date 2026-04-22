@@ -851,3 +851,230 @@ def test_turn_sort_key():
 
     # 단일 타입 안에서의 정렬 안정성만 보장. int/str 혼합은 정의되지 않은 동작이며
     # golden.csv 운용 규약상 금지 (한 conversation 내 turn_id 타입은 일관)
+
+
+# ============================================================================
+# Phase 5 — Evaluation Robustness (Q7)
+# 5.1 보정 세트 집계 + 5.2 경계 case N-repeat
+# ============================================================================
+
+
+def test_phase5_is_truthy_flag():
+    """[Phase 5.1] CSV calib 컬럼의 boolean-like 문자열 정규화."""
+    # Falsy
+    for v in (None, "", "   ", "false", "0", "no", "FALSE", "abc"):
+        assert tr._is_truthy_flag(v) is False, f"expected False for {v!r}"
+    # Truthy
+    for v in ("true", "TRUE", "1", "yes", "y", "Y", "t", "on", "calib", "  true  "):
+        assert tr._is_truthy_flag(v) is True, f"expected True for {v!r}"
+    # native types
+    assert tr._is_truthy_flag(True) is True
+    assert tr._is_truthy_flag(False) is False
+    assert tr._is_truthy_flag(1) is True
+    assert tr._is_truthy_flag(0) is False
+
+
+def test_phase5_calib_column_in_dataset():
+    """[Phase 5.1] tiny_dataset.csv 에 calib 컬럼 파싱 — 2 케이스 True, 나머지 False."""
+    conversations = tr.load_dataset()
+    all_turns = [t for conv in conversations for t in conv]
+    calib_cases = {t["case_id"] for t in all_turns if tr._is_truthy_flag(t.get("calib"))}
+    # 고정 기대: policy-pass-clean + task-pass-simple 두 건만 보정 세트.
+    assert calib_cases == {"policy-pass-clean", "task-pass-simple"}
+
+
+def test_phase5_median_helper():
+    """[Phase 5.2] _median — odd/even/empty/단일값."""
+    assert tr._median([]) is None
+    assert tr._median([0.7]) == 0.7
+    assert tr._median([1.0, 0.5, 0.9]) == 0.9  # sorted=[0.5,0.9,1.0] mid=0.9
+    assert tr._median([0.2, 0.4, 0.6, 0.8]) == 0.5  # (0.4+0.6)/2
+    # None 섞여 있어도 무시
+    assert tr._median([None, 0.4, 0.6]) == 0.5
+
+
+def test_phase5_stdev_helper():
+    """[Phase 5.1] 표본 표준편차 (분모 n-1). 1개 이하 → 0.0."""
+    assert tr._stdev([]) == 0.0
+    assert tr._stdev([0.9]) == 0.0
+    # 2값: [0.8, 1.0] mean=0.9, var=(0.01+0.01)/1=0.02, std=sqrt(0.02)
+    got = tr._stdev([0.8, 1.0])
+    assert abs(got - 0.1414213) < 1e-4, got
+
+
+def test_phase5_borderline_detection():
+    """[Phase 5.2] _is_borderline 경계 판단."""
+    # threshold=0.7, margin=0.05 → [0.65, 0.75] 이내만 borderline
+    assert tr._is_borderline(0.7, 0.7, 0.05) is True
+    assert tr._is_borderline(0.65, 0.7, 0.05) is True
+    assert tr._is_borderline(0.75, 0.7, 0.05) is True
+    assert tr._is_borderline(0.64, 0.7, 0.05) is False
+    assert tr._is_borderline(0.76, 0.7, 0.05) is False
+    assert tr._is_borderline(None, 0.7, 0.05) is False
+    assert tr._is_borderline(0.7, None, 0.05) is False
+
+
+def test_phase5_borderline_config_defaults_and_env(monkeypatch):
+    """[Phase 5.2] REPEAT_BORDERLINE_N / BORDERLINE_MARGIN 환경변수 해석."""
+    monkeypatch.delenv("REPEAT_BORDERLINE_N", raising=False)
+    monkeypatch.delenv("BORDERLINE_MARGIN", raising=False)
+    n, m = tr._borderline_config()
+    assert n == 1 and m == 0.05  # 기본 = off
+    monkeypatch.setenv("REPEAT_BORDERLINE_N", "3")
+    monkeypatch.setenv("BORDERLINE_MARGIN", "0.08")
+    n, m = tr._borderline_config()
+    assert n == 3 and m == 0.08
+    # 이상값 → safe fallback
+    monkeypatch.setenv("REPEAT_BORDERLINE_N", "abc")
+    monkeypatch.setenv("BORDERLINE_MARGIN", "xyz")
+    n, m = tr._borderline_config()
+    assert n == 1 and m == 0.05
+
+
+def test_phase5_rescore_borderline_noop_when_n_one():
+    """[Phase 5.2] N=1 (기본) 일 땐 remeasure 호출 없음, 원점수 그대로."""
+    calls = {"count": 0}
+
+    def _remeasure():
+        calls["count"] += 1
+        return 0.99
+
+    score, samples = tr._rescore_borderline(0.70, _remeasure, 0.70, n=1, margin=0.05)
+    assert score == 0.70
+    assert samples == [0.70]
+    assert calls["count"] == 0
+
+
+def test_phase5_rescore_borderline_noop_when_outside_margin():
+    """[Phase 5.2] 점수가 경계 밖이면 remeasure 호출 없음."""
+    calls = {"count": 0}
+
+    def _remeasure():
+        calls["count"] += 1
+        return 0.99
+
+    score, samples = tr._rescore_borderline(0.30, _remeasure, 0.70, n=5, margin=0.05)
+    assert score == 0.30
+    assert samples == [0.30]
+    assert calls["count"] == 0
+
+
+def test_phase5_rescore_borderline_uses_median_when_inside():
+    """[Phase 5.2] 경계 점수 + N=3 이면 remeasure 2회 호출, 3점 median 반환."""
+    next_scores = iter([0.80, 0.60])  # remeasure 는 2회 호출됨
+    calls = {"count": 0}
+
+    def _remeasure():
+        calls["count"] += 1
+        return next(next_scores)
+
+    score, samples = tr._rescore_borderline(0.72, _remeasure, 0.70, n=3, margin=0.05)
+    assert calls["count"] == 2
+    # 수집 순서: [0.72, 0.80, 0.60] — sorted=[0.60, 0.72, 0.80], median=0.72
+    assert score == 0.72
+    assert sorted(samples) == [0.60, 0.72, 0.80]
+
+
+def test_phase5_calibration_block_empty():
+    """[Phase 5.1] 보정 세트가 0 case 이면 enabled=False + 정상 구조 반환."""
+    tr.SUMMARY_STATE["_calib_raw"] = {"turn_count": 0, "case_ids": [], "per_metric_scores": {}}
+    block = tr._build_calibration_block()
+    assert block["enabled"] is False
+    assert block["turn_count"] == 0
+    assert block["per_metric"] == {}
+    assert block["overall"]["score_count"] == 0
+
+
+def test_phase5_calibration_block_with_scores():
+    """[Phase 5.1] per_metric_scores 로부터 mean/std/min/max 산출."""
+    tr.SUMMARY_STATE["_calib_raw"] = {
+        "turn_count": 2,
+        "case_ids": ["policy-pass-clean", "task-pass-simple"],
+        "per_metric_scores": {
+            "TaskCompletion": [1.0, 0.95, 0.90],
+            "AnswerRelevancyMetric": [0.88, 0.92],
+        },
+    }
+    block = tr._build_calibration_block()
+    assert block["enabled"] is True
+    assert block["turn_count"] == 2
+    assert block["case_ids"] == ["policy-pass-clean", "task-pass-simple"]
+    tc = block["per_metric"]["TaskCompletion"]
+    assert tc["count"] == 3
+    assert abs(tc["mean"] - 0.95) < 1e-6
+    assert tc["min"] == 0.90 and tc["max"] == 1.0
+    assert tc["std"] > 0
+    overall = block["overall"]
+    assert overall["score_count"] == 5
+    assert overall["mean"] is not None
+    assert overall["std"] >= 0
+
+
+def test_phase5_html_header_shows_calibration_and_judge_calls():
+    """[Phase 5.1] HTML 헤더에 calibration 편차 + judge_calls_total 노출."""
+    from reporting.html import render_summary_html
+
+    state = {
+        "run_id": "p5-001",
+        "target_url": "", "target_type": "http", "judge_model": "",
+        "langfuse_enabled": False,
+        "thresholds": {}, "metric_guide": {},
+        "totals": {
+            "conversations": 0, "passed_conversations": 0, "failed_conversations": 0,
+            "turns": 0, "passed_turns": 0, "failed_turns": 0,
+            "conversation_pass_rate": 0, "turn_pass_rate": 0,
+        },
+        "metric_averages": {},
+        "indicators": {},
+        "conversations": [],
+        "aggregate": {
+            "judge": {"model": "qwen3-coder:30b", "base_url": "http://127.0.0.1:11434", "temperature": 0},
+            "dataset": {"path": "/tmp/golden.csv", "sha256": "abc", "rows": 11, "mtime": "2026-04-22T08:00:00+00:00"},
+            "calibration": {
+                "enabled": True,
+                "turn_count": 2,
+                "case_ids": ["policy-pass-clean", "task-pass-simple"],
+                "per_metric": {"TaskCompletion": {"count": 2, "mean": 0.95, "std": 0.05, "min": 0.9, "max": 1.0}},
+                "overall": {"score_count": 2, "mean": 0.95, "std": 0.05},
+            },
+            "judge_calls_total": 42,
+            "borderline_policy": {"repeat_n": 3, "margin": 0.05},
+        },
+    }
+
+    html = render_summary_html(state)
+    assert "Judge 변동성:" in html
+    assert "보정 σ=" in html
+    assert "Judge calls=42" in html
+    assert "경계 재실행 N=3" in html
+
+
+def test_phase5_html_header_calibration_disabled():
+    """[Phase 5.1] 보정 세트 미설정 시에도 헤더 라인 정상 (placeholder)."""
+    from reporting.html import render_summary_html
+
+    state = {
+        "run_id": "p5-002",
+        "target_url": "", "target_type": "http", "judge_model": "",
+        "langfuse_enabled": False,
+        "thresholds": {}, "metric_guide": {},
+        "totals": {
+            "conversations": 0, "passed_conversations": 0, "failed_conversations": 0,
+            "turns": 0, "passed_turns": 0, "failed_turns": 0,
+            "conversation_pass_rate": 0, "turn_pass_rate": 0,
+        },
+        "metric_averages": {},
+        "indicators": {},
+        "conversations": [],
+        "aggregate": {
+            "calibration": {"enabled": False, "turn_count": 0, "case_ids": [], "per_metric": {}, "overall": {}},
+            "judge_calls_total": 0,
+            "borderline_policy": {"repeat_n": 1, "margin": 0.05},
+        },
+    }
+
+    html = render_summary_html(state)
+    assert "보정 세트: 미설정" in html
+    assert "Judge calls=0" in html
+    # N=1 (기본 off) 은 재실행 배지 미출력
+    assert "경계 재실행" not in html
