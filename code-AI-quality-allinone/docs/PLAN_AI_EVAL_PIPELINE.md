@@ -24,7 +24,7 @@
 - **5단계 운영**: ⑩ Latency (정보성), ⑪ Token Usage (API 전용)
 - **대상 분기**: `TARGET_TYPE ∈ {http, ui_chat}` + `retrieval_context` 유무
 - **Judge**: 기본 `qwen3-coder:30b`, temperature=0, env 오버라이드 허용
-- **Wrapper 모드**: `local_ollama_wrapper` / `openai_wrapper` / `gemini_wrapper` / `direct`
+- **Wrapper 모드 (현 phase)**: **`local_ollama_wrapper` 단일 모드로 한정**. README 정본은 4 모드를 정의하나, 사용자 결정으로 현 phase 에서는 로컬 LLM(Ollama) 만 사용. `openai_wrapper`/`gemini_wrapper`/`direct` 는 향후 phase 로 이연.
 
 ### 1.2 Langfuse 스코프
 
@@ -67,11 +67,12 @@
 카테고리: **G** 스펙 위반 · **R** 리포트 가독성 · **Q** 운영 품질.
 
 ### 🔴 G — 스펙 위반
-| ID | 항목 | 증거 | 영향 |
-|---|---|---|---|
-| G1 | `openai_wrapper_api.py` 미구현 | [04:275](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L275) | `TARGET_MODE=openai_wrapper` 하드 크래시 |
-| G2 | `gemini_wrapper_api.py` 미구현 | [04:331](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L331) | `TARGET_MODE=gemini_wrapper` 하드 크래시 |
-| G3 | Langfuse-off 시 Latency/Token Usage 지표 미기록 | [test_runner.py:1022,:1567](code-AI-quality-allinone/eval_runner/tests/test_runner.py#L1022) | 11지표 중 ⑩⑪ 커버리지 실패 |
+| ID | 항목 | 증거 | 영향 | 현 phase 처리 |
+|---|---|---|---|---|
+| G1 | `openai_wrapper_api.py` 미구현 | [04:275](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L275) | `TARGET_MODE=openai_wrapper` 하드 크래시 | **이연** — 모드 자체를 Jenkinsfile choice 에서 제거하므로 위험 제거 |
+| G2 | `gemini_wrapper_api.py` 미구현 | [04:331](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L331) | `TARGET_MODE=gemini_wrapper` 하드 크래시 | **이연** — 동일 |
+| G3 | Langfuse-off 시 Latency/Token Usage 지표 미기록 | [test_runner.py:1022,:1567](code-AI-quality-allinone/eval_runner/tests/test_runner.py#L1022) | 11지표 중 ⑩⑪ 커버리지 실패 | Phase 1 의 **단독 핵심 스펙 위반** |
+| G4 | Jenkinsfile 의 사용 불가 모드 노출 | [04:60-69, :246-353](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L60) | 운영자가 미구현 모드를 선택해 빌드를 깨뜨릴 수 있음 | Phase 1 에서 모드 단순화 (`local_ollama_wrapper` 단일) |
 
 ### 🟣 R — 리포트 가독성·이해도
 | ID | 항목 | 현 상태 | 목표 |
@@ -129,9 +130,9 @@
 
 ---
 
-### Phase 1 — Spec Compliance (G 해소)
+### Phase 1 — Spec Compliance (로컬 LLM 단독, G3 + G4)
 
-**목적**: 11지표 커버리지를 완전하게 만들고, Jenkinsfile 이 선언한 모든 `TARGET_MODE` 를 실동작시킨다.
+**목적**: 11지표 커버리지를 Langfuse off 상태에서도 완전하게 만들고, Jenkinsfile 의 모드 선택을 **현재 실동작 가능한 `local_ollama_wrapper` 단일** 로 정리한다. G1/G2(외부 API 래퍼) 는 본 phase 에서 다루지 않음.
 
 **진입 조건**: Phase 0 완료.
 
@@ -140,19 +141,20 @@
   - `test_runner.py` 가 per-turn 결과를 summary 에 합산할 때 `latency_ms`, `usage` 포함
   - summary 스키마: `conversations[*].turns[*].{latency_ms, usage}` + `aggregate: {latency_p50, latency_p95, latency_p99, total_tokens}`
   - Langfuse 경로 제거 금지 (유지)
-- **1.2** G1 — `openai_wrapper_api.py` 실장
-  - [ollama_wrapper_api.py](code-AI-quality-allinone/eval_runner/ollama_wrapper_api.py) 템플릿으로 `http.server` 기반 구현
-  - Jenkinsfile 이 전달하는 env 수용: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`
-  - 출력 스키마 `{answer, docs, usage}` — `schema.json` 준수
-- **1.3** G2 — `gemini_wrapper_api.py` 실장
-  - G1 과 동일 구조 + throttling env (`GEMINI_MIN_INTERVAL_SEC`, `GEMINI_MAX_RETRIES`, `GEMINI_RETRY_BASE_SEC`, `GEMINI_RETRY_MAX_SEC`)
+- **1.2** G4 — Jenkinsfile 모드 단순화 (Q6 동시 해소)
+  - [04:60-69](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L60) `TARGET_MODE` Choice 옵션을 `local_ollama_wrapper` 단일로 축소
+  - [04:163-455](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L163) Stage 1-2 의 case 분기 중 `openai_wrapper` / `gemini_wrapper` / `direct` 블록 제거 → 결과적으로 Q6 (3× 중복) 도 자동 해소
+  - 외부 API 관련 파라미터 (`OPENAI_*`, `GEMINI_*`, `TARGET_AUTH_HEADER`) 도 정리. 단 `TARGET_URL` 은 호환성 위해 hidden default 로 유지 가능
+  - 미래 재확장 대비: 제거 직전 코드를 `archive/` 디렉터리로 이동하지는 않음 (git history 가 보존)
+- **1.3** (이연) G1/G2 OpenAI/Gemini 래퍼 실장 — 별도 phase 또는 별도 브랜치로
 
 **검증 게이트**:
-- 골든 하네스 통과 (Phase 0 하네스가 Phase 1 변화를 허용하도록 golden snapshot 업데이트 시 리뷰 필수)
-- `LANGFUSE_PUBLIC_KEY=""` 상태로 실행 → summary.json 에 latency/usage 모든 턴 기록
-- Jenkins 에서 4가지 `TARGET_MODE` 각 1회 성공 실행 (`local_ollama_wrapper`, `openai_wrapper`, `gemini_wrapper`, `direct`)
+- 골든 하네스 통과
+- `LANGFUSE_PUBLIC_KEY=""` 상태로 실행 → summary.json 에 11지표 전부 (latency/usage 모든 턴) 기록
+- Jenkins 에서 `TARGET_MODE=local_ollama_wrapper` 1회 성공 실행
+- Jenkins UI 에서 모드 드롭다운에 **단일 옵션만** 노출 확인
 
-**종료 조건**: 11지표가 Langfuse 유무와 무관하게 summary.json 에 전부 존재.
+**종료 조건**: 11지표 커버리지가 Langfuse 유무와 무관하게 완전. `04 AI평가` Job 이 미구현 모드 선택으로 깨질 가능성 0.
 
 ---
 
@@ -217,21 +219,18 @@
 
 ---
 
-### Phase 4 — Structure Cleanup (Q4~Q6)
+### Phase 4 — Structure Cleanup (Q4, Q5)
 
-**목적**: 유지보수 비용을 줄인다. 이 Phase 는 기능 변화 0 (행위 보존 리팩터 + Jenkins 중복 제거).
+**목적**: 유지보수 비용을 줄인다. 이 Phase 는 기능 변화 0 (행위 보존 리팩터). Q6 는 Phase 1 의 모드 단순화로 자동 해소되었으므로 본 Phase 에서 제외.
 
 **진입 조건**: Phase 3 완료 (골든 하네스가 성숙).
 
 **Steps**:
-- **4.1** Q6 — Jenkinsfile 래퍼 기동 중복 제거
-  - [04:192–353](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline#L192) 의 3× `nohup → /health` 패턴을 Groovy 클로저 `startWrapper(name, cmd, port)` 로 추출
-  - Jenkins Replay 로 console 로그 line-by-line 비교
-- **4.2** Q5 — Promptfoo in-process 전환
+- **4.1** Q5 — Promptfoo in-process 전환
   - `security_assert.py` 가 이미 Python 이므로 regex 체크는 in-process
   - `_promptfoo_policy_check` → `_run_policy_check(text) -> list[Violation]` 치환
   - LLM 기반 assertion 필요 시만 subprocess 유지
-- **4.3** Q4 — `test_runner.py` 분할 (Phase 2 의 reporting/ 분리 이후 남은 부분)
+- **4.2** Q4 — `test_runner.py` 분할 (Phase 2 의 reporting/ 분리 이후 남은 부분)
   - `eval_runner/dataset.py` — 로딩/정규화
   - `eval_runner/policy.py` — Phase 1 정책 + schema 검증
   - `eval_runner/scoring.py` — GEval + DeepEval 메트릭 실행
@@ -280,6 +279,7 @@
 - `c:/developer/ttcScripts/e2e-pipeline` (별도 레포)
 - 신규 지표 추가, Type A/B/C 분기 (README 미명시)
 - Ragas 도입
+- **OpenAI/Gemini 래퍼 (G1/G2)** 및 `direct` 모드 — 현 phase 에서 모드 제거. 향후 별도 phase 에서 재도입 (필요 시)
 
 ---
 
@@ -294,11 +294,11 @@
 - [code-AI-quality-allinone/jenkinsfiles/04 AI평가.jenkinsPipeline](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline) — Phase 1 래퍼 연결, Phase 2 publishHTML, Phase 4 중복 제거
 
 **신규 파일 (계획 상)**:
-- `eval_runner/openai_wrapper_api.py`, `eval_runner/gemini_wrapper_api.py` (Phase 1)
 - `eval_runner/reporting/{__init__,state,html,translate}.py` (Phase 2)
 - `eval_runner/{dataset,policy,scoring,runner}.py` (Phase 4)
 - `eval_runner/tests/{test_golden.py, fixtures/tiny_dataset.csv, fixtures/expected_summary.json}` (Phase 0)
 - `eval_runner/docs/REPORT_SPEC.md` (Phase 0)
+- (이연) `eval_runner/openai_wrapper_api.py`, `eval_runner/gemini_wrapper_api.py` — G1/G2, 별도 phase
 
 ---
 
@@ -308,7 +308,7 @@
 
 **Phase 별 게이트**:
 - **Phase 0**: 골든 하네스가 `main` 에서 pass, REPORT_SPEC 승인
-- **Phase 1**: 4가지 `TARGET_MODE` 각 1회 성공, Langfuse off 로 summary.json 에 11지표 전부 존재
+- **Phase 1**: `TARGET_MODE=local_ollama_wrapper` 1회 성공, Jenkins UI 에 단일 모드만 노출, Langfuse off 로 summary.json 에 11지표 전부 존재
 - **Phase 2**: 리포트 사용성 A/B — 리뷰어가 30초 내 빌드 결과 이해
 - **Phase 3**: 메타 3종(judge/dataset/error breakdown) 리포트 상시 노출
 - **Phase 4**: 골든 byte-match, `test_runner.py` ≤ 100 LOC
@@ -327,17 +327,17 @@
 | Phase | Done 시 사용자에게 보이는 변화 |
 |---|---|
 | 0 | 기획서 제거됨. `pytest tests/test_golden.py` 수동 재현 가능. |
-| 1 | Jenkins 에서 OpenAI/Gemini 모드 선택이 하드 크래시 없이 동작. summary.json 에 latency/usage 전체 기록. |
+| 1 | Jenkins 모드 드롭다운이 `local_ollama_wrapper` 단일로 정리. summary.json 에 latency/usage 전체 기록. 미구현 모드 선택으로 인한 빌드 깨짐 0. |
 | 2 | Jenkins 탭 `AI Eval Summary` 이 **한눈에 보이는 대시보드** 로 바뀜 (헤더 + 11지표 카드 + case drill-down). |
 | 3 | 모든 리포트가 Judge/Dataset 버전을 자기기록. 시스템 에러와 품질 실패가 색상·섹션 분리. |
-| 4 | `test_runner.py` 가 작아짐(≤100 LOC). Jenkinsfile 래퍼 기동 중복 제거. Promptfoo 의존도 감소. |
+| 4 | `test_runner.py` 가 작아짐(≤100 LOC). Promptfoo 의존도 감소. |
 | 5 | 리포트에 "Judge 변동성 편차" 수치 노출, 경계 case N-repeat 옵션 활성화 가능. |
 
 ### 전체 Done (모든 Phase 완료 시)
 
 - [ ] 기획서 파일 제거 + 정본 선언 기록
 - [ ] Phase 0 골든 하네스가 Phase 1~5 모든 변경을 회귀 검출
-- [ ] Jenkins 에서 `04 AI평가` Job 의 모든 `TARGET_MODE` 가 성공 실행
+- [ ] Jenkins 에서 `04 AI평가` Job 의 `TARGET_MODE=local_ollama_wrapper` 가 성공 실행 (현 phase 단일 모드)
 - [ ] Langfuse 크리덴셜 유무와 무관하게 11지표 전체 summary.json 기록
 - [ ] `AI Eval Summary` Jenkins 탭이 운영자 1차 판단 도구로 기능
 - [ ] 모든 리포트가 `judge_meta`, `dataset_meta`, `error_type_breakdown` 3종 메타 포함
