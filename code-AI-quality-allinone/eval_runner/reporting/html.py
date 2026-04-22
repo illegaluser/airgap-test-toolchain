@@ -219,6 +219,44 @@ def _build_deepeval_metrics_display(turn: dict):
     return display_metrics
 
 
+def _render_exec_summary_block(exec_summary: dict | None) -> str:
+    """
+    R1.1 — 🤖 LLM 임원 요약 섹션. `exec_summary` 는 `reporting.narrative.generate_exec_summary`
+    의 반환 dict: `{text, source, role, reason?}`. 미설정이면 빈 문자열 반환 (섹션 자체 생략).
+
+    provenance 배지는 source 에 따라:
+    - "llm"      → 🤖 LLM 생성
+    - "cached"   → 🤖 LLM (캐시)
+    - "fallback" → 📋 기본 메시지
+    """
+    if not exec_summary or not isinstance(exec_summary, dict):
+        return ""
+    text = str(exec_summary.get("text") or "").strip()
+    if not text:
+        return ""
+
+    source = str(exec_summary.get("source") or "fallback").lower()
+    badge_class = {
+        "llm": "llm",
+        "cached": "cached",
+        "fallback": "fallback",
+    }.get(source, "fallback")
+    badge_label = {
+        "llm": "🤖 LLM 생성",
+        "cached": "🤖 LLM (캐시)",
+        "fallback": "📋 기본 메시지",
+    }.get(source, "📋 기본 메시지")
+
+    return (
+        "<div class='exec-summary'>"
+        "<h2>이번 빌드 한 줄 요약"
+        f"<span class='provenance {badge_class}'>{escape(badge_label)}</span>"
+        "</h2>"
+        f"<div class='body'>{escape(text)}</div>"
+        "</div>"
+    )
+
+
 def _build_multi_turn_display(conversation: dict):
     """
     Multi-turn 지표 표시를 구성합니다.
@@ -420,6 +458,10 @@ def render_summary_html(state: dict) -> str:
             )
         return "".join(blocks)
 
+    # R1.1: LLM 임원 요약 — test_runner._write_summary_report 가 미리 state 에 주입.
+    #        LLM 호출 중복 방지를 위해 여기서는 read-only.
+    exec_summary_html = _render_exec_summary_block(state.get("aggregate", {}).get("exec_summary"))
+
     metric_average_rows = "".join(
         f"<tr><td>{escape(METRIC_DISPLAY_NAMES.get(name, name))}</td><td>{value}</td></tr>"
         for name, value in sorted(metric_averages.items())
@@ -473,10 +515,18 @@ def render_summary_html(state: dict) -> str:
     .skip {{ background: #e2e8f0; color: #334155; }}
     .empty {{ color: #64748b; margin: 8px 0 0; }}
     .note {{ background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; border-radius: 8px; padding: 8px; margin-top: 10px; }}
+    .exec-summary {{ background: #ecfeff; border: 1px solid #67e8f9; border-radius: 12px; padding: 14px 16px; margin: 8px 0 16px; }}
+    .exec-summary h2 {{ font-size: 15px; color: #0e7490; display: flex; align-items: center; gap: 6px; }}
+    .exec-summary .body {{ font-size: 15px; line-height: 1.6; color: #0f172a; margin-top: 6px; white-space: pre-line; }}
+    .provenance {{ display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; margin-left: 6px; vertical-align: middle; }}
+    .provenance.llm {{ background: #cffafe; color: #0e7490; }}
+    .provenance.cached {{ background: #e0e7ff; color: #3730a3; }}
+    .provenance.fallback {{ background: #fef3c7; color: #92400e; }}
   </style>
 </head>
 <body>
   <h1>AI 에이전트 평가 요약</h1>
+  {exec_summary_html}
   <div class="meta">
     <p>실행 ID: <strong>{escape(str(state['run_id']))}</strong></p>
     <p>평가 대상: {escape(str(state.get('target_url') or ''))} ({escape(str(state.get('target_type') or ''))})</p>

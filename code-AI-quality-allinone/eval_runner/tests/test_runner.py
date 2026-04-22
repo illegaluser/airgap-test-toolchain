@@ -69,6 +69,7 @@ from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 from adapters.registry import AdapterRegistry
 from reporting.html import render_summary_html
+from reporting.narrative import generate_exec_summary
 
 try:
     from langfuse import Langfuse
@@ -412,9 +413,17 @@ def _write_summary_report():
     """
     최신 누적 상태를 JSON/HTML 두 형식으로 모두 저장합니다.
     JSON은 후처리/자동화용, HTML은 Jenkins 아티팩트에서 사람이 바로 읽기 위한 용도입니다.
+
+    Phase 2.1 (R1.1): 리포트 생성 시점에 LLM 임원 요약을 한 번 생성해
+    `SUMMARY_STATE["aggregate"]["exec_summary"]` 에 저장. 이후 HTML 렌더는 이
+    필드를 읽기만 하므로 LLM 호출이 빌드당 1 회로 제한됨. LLM 비활성/실패 시
+    narrative.generate_exec_summary 가 하드코딩 fallback 으로 degrade.
     """
     _recompute_summary_totals()
     SUMMARY_STATE["generated_at"] = int(time.time())
+
+    aggregate = SUMMARY_STATE.setdefault("aggregate", {})
+    aggregate["exec_summary"] = generate_exec_summary(SUMMARY_STATE)
 
     with open(REPORT_JSON_PATH, "w", encoding="utf-8") as report_file:
         json.dump(SUMMARY_STATE, report_file, ensure_ascii=False, indent=2)
