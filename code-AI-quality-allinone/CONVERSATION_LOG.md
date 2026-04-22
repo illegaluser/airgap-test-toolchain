@@ -7626,3 +7626,348 @@ auto-merge 직후 README §8.5 (04 AI평가 섹션) 가 main 쪽에서 작성된
 
 ---
 
+## Session 2026-04-22 (continuation) — 통합 이미지 E2E 검증 + 04 AI 평가 실행 + Judge provider 확장 논의
+
+### 진입 맥락
+
+직전 Section (`integrate/main-ai-eval-ttc` 생성·머지·README §8.5 재작성·푸시) 직후 사용자 요청:
+> "통합이미지를 빌드하고 서비스를 구동하면 몇개의 파이프라인을 볼 수 있지?"
+→ "5개의 파이프라인이 정상동작하는지 확인하자. 일단 이미지 빌드, 컨테이너 구동 및 프로비저닝을 하자"
+
+직전 세션에서 "통합 브랜치 E2E 미실행" 으로 남겨두었던 항목을 본 세션이 받아 실제 실행·검증까지 진행.
+
+### 단계 ① — 파이프라인 개수 확인 (답변)
+
+통합 이미지의 Jenkins 에는 총 **5 개** Job:
+
+| # | Job | 역할 |
+|:-:|-----|------|
+| 00 | `00-코드-분석-체인` | P1→P2→P3 오케스트레이터 |
+| 01 | `01-코드-사전학습` | tree-sitter 청킹 → Dify KB 적재 |
+| 02 | `02-코드-정적분석` | SonarQube 스캔 |
+| 03 | `03-정적분석-결과분석-이슈등록` | Sonar → Dify LLM → GitLab Issue (Dual-path FP) |
+| 04 | `04-AI평가` | 11 지표 × 5 단계 Golden Dataset 평가 (eval_runner) |
+
+일상 운용상 버튼을 누르는 Job 은 2 개(`00`, `04`), 나머지는 체인이 자동 실행.
+
+### 단계 ② — 통합 이미지 클린 빌드
+
+- `offline-prefetch.sh` 기반 클린 빌드 50 stages 전 구간 통과.
+- 주요 지점: pip(deepeval/langchain/pytest) → Playwright Chromium 설치 → Node v22 → Sonar/Jenkins plugins + PG init → OCI export → tarball → Docker load.
+- 총 소요 ≈ 빌드 9 분.
+
+### 단계 ③ — 컨테이너 기동 + 프로비저닝
+
+- provision 7 분 완주.
+- **Jenkins Jobs 5 종** 등록 확인 (00·01·02·03·04).
+- **프로비저닝 마커 11 종** 전부 생성: `dataset_api_key` · `dataset_id` · `default_models.ok` · `gitlab_root_pat` · `jenkins_sonar_integration.ok` · `ollama_embedding.ok` · `ollama_plugin.ok` · `sonar_token` · `workflow_api_key` · `workflow_app_id` · `workflow_published.ok`.
+- **플러그인 상태**: `sonar 2.18.2` · `pipeline-build-step` · `workflow-aggregator` 모두 active.
+- **서비스 4 종 HTTP 200**: Jenkins `:28080` / Dify `:28081` / SonarQube `:29000` / GitLab `:28090`.
+
+### 단계 ④ — 04 AI 평가 실행 (첫 시도 #1)
+
+- 사용자 지시: "옵션B" (04-AI평가 먼저).
+- Fixture CSV → `golden.csv` 복사 후 빈 params 로 Active Choices 모델 목록 로딩용 dry-run.
+- JUDGE 기본값 `qwen3.5:4b` 가 호스트 Ollama 에 없음을 발견 → `qwen3-coder:30b` 로 재지정 시도.
+- 이어 TARGET 기본값 `gemma4:e2b` 역시 호스트에 없음 확인. 실제 호스트 모델 목록: `qwen3-coder:30b`, `gemma4:e4b`, `gemma4:26b`, `bona/bge-m3-korean`, `bge-m3`, `llama3.2-vision`.
+
+### 단계 ⑤ — 04 AI 평가 실행 #2 (JUDGE=gemma4:26b / TARGET=gemma4:e4b)
+
+사용자 결정: "평가모델은 gemma4:26b로 하자. 평가대상 모델은 gemma4:e4b."
+
+- 빌드 기동 → Ollama 에 gemma4:26b(21 GB) + gemma4:e4b(12 GB) 동시 VRAM 로드.
+- 10 초 간격 background Monitor task 로 진행 추적.
+- 관측 결과(요약):
+
+| t (경과) | 이벤트 |
+|----------|--------|
+| 010~040s | rag-1 진행, Judge 첫 호출 대기 (gemma4:26b 첫 로드) |
+| 060s | 여전히 rag-1 Judge 대기 |
+| ~100s | rag-1 **FAILED**, rag-2 진입 |
+| 290s | rag-2 종료(fail), task-1 진입 — conversation 당 ≈ 4 분 |
+| 310s | mt-1(2-turn multi-turn) 진입 |
+| 570s | mt-1 종료 → 4 번째 conversation |
+| 600s | 10 분 경과, 남은 6 개 conversation 예상 20~30 분 추가 |
+
+- 병목: DeepEval GEval 체인이 conversation 당 평균 10~15 LLM call × 20~40 s/call → **총 25~100 분 예상**.
+- 독립 `api/generate` 호출도 120 s 타임아웃 → Judge 가 Ollama 큐를 점유 중.
+
+### 단계 ⑥ — 04 AI 평가 실행 #3 (JUDGE 교체: qwen3.5:4b 대체 시도)
+
+속도 완화를 위해 Judge 모델 경량화 시도:
+
+- 호스트에서 `qwen3.5:4b` 계열 pull 후 재실행.
+- rag-1 → FAILED, rag-2 4.7 분 처리, mt-1 진입 후 10 분 이상 지속.
+- 결론: 모델 체급을 낮춰도 **DeepEval GEval 의 긴 reasoning chain** 자체가 구조적 병목이라 대폭 개선되지 않음.
+
+### 단계 ⑦ — Judge provider 확장 논의 (미착수)
+
+사용자 질문: "judge model을 claude나 codex, gemini로 설정할수도 있게 설정해볼까?"
+
+제시한 설계 초안:
+
+- **04 Jenkinsfile 파라미터 추가**
+  - `JUDGE_PROVIDER`: choice (`ollama` / `openai` / `anthropic` / `gemini`, 기본 `ollama`)
+  - `JUDGE_API_KEY`: password (provider ≠ ollama 시 필수)
+  - `JUDGE_MODEL`: provider 별 유효값 힌트 (ollama → 호스트 모델 / openai → `gpt-4o-mini` / anthropic → `claude-sonnet-4-5` / gemini → `gemini-2.5-flash`)
+- **eval_runner 변경**
+  - Judge 인스턴스 생성 지점에서 `JUDGE_PROVIDER` env 분기
+  - ollama 는 기존 OpenAI-compat wrapper 유지
+  - 외부 provider 는 DeepEval 의 `OpenAIModel` / `AnthropicModel` / `GeminiModel` 공식 클래스 직접 인스턴스화
+- **폐쇄망 원칙 보호**
+  - README 경고 섹션: 외부 API judge 는 개발/검증 용도, 운영 airgap 은 ollama 유지
+  - provider ≠ ollama 시 Jenkins Console 에 WARN 로그
+
+### 단계 ⑧ — 구독 vs API 과금 안내
+
+사용자가 Claude Max / ChatGPT Plus / Gemini Pro(Google One) 구독 보유, API 키 없음 상태 확인. 안내 요지:
+
+| 서비스 | UI 구독 | API 키 (별도 과금) |
+|--------|---------|---------------------|
+| ChatGPT Plus | chatgpt.com | platform.openai.com — gpt-4o-mini $0.15/$0.60 per 1M tok |
+| Claude Max | claude.ai | console.anthropic.com — Sonnet $3/$15 per 1M tok |
+| Gemini Pro | gemini.google.com | aistudio.google.com — **무료 tier 15 req/min, 1500 req/day** |
+
+→ **즉시 무료 사용 가능한 건 Gemini API 뿐**. 10 conversation × 15 call ≈ 150 call 로 무료 tier 여유.
+
+### 세션 종료
+
+마지막 사용자 메시지: "현재 빌드 끝까지 대기해보자. 다운된건 아니지?"
+
+이후 Assistant 가 `ttc-allinone` 내 pytest 프로세스 / Ollama / Jenkins 상태 확인 Bash 명령을 실행하던 중 **Anthropic 사용 한도 도달(`You've hit your limit · resets Apr 24 at 10am`)** 로 세션 강제 종료. 빌드 #3 는 계속 실행 중이었음.
+
+### 성과 정리
+
+- ✅ 통합 이미지 클린 빌드 + 기동 + provision 무결히 완주 — P0~P3 + P4 동일 이미지 공존 검증.
+- ✅ Jenkins 5 Job · 프로비저닝 마커 11 종 · 4 서비스 HTTP 200 전수 확인.
+- ✅ 04 AI 평가가 호스트 Ollama 에 실제 요청을 보내며 구동됨 (wrapper → Ollama → DeepEval 경로 동작 확인).
+- ⚠️ 평가 속도 실무 기준 매우 느림 (로컬 Ollama 24B~26B judge 로 conversation 당 4~10 분) — 운영 적용 전 Judge provider 확장 또는 metric subset 선별 필요.
+- ⚠️ rag-1/rag-2 FAILED — golden.csv 기준치 미달로 보임. 원인 분석 (expected vs actual + threshold) 후속 필요.
+
+### 미반영·후속 과제
+
+1. **Judge provider 확장 구현** — 위 §⑦ 설계 그대로 eval_runner + 04 Jenkinsfile 에 반영. Gemini 무료 tier 가 가장 현실적 — 먼저 Gemini provider 붙이고 smoke 통과 후 openai/anthropic 순차 추가.
+2. **기본 JUDGE/TARGET 값 정리** — 현재 `qwen3.5:4b` / `gemma4:e2b` 기본값이 실제 호스트 모델 네이밍과 불일치. provision 단계에서 존재 모델을 enum 으로 주입하거나, Jenkinsfile Active Choices 를 호스트 `ollama list` 기반으로 동적 갱신하도록 통일.
+3. **conversation 실패 원인 분석** — 빌드 완료 후 `summary.html` / `summary.json` 에서 rag-1 · rag-2 실패 metric 및 threshold 기록 확인. fixture 품질 문제인지, Judge 판정 엄격성 문제인지 분리.
+4. **Metric subset 모드** — 전체 11 지표가 아닌 "fast profile"(Format · Policy · Task Completion · Answer Relevancy 만) 옵션 도입 시 경량 smoke 평가 가능. 04 Jenkinsfile `METRIC_PROFILE` param 후보.
+5. **빌드 #3 최종 결과 확인** — rate limit 으로 종료되었으므로 다음 세션 진입 시 해당 Jenkins 빌드 상태 · report artifact 우선 수거.
+
+### 이번 세션 커밋
+
+없음 — 본 세션은 **실행·검증·설계 논의 단계** 로 코드·문서 변경을 커밋하지 않았다. Judge provider 확장 구현은 후속 세션에서 착수.
+
+---
+
+
+
+## Session 2026-04-22 (continuation) — README 단일 정보 원천 승격 + AI_EVAL_PIPELINE_README 완전 흡수
+
+### 진입 맥락
+
+직전 세션에서 README §3.6 / §6.4 / §7.7 / §8.5 / §12 에 통합 브랜치 E2E 실측 수치와 04 AI 평가 first-run 가이드를 1차 반영했다. 그러나 여전히 `docs/AI_EVAL_PIPELINE_README.md` (850 라인) 가 별도 문서로 존재하면서 README §8.5 말미에 "상세 가이드는 두 문서에..." 포인터가 남아있어 **문서 트리가 4-갈래** (README · AI_EVAL_PIPELINE_README · eval_runner/README · docs/PLAN) 로 분산된 상태였다.
+
+사용자 지시:
+> "readme.md가 정보의 원천이 되어야해. 다른 문서가 없더라도 해당 문서만으로 모든 정보를 얻어서 빌드하고 구동 및 사용할 수 있어야해."
+> "macos / windows wsl2 환경에서 모두 설치 및 운용가능하도록 가이드해야해."
+> "비개발자도 이 문서를 이해하고 따라할 수 있어야 한다. 가독성 확보가 최우선 목표다."
+> "통합브랜치 기준으로 readme.md 문서를 작성해야해."
+
+### 결정된 4 원칙
+
+1. README 단독으로 빌드→구동→사용→해석→트러블까지 완결 (다른 문서 열 필요 없음).
+2. macOS Apple Silicon (Metal) + Windows WSL2 (NVIDIA CUDA) 동등 지원.
+3. 비개발자 독자 우선 — 용어 풀이·예시 선행·표 위주·TL;DR 상단.
+4. `integrate/main-ai-eval-ttc` 브랜치 기준 (5 Jobs 공존).
+
+### Phase 1 — AI_EVAL_PIPELINE_README.md 내용 소진
+
+`Explore` 서브에이전트로 AI_EVAL 문서와 README 겹침 분석 → 중복 ≈ 40% (지표/모드/파라미터/결과물), 살려야 할 unique 5건 확인: DSL 상세 문법 / summary.html 시각 예시 / summary.json 스키마 / 실패 패턴 진단표 / 진단 명령어 9종.
+
+추가로 `CONVERSATION_LOG.md` 를 별도 Explore 로 마이닝해 Phase 0~6 의 사용자-관측 가능한 사실들 수확: deepeval 3.9.7 업그레이드 이유, dify-plugin-daemon race fix (autostart=false + 수동 start), Phase 3 메타데이터 immutability (judge.digest / dataset.sha256 / error_type), Phase 5 Q7 calibration + `--repeat-borderline N`, Phase 6 `TARGET_REQUEST_SCHEMA ∈ {standard, openai_compat}`, CascadeChoice sandbox=false + 9 시그니처 승인 요건, ollama_wrapper_api.py cold-start probe 300s WARN, pandas NaN → None 치환, CUDA_VISIBLE_DEVICES gotcha.
+
+### Phase 2 — README 타겟 확장
+
+**§1 상단 블록 재작성**: 통합 브랜치 명시 + `git checkout integrate/main-ai-eval-ttc` 예시 + "단일 정보 원천" 선언 + "비개발자 독자" 명시.
+
+**§7.7 04 AI 평가 first-run** — Step 1~5 를 **Step 0~7 로 확장** (README 라인 수 약 260 라인 추가):
+
+- Step 0 — 호스트 Ollama + GPU 사전 점검 (`ollama list` / `ollama ps`, macOS Metal vs WSL2 CUDA 분기 블록, `CUDA_VISIBLE_DEVICES` 함정, cold-start 예열 `curl /api/generate`).
+- Step 1 — Golden Dataset 준비 (CSV 컬럼 9종 완전 레퍼런스 표 · `success_criteria` DSL 예시 → 규칙 순서 · `conversation_id`+`turn_id` 의미 · 멀티턴/RAG 케이스 예시 · `docker cp` 절차 · `UPLOADED_GOLDEN_DATASET` 안내).
+- Step 2 — 파라미터 등록용 첫 빌드 (#1 는 실패 정상).
+- Step 3 — 실제 파라미터 지정 (기본값 / 권장값 / 의미 14-열 표 · CascadeChoice 드롭다운 주의).
+- Step 4 — 진행 모니터링 (Stage 5단계 실측 표 · pytest 실시간 로그 예시 · VRAM/소요시간 실측 테이블 · 생존 확인 3-명령).
+- Step 5 — 결과 확인 5-A(위치) / 5-B(summary.html 4 구역 mock-up + "어디부터 보나") / 5-C(summary.json 완전 스키마).
+- Step 6 — 리포트로 의사결정 (pass/investigate/block 판정 기준 · judge.digest+dataset.sha256 회귀 비교 원칙 · calibration σ 임계).
+- Step 7 — 빌드 간 회귀 추적 (case_id 불변 원칙 + 최소 회귀 감지 bash 스크립트).
+
+**§8.5 04-AI평가 상세** — 8.5.1~8.5.6 으로 확장 재작성:
+
+- 8.5.1 Fail-Fast 다이어그램 + 5단계 11지표 "이 지표가 하는 일 + 언제 중요한가" 한 문장 풀이 (비개발자 독자 원칙).
+- 8.5.2 3 모드 (wrapper/http/ui_chat) + `TARGET_REQUEST_SCHEMA ∈ {standard, openai_compat}` Phase 6 반영.
+- 8.5.3 모듈 구성 — README 만 보고도 내부 이해 가능하도록 각 파일 1~2줄 기능.
+- 8.5.4 파라미터 14종 완전 레퍼런스 표 + CascadeChoice 승인 주의 + fallback 모델 주의 + Judge/Target 조합별 리소스 예상표 4행.
+- 8.5.5 artifact 트리 (summary.html/summary.json/results.xml/wrapper.log).
+- 8.5.6 **내부 구현에서 알아야 할 운영 사실 9개** (deepeval 3.9.7, dify-plugin-daemon race fix, ollama_wrapper cold-start probe, Phase 3 metadata lockdown, Phase 5 calibration, Phase 5 borderline repeat, pandas NaN, pytest realtime, JUnit plugin 부재 허용).
+
+**§12 트러블슈팅 확장**:
+
+- §12.10 로그 위치 → 진단 명령어 묶음 (4서비스 HTTP, Ollama /api/ps, summary.json 빠른 집계, pytest 실시간 로그 등 10+ 명령).
+- §12.14 신규 — 실패 패턴 → 원인 매핑 종합 진단표 10행.
+- §12.15 신규 — CascadeChoice 드롭다운 빈 상태 (Script Approval 9 시그니처 Groovy 승인 스크립트 인라인).
+- §12.16 신규 — GPU fallback (macOS Metal 분기 / WSL2 CUDA 분기 + `CUDA_VISIBLE_DEVICES` 교정).
+- §12.17 신규 — dify-plugin-daemon FATAL 복구 (`supervisorctl reset-fail + start`).
+
+### Phase 3 — 문서 트리 단순화
+
+- `git rm code-AI-quality-allinone/docs/AI_EVAL_PIPELINE_README.md` — 850 라인 단일 파일 제거.
+- README §8.5 말미 "상세 가이드는 두 문서에..." 포인터 삭제.
+- README 내 `docs/PLAN_AI_EVAL_PIPELINE.md` 링크도 제거 (1개 → 0개, "미구현 후속 과제" 문구로 대체).
+- `grep -n "AI_EVAL_PIPELINE_README" code-AI-quality-allinone/README.md` = 0건 확인.
+- `eval_runner/SUCCESS_CRITERIA_GUIDE.md` 는 모듈 트리 표시용 한 줄만 남김 (링크 의존 아님).
+
+### 산출물
+
+- `README.md` — 약 +680 라인 (1470 → 2150 전후). 통합 브랜치 선언 / §7.7 Step 0~7 / §8.5.1~8.5.6 / §12.10 확장 + §12.14~17 신규.
+- `docs/AI_EVAL_PIPELINE_README.md` — 삭제 (850 라인).
+- `CONVERSATION_LOG.md` — 본 세션 요약 블록 (이 블록).
+
+### 기능 동시 동작 보장
+
+문서만 수정 — 코드·파이프라인·이미지 빌드 절차 변경 없음. 직전 세션의 통합 이미지 E2E 검증 (P0~P3 + P4 동일 이미지 공존) 결과가 계속 유효.
+
+### 미반영·후속 과제
+
+1. **통합 브랜치 E2E 재실행 후 실측 치환** — README 에 기록된 소요시간·VRAM·stage 수치는 직전 세션 실측 + AI_EVAL_PIPELINE_README 참조값 병합. 다음 세션에서 통합 브랜치에서 clean 빌드 + 00 체인 + 04 평가 한 사이클 실행해 README 값들과 대조 후 필요 시 수정. 특히 10-row dataset 45~90 분 구간이 현재 Ollama/host 하드웨어 실측과 일치하는지 확인.
+2. **Judge provider 확장 (`JUDGE_PROVIDER`)** — 구현 착수 시 §7.7 Step 3 파라미터 표 + §8.5.4 파라미터 표 + §12 트러블슈팅에 각각 추가 필요.
+3. **`REPEAT_BORDERLINE_N` Jenkinsfile 노출** — 현재 CLI 플래그로만 지원. Jenkinsfile 파라미터로 승격 시 §8.5.4 표 한 행 추가.
+4. **README 가독성 린트** — markdownlint MD060/MD036/MD034 경고는 기존 컨벤션이라 유지했으나, 향후 린트 정책 바꾸면 본 세션 추가분부터 정리.
+5. **다국어 support** (옵션) — 현재 한국어. 영문 번역 필요 시 README 자체가 단일 원천이라 번역 작업 단위도 명확.
+
+### 이번 세션 커밋 (예정)
+
+- `docs(readme): AI_EVAL_PIPELINE_README 완전 흡수 + README 를 단일 정보 원천으로 승격` — README ~+680 라인, `git rm docs/AI_EVAL_PIPELINE_README.md`, CONVERSATION_LOG 갱신.
+
+---
+
+
+## Session 2026-04-22 (continuation) — §1 전체 일관성: 04 를 일급 파이프라인으로 승격
+
+### 배경
+
+직전 편집으로 README 가 단일 정보 원천으로 재구성되었으나, 사용자 지적:
+> "AI평가를 왜 별도로 구성했지? 이것도 파이프라인의 일종인데 여기에 넣어야지. 전체적인 문서의 통일성을 고려하면 좋겠다."
+
+§1.2 표에 00~03 만 있고 04 는 "별도로 제공되는 독립 도구" 로 단락 처리된 상태였음. 표 밖으로 밀려나 **5개 파이프라인 중 4 개만 나열** 되는 불일치. "4 Jobs" vs "5 Jobs" · "통합 파이프라인" vs "별도 도구" 등 여러 지점에서 04 가 이등시민처럼 다뤄짐.
+
+### 수정 원칙
+
+- **5 개 파이프라인 동등 서술**. 00~03 은 "코드 품질 체인" (커밋 트리거, 자동 연쇄), 04 는 "AI 품질 게이트" (평가 정책 트리거, 독립). 두 흐름 모두 일급 파이프라인.
+- **"별도" / "독립 도구" / "부록" 표현 제거** — 04 가 파이프라인 A·B 둘 중 하나임을 명확히.
+- **같은 서술 틀**: 각 파이프라인을 "트리거 · 주기 / 수행 작업 / 최종 산출 효과" 3 열로 일관 서술.
+- **비개발자 독자 원칙 유지** — 표·TL;DR·시각 예시 중심.
+
+### 편집 내역
+
+**§1 (스택 소개) 전면 재작성**:
+
+- §1 도입 한 문단 — "코드 품질" + "AI 응답 품질" 두 축으로 재프레이밍.
+- §1.1 — "문제 4" 에 그치던 고통 목록에 "문제 5 — AI 응답 품질 회귀 감지 부재" 추가. 04 가 해소하는 실무 문제를 명시.
+- §1.2 — "4 개의 파이프라인" → "5 개의 Jenkins Pipeline". 표에 04 행 추가하고 "트리거 · 주기" 컬럼 신설. 전체 5 파이프라인이 같은 서술 틀 안에 정렬됨. "별도로 제공되는 04 AI 평가..." 단락 삭제.
+- §1.3 — "개발자가 받게 되는 결과물" → "개발자·운영자가 받게 되는 결과물". ① GitLab Issue (00~03) · ② summary.html/summary.json 리포트 (04) 두 산출물 표 각각 첨부.
+- §1.4 — 기대 효과 표에 "영역" 열 추가. 코드 품질 5행 + AI 품질 4행 (회귀 감지 / 평가 일관성 / 판정 해석 / 외부 클라우드 의존) 로 확장.
+- §1.6 — 기술적 실행 개요에 "흐름 A (코드 분석 체인)" + "흐름 B (04 AI 평가)" 두 흐름 각 6 단계 병렬 서술. 호스트 Ollama 가 양쪽 공통 추론 엔진임을 명시.
+
+**§7.7 / §8.5 TL;DR 문구 수정**:
+
+- §7.7 제목 `(선택)` 꼬리말 제거 → 04 가 선택이 아닌 본 스택의 한 축임을 명확.
+- §7.7 TL;DR — "`00` 코드 분석 체인과는 완전히 독립된 별개 Job" → "트리거 주기·대상이 다른 동등한 일급 파이프라인" 으로 재표현.
+- §8.5 TL;DR — "목적이 완전히 다른 독립 Job" → "대상과 트리거 주기가 다른 동등한 일급 파이프라인" 으로 재표현.
+
+### 검증
+
+- `grep "별도로 제공\|4 개의 파이프라인\|독립 도구\|별개 Job\|독립 파이프라인"` → **0 건**.
+- §1.2 표 행수 4 → 5 (00·01·02·03·04 모두 포함).
+- §1.3 산출물 섹션 2 개 (코드 품질 + AI 품질) 로 확장.
+- §1.4 기대 효과 표 5행 → 9행 (코드 5 + AI 4).
+- §1.6 실행 개요 흐름 1개 → 2개.
+
+### 이번 세션 커밋 (예정)
+
+- `docs(readme): §1 일관성 — 04 AI평가를 일급 파이프라인으로 승격 (§1.1 문제5 + §1.2 5-row 표 + §1.3 산출물 2종 + §1.4 AI 품질 4행 + §1.6 흐름 A/B)` — 05 가 직전 편집과 독립적이므로 별도 커밋 권장. 또는 직전 작업과 squash.
+
+---
+
+
+## Session 2026-04-22 (continuation) — README vs 리포 구현 정합성 감사
+
+### 배경
+
+사용자 지시:
+> "현재 readme.md가 지금까지 구현한 기능 및 구성을 정확히, 그리고 충분히 반영하고 있는지 전체 리파지토리를 분석하고 해당 문서와 매핑시켜보는 작업을 해보는게 어때?"
+
+### 방법
+
+Explore 서브에이전트에 README 주요 섹션을 리포 실제 파일/코드와 매핑 감사하도록 의뢰. 에이전트 리포트를 받은 후, HIGH 항목은 직접 재검증 (에이전트가 종종 메트릭을 오해함).
+
+### 에이전트 리포트 검증 결과
+
+에이전트가 11건 발견 주장, 재검증 후 **실제 gap = 6건** (나머지는 에이전트 오해).
+
+| # | 에이전트 주장 | 재검증 결과 | 조치 |
+|---|------------|----------|------|
+| 1 | "50 build stages" 잘못됨 (Dockerfile RUN 23개) | Dockerfile 에 65 top-level instructions, 5 FROM. buildkit 의 실행 stage 표기와 RUN 수는 다름. README 는 "실측 기반 50 stages 진행" 으로 명시 — 정확. | 수정 없음 |
+| 2 | "11 provision markers" 미확인 | `grep STATE_DIR/ scripts/provision.sh` 로 정확히 **11개 마커 파일 확인** (`jenkins_sonar_integration.ok`, `ollama_plugin.ok`, `ollama_embedding.ok`, `default_models.ok`, `dataset_id`, `dataset_api_key`, `workflow_app_id`, `workflow_published.ok`, `workflow_api_key`, `gitlab_root_pat`, `sonar_token`) | 수정 없음 |
+| 3 | "§11.1 함수 13개 나열, 실제 18개" | 실제 provision.sh 에 **30 함수** 정의. §11.1 표는 admin-facing 14행 (= 자동화 단위). 표 자체는 작업 단위로 묶여 문제 없으나 **5 개 함수 이름이 실제와 불일치**: `dify_setup` → `dify_setup_admin`, `dify_create_dataset_key` → `dify_issue_dataset_api_key`, `dify_create_app_key` → `dify_issue_app_api_key`, `sonar_change_admin_password` → `sonar_change_initial_password`, `sonar_issue_token` → `sonar_generate_token`. | **§11.1 표 5 함수명 교정** |
+| 4 | "§8.5.4 파라미터 13 vs 14" | Jenkinsfile 04 에 실제 **14 파라미터** 정의 · 표 14행 일치. | 수정 없음 |
+| 5 | "fixture 경로 `/opt/` 가 아니라 `/var/jenkins_home/scripts/`" | Dockerfile 이 `/opt/eval_runner` 로 COPY, Jenkins 런타임에만 `/var/jenkins_home/scripts/eval_runner/` 로 심볼릭 접근. §7.7 Step 1 의 `docker exec cp /opt/eval_runner/tests/fixtures/tiny_dataset.csv ...` 는 **build-time 경로 기준으로 정확**. | 수정 없음 |
+| 6 | "§1.5 모델 리스트 불일치" | §1.5 = 필수 3 모델 (gemma4:e4b + bge-m3 + qwen3-coder:30b), §8.5.4 = Jenkinsfile 동적 fallback 5개. 서로 다른 맥락이라 모순 아님. | 수정 없음 |
+
+### 에이전트가 놓친 gap (직접 발견)
+
+**§7.7 Step 6 + §8.5.6 + §12.14** 의 `--repeat-borderline N` / `--repeat-borderline 3` CLI 플래그 명세가 **틀림**. 실제 구현은 환경변수:
+
+```python
+# eval_runner/tests/test_runner.py:647
+n = int(os.environ.get("REPEAT_BORDERLINE_N", "1"))
+# :651
+margin = float(os.environ.get("BORDERLINE_MARGIN", "0.05"))
+```
+
+CLI 파서 없음 — pytest 가 env 로 읽음. README 3 곳 모두 `REPEAT_BORDERLINE_N=3` (+ 선택적 `BORDERLINE_MARGIN=0.05`) 환경변수로 정정.
+
+### 추가 검증 통과 항목 (§8.5.6 운영 사실)
+
+코드로 직접 확인:
+
+| 주장 | 근거 | 결과 |
+|------|-----|-----|
+| `deepeval==3.9.7` | Dockerfile:146 `deepeval==3.9.7 && \` | ✅ |
+| `dify-plugin-daemon autostart 수동 start` | supervisord.conf `[program:dify-plugin-daemon]` 블록 + entrypoint.sh:147-149 `supervisorctl start dify-plugin-daemon` | ✅ |
+| ollama_wrapper cold-start 300s | `ollama_wrapper_api.py:114 timeout=300` | ✅ |
+| `calib` 컬럼 처리 | `dataset.py:85 _TRUTHY_FLAG_VALUES` | ✅ |
+| pytest `-u -v -s --tb=short` + `PYTHONUNBUFFERED=1` | Jenkinsfile 04:473-477 | ✅ |
+
+### 구조 검증 통과
+
+- `pipeline-scripts/*.py` 6 개 (§14 표시와 일치)
+- `jenkinsfiles/*.jenkinsPipeline` 5 개 (00/01/02/03/04)
+- `scripts/{build,run,provision,entrypoint,offline-*,download-plugins,pg-init}.sh` + `nginx.conf` + `supervisord.conf` 전부 존재
+- `scripts/dify-assets/{code-context-dataset.json, sonar-analyzer-workflow.yaml}` 존재
+- `eval_runner/{adapters,configs,reporting,tests}/` 전부 존재
+
+### 이번 세션 산출물
+
+- **README §11.1** — 5 함수명 정정 (`dify_setup` → `dify_setup_admin` 등)
+- **README §7.7 Step 6** — `--repeat-borderline 3` CLI → `REPEAT_BORDERLINE_N=3` env
+- **README §8.5.6** — `--repeat-borderline N` CLI → `REPEAT_BORDERLINE_N` env + `BORDERLINE_MARGIN` 설명
+- **README §12.14** — `--repeat-borderline 3` → `REPEAT_BORDERLINE_N=3`
+
+### 결론
+
+README 는 리포 구현을 **거의 정확히 반영**. 에이전트가 찾은 11건 주장 중 6건은 오해, 5건은 실제 수정 필요한 gap → **전부 수정 완료**. 문서 무결성 높음.
+
+### 이번 세션 커밋 (예정)
+
+- `docs(readme): §11.1 함수명 5 건 정정 + Q7-b 설정 환경변수 (REPEAT_BORDERLINE_N) 정정 — 리포 구현과 정합성 맞춤`
+
+---
