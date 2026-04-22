@@ -97,10 +97,12 @@ class BrowserUIAdapter(BaseAdapter):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
+            # Phase 3.3 Q1: 의존성 미설치 → 시스템 환경 이슈 (system)
             return UniversalEvalOutput(
                 input=input_text,
                 actual_output="",
                 error="Playwright not installed",
+                error_type="system",
                 http_status=500,
             )
 
@@ -144,10 +146,12 @@ class BrowserUIAdapter(BaseAdapter):
             )
         except Exception as exc:
             # UI 자동화 실패도 표준 구조로 감싸 상위 테스트가 동일하게 처리할 수 있게 합니다.
+            # Phase 3.3 Q1: 브라우저 자동화 실패는 인프라/환경 이슈 → system.
             return UniversalEvalOutput(
                 input=input_text,
                 actual_output="",
                 error=f"Browser Error: {exc}",
+                error_type="system",
                 http_status=500,
                 latency_ms=int((time.time() - start_time) * 1000),
             )

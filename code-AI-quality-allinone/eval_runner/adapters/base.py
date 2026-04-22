@@ -14,7 +14,14 @@ base.py — AI 평가 어댑터 공통 인터페이스 및 데이터 모델
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
+
+
+# Phase 3.3 Q1 — 에러 분류 enum. 리포트 R4 섹션(시스템 vs 품질) 의 구조화 필드.
+# - "system": HTTP 5xx / ConnError / Timeout / wrapper crash → 인프라/가용성 이슈
+# - "quality": policy/schema/metric 실패 → 모델 품질 이슈
+# - None: 정상 (error == None)
+ErrorType = Optional[Literal["system", "quality"]]
 
 
 @dataclass
@@ -31,6 +38,9 @@ class UniversalEvalOutput:
     http_status: int = 0
     raw_response: str = ""
     error: Optional[str] = None
+    # Phase 3.3 Q1 — 에러 원인 구조화. adapter 가 채움. 상위 test_runner 는
+    # metric 실패일 때 "quality" 로 override 가능.
+    error_type: ErrorType = None
     latency_ms: int = 0
     usage: Dict[str, int] = field(default_factory=dict)
 
@@ -47,6 +57,7 @@ class UniversalEvalOutput:
             "http_status": self.http_status,
             "raw_response": self.raw_response,
             "error": self.error,
+            "error_type": self.error_type,
             "latency_ms": self.latency_ms,
             "usage": self.usage,
         }

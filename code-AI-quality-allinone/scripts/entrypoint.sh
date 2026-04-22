@@ -140,6 +140,13 @@ if [ $_w -lt 120 ]; then
     log "SonarQube start..."
     supervisorctl -c /etc/supervisor/supervisord.conf start sonarqube >/dev/null 2>&1 || \
         warn "supervisorctl start sonarqube 실패 — 수동 확인: supervisorctl status"
+
+    # dify-plugin-daemon 도 PG 준비 후 start (race 방지).
+    # supervisord autostart=true 로 두면 PG 기동 0~3초 사이에 3회 재시도를 모두 써서
+    # FATAL 상태로 포기 → dify-api 가 plugin-daemon 헬스 대기에서 무한 블록.
+    log "dify-plugin-daemon start..."
+    supervisorctl -c /etc/supervisor/supervisord.conf start dify-plugin-daemon >/dev/null 2>&1 || \
+        warn "supervisorctl start dify-plugin-daemon 실패 — 수동 확인: supervisorctl status"
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
