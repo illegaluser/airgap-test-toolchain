@@ -101,6 +101,46 @@
 
 ---
 
+### 3.1.1 R1.1 — 🤖 LLM 임원 요약 문단 (기본 on)
+
+R1 헤더 최상단에 LLM 이 생성한 2~3 문장 요약 섹션을 추가. 운영자가 **숫자를 읽기 전에 자연어로 먼저 상황을 파악**할 수 있도록.
+
+**위치**: R1 헤더 맨 위, "AI Eval Summary" 타이틀 바로 아래.
+
+**ASCII 목업**:
+```
+╔════════════════════════════════════════════════════════════════════╗
+║  AI Eval Summary    Build #42       2026-04-22 10:15  ✅ PASSED   ║
+║                                                                    ║
+║  🤖 이번 빌드 한 줄 요약                                          ║
+║  ──────────────────────────────────────────────────────────────── ║
+║  이번 빌드는 대화 10건 중 9건 통과 (90%). 주원인 지표는 Answer    ║
+║  Relevancy (off-topic 1건). 권장 조치: 프롬프트에 "질문 주제에    ║
+║  국한" 지시어 보강.                                               ║
+║  ──────────────────────────────────────────────────────────────── ║
+║  [기존 R1 카드들: 집계, 11지표, latency/tokens, judge 메타...]    ║
+╚════════════════════════════════════════════════════════════════════╝
+```
+
+**필수 필드**:
+- 생성 문장 (한국어, 2~3 문장, 최대 300자)
+- Provenance 배지: 🤖 LLM / 📋 기본 메시지 (fallback 이면)
+- summary.json 에 영구 기록: `aggregate.exec_summary: {text, source, role, cached_at}`
+
+**환경변수**: `SUMMARY_LLM_EXEC_SUMMARY` (기본 on, "off" 로 비활성).
+
+**LLM 입력 페이로드 (캐시 키)**: `totals` 의 pass/fail 카운트, `metric_averages`, `latency_ms.p95`, 실패 case 상위 3개의 (case_id, failure_message).
+
+**프롬프트 가드레일**:
+- 주어진 JSON 필드의 사실만 사용
+- 정확히 2~3 문장, 첫 문장=전체 상태, 둘째=주원인, 셋째(선택)=권장 조치
+- 추측·새 해석·외부 지식 금지
+- score/case_id/숫자/URL 원문 유지
+
+**Fallback (결정론 템플릿)**: LLM 비활성/실패 시 `"총 N건 중 K건 실패 (통과율 X%). 주요 실패 case: c1, c2, c3. 상세 원인은 case drill-down 을 확인하세요."`.
+
+---
+
 ### 3.2 R2 — 11지표 카드 대시보드
 
 **위치**: R1 바로 아래. 11개 카드 grid 배열 (2~3열).
@@ -135,6 +175,33 @@
 - ⑥/⑦/⑧ (RAG 전용) — `retrieval_context` 있는 case 가 0이면 카드 전체를 ⚪ N/A
 - ⑩ Latency, ⑪ Token Usage — 정보성. PASS/FAIL 없이 P50/P95/P99 또는 합계만
 - ② Format Compliance — `TARGET_TYPE=ui_chat` 빌드에서는 ⚪ N/A
+
+---
+
+### 3.2.1 R2.1 — 🤖 지표별 LLM 해석 1줄 (기본 off)
+
+각 지표 카드 하단에 "이 지표가 왜 이런 점수인지" 한 줄 해설을 LLM 이 생성. **빌드당 최대 11 calls** 이므로 기본 비활성, 운영 중 필요 시 opt-in.
+
+**ASCII 목업 (카드 안)**:
+```
+┌──────────────────────────────────┐
+│ ④ Answer Relevancy        🟢 PASS│
+│ pass: 9/10  (90%)   threshold: 0.70│
+│ [히스토그램]                     │
+│ ─────────────────────────────── │
+│ 🤖 Answer Relevancy pass 9/10,  │
+│    off-topic case 1건이 편차    │
+│    원인.                        │
+└──────────────────────────────────┘
+```
+
+**환경변수**: `SUMMARY_LLM_INDICATOR_NARRATIVE` (기본 **off**).
+
+**LLM 입력**: 지표명 + pass/total + threshold + 실패 case_id 상위 3개.
+
+**Fallback**: `"{지표명} pass {N}/{M} ({rate}%). 실패 case: c1, c2."`.
+
+**비용 메모**: 호출량 × ~5s = 빌드당 최대 ~55s 추가. 옵션 활성화 전 비용 공지 필요.
 
 ---
 
@@ -192,6 +259,60 @@
 - 기본: 모든 conversation accordion 접힘
 - 실패한 conversation 은 자동 펼침 (1단계만)
 - "모두 펼침" / "실패만 펼침" 토글
+
+---
+
+### 3.3.1 R3.1 — 🤖 LLM 실패 사유 1문장 해설 (기본 on)
+
+R3 turn 카드의 "쉬운 해설" 필드를 LLM 생성으로 교체. 기존 `_easy_explanation` 의 if-else 키워드 매칭은 **fallback** 으로 유지 (LLM 실패·비활성 시).
+
+**위치**: 각 실패 turn 행의 "쉬운 해설" 섹션.
+
+**ASCII 목업**:
+```
+│ ▼ Turn 2                                              🤖 LLM   │
+│   🤖 응답에 질문과 무관한 요리 레시피가 섞여 있어 답변        │
+│      관련성 기준(0.7)을 0.45 로 크게 밑돌았습니다.            │
+```
+
+**환경변수**: `SUMMARY_LLM_EASY_EXPLANATION` (기본 **on**).
+
+**LLM 입력**: case_id + failure_message(500자 truncate) + task_completion passed + failed metric names.
+
+**프롬프트 가드**: 정확히 1 문장. 기술 용어는 괄호 부연. 운영자가 다음 조치 판단 가능한 정보량.
+
+**Fallback (현 `_easy_explanation` 키워드 매칭 그대로)**:
+- "Promptfoo policy" → "민감정보 또는 금칙 패턴…"
+- "Format Compliance Failed" → "응답 형식이 규격과 달라…"
+- "Adapter Error / Connection" → "대상 시스템 통신 실패…"
+- "TaskCompletion failed" → "핵심 정보 누락…"
+- 기타 → "평가 기준 미달로 실패"
+
+**비용**: 실패 case 당 1 call. 20 case 중 5 실패 → ~25s 추가. 기본 on 정당.
+
+---
+
+### 3.3.2 R3.2 — 🤖 LLM 조치 권장 1~2줄 (기본 off)
+
+실패 case 마다 "다음에 시도할 만한 조치"를 LLM 이 1~2줄로 제안. **확정적 단정 금지, 권장 형태로만**.
+
+**ASCII 목업**:
+```
+│   🤖 조치 권장                                                 │
+│      • system prompt 끝에 "질문 주제에서 벗어나지 말 것"       │
+│        지시어 추가 권장.                                       │
+│      • RAG context 에 관련 도메인 문서 추가 검토.              │
+```
+
+**환경변수**: `SUMMARY_LLM_REMEDIATION_HINTS` (기본 **off**).
+
+**LLM 입력**: case_id + failure_message + failed metric names + input/actual_output preview(200자).
+
+**프롬프트 가드**: 1~2줄. 구체적 조치 (prompt 보강 / RAG 추가 / 임계치 재검토 등). "개선 가능" 이 아니라 "개선 시도 권장" 처럼 확정 금지.
+
+**Fallback**: 텍스트 비움 → UI 에서 조치 섹션 자체 숨김 (공백 노이즈 방지).
+
+**비용**: 실패 case 당 1 call. 기본 off — 운영 중 필요 시 on.
 
 ---
 
@@ -365,6 +486,10 @@ Phase 2 종료 게이트로 사용. **각 항목은 측정 가능해야 함.**
 - [ ] **AC6** — Judge digest, dataset sha256 이 R1 헤더에 노출 (Phase 3 종료 시점에 충족)
 - [ ] **AC7** — summary.html 단일 파일, inline CSS, 외부 자원 의존 없음 (`grep "src=\"http"` 결과 0)
 - [ ] **AC8** — 빌드 페이지 description 에 summary 링크 자동 부여 (기존 04 Jenkinsfile 동작 유지)
+- [ ] **AC9 (R1.1)** — 모든 빌드의 리포트에 🤖 임원 요약이 2~3 문장(≤300자) 생성, JSON 에 없는 숫자·case_id 를 언급하지 않음 (샘플 5건 수동 환각 체크 0건). summary.json 의 `aggregate.exec_summary.{text,source}` 필드 존재.
+- [ ] **AC10 (R3.1)** — 모든 실패 case 에 🤖 쉬운 해설 1 문장. `SUMMARY_LLM_EASY_EXPLANATION=off` 로 실행 시 하드코딩 fallback 으로 degrade, 문장 내용은 계속 존재.
+- [ ] **AC11 (LLM 결정성)** — 동일 summary.json 을 입력한 두 리포트 생성의 LLM 문장이 **bit-identical** (동일 `(role, canonical JSON sha256)` → 캐시 hit).
+- [ ] **AC12 (LLM graceful degrade)** — `OLLAMA_BASE_URL=http://127.0.0.1:0` 로 LLM 접근 불가 상태에서 리포트 생성이 예외 없이 완주, 모든 role 의 narrative 가 `source="fallback"` 으로 출력.
 
 ---
 
