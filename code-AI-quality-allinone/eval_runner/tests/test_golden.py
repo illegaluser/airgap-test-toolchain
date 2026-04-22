@@ -527,6 +527,151 @@ def test_narrative_remediation_fallback_empty():
     assert result["text"] == ""
 
 
+def test_render_indicator_cards_landmarks():
+    """[Phase 2.2 R2] 11지표 카드가 전부 렌더된다."""
+    from reporting.html import render_summary_html, INDICATOR_ORDER
+
+    assert len(INDICATOR_ORDER) == 11
+
+    state = {
+        "run_id": "r2-001",
+        "target_url": "", "target_type": "http", "judge_model": "",
+        "langfuse_enabled": False,
+        "thresholds": {}, "metric_guide": {},
+        "totals": {
+            "conversations": 0, "passed_conversations": 0, "failed_conversations": 0,
+            "turns": 0, "passed_turns": 0, "failed_turns": 0,
+            "conversation_pass_rate": 0, "turn_pass_rate": 0,
+        },
+        "metric_averages": {},
+        "conversations": [],
+        "indicators": {
+            "PolicyCheck": {"pass": 10, "fail": 1, "skipped": 0, "scores": [], "threshold": None,
+                            "failed_case_ids": ["policy-fail-pii"]},
+            "SchemaValidation": {"pass": 10, "fail": 0, "skipped": 1, "scores": [], "threshold": None,
+                                 "failed_case_ids": []},
+            "TaskCompletion": {"pass": 9, "fail": 1, "skipped": 0, "scores": [0.9, 1.0],
+                               "threshold": 0.5, "failed_case_ids": ["task-fail-criteria"]},
+            "AnswerRelevancyMetric": {"pass": 10, "fail": 1, "skipped": 0, "scores": [0.9],
+                                      "threshold": 0.7, "failed_case_ids": ["deep-relevancy-offtopic"]},
+            "ToxicityMetric": {"pass": 11, "fail": 0, "skipped": 0, "scores": [0.02],
+                               "threshold": 0.5, "failed_case_ids": []},
+            "FaithfulnessMetric": {"pass": 1, "fail": 1, "skipped": 0, "scores": [0.95, 0.3],
+                                   "threshold": 0.9, "failed_case_ids": ["rag-hallucinate"]},
+            "ContextualRecallMetric": {"pass": 2, "fail": 0, "skipped": 0, "scores": [0.9, 0.85],
+                                       "threshold": 0.8, "failed_case_ids": []},
+            "ContextualPrecisionMetric": {"pass": 0, "fail": 0, "skipped": 0, "scores": [],
+                                          "threshold": 0.8, "failed_case_ids": []},  # N/A
+            "MultiTurnConsistency": {"pass": 1, "fail": 0, "skipped": 0, "scores": [0.95],
+                                     "threshold": 0.7, "failed_case_ids": []},
+            "Latency": {"pass": 0, "fail": 0, "skipped": 0, "scores": [500, 800], "threshold": None,
+                        "failed_case_ids": [], "kind": "informational",
+                        "stats": {"count": 2, "min": 500, "max": 800, "p50": 500, "p95": 800, "p99": 800}},
+            "TokenUsage": {"pass": 0, "fail": 0, "skipped": 0, "scores": [], "threshold": None,
+                           "failed_case_ids": [], "kind": "informational",
+                           "stats": {"turns_with_usage": 2, "prompt": 100, "completion": 50, "total": 150}},
+        },
+    }
+
+    html = render_summary_html(state)
+    # 11지표 각각의 한글 라벨이 들어있는지
+    for symbol, name, label, stage in INDICATOR_ORDER:
+        assert symbol in html, f"symbol {symbol} missing"
+        assert label in html, f"label {label} missing"
+    # 배지 종류
+    assert "🟢 PASS" in html  # Toxicity (전부 pass)
+    assert "🔴 FAIL" in html or "🟡 WARN" in html  # PolicyCheck 는 WARN
+    assert "⚪ N/A" in html  # ContextualPrecision
+    # 실패 case_id 노출
+    assert "policy-fail-pii" in html
+    assert "deep-relevancy-offtopic" in html
+    # Latency/TokenUsage stats
+    assert "P50" in html
+    assert "합계" in html
+
+
+def test_render_turn_narrative_and_error_type():
+    """[Phase 2.3 R3.1/R3.2 + Phase 2.4 R4] turn 에 주입된 narrative + error type 이 렌더됨."""
+    from reporting.html import render_summary_html
+
+    state = {
+        "run_id": "r3-001",
+        "target_url": "", "target_type": "http", "judge_model": "",
+        "langfuse_enabled": False,
+        "thresholds": {}, "metric_guide": {},
+        "totals": {
+            "conversations": 1, "passed_conversations": 0, "failed_conversations": 1,
+            "turns": 1, "passed_turns": 0, "failed_turns": 1,
+            "conversation_pass_rate": 0.0, "turn_pass_rate": 0.0,
+        },
+        "metric_averages": {},
+        "indicators": {},
+        "conversations": [{
+            "conversation_id": None,
+            "conversation_key": "fail-case-1",
+            "status": "failed",
+            "failure_message": "Adapter Error: Connection refused",
+            "turns": [{
+                "case_id": "fail-case-1",
+                "turn_id": None,
+                "status": "failed",
+                "input": "hi", "expected_output": "-", "success_criteria": "",
+                "actual_output": "", "raw_response": "",
+                "latency_ms": None, "usage": None,
+                "policy_check": None, "schema_check": None,
+                "task_completion": None, "metrics": [],
+                "failure_message": "Adapter Error: Connection refused",
+                "has_retrieval_context": False, "has_context_ground_truth": False,
+                # R3.1 주입 — LLM 생성됐다고 가정 (source=llm)
+                "easy_explanation": {"text": "대상 시스템 통신 실패.", "source": "llm", "role": "easy_explanation"},
+                # R3.2 주입 — opt-in 활성 시 (source=cached)
+                "remediation": {"text": "TARGET_URL 재확인 및 Ollama wrapper 상태 점검.",
+                                "source": "cached", "role": "remediation"},
+            }],
+            "multi_turn_consistency": None,
+        }],
+    }
+
+    html = render_summary_html(state)
+    # R3.1 narrative + provenance 배지
+    assert "🤖 LLM" in html
+    assert "대상 시스템 통신 실패" in html
+    # R3.2 remediation
+    assert "조치 권장" in html
+    assert "TARGET_URL 재확인" in html
+    # R4 error classification: Adapter Error → system
+    assert "시스템 에러" in html
+    assert "시스템 1" in html  # breakdown
+
+
+def test_classify_error_type():
+    """[Phase 2.4 R4] failure_message 기반 system/quality 분류."""
+    from reporting.html import _classify_error_type, classify_failure_buckets
+
+    # Adapter / Connection / 5xx / Timeout → system
+    assert _classify_error_type({"status": "failed", "failure_message": "Adapter Error: x"}) == "system"
+    assert _classify_error_type({"status": "failed", "failure_message": "Connection Error"}) == "system"
+    assert _classify_error_type({"status": "failed", "failure_message": "HTTP 503 Bad"}) == "system"
+    assert _classify_error_type({"status": "failed", "failure_message": "Timeout after 20s"}) == "system"
+    # policy/metric 실패 → quality
+    assert _classify_error_type({"status": "failed", "failure_message": "Promptfoo policy checks reported 1"}) == "quality"
+    assert _classify_error_type({"status": "failed", "failure_message": "Metrics failed: AnswerRelevancy"}) == "quality"
+    # passed → 빈 문자열
+    assert _classify_error_type({"status": "passed"}) == ""
+    # 명시적 error_type 필드 (Phase 3 Q1 이후)
+    assert _classify_error_type({"status": "failed", "error_type": "system", "failure_message": "x"}) == "system"
+    assert _classify_error_type({"status": "failed", "error_type": "quality", "failure_message": "x"}) == "quality"
+
+    # classify_failure_buckets
+    state = {"conversations": [{"turns": [
+        {"status": "failed", "failure_message": "HTTP 500 x"},
+        {"status": "failed", "failure_message": "Metrics failed"},
+        {"status": "passed"},
+    ]}]}
+    result = classify_failure_buckets(state)
+    assert result == {"system": 1, "quality": 1}
+
+
 def test_turn_sort_key():
     """turn_id 정렬이 실제 사용 패턴(int + None, 또는 digit-string + None)에서 안정적."""
     # 실사용 케이스 1: 정수 turn_id + None → None 이 뒤로

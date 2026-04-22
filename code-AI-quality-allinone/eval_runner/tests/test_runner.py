@@ -69,7 +69,12 @@ from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 from adapters.registry import AdapterRegistry
 from reporting.html import render_summary_html
-from reporting.narrative import generate_exec_summary
+from reporting.narrative import (
+    generate_easy_explanation,
+    generate_exec_summary,
+    generate_indicator_narrative,
+    generate_remediation,
+)
 
 try:
     from langfuse import Langfuse
@@ -284,6 +289,37 @@ def _recompute_summary_totals():
     tokens_total_sum = 0
     tokens_turn_count = 0
 
+    # Phase 2.2 R2: per-indicator 집계. UI (11지표 카드) 와 R2.1 내러티브 호출 입력으로 사용.
+    indicators: dict = {}
+
+    def _ind(name: str) -> dict:
+        return indicators.setdefault(name, {
+            "pass": 0,
+            "fail": 0,
+            "skipped": 0,
+            "scores": [],
+            "threshold": None,
+            "failed_case_ids": [],
+        })
+
+    def _record(name: str, case_id, passed, *, score=None, threshold=None):
+        data = _ind(name)
+        if passed is True:
+            data["pass"] += 1
+        elif passed is False:
+            data["fail"] += 1
+            if case_id and len(data["failed_case_ids"]) < 10:
+                data["failed_case_ids"].append(str(case_id))
+        else:
+            data["skipped"] += 1
+        if score is not None:
+            try:
+                data["scores"].append(float(score))
+            except (TypeError, ValueError):
+                pass
+        if threshold is not None and data["threshold"] is None:
+            data["threshold"] = threshold
+
     for conversation in conversations:
         if conversation.get("status") == "passed":
             passed_conversations += 1
@@ -293,6 +329,14 @@ def _recompute_summary_totals():
         multi_turn_detail = conversation.get("multi_turn_consistency")
         if multi_turn_detail:
             _append_metric_average(metric_scores, multi_turn_detail["name"], multi_turn_detail.get("score"))
+            # ⑨ Multi-turn Consistency — conversation 단위 1 record
+            _record(
+                multi_turn_detail["name"],
+                conversation.get("conversation_key"),
+                multi_turn_detail.get("passed"),
+                score=multi_turn_detail.get("score"),
+                threshold=multi_turn_detail.get("threshold"),
+            )
 
         for turn in conversation.get("turns", []):
             total_turns += 1
@@ -301,12 +345,48 @@ def _recompute_summary_totals():
             else:
                 failed_turns += 1
 
+            case_id = turn.get("case_id")
+
+            # ① Policy Violation
+            policy = turn.get("policy_check")
+            if policy is not None:
+                _record("PolicyCheck", case_id, policy.get("passed"))
+
+            # ② Format Compliance (API 전용, ui_chat 은 skipped)
+            schema = turn.get("schema_check")
+            if schema is not None:
+                status = str(schema.get("status") or "").lower()
+                if status == "passed":
+                    _record("SchemaValidation", case_id, True)
+                elif status == "failed":
+                    _record("SchemaValidation", case_id, False)
+                else:
+                    _ind("SchemaValidation")["skipped"] += 1
+
             task_completion = turn.get("task_completion")
             if task_completion:
                 _append_metric_average(metric_scores, task_completion["name"], task_completion.get("score"))
+                # ③ Task Completion
+                _record(
+                    task_completion["name"],
+                    case_id,
+                    task_completion.get("passed"),
+                    score=task_completion.get("score"),
+                    threshold=task_completion.get("threshold"),
+                )
+            elif turn.get("status") == "failed":
+                _ind("TaskCompletion")["skipped"] += 1
 
             for metric_detail in turn.get("metrics", []):
                 _append_metric_average(metric_scores, metric_detail["name"], metric_detail.get("score"))
+                # ④~⑧ DeepEval metrics
+                _record(
+                    metric_detail["name"],
+                    case_id,
+                    metric_detail.get("passed"),
+                    score=metric_detail.get("score"),
+                    threshold=metric_detail.get("threshold"),
+                )
 
             latency_ms = turn.get("latency_ms")
             if latency_ms is not None:
@@ -350,6 +430,43 @@ def _recompute_summary_totals():
             "total": tokens_total_sum,
         },
     }
+    # Phase 2.2 R2: 11지표 카드용 집계 저장
+    # ⑩ Latency, ⑪ Token Usage 는 정보성 지표 — pass/fail 없이 통계만
+    indicators["Latency"] = {
+        "pass": 0,
+        "fail": 0,
+        "skipped": 0,
+        "scores": list(latency_samples),
+        "threshold": None,
+        "failed_case_ids": [],
+        "kind": "informational",
+        "stats": {
+            "count": len(latency_samples),
+            "min": latency_samples[0] if latency_samples else None,
+            "max": latency_samples[-1] if latency_samples else None,
+            "p50": _percentile(latency_samples, 50),
+            "p95": _percentile(latency_samples, 95),
+            "p99": _percentile(latency_samples, 99),
+        },
+    }
+    indicators["TokenUsage"] = {
+        "pass": 0,
+        "fail": 0,
+        "skipped": 0,
+        "scores": [],
+        "threshold": None,
+        "failed_case_ids": [],
+        "kind": "informational",
+        "stats": {
+            "turns_with_usage": tokens_turn_count,
+            "prompt": tokens_prompt_sum,
+            "completion": tokens_completion_sum,
+            "total": tokens_total_sum,
+        },
+    }
+
+    SUMMARY_STATE["indicators"] = indicators
+
     SUMMARY_STATE["metric_averages"] = {
         metric_name: round(sum(scores) / len(scores), 4) for metric_name, scores in metric_scores.items() if scores
     }
@@ -423,13 +540,54 @@ def _write_summary_report():
     SUMMARY_STATE["generated_at"] = int(time.time())
 
     aggregate = SUMMARY_STATE.setdefault("aggregate", {})
+    # R1.1 — 빌드당 1 call, fallback 포함.
     aggregate["exec_summary"] = generate_exec_summary(SUMMARY_STATE)
+    # R2.1 — opt-in. off 기본에서는 narrative 가 즉시 fallback 반환.
+    aggregate["indicator_narratives"] = _build_indicator_narratives(SUMMARY_STATE)
+    # R3.1 / R3.2 — turn 단위 narrative 를 state 에 direct 주입해 HTML 렌더가 읽기만.
+    _inject_turn_narratives(SUMMARY_STATE)
 
     with open(REPORT_JSON_PATH, "w", encoding="utf-8") as report_file:
         json.dump(SUMMARY_STATE, report_file, ensure_ascii=False, indent=2)
 
     with open(REPORT_HTML_PATH, "w", encoding="utf-8") as report_file:
         report_file.write(render_summary_html(SUMMARY_STATE))
+
+
+def _build_indicator_narratives(state: dict) -> dict:
+    """R2.1 — 11지표 각각에 대해 narrative 생성 (기본 off 면 fallback 텍스트)."""
+    out = {}
+    indicators = state.get("indicators") or {}
+    for name, data in indicators.items():
+        if data.get("kind") == "informational":
+            # Latency / TokenUsage 는 정보성 — 해설 불필요 (fallback 도 비움)
+            continue
+        pass_count = int(data.get("pass") or 0)
+        fail_count = int(data.get("fail") or 0)
+        total = pass_count + fail_count
+        if total == 0:
+            continue  # N/A case 는 해설 생략
+        out[name] = generate_indicator_narrative(
+            indicator_name=name,
+            pass_count=pass_count,
+            total_count=total,
+            threshold=data.get("threshold"),
+            fail_case_ids=data.get("failed_case_ids") or [],
+        )
+    return out
+
+
+def _inject_turn_narratives(state: dict) -> None:
+    """
+    R3.1 (기본 on) — 실패 turn 마다 `easy_explanation` 을 narrative 로 생성.
+    R3.2 (기본 off) — 실패 turn 마다 `remediation` 을 생성 (off 면 빈 text).
+    결과는 turn dict 에 직접 주입하여 HTML 렌더가 추가 호출 없이 읽는다.
+    """
+    for conversation in state.get("conversations") or []:
+        for turn in conversation.get("turns") or []:
+            if turn.get("status") == "failed":
+                turn["easy_explanation"] = generate_easy_explanation(turn)
+                turn["remediation"] = generate_remediation(turn)
 
 
 def _upsert_conversation_report(conversation_report: dict):
