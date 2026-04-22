@@ -77,6 +77,10 @@ bash scripts/build-mac.sh
 bash scripts/run-mac.sh
 ```
 
+- **중요**: 위 순서는 **온라인 또는 개발용 단일 머신 검증 흐름**입니다.
+- `build-mac.sh` 는 `ttc-allinone` 이미지만 빌드하며, 별도 compose 서비스인 GitLab 이미지는 포함하지 않습니다.
+- 따라서 로컬 Docker 데몬에 GitLab 이미지가 없다면 `run-mac.sh` 시점에 GitLab 이미지 pull 이 발생할 수 있습니다.
+- **폐쇄망 반입용 정식 절차**는 아래 `오프라인 반출/복원 흐름`의 `offline-prefetch.sh` + `offline-load.sh` 경로를 따라야 합니다.
 - `download-plugins.sh` 는 Jenkins/Dify 플러그인 seed 를 준비합니다.
 - `build-mac.sh` 는 all-in-one 이미지와 관련 자산을 빌드합니다.
 - `run-mac.sh` 는 mac용 docker compose 스택을 기동합니다.
@@ -91,6 +95,9 @@ bash scripts/build-wsl2.sh
 bash scripts/run-wsl2.sh
 ```
 
+- **중요**: 위 순서 역시 **온라인 또는 개발용 단일 머신 검증 흐름**입니다.
+- `build-wsl2.sh` 는 `ttc-allinone` 이미지만 빌드하며, GitLab 이미지는 별도로 반출/로드해야 폐쇄망에서 네트워크 없이 `compose up` 할 수 있습니다.
+- **폐쇄망 반입용 정식 절차**는 아래 `오프라인 반출/복원 흐름`의 `offline-prefetch.sh` + `offline-load.sh` 경로입니다.
 - `build-wsl2.sh` 는 WSL2/Docker Desktop 기준 이미지를 빌드합니다.
 - `run-wsl2.sh` 는 WSL2용 compose 스택을 기동합니다.
 - 운영 시 Jenkins, Dify, SonarQube, PostgreSQL, Redis, Qdrant, GitLab 이 함께 올라갑니다.
@@ -99,6 +106,12 @@ bash scripts/run-wsl2.sh
 
 - `playwright-allinone`: `build.sh` 로 이미지 tarball 생성 후 대상 머신에서 `docker load` + `docker run`, 이후 호스트 agent 연결
 - `code-AI-quality-allinone`: 온라인 준비 머신에서 플러그인/이미지/모델 반출 자산 준비 후, 대상 머신에서 `offline-load.sh` + `run-*.sh`
+
+`code-AI-quality-allinone` 의 경우 폐쇄망 운영 기준으로는 **반드시 tarball 2개**가 필요합니다.
+- `ttc-allinone-*`: Jenkins/Dify/SonarQube/PostgreSQL/Redis/Qdrant 통합 이미지
+- `gitlab-*`: compose 로 함께 기동되는 별도 GitLab 런타임 이미지
+
+즉, 폐쇄망에서는 `build-mac.sh` / `build-wsl2.sh`만 수행한 뒤 바로 `run-*.sh` 로 넘어가면 안 됩니다. 반드시 하위 문서의 `offline-prefetch.sh` 로 두 tarball 을 만들고, 대상 머신에서 `offline-load.sh` 로 둘 다 load 한 뒤 `run-*.sh` 를 실행해야 합니다.
 
 ## 첫 진입점
 
