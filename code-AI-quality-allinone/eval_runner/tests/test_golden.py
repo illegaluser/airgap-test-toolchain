@@ -188,6 +188,76 @@ def test_percentile(expected):
         assert got == case["expected"], f"case={case} got={got}"
 
 
+def test_render_summary_html_smoke(expected):
+    """[Phase 2.0] reporting.html.render_summary_html 이 state dict 로 HTML 을 정상 생성."""
+    from reporting.html import render_summary_html
+
+    # test_runner 의 SUMMARY_STATE 와 동일 스키마의 최소 샘플
+    state = {
+        "run_id": "smoke-001",
+        "target_url": "http://127.0.0.1:8000/invoke",
+        "target_type": "http",
+        "judge_model": "qwen3-coder:30b",
+        "langfuse_enabled": False,
+        "thresholds": {"answer_relevancy": 0.7, "task_completion": 0.5},
+        "metric_guide": {"AnswerRelevancyMetric": {"description": "답변 관련성", "pass_rule": "≥ 0.7"}},
+        "totals": {
+            "conversations": 1,
+            "passed_conversations": 1,
+            "failed_conversations": 0,
+            "turns": 1,
+            "passed_turns": 1,
+            "failed_turns": 0,
+            "conversation_pass_rate": 100.0,
+            "turn_pass_rate": 100.0,
+            "latency_ms": {"count": 1, "min": 500, "max": 500, "p50": 500, "p95": 500, "p99": 500},
+            "tokens": {"turns_with_usage": 1, "prompt": 10, "completion": 5, "total": 15},
+        },
+        "metric_averages": {"AnswerRelevancyMetric": 0.9},
+        "conversations": [
+            {
+                "conversation_id": None,
+                "conversation_key": "sample-case",
+                "status": "passed",
+                "failure_message": "",
+                "multi_turn_consistency": None,
+                "turns": [
+                    {
+                        "case_id": "sample-case",
+                        "turn_id": None,
+                        "input": "test input",
+                        "expected_output": "expected",
+                        "success_criteria": "",
+                        "expected_outcome": "pass",
+                        "status": "passed",
+                        "latency_ms": 500,
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                        "policy_check": {"name": "PolicyCheck", "passed": True},
+                        "schema_check": {"name": "SchemaValidation", "status": "passed"},
+                        "task_completion": None,
+                        "metrics": [],
+                        "actual_output": "test output",
+                        "raw_response": "test output",
+                        "has_retrieval_context": False,
+                        "has_context_ground_truth": False,
+                        "failure_message": "",
+                    }
+                ],
+            }
+        ],
+    }
+
+    html = render_summary_html(state)
+    # 필수 랜드마크 존재 확인 — 각 섹션의 구조 검증
+    assert "<!DOCTYPE html>" in html
+    assert "AI 에이전트 평가 요약" in html
+    assert "smoke-001" in html
+    assert "qwen3-coder:30b" in html
+    assert "sample-case" in html
+    assert "단일턴 대화 결과" in html
+    assert "멀티턴 대화 결과" in html
+
+
 def test_summary_totals_aggregates_latency_and_tokens(expected):
     """[Phase 1 G3] _recompute_summary_totals 가 latency 분포 + 토큰 합계를 기록."""
     # SUMMARY_STATE 를 격리된 샘플로 교체 후 재집계
