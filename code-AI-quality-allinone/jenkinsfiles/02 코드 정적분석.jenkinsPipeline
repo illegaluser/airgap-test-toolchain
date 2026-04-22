@@ -19,6 +19,19 @@ pipeline {
             defaultValue: 'main',
             description: '분석 대상 Git 브랜치'
         )
+
+        // Phase 1.5: 체인 Job 전파용. 빈 값이면 Bootstrap Guard skip (수동 실행 하위호환).
+        string(
+            name: 'COMMIT_SHA',
+            defaultValue: '',
+            description: '특정 커밋 SHA 지정. 체인 Job 용 — 빈 값이면 단독 실행 흐름.'
+        )
+
+        choice(
+            name: 'ANALYSIS_MODE',
+            choices: ['full', 'commit'],
+            description: 'full: P1 무조건 재빌드 트리거 | commit: kb_manifest.commit_sha 불일치 시에만 P1 트리거'
+        )
     }
 
     environment {
@@ -39,6 +52,68 @@ pipeline {
 
     stages {
 
+        // Phase 1.5: COMMIT_SHA 전달받을 때만 KB freshness 확인.
+        // 설계 (executor deadlock + 중복 P1 방지):
+        //   - 체인 경로 (00 이 이미 P1 을 돌리고 wait:true 로 executor 1개를 hold) 에서
+        //     이 Stage 가 다시 P1 을 wait:true 로 호출하면 deadlock (executor=2 기본).
+        //   - 따라서 **full 모드는 체인이 P1 책임** — guard 는 manifest 검증만 수행,
+        //     불일치면 fail loud (체인 P1 이 실패했거나 race).
+        //   - **commit 모드 단독 실행** 은 P1 을 돌린 적이 없을 수 있으므로 manifest
+        //     부재/불일치 시 P1 자동 트리거 허용 (00 이 끼어있지 않으니 deadlock 무관).
+        //   - COMMIT_SHA 비어있으면 guard 전체 skip — 완전 수동 흐름 하위호환.
+        stage('(0) KB Bootstrap Guard') {
+            when {
+                expression { return (params.COMMIT_SHA ?: '').trim() != '' }
+            }
+            steps {
+                script {
+                    def expectedSha = params.COMMIT_SHA.trim()
+                    def check = sh(
+                        script: """
+                            set -e
+                            if [ ! -f /data/kb_manifest.json ]; then
+                                echo "MISSING"
+                                exit 0
+                            fi
+                            CURRENT=\$(python3 -c "import json;print(json.load(open('/data/kb_manifest.json')).get('commit_sha',''))" 2>/dev/null || echo "")
+                            if [ "\${CURRENT}" = "${expectedSha}" ]; then
+                                echo "MATCH"
+                            else
+                                echo "MISMATCH:\${CURRENT}"
+                            fi
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "[Guard] kb_manifest check: ${check} (expected=${expectedSha})"
+
+                    if (check == 'MATCH') {
+                        echo "[Guard] manifest 일치 — Sonar 분석 진행"
+                        return
+                    }
+
+                    if (params.ANALYSIS_MODE == 'full') {
+                        // 체인이 P1 을 담당. manifest 가 맞지 않으면 체인 실패 → fail loud.
+                        error "[Guard] ANALYSIS_MODE=full 에서 manifest 불일치 — 체인 Stage 2 (P1) 실패 추정. Jenkins 에서 01 Job 로그 확인."
+                    }
+
+                    echo "[Guard] commit 모드 + manifest 불일치 — P1 단독 트리거"
+                    def repoUrl = "http://gitlab:80/${params.GITLAB_PROJECT_PATH}.git"
+                    build(
+                        job: '01-코드-사전학습',
+                        parameters: [
+                            string(name: 'REPO_URL',      value: repoUrl),
+                            string(name: 'COMMIT_SHA',    value: expectedSha),
+                            string(name: 'BRANCH',        value: params.BRANCH),
+                            string(name: 'ANALYSIS_MODE', value: params.ANALYSIS_MODE),
+                            booleanParam(name: 'ENRICH_CONTEXT', value: true)
+                        ],
+                        wait: true,
+                        propagate: true
+                    )
+                }
+            }
+        }
+
         stage('Checkout from GitLab') {
             steps {
                 script {
@@ -46,20 +121,26 @@ pipeline {
                     deleteDir()
                 }
 
-                sh '''
+                sh """
                 set -e
                 echo "[Checkout] GitLab에서 코드 체크아웃 (git clone)"
 
                 set +x
-                git clone -b "${BRANCH}" "http://${GITLAB_USER}:${GITLAB_PAT}@gitlab:80/${GITLAB_PROJECT_PATH}.git" .
+                git clone -b "${params.BRANCH}" "http://${GITLAB_USER}:\${GITLAB_PAT}@gitlab:80/${params.GITLAB_PROJECT_PATH}.git" .
                 set -x
+
+                # Phase 1.5: COMMIT_SHA 가 전달되면 해당 커밋으로 고정.
+                if [ -n "${params.COMMIT_SHA ?: ''}" ]; then
+                    echo "[Checkout] COMMIT_SHA 고정: ${params.COMMIT_SHA ?: ''}"
+                    git checkout -f "${params.COMMIT_SHA ?: ''}"
+                fi
 
                 echo "[Checkout] 현재 작업 디렉터리"
                 pwd
 
                 echo "[Checkout] 디렉터리 목록"
                 ls -al
-                '''
+                """
             }
         }
 
@@ -147,8 +228,8 @@ pipeline {
                         "${scannerHome}/bin/sonar-scanner" \\
                           -Dsonar.host.url=${SONAR_HOST_URL} \\
                           -Dsonar.token=${SONAR_AUTH_TOKEN} \\
-                          -Dsonar.projectKey=${SONAR_PROJECT_KEY} \\
-                          -Dsonar.projectName=${SONAR_PROJECT_KEY} \\
+                          -Dsonar.projectKey=${params.SONAR_PROJECT_KEY} \\
+                          -Dsonar.projectName=${params.SONAR_PROJECT_KEY} \\
                           -Dsonar.exclusions=**/node_modules/**,**/build/**,**/dist/**,**/.git/** \\
                           -Dsonar.nodejs.executable=\${NODE_BIN}
                         """

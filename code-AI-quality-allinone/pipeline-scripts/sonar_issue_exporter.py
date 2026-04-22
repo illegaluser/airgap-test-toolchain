@@ -34,7 +34,10 @@
 
 import argparse
 import base64
+import glob
+import hashlib
 import json
+import subprocess
 import sys
 import html
 import os
@@ -237,6 +240,209 @@ def _enclosing_function(repo_root: str, rel_path: str, target_line: int) -> tupl
     return (best.get("symbol", ""), best.get("lines", ""))
 
 
+def _git_context(repo_root: str, rel_path: str, line: int) -> str:
+    """Step B — 이슈 라인의 git blame + 파일 최근 log 요약을 3줄 텍스트로 반환.
+
+    실패 시 빈 문자열 (파이프라인 계속). LLM 에 "이 코드를 누가 언제 왜 넣었는지"
+    맥락을 공급.
+    """
+    if not repo_root or not rel_path or line <= 0:
+        return ""
+    if not Path(repo_root).is_dir():
+        return ""
+    try:
+        blame = subprocess.run(
+            ["git", "-C", repo_root, "blame", "-L", f"{line},{line}", "--porcelain", rel_path],
+            capture_output=True, text=True, timeout=15
+        )
+        author = ""
+        committed = ""
+        sha = ""
+        if blame.returncode == 0:
+            for ln in blame.stdout.splitlines():
+                if ln.startswith("author "):
+                    author = ln[len("author "):]
+                elif ln.startswith("author-time "):
+                    # unix epoch — 사람 읽기 좋은 포맷으로 변환은 생략 (복잡도 회피)
+                    committed = ln[len("author-time "):]
+                elif not sha and re.match(r"^[0-9a-f]{40}", ln):
+                    sha = ln.split()[0][:12]
+
+        log_line = ""
+        log_run = subprocess.run(
+            ["git", "-C", repo_root, "log", "-1", "--format=%an|%ar|%s", "--", rel_path],
+            capture_output=True, text=True, timeout=15
+        )
+        if log_run.returncode == 0 and log_run.stdout.strip():
+            log_line = log_run.stdout.strip()
+
+        parts = []
+        if author or sha:
+            parts.append(f"blame L{line}: {author} ({sha})")
+        if committed:
+            parts.append(f"committed_at(epoch)={committed}")
+        if log_line:
+            parts.append(f"last_commit: {log_line}")
+        return "\n".join(parts)
+    except Exception:
+        return ""
+
+
+def _load_callgraph_index(callgraph_dir: str) -> dict:
+    """Step B — callgraph_dir 아래 *.jsonl 을 한 번 로딩해 `callee_symbol → [caller path::symbol, ...]`
+    역인덱스를 구성. exporter 실행당 최초 1회만 돌고, 이후 `_direct_callers` 는 이 dict 만 조회.
+    """
+    idx: dict = {}
+    if not callgraph_dir or not Path(callgraph_dir).is_dir():
+        return idx
+    for jp in sorted(glob.glob(os.path.join(callgraph_dir, "*.jsonl"))):
+        try:
+            with open(jp, "r", encoding="utf-8") as f:
+                for ln in f:
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        ch = json.loads(ln)
+                    except Exception:
+                        continue
+                    path = ch.get("path") or ""
+                    symbol = ch.get("symbol") or ""
+                    callees = ch.get("callees") or []
+                    caller_ref = f"{path}::{symbol}" if path and symbol else (path or symbol)
+                    if not caller_ref:
+                        continue
+                    for cal in callees:
+                        if not cal:
+                            continue
+                        idx.setdefault(cal, []).append(caller_ref)
+        except Exception:
+            continue
+    return idx
+
+
+def _direct_callers(cg_index: dict, symbol: str, limit: int = 10) -> list:
+    """cg_index 에서 symbol 을 호출하는 caller 리스트를 반환 (최대 limit)."""
+    if not symbol or not cg_index:
+        return []
+    refs = cg_index.get(symbol, [])
+    # 동일 caller 가 중복으로 들어갈 수 있으므로 dedup + 순서 보존
+    seen = set()
+    out = []
+    for r in refs:
+        if r in seen:
+            continue
+        seen.add(r)
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+
+_SEVERITY_ROUTING = {
+    "BLOCKER":  ("qwen3-coder:30b", False),
+    "CRITICAL": ("qwen3-coder:30b", False),
+    "MAJOR":    ("gemma4:e4b",     False),
+}
+
+
+def _classify_severity(severity: str) -> tuple:
+    """Step B — severity → (judge_model, skip_llm) 매핑.
+
+    MINOR/INFO/UNKNOWN 은 LLM 호출 생략 (analyzer 의 skip_llm 분기).
+    """
+    s = (severity or "").upper()
+    if s in _SEVERITY_ROUTING:
+        model, skip = _SEVERITY_ROUTING[s]
+        return (model, skip)
+    return ("skip_llm", True)
+
+
+def _cluster_key(rule_key: str, enclosing_function: str, component: str) -> str:
+    """Step B — 같은 규칙 · 같은 함수 · 같은 디렉터리 안 이슈는 한 cluster.
+
+    대표 1건만 emit 하고 나머지는 affected_locations 로 묶어 P3 LLM 호출 절감.
+    """
+    base_dir = os.path.dirname(component or "")
+    raw = f"{rule_key or ''}|{enclosing_function or ''}|{base_dir}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _severity_rank(sev: str) -> int:
+    """Clustering 대표 선정용 — 심각도가 높을수록 작은 rank 값."""
+    order = {"BLOCKER": 0, "CRITICAL": 1, "MAJOR": 2, "MINOR": 3, "INFO": 4}
+    return order.get((sev or "").upper(), 9)
+
+
+def _apply_clustering(records: list) -> list:
+    """cluster_key 동일 그룹 → 대표 1건만 남기고 나머지는 affected_locations 로 합침.
+
+    대표 선정: severity 가장 심각 → line 번호 작은 순.
+    비결정적 정렬 회피를 위해 cluster_key 내 원본 순서 유지 후 key 로만 pick.
+    """
+    groups: dict = {}
+    for r in records:
+        k = r.get("cluster_key") or r.get("sonar_issue_key")
+        groups.setdefault(k, []).append(r)
+    out: list = []
+    for k, items in groups.items():
+        if len(items) == 1:
+            items[0]["affected_locations"] = []
+            out.append(items[0])
+            continue
+        items.sort(key=lambda r: (_severity_rank(r.get("issue_search_item", {}).get("severity", "")), r.get("line") or 0))
+        leader = items[0]
+        followers = items[1:]
+        leader["affected_locations"] = [
+            {
+                "component": f.get("component"),
+                "line": f.get("line"),
+                "sonar_issue_key": f.get("sonar_issue_key"),
+                "relative_path": f.get("relative_path"),
+            }
+            for f in followers
+        ]
+        out.append(leader)
+    return out
+
+
+def _diff_mode_filter(records: list, state_dir: str, mode: str) -> tuple:
+    """Step B — diff-mode.
+
+    `mode=incremental` → {state_dir}/last_scan.json 의 이슈 key set 과 비교, 기존 key 는 drop.
+    `mode=full` → 필터 없음 + last_scan 덮어쓰기.
+    반환: (filtered_records, skipped_count).
+    """
+    state_path = Path(state_dir) / "last_scan.json" if state_dir else None
+    prev_keys: set = set()
+    if mode == "incremental" and state_path and state_path.is_file():
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            prev_keys = set(data.get("issue_keys", []))
+        except Exception:
+            prev_keys = set()
+
+    filtered = records
+    skipped = 0
+    if mode == "incremental" and prev_keys:
+        filtered = [r for r in records if r.get("sonar_issue_key") not in prev_keys]
+        skipped = len(records) - len(filtered)
+
+    # 새 last_scan 기록 (full/incremental 무관 — 다음 incremental 실행이 이 snapshot 기준)
+    if state_path:
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "issue_keys": sorted({r.get("sonar_issue_key") for r in records if r.get("sonar_issue_key")}),
+                "snapshot_size": len(records),
+            }
+            state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"[WARN] last_scan.json 기록 실패: {e}", file=sys.stderr)
+
+    return (filtered, skipped)
+
+
 def _get_code_lines(host: str, headers: dict, component: str, target_line: int) -> str:
     """
     이슈가 발생한 소스 코드의 전후 50줄(총 101줄)을 텍스트로 추출합니다.
@@ -317,6 +523,13 @@ def main():
     # Step R 신규 — enclosing_function 추출용 레포 루트. 보통 /var/knowledges/codes/<repo>.
     # 비어있으면 enclosing_function 생략 (파이프라인은 정상 동작).
     ap.add_argument("--repo-root", default="")
+    # Step B 신규 — diff-mode, state, callgraph 경로.
+    ap.add_argument("--mode", choices=["full", "incremental"], default="full",
+                    help="full: last_scan 리셋 후 전수 emit. incremental: 이전 스냅샷과 diff.")
+    ap.add_argument("--state-dir", default="/var/knowledges/state",
+                    help="last_scan.json 등 스캐너 상태 저장 경로.")
+    ap.add_argument("--callgraph-dir", default="/var/knowledges/docs/result",
+                    help="P1 이 남긴 JSONL 청크 디렉터리 — direct_callers 역인덱스 소스.")
     args, _ = ap.parse_known_args()
 
     # SonarQube API 인증 헤더 (Basic Auth)
@@ -346,6 +559,11 @@ def main():
         except: break
 
     print(f"[INFO] Processing {len(issues)} issues...", file=sys.stderr)
+
+    # Step B — callgraph 역인덱스 최초 1회 로드 (symbol → callers 리스트)
+    cg_index = _load_callgraph_index(args.callgraph_dir)
+    if cg_index:
+        print(f"[INFO] callgraph index loaded: {len(cg_index)} callees", file=sys.stderr)
 
     # ---------------------------------------------------------------
     # [3단계] 각 이슈에 대해 룰 정보 + 소스 코드 보강(Enrichment)
@@ -380,7 +598,14 @@ def main():
             args.repo_root, rel_path, line
         )
 
-        # --- 3-d. 통합 객체 생성 ---
+        # --- 3-d. Step B: git context + direct_callers + severity routing + cluster_key ---
+        git_ctx = _git_context(args.repo_root, rel_path, line)
+        callers = _direct_callers(cg_index, enclosing_symbol)
+        severity = (issue.get("severity") or rule_cache[rule_key].get("severity", "") or "").upper()
+        judge_model, skip_llm = _classify_severity(severity)
+        cluster_k = _cluster_key(rule_key, enclosing_symbol, component)
+
+        # --- 3-e. 통합 객체 생성 ---
         # 이 객체가 dify_sonar_issue_analyzer.py의 입력으로 사용됩니다.
         enriched.append({
             "sonar_issue_key": key,           # 이슈 고유 키
@@ -397,17 +622,41 @@ def main():
             "enclosing_function": enclosing_symbol,   # 예: "login" (tree-sitter, 실패 시 "")
             "enclosing_lines": enclosing_lines,       # 예: "22-27"
             "commit_sha": args.commit_sha,            # 빈 문자열이면 본문에 commit 섹션 생략
+            # Step B 신규 필드 — P3 LLM 프롬프트 + clustering + skip_llm 분기
+            "git_context": git_ctx,                   # "blame L24: alice (abc123)" 등 3줄
+            "direct_callers": callers,                # 최대 10개. fs-based callgraph.
+            "cluster_key": cluster_k,                 # sha1 앞 16글자
+            "judge_model": judge_model,               # "qwen3-coder:30b" / "gemma4:e4b" / "skip_llm"
+            "skip_llm": skip_llm,                     # True 면 analyzer 가 Dify 호출 생략
+            "severity": severity,                     # clustering/creator 용 top-level 복사
+            # affected_locations 은 _apply_clustering 에서 채움 (대표 1건만 비지 않음)
+            "affected_locations": [],
         })
 
     # ---------------------------------------------------------------
-    # [4단계] 결과 저장
+    # [4단계] Step B — Clustering + diff-mode
+    # ---------------------------------------------------------------
+    # (a) Clustering: 같은 rule+function+dir 이슈 → 대표 1건 + affected_locations 리스트
+    pre_cluster = len(enriched)
+    clustered = _apply_clustering(enriched)
+    cluster_reduced = pre_cluster - len(clustered)
+    if cluster_reduced > 0:
+        print(f"[INFO] clustering: {pre_cluster} → {len(clustered)} ({cluster_reduced} merged into affected_locations)", file=sys.stderr)
+
+    # (b) Diff-mode: last_scan 과 비교해 이미 본 이슈는 skip (incremental) + snapshot 갱신
+    filtered, skipped = _diff_mode_filter(clustered, args.state_dir, args.mode)
+    if skipped > 0:
+        print(f"[diff-mode] skipped {skipped} cached issues (mode={args.mode})", file=sys.stderr)
+
+    # ---------------------------------------------------------------
+    # [5단계] 결과 저장
     # 전체 enriched 이슈를 하나의 JSON 파일로 저장합니다.
     # 다음 단계(dify_sonar_issue_analyzer.py)가 이 파일을 입력으로 사용합니다.
     # ---------------------------------------------------------------
     with open(args.output, "w", encoding="utf-8") as f:
-        json.dump({"issues": enriched}, f, ensure_ascii=False, indent=2)
+        json.dump({"issues": filtered}, f, ensure_ascii=False, indent=2)
 
-    print(f"[OK] Exported {len(enriched)} issues.", file=sys.stdout)
+    print(f"[OK] Exported {len(filtered)} issues (from {len(enriched)} pre-cluster, {skipped} skipped by diff-mode).", file=sys.stdout)
 
 if __name__ == "__main__":
     main()

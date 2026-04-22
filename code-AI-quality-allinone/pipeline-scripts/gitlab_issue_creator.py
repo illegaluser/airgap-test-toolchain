@@ -25,7 +25,7 @@
 #
 # [실행 예시]
 # python3 gitlab_issue_creator.py \
-#   --gitlab-host-url http://gitlab:8929 \
+#   --gitlab-host-url http://gitlab:80 \
 #   --gitlab-token glpat-xxxxx \
 #   --gitlab-project mygroup/myproject \
 #   --input llm_analysis.jsonl \
@@ -33,6 +33,7 @@
 # ==================================================================================
 
 import argparse
+import base64
 import json
 import sys
 import time
@@ -148,6 +149,72 @@ def _gitlab_commit_url(public_base: str, project: str, sha: str) -> str:
 
 def _short_sha(sha: str, n: int = 8) -> str:
     return sha[:n] if sha else ""
+
+
+def _sonar_mark_fp(sonar_host: str, sonar_token: str, issue_key: str, timeout: int = 30) -> tuple:
+    """Step D — SonarQube `POST /api/issues/do_transition` 으로 이슈를 false positive 로 마킹.
+
+    Community Edition 에서 동작 여부가 환경마다 다르므로 실패해도 파이프라인은
+    계속 (Dual-path 설계). 반환: `(success: bool, err_msg: str)`.
+
+    Auth: Basic auth with token as username, empty password (Sonar 표준).
+    """
+    if not sonar_host or not sonar_token or not issue_key:
+        return (False, "missing sonar_host / token / issue_key")
+    url = f"{sonar_host.rstrip('/')}/api/issues/do_transition"
+    form = urlencode({"issue": issue_key, "transition": "falsepositive"}).encode("utf-8")
+    auth = "Basic " + base64.b64encode(f"{sonar_token}:".encode("utf-8")).decode("ascii")
+    headers = {
+        "Authorization": auth,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    req = Request(url, method="POST", headers=headers, data=form)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            if 200 <= resp.status < 300:
+                return (True, "")
+            body = resp.read().decode("utf-8", errors="replace")
+            return (False, f"HTTP {resp.status} · {body[:200]}")
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        return (False, f"HTTP {e.code} · {body[:200]}")
+    except URLError as e:
+        return (False, f"URLError: {e}")
+    except Exception as e:
+        return (False, f"Exception: {e}")
+
+
+def _merge_labels(llm_labels, severity: str, classification: str, confidence: str,
+                  llm_skipped: bool, extra: list = None) -> str:
+    """Step D — labels 조립. LLM 제안 + Step B/C 필드 + Step D 경고 라벨 병합 + 중복 제거.
+
+    반환: "labelA,labelB,..." 문자열 (GitLab Issues API form 포맷).
+    """
+    merged = []
+    if isinstance(llm_labels, list):
+        merged.extend(str(x) for x in llm_labels if x)
+    elif llm_labels:
+        merged.append(str(llm_labels))
+
+    if severity:
+        merged.append(f"severity:{severity}")
+    if classification:
+        merged.append(f"classification:{classification}")
+    if confidence:
+        merged.append(f"confidence:{confidence}")
+    if llm_skipped:
+        merged.append("auto_template:true")
+    if extra:
+        merged.extend(extra)
+
+    # 중복 제거 (순서 보존)
+    seen = set()
+    out = []
+    for lbl in merged:
+        if lbl and lbl not in seen:
+            seen.add(lbl)
+            out.append(lbl)
+    return ",".join(out)
 
 
 def _trim_code_snippet(snippet: str, target_line: int, context: int = 10) -> str:
@@ -276,6 +343,16 @@ def render_issue_body(row: dict, args) -> str:
             suggested_fix = f"```{lang}\n{suggested_fix}\n```"
         fix_section = f"### ✅ 수정 제안\n\n{suggested_fix}"
 
+    # 4-b. Step D — Suggested Diff (unified diff, optional) — suggested_fix_markdown 과 별개로
+    # 기계 적용 가능한 diff 가 있을 때만 추가. LLM 이 비워두면 섹션 생략.
+    suggested_diff = (outputs.get("suggested_diff") or "").strip()
+    diff_section = ""
+    if suggested_diff and suggested_diff.lower() not in ("", "null", "none"):
+        # 이미 코드펜스 감싸져 있으면 그대로, 아니면 diff 펜스로 감싸기.
+        if "```" not in suggested_diff:
+            suggested_diff = f"```diff\n{suggested_diff}\n```"
+        diff_section = f"### 💡 Suggested Diff\n\n{suggested_diff}"
+
     # 5. 영향 분석 (required from LLM)
     impact = (outputs.get("impact_analysis_markdown") or "").strip()
     if impact:
@@ -294,7 +371,20 @@ def render_issue_body(row: dict, args) -> str:
             "</details>"
         )
 
-    # 7. 링크 섹션
+    # 7. Step D — Affected Locations (같은 cluster 의 나머지 이슈). row.affected_locations
+    # 가 비어 있으면 섹션 생략 (단일 이슈). Step B exporter 가 채움.
+    affected = row.get("affected_locations") or []
+    aff_section = ""
+    if affected:
+        rows_md = ["| component | line | sonar key |", "|-----------|------|-----------|"]
+        for a in affected[:20]:  # 본문이 너무 길어지지 않도록 상한
+            comp = a.get("component") or a.get("relative_path") or ""
+            lno = a.get("line") or ""
+            skey = a.get("sonar_issue_key") or ""
+            rows_md.append(f"| `{comp}` | {lno} | `{skey}` |")
+        aff_section = "### 🧭 Affected Locations\n\n" + "\n".join(rows_md)
+
+    # 8. 링크 섹션
     link_lines = []
     if sonar_public_url:
         link_lines.append(f"- [SonarQube 이슈 상세]({sonar_public_url})")
@@ -307,12 +397,26 @@ def render_issue_body(row: dict, args) -> str:
     if link_lines:
         link_section = "### 🔗 링크\n\n" + "\n".join(link_lines)
 
+    # 9. Step D — footer: commit 추적용 메타 한 줄. dedup 에서도 활용.
+    analysis_mode = getattr(args, "analysis_mode", "") or ""
+    scan_label = f" ({analysis_mode} scan)" if analysis_mode else ""
+    footer_parts = []
+    if commit_sha:
+        footer_parts.append(f"commit: `{_short_sha(commit_sha)}`{scan_label}")
+    if sonar_public_url:
+        footer_parts.append(f"sonar: {sonar_public_url}")
+    footer = ""
+    if footer_parts:
+        footer = "---\n_" + " · ".join(footer_parts) + "_"
+
     # 조립 (섹션 사이 빈 줄 유지)
     sections = [tldr, location_table]
-    for s in (code_section, fix_section, impact_section, rule_section, link_section):
+    for s in (code_section, fix_section, diff_section, impact_section, aff_section, rule_section, link_section):
         if s:
             sections.append(s)
-    body = "\n\n---\n\n".join([sections[0]] + sections[1:])
+    body = "\n\n---\n\n".join(sections)
+    if footer:
+        body = body + "\n\n" + footer
     # LLM 본문에 섞여 나올 수 있는 내부 URL 을 public 으로 최종 한 번 더 정규화
     body = _replace_sonar_url(body, args.sonar_host_url, args.sonar_public_url)
     return body
@@ -376,13 +480,20 @@ def main() -> int:
     ap.add_argument("--gitlab-public-url", default="http://localhost:28090")
     ap.add_argument("--gitlab-branch", default="main")
     ap.add_argument("--commit-sha", default="")            # row 에 없을 때 fallback
+    # Step D — FP 전이 API 호출용 Sonar 토큰. Jenkins credential 에서 주입.
+    # 빈 값이면 FP 전이는 시도 자체를 skip (GitLab Issue 는 정상 생성).
+    ap.add_argument("--sonar-token", default="")
+    # Step D — footer 의 `(<mode> scan)` 표기. 체인 Job 이 전달.
+    ap.add_argument("--analysis-mode", default="")
     args = ap.parse_args()
 
     # GitLab API 인증 헤더
     headers = {"PRIVATE-TOKEN": args.gitlab_token}
 
-    # 처리 결과를 세 가지 카테고리로 분류합니다.
+    # 처리 결과를 여러 카테고리로 분류 — Step D Dual-path FP 집계 포함.
     created, skipped, failed = [], [], []
+    fp_transitioned = []        # Sonar 전이 성공 → GitLab Issue 미생성
+    fp_transition_failed = []   # 전이 실패 → GitLab Issue 는 생성 (라벨로 구분)
     rows = []
 
     # ---------------------------------------------------------------
@@ -414,7 +525,27 @@ def main() -> int:
         severity = row.get("severity") or ""
         final_title = f"[{severity}] {main_title}" if severity else main_title
 
-        # --- 3-b. Step R 이후: deterministic 렌더로 본문 조립 ---
+        # Step D — classification/confidence 는 LLM outputs 에서 추출 (analyzer 가 기본값 주입).
+        classification = (outputs.get("classification") or "true_positive").lower()
+        confidence = (outputs.get("confidence") or "").lower()
+        llm_skipped = bool(row.get("llm_skipped"))
+
+        # --- 3-b. Step D: Dual-path FP 처리 ---
+        # classification == "false_positive" → Sonar 전이 API 먼저 시도.
+        # 성공: GitLab Issue 생성 skip, 집계에 기록.
+        # 실패(또는 --sonar-token 비어있음): GitLab Issue 는 생성하되 `fp_transition_failed` 라벨 추가.
+        extra_labels = []
+        if classification == "false_positive":
+            ok, err = _sonar_mark_fp(args.sonar_host_url, args.sonar_token, sonar_key)
+            if ok:
+                print(f"[FP-TRANSITION] {sonar_key} → Sonar marked as false positive")
+                fp_transitioned.append({"key": sonar_key, "title": final_title})
+                continue
+            print(f"[FP-TRANSITION:FAIL] {sonar_key} — {err} — GitLab Issue 는 생성합니다")
+            fp_transition_failed.append({"key": sonar_key, "err": err})
+            extra_labels.append("fp_transition_failed")
+
+        # --- 3-c. deterministic 본문 렌더 (Step R + Step D 확장 포함) ---
         # row 에 --commit-sha (CLI) 가 비어있으면 덮어쓰기
         if not row.get("commit_sha"):
             row["commit_sha"] = args.commit_sha or ""
@@ -425,19 +556,21 @@ def main() -> int:
             failed.append({"key": sonar_key, "reason": "Empty title"})
             continue
 
-        # --- 3-c. 중복 이슈 검사 ---
-        # SonarQube 이슈 키로 GitLab에서 기존 이슈를 검색합니다.
-        # 파이프라인 재실행 시 동일 이슈가 중복 생성되는 것을 방지합니다.
+        # --- 3-d. 중복 이슈 검사 ---
         if _find_existing_by_sonar_key(args.gitlab_host_url, headers, args.gitlab_project, sonar_key):
             skipped.append({"key": sonar_key, "title": final_title, "reason": "Dedup"})
             continue
 
-        # --- 3-d. GitLab 이슈 생성 ---
+        # --- 3-e. GitLab 이슈 생성 ---
         form = {"title": final_title, "description": desc}
-        # LLM이 제안한 라벨이 있으면 이슈에 태깅합니다 (예: bug, security, code-smell).
-        labels = outputs.get("labels")
-        if labels:
-            form["labels"] = ",".join(labels) if isinstance(labels, list) else str(labels)
+        form["labels"] = _merge_labels(
+            llm_labels=outputs.get("labels"),
+            severity=severity,
+            classification=classification,
+            confidence=confidence,
+            llm_skipped=llm_skipped,
+            extra=extra_labels,
+        )
 
         url = f"{args.gitlab_host_url.rstrip('/')}/api/v4/projects/{quote(args.gitlab_project, safe='')}/issues"
         try:
@@ -453,10 +586,21 @@ def main() -> int:
     # [4단계] 결과 요약 파일 저장
     # Jenkins 콘솔과 아티팩트에서 처리 현황을 확인할 수 있습니다.
     # ---------------------------------------------------------------
+    summary = {
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "fp_transitioned": fp_transitioned,
+        "fp_transition_failed": fp_transition_failed,
+    }
     with open(args.output, "w", encoding="utf-8") as f:
-        json.dump({"created": created, "skipped": skipped, "failed": failed}, f, ensure_ascii=False, indent=2)
+        json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    print(f"[OK] created={len(created)} skipped={len(skipped)} failed={len(failed)} output={args.output}")
+    print(
+        f"[OK] created={len(created)} skipped={len(skipped)} failed={len(failed)} "
+        f"fp_transitioned={len(fp_transitioned)} fp_transition_failed={len(fp_transition_failed)} "
+        f"output={args.output}"
+    )
     # 실패 건이 있으면 종료 코드 2를 반환하여 Jenkins 빌드를 UNSTABLE/FAILURE로 표시합니다.
     return 2 if failed else 0
 
