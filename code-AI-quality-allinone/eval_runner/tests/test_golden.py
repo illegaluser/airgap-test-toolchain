@@ -258,6 +258,72 @@ def test_render_summary_html_smoke(expected):
     assert "멀티턴 대화 결과" in html
 
 
+def test_render_summary_html_exec_summary_block():
+    """[Phase 2.1 R1.1] state['aggregate']['exec_summary'] 가 있으면 헤더에 🤖 블록이 렌더된다."""
+    from reporting.html import render_summary_html
+
+    state_base = {
+        "run_id": "exec-001",
+        "target_url": "http://127.0.0.1:8000/invoke",
+        "target_type": "http",
+        "judge_model": "qwen3-coder:30b",
+        "langfuse_enabled": False,
+        "thresholds": {},
+        "metric_guide": {},
+        "totals": {
+            "conversations": 1, "passed_conversations": 1, "failed_conversations": 0,
+            "turns": 1, "passed_turns": 1, "failed_turns": 0,
+            "conversation_pass_rate": 100.0, "turn_pass_rate": 100.0,
+        },
+        "metric_averages": {},
+        "conversations": [],
+    }
+
+    # Case 1: source=llm (배지 "🤖 LLM 생성")
+    state_llm = {
+        **state_base,
+        "aggregate": {"exec_summary": {"text": "전체 통과. 품질 이슈 없음.", "source": "llm", "role": "exec_summary"}},
+    }
+    html_llm = render_summary_html(state_llm)
+    assert "<div class='exec-summary'>" in html_llm
+    assert "이번 빌드 한 줄 요약" in html_llm
+    assert "🤖 LLM 생성" in html_llm
+    assert "전체 통과. 품질 이슈 없음." in html_llm
+
+    # Case 2: source=fallback (배지 "📋 기본 메시지")
+    state_fallback = {
+        **state_base,
+        "aggregate": {"exec_summary": {
+            "text": "총 10건 중 1건 실패 (통과율 90%). 상세 원인은 case drill-down 을 확인하세요.",
+            "source": "fallback",
+            "role": "exec_summary",
+        }},
+    }
+    html_fallback = render_summary_html(state_fallback)
+    assert "📋 기본 메시지" in html_fallback
+    assert "총 10건 중 1건 실패" in html_fallback
+
+    # Case 3: source=cached
+    state_cached = {
+        **state_base,
+        "aggregate": {"exec_summary": {"text": "요약 텍스트", "source": "cached", "role": "exec_summary"}},
+    }
+    assert "🤖 LLM (캐시)" in render_summary_html(state_cached)
+
+    # Case 4: exec_summary 없음 → 섹션 자체 생략 (렌더 에러 없이)
+    html_empty = render_summary_html(state_base)
+    assert "<div class='exec-summary'>" not in html_empty
+    assert "이번 빌드 한 줄 요약" not in html_empty
+
+    # Case 5: exec_summary.text 가 빈 문자열 → 섹션 생략
+    state_empty_text = {
+        **state_base,
+        "aggregate": {"exec_summary": {"text": "", "source": "fallback"}},
+    }
+    html_empty2 = render_summary_html(state_empty_text)
+    assert "이번 빌드 한 줄 요약" not in html_empty2
+
+
 def test_summary_totals_aggregates_latency_and_tokens(expected):
     """[Phase 1 G3] _recompute_summary_totals 가 latency 분포 + 토큰 합계를 기록."""
     # SUMMARY_STATE 를 격리된 샘플로 교체 후 재집계
