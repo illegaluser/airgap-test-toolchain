@@ -6117,3 +6117,58 @@ Step C 는 사용자 피드백 반영해 **LLM 조언 실효성 강화** 를 범
 - 1.1 G3: `test_runner.py` 가 per-turn `latency_ms` / `usage` 를 summary.json 의 `conversations[*].turns[*]` 와 `aggregate.{latency_p50/p95/p99, tokens.total}` 에 필수 기록. 골든 하네스가 새 필드 등장을 캐치하도록 `expected_golden.json` 갱신 동반.
 - 1.2 G4: `04 AI평가.jenkinsPipeline` Choice 옵션 4→1, Stage 1-2 의 case 분기에서 openai/gemini/direct 블록 제거. Q6 (래퍼 기동 3× 중복) 자동 해소.
 - 검증: `LANGFUSE_PUBLIC_KEY=""` 로 Jenkins 1회 성공 + summary.json 11지표 전부 존재 + 모드 드롭다운 단일 옵션 노출.
+
+---
+
+### ▣ AI 평가 파이프라인 개선 — Phase 1 (Spec Compliance)
+**브랜치**: `feat/ai-eval-pipeline` (Phase 0 이어서)
+
+#### 진입 조건
+Phase 0 4 게이트 모두 충족 — 골든 하네스 pass, 변경 영향 eval_runner/docs 범위 확정, 정본 문서 확정, CONVERSATION_LOG 반영.
+
+#### Step 1.1 — G3 (Latency/Token Usage summary.json 필수 기록)
+커밋 `bf2b4fb` 의 일부.
+
+**문제**: `_recompute_summary_totals()` 가 conversation/turn 카운트와 metric 평균만 집계하고, per-turn `latency_ms`·`usage` 는 턴 레벨에만 남겨둠. Langfuse off 상태에서 11지표 중 ⑩ Latency·⑪ Token Usage 가 리포트 요약 레벨에 부재 → 스펙 위반.
+
+**구현**:
+- `test_runner.py` 에 두 개 module-level 헬퍼 추가 (golden 하네스 테스트 가능하도록):
+  - `_normalize_usage(usage)` — camelCase/snake_case 키 스타일 흡수. 입력: `{promptTokens, completionTokens, totalTokens}` 또는 `{prompt_tokens, completion_tokens, total_tokens}` → 출력: `{prompt, completion, total}`. total 누락 시 prompt+completion 파생. 전부 0 이면 None 반환.
+  - `_percentile(sorted_values, p)` — nearest-rank 방식. 빈 시퀀스 None. numpy/statistics 의존 회피 (airgap).
+- `_recompute_summary_totals()` 내부 루프에서 turn 의 `latency_ms` / `usage` 값을 samples/sums 로 누적
+- `SUMMARY_STATE["totals"]` 에 두 필드 신설:
+  - `latency_ms: {count, min, max, p50, p95, p99}`
+  - `tokens: {turns_with_usage, prompt, completion, total}`
+- 기존 totals 키(conversations/turns/pass rate) 는 보존 — 하위 호환.
+
+**골든 하네스 보강**:
+- `expected_golden.json` 3 섹션 추가: `usage_normalization` (7 cases), `percentile_cases` (6 cases), `summary_totals` (복합 conversation + 기대값)
+- `test_golden.py` 3 tests 추가: `test_normalize_usage`, `test_percentile`, `test_summary_totals_aggregates_latency_and_tokens`
+- 로컬 실행: **9/9 PASS** (이전 6 + 신규 3, Python 3.11 + pytest 9.0.3)
+
+#### Step 1.2 — G4 (Jenkinsfile 모드 단순화)
+커밋 `bf2b4fb` 의 일부.
+
+**문제**: `04 AI평가.jenkinsPipeline` 이 4가지 `TARGET_MODE` 를 광고하지만 `openai_wrapper`/`gemini_wrapper` 는 구현 래퍼 부재 → 선택 시 하드 크래시. `direct` 는 본 phase 스코프 외 (로컬 LLM 전용). 3× 반복되는 wrapper 기동 블록(Q6) 까지 포함해 운영 위험 + 유지보수 비용.
+
+**구현**:
+- 파라미터 제거 (15 → 5 개 남김):
+  - DROP: TARGET_URL, TARGET_TYPE, TARGET_MODE, API_KEY, TARGET_AUTH_HEADER, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL, GEMINI_API_KEY, GEMINI_MIN_INTERVAL_SEC, GEMINI_MAX_RETRIES, GEMINI_RETRY_BASE_SEC, GEMINI_RETRY_MAX_SEC
+  - KEEP: OLLAMA_BASE_URL, JUDGE_MODEL (Active Choices), ANSWER_RELEVANCY_THRESHOLD, GOLDEN_CSV_PATH, UPLOADED_GOLDEN_DATASET
+- Stage 1-2 의 case 분기 (192–365줄, 4가지 모드) → 단일 흐름으로 통합. wrapper_modes 집합·direct 분기 제거.
+- Stage 2 runEval 클로저의 openai/gemini echo 블록 + API_KEY/AUTH_HEADER export 제거. TARGET_TYPE=http 고정.
+- stage 이름 '1-2. Target URL 연결 검증' → '1-2. 로컬 Ollama Wrapper 기동 + 연결 검증'
+- 파일 크기: **597 → 418 줄 (-179, -30%)**. Q6 자동 해소.
+
+#### Phase 1 종료 게이트 결과
+- ✅ 골든 하네스 **9/9 PASS** (G3 신규 테스트 포함)
+- ✅ 변경 10건 모두 §1.4 매트릭스 In 범위 — Jobs 01/02/03 영향 0
+- ✅ 계획서 working copy ↔ 레포 사본 이미 일치 (Phase 1 에서 계획 편집 불필요)
+- ✅ 본 세션 요약 CONVERSATION_LOG 추가
+
+#### 커밋 (이번 세션)
+- `bf2b4fb` `feat(eval_runner): Phase 1 — G3 + G4 스펙 준수 복구`
+- (예정) `docs(ai-eval): Phase 1 종료 + CONVERSATION_LOG 갱신`
+
+#### 다음 단계 — Phase 2 (Report Overhaul)
+R1~R6 리포트 개편. 2.0 (`reporting/` 패키지 분리 — Q4 의 부분 착수) → 2.1 R1 임원 헤더 → 2.2 R2 11지표 카드 → 2.3 R3 case drill-down → 2.4 R4 에러 분리 (Phase 3 Q1 와 연계) → 2.5 R5 build delta (스트레치) → 2.6 R6 publishHTML 검증. acceptance 는 REPORT_SPEC §5 의 AC1~AC8.
