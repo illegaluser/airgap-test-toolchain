@@ -117,7 +117,6 @@ bash scripts/run-wsl2.sh
 - `convert`: Playwright 녹화 스크립트(`.py`)를 내부 DSL 시나리오로 변환합니다.
 - `execute`: 이미 존재하는 `scenario.json` 파일을 그대로 재실행합니다.
 - 시나리오 실행 시 locator fallback, action alternative, 로컬 DOM healing, Dify healing, 검색 전용 휴리스틱까지 포함한 다단계 자가 치유를 수행합니다.
-- 결과물은 `scenario.json`, `run_log.jsonl`, `index.html`, `regression_test.py` 등으로 남습니다.
 - 실제 브라우저 창을 띄우는 headed Playwright 실행을 위해 호스트 Jenkins agent 구성이 필요합니다.
 
 상세 설치/운영 가이드는 [playwright-allinone/README.md](playwright-allinone/README.md) 를 참고하세요.
@@ -130,8 +129,6 @@ bash scripts/run-wsl2.sh
 - `02 코드 정적분석`: SonarQube 스캔을 수행해 정적분석 결과를 생성하는 단계입니다.
 - `03 코드 정적분석 결과분석 및 이슈등록`: Sonar 이슈를 export한 뒤 Dify로 분석하고 GitLab Issue로 등록하는 단계입니다.
 - `04 AI평가`: Golden Dataset을 사용해 대상 AI를 평가하고 `summary.json`, `summary.html` 리포트를 생성하는 단계입니다.
-- `pipeline-scripts/` 는 코드 컨텍스트 구축, Sonar 이슈 export, Dify 분석, GitLab 이슈 생성 등을 담당합니다.
-- `eval_runner/` 는 AI 평가 엔진이며, HTTP API / UI 채팅 / 로컬 Ollama wrapper 경로를 통해 대상 AI 를 평가하고 `summary.json`, `summary.html` 리포트를 생성합니다.
 - 런타임은 Dify, Jenkins, PostgreSQL, Redis, Qdrant, SonarQube, GitLab 조합이며, LLM 추론은 호스트 Ollama 를 사용합니다.
 
 상세 설치/운영 가이드는 [code-AI-quality-allinone/README.md](code-AI-quality-allinone/README.md) 를 참고하세요.
