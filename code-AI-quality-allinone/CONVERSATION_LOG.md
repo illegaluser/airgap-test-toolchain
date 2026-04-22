@@ -6172,3 +6172,83 @@ Phase 0 4 게이트 모두 충족 — 골든 하네스 pass, 변경 영향 eval_
 
 #### 다음 단계 — Phase 2 (Report Overhaul)
 R1~R6 리포트 개편. 2.0 (`reporting/` 패키지 분리 — Q4 의 부분 착수) → 2.1 R1 임원 헤더 → 2.2 R2 11지표 카드 → 2.3 R3 case drill-down → 2.4 R4 에러 분리 (Phase 3 Q1 와 연계) → 2.5 R5 build delta (스트레치) → 2.6 R6 publishHTML 검증. acceptance 는 REPORT_SPEC §5 의 AC1~AC8.
+
+---
+
+### ▣ AI 평가 파이프라인 개선 — Phase 2.0 (Report Overhaul 기반 + LLM 내러티브 인프라)
+
+**브랜치**: `feat/ai-eval-pipeline` (Phase 1 이어서)
+
+#### 진입 맥락 + 스코프 확장
+착수 직전 사용자가 "리포트 생성 시 LLM 으로 이해도·가독성 높일 수 있지 않나? 고려됐는지?" 질문. 현재 `reporting/translate.py` 는 번역·가독성 재구성에 LLM 을 사용 중이지만, (1) 실패 사유 해설은 하드코딩 if-else, (2) 빌드 단위 임원 요약·지표별 내러티브·조치 권장은 부재. 이에 **Phase 2.0 에 LLM 내러티브 인프라까지 포함**하기로 결정.
+
+#### 계획 업데이트
+- R 카테고리 sub-item 4종 신규: **R1.1** 임원 요약 (기본 on), **R2.1** 지표별 1줄 해석 (기본 off), **R3.1** 실패 사유 1문장 (기본 on), **R3.2** 조치 권장 (기본 off)
+- Phase 2.0 Steps 를 **(a)~(h) 8 sub-step** 으로 재구성:
+    - (a) 모듈 분리, (b) LLM 생성기 일반화, (c) 결정론 캐시, (d) 4 env flag,
+    - (e) role별 프롬프트 가드레일, (f) Fallback 체계, (g) REPORT_SPEC §3.1.1/§3.2.1/§3.3.1/§3.3.2 + AC9~AC12,
+    - (h) 골든 하네스 LLM stub 확장
+
+#### 구현 산출물
+
+**Step 2.0 (a) — 모듈 분리** (커밋 `1555692`)
+- NEW: `eval_runner/reporting/{__init__,html,translate}.py` (총 756 LOC)
+- MOD: `test_runner.py` 1667 → 1104 LOC (17 함수 이전)
+- `render_summary_html(state)` 시그니처 — SUMMARY_STATE 모듈 전역 참조 제거
+- 골든 하네스: `test_render_summary_html_smoke` 추가 (10/10 PASS)
+
+**Step 2.0 (b~f) — LLM 내러티브 인프라** (커밋 예정)
+- NEW: `eval_runner/reporting/llm.py` (172 LOC)
+    - `generate(role, cache_key, prompt, ...)` 단일 엔트리
+    - 결정론 캐시: `(role, sha256(canonical JSON))` 키. 동일 입력 → 동일 출력
+    - 5개 role: translate / exec_summary / indicator_narrative / easy_explanation / remediation
+    - env flag: `SUMMARY_LLM_{EXEC_SUMMARY,EASY_EXPLANATION,INDICATOR_NARRATIVE,REMEDIATION_HINTS}` + `SUMMARY_LLM_TIMEOUT_SEC`
+    - `is_role_enabled(role)` 헬퍼, `cache_clear/peek` 도구
+    - Graceful fallback: timeout/error → `{"text":"", "source":"fallback"}`
+- NEW: `eval_runner/reporting/narrative.py` (278 LOC)
+    - `generate_exec_summary(state)` — R1.1, 빌드당 1 call
+    - `generate_indicator_narrative(name, pass, total, threshold, fail_ids)` — R2.1, opt-in
+    - `generate_easy_explanation(turn)` — R3.1, case 당 1 call, fallback 은 html.py 의 기존 if-else 규칙 그대로
+    - `generate_remediation(turn)` — R3.2, opt-in
+    - 공통 가드레일 문구 `_COMMON_RULES`: "JSON 사실만, 추측 금지, score/case_id 원문 유지, 한국어로만"
+    - 각 함수 반환 `{text, source, role, reason?}`. source ∈ {"llm", "cached", "fallback"}
+
+**Step 2.0 (g) — REPORT_SPEC 확장**
+- `REPORT_SPEC.md` 420 → 514 LOC. 4개 subsection 신규:
+    - §3.1.1 R1.1 (ASCII 목업 + 필수 필드 + provenance 배지 + 환경변수 + fallback 템플릿)
+    - §3.2.1 R2.1 (opt-in 기본 off, 비용 메모)
+    - §3.3.1 R3.1 (ASCII + 환경변수 + 기존 하드코딩 fallback 규칙 전부 명시)
+    - §3.3.2 R3.2 (확정 단정 금지 + fallback = 텍스트 비움 → UI 섹션 숨김)
+- Acceptance criteria AC9~AC12 추가:
+    - AC9: LLM 요약에 JSON 에 없는 수치 언급 0 (환각 체크)
+    - AC10: `EASY_EXPLANATION=off` 시 fallback degrade 동작
+    - AC11: 동일 입력 → bit-identical 출력 (결정성)
+    - AC12: `OLLAMA_BASE_URL=http://127.0.0.1:0` 상태에서 graceful degrade
+
+**Step 2.0 (h) — 골든 하네스 확장** (9 → 17 tests)
+- `test_llm_role_enablement` — env flag on/off 토글 검증
+- `test_llm_generate_fallback_when_role_disabled` — role disabled 시 즉시 fallback
+- `test_llm_generate_cache_key_determinism` — dict key 순서 달라도 동일 해시 → cache hit 1회만 호출
+- `test_narrative_exec_summary_fallback` — 숫자·case_id 포함 확인
+- `test_narrative_easy_explanation_fallback_hardcoded_rules` — 5 keyword 분기 전수 검증
+- `test_narrative_indicator_narrative_fallback` — pass rate, N/A 케이스
+- `test_narrative_remediation_fallback_empty` — 텍스트 비움 확인
+- 로컬 실행: **17/17 PASS**
+
+#### Phase 2.0 종료 게이트 결과
+- ✅ 골든 하네스 17/17 PASS (9 기존 + 8 신규)
+- ✅ 변경 파일 모두 `eval_runner/` 범위 (Jobs 01/02/03 영향 0)
+- ✅ LLM 내러티브 인프라는 기본 flag 대부분 on 이어도 **Ollama 서버 미가동 시 fallback 으로 degrade** 하도록 설계
+- ✅ REPORT_SPEC §3 의 acceptance 기준이 Phase 2.1~2.6 에서 평가 가능하도록 확정
+
+#### 커밋 (이번 세션)
+- `1555692` `refactor(eval_runner): Phase 2.0(a) reporting/ 패키지 분리`
+- (예정) `feat(eval_runner): Phase 2.0(b-h) LLM 내러티브 인프라 + REPORT_SPEC AC9~AC12`
+- (예정) `docs(ai-eval): plan v4 sync + Phase 2.0 종료`
+
+#### 다음 단계 — Phase 2.1~2.6
+reporting/html.py 의 render_summary_html 이 `reporting.narrative` 의 generate_* 를 호출하도록 통합:
+- **2.1**: R1 헤더 최상단에 🤖 임원 요약 섹션 삽입. summary.json 에 `aggregate.exec_summary` 기록.
+- **2.2**: 11지표 카드 + opt-in R2.1 지표 해설 placeholder.
+- **2.3**: R3 turn 카드의 "쉬운 해설" 을 narrative.generate_easy_explanation() 로 교체. 기존 `_easy_explanation` 하드코딩은 narrative 의 fallback 경로로 이동 (이미 완료).
+- **2.4~2.6**: 에러 분리, build delta, publishHTML 검증.

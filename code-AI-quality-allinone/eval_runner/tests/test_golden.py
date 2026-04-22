@@ -281,6 +281,186 @@ def test_summary_totals_aggregates_latency_and_tokens(expected):
         f"tokens 불일치: {totals['tokens']}"
 
 
+def test_llm_role_enablement(monkeypatch):
+    """[Phase 2.0(d)] env flag 에 따라 role 이 on/off 된다."""
+    from reporting import llm
+
+    # exec_summary 기본 on, 명시적 off 가능
+    monkeypatch.delenv("SUMMARY_LLM_EXEC_SUMMARY", raising=False)
+    assert llm.is_role_enabled("exec_summary") is True
+    monkeypatch.setenv("SUMMARY_LLM_EXEC_SUMMARY", "off")
+    assert llm.is_role_enabled("exec_summary") is False
+
+    # indicator_narrative 기본 off, 명시적 on 가능
+    monkeypatch.delenv("SUMMARY_LLM_INDICATOR_NARRATIVE", raising=False)
+    assert llm.is_role_enabled("indicator_narrative") is False
+    monkeypatch.setenv("SUMMARY_LLM_INDICATOR_NARRATIVE", "true")
+    assert llm.is_role_enabled("indicator_narrative") is True
+
+
+def test_llm_generate_fallback_when_role_disabled(monkeypatch):
+    """[Phase 2.0(f)] role 이 비활성일 때 즉시 fallback 반환."""
+    from reporting import llm
+
+    monkeypatch.setenv("SUMMARY_LLM_EXEC_SUMMARY", "off")
+    result = llm.generate("exec_summary", {"key": "v1"}, "prompt")
+    assert result["source"] == "fallback"
+    assert result["text"] == ""
+    assert "disabled" in result.get("reason", "")
+
+
+def test_llm_generate_cache_key_determinism(monkeypatch):
+    """[Phase 2.0(c)] 동일 cache_key → 동일 해시 → 동일 캐시 슬롯."""
+    from reporting import llm
+
+    llm.cache_clear()
+    # Ollama 호출을 stub 으로 만들어 결정론 확인
+    call_count = {"n": 0}
+
+    def fake_post(*args, **kwargs):
+        call_count["n"] += 1
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"response": f"generated-{call_count['n']}"}
+        return FakeResponse()
+
+    monkeypatch.setattr("reporting.llm.requests.post", fake_post)
+    monkeypatch.setenv("SUMMARY_LLM_EXEC_SUMMARY", "on")
+
+    # 동일 cache_key (dict 순서 다르게) → 동일 해시 → 캐시 hit
+    result1 = llm.generate("exec_summary", {"a": 1, "b": 2}, "prompt")
+    result2 = llm.generate("exec_summary", {"b": 2, "a": 1}, "prompt")
+    assert result1["source"] == "llm"
+    assert result2["source"] == "cached"
+    assert result1["text"] == result2["text"]
+    assert call_count["n"] == 1  # 두 번째는 캐시
+
+
+def test_narrative_exec_summary_fallback():
+    """[Phase 2.0 R1.1 fallback] LLM 비활성 시 결정론 템플릿."""
+    import os
+
+    os.environ["SUMMARY_LLM_EXEC_SUMMARY"] = "off"
+    try:
+        from reporting import narrative
+
+        state = {
+            "totals": {
+                "conversations": 10, "passed_conversations": 9, "failed_conversations": 1,
+                "turns": 12, "passed_turns": 11, "failed_turns": 1,
+                "conversation_pass_rate": 90.0, "turn_pass_rate": 91.67,
+            },
+            "metric_averages": {"AnswerRelevancyMetric": 0.9},
+            "conversations": [
+                {"status": "passed", "turns": [{"status": "passed"}]},
+                {"status": "failed", "turns": [
+                    {"status": "failed", "case_id": "c1", "failure_message": "x"},
+                ]},
+            ],
+        }
+        result = narrative.generate_exec_summary(state)
+        assert result["source"] == "fallback"
+        assert result["role"] == "exec_summary"
+        # 사실 기반 템플릿에 숫자 포함
+        assert "10건" in result["text"]
+        assert "1건 실패" in result["text"]
+        assert "c1" in result["text"]
+    finally:
+        del os.environ["SUMMARY_LLM_EXEC_SUMMARY"]
+
+
+def test_narrative_easy_explanation_fallback_hardcoded_rules():
+    """[Phase 2.0 R3.1 fallback] LLM 비활성 시 html.py 와 동일한 키워드 매칭."""
+    import os
+
+    os.environ["SUMMARY_LLM_EASY_EXPLANATION"] = "off"
+    try:
+        from reporting import narrative
+
+        # 정책 위반
+        result = narrative.generate_easy_explanation({
+            "status": "failed",
+            "failure_message": "Promptfoo policy checks reported 1 failure(s).",
+        })
+        assert result["source"] == "fallback"
+        assert "보안" in result["text"]
+
+        # 형식 위반
+        result = narrative.generate_easy_explanation({
+            "status": "failed",
+            "failure_message": "Format Compliance Failed (schema.json): ...",
+        })
+        assert "응답 형식" in result["text"] or "형식" in result["text"]
+
+        # Adapter 에러
+        result = narrative.generate_easy_explanation({
+            "status": "failed",
+            "failure_message": "Adapter Error: connection refused",
+        })
+        assert "통신" in result["text"]
+
+        # 기타
+        result = narrative.generate_easy_explanation({
+            "status": "failed",
+            "failure_message": "some unrelated reason",
+        })
+        assert result["source"] == "fallback"
+        assert result["text"]  # non-empty
+
+        # Passed turn → passed 메시지
+        result = narrative.generate_easy_explanation({"status": "passed"})
+        assert result["source"] == "fallback"
+        assert "통과" in result["text"]
+    finally:
+        del os.environ["SUMMARY_LLM_EASY_EXPLANATION"]
+
+
+def test_narrative_indicator_narrative_fallback():
+    """[Phase 2.0 R2.1 fallback] 지표별 1줄 해설의 결정론 템플릿."""
+    from reporting import narrative
+
+    # Opt-in off (기본) 이면 fallback
+    result = narrative.generate_indicator_narrative(
+        "AnswerRelevancyMetric", pass_count=9, total_count=10,
+        threshold=0.7, fail_case_ids=["deep-relevancy-offtopic"]
+    )
+    assert result["source"] == "fallback"
+    assert "9/10" in result["text"]
+    assert "deep-relevancy-offtopic" in result["text"]
+
+    # 전부 통과
+    result = narrative.generate_indicator_narrative(
+        "ToxicityMetric", pass_count=11, total_count=11, threshold=0.5, fail_case_ids=[]
+    )
+    assert "전부 통과" in result["text"]
+
+    # 적용 case 없음 (N/A)
+    result = narrative.generate_indicator_narrative(
+        "FaithfulnessMetric", pass_count=0, total_count=0, threshold=0.9, fail_case_ids=[]
+    )
+    assert "N/A" in result["text"]
+
+
+def test_narrative_remediation_fallback_empty():
+    """[Phase 2.0 R3.2 fallback] 조치 권장 비활성 시 텍스트 비움 (UI 섹션 숨김)."""
+    from reporting import narrative
+
+    # R3.2 는 기본 off → fallback text 비움
+    result = narrative.generate_remediation({
+        "status": "failed",
+        "case_id": "x1",
+        "failure_message": "whatever",
+    })
+    assert result["source"] == "fallback"
+    assert result["text"] == ""
+
+    # passed turn 도 동일
+    result = narrative.generate_remediation({"status": "passed"})
+    assert result["text"] == ""
+
+
 def test_turn_sort_key():
     """turn_id 정렬이 실제 사용 패턴(int + None, 또는 digit-string + None)에서 안정적."""
     # 실사용 케이스 1: 정수 turn_id + None → None 이 뒤로

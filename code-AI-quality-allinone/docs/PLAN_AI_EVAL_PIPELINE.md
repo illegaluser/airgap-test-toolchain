@@ -78,8 +78,12 @@
 | ID | 항목 | 현 상태 | 목표 |
 |---|---|---|---|
 | R1 | 임원 요약 헤더 없음 | PASS/FAIL 수치가 테이블 내부에 파묻힘 | 상단에 **단일 스크린 대시보드**: 전체 pass rate, 11지표별 막대, P50/P95/P99 latency, total tokens, judge/dataset 메타 |
+| **R1.1** | **임원 문단 부재** | 숫자만 나열 | **로컬 LLM(Ollama Judge 재사용) 이 summary.json 을 입력받아 2~3 문장 "상태·주원인·권장 조치" 생성**. 필수(기본 on). 캐시 필수. 프롬프트 가드레일: "JSON 사실만, 추측 금지" |
 | R2 | 11지표별 집계 뷰 없음 | 지표는 case 행에만 표시 | 지표 카드 11개: pass rate·threshold·분포 히스토그램·경계 case 수 |
+| **R2.1** | **지표별 내러티브 부재** | 숫자만 표시 | **지표당 1줄 LLM 해석** ("Answer Relevancy pass 9/10, off-topic case 1건이 편차 원인"). 옵션(`SUMMARY_LLM_INDICATOR_NARRATIVE`, 기본 off — 비용 때문) |
 | R3 | Case drill-down 부실 | HTML ~400 LOC 에 분산 | conversation accordion → turn row → input/output/Judge reason 토글 |
+| **R3.1** | **실패 사유 해설 하드코딩** | `_easy_explanation` if-else 키워드 매칭 | **LLM 이 실패 metric + failure_message 로 1문장 "쉬운 해설" 생성**. 하드코딩 fallback 유지 (LLM 실패/비활성 시). 기본 on. |
+| **R3.2** | **조치 권장 없음** | 실패 원인만 표시 | **실패 case 마다 "권장 조치" 1~2줄 LLM 생성** ("system prompt 에 응답 길이 제한 추가 권장"). 옵션(`SUMMARY_LLM_REMEDIATION_HINTS`, 기본 off) |
 | R4 | 시스템 에러 vs 품질 실패 미구분 | 문자열 파싱에 의존 | 색상·섹션 분리, 5xx/ConnError 는 "가용성 이슈" 로 별도 집계 |
 | R5 | Build-over-build delta 없음 | 단일 빌드만 표시 | 이전 빌드 `summary.json` 을 Jenkins artifacts 에서 로드해 지표 delta 표 (스트레치) |
 | R6 | Jenkins 탭 접근성 | `publishHTML` 사용 중이나 `allowMissing: true` | `AI Eval Summary` 탭 기본 노출, 비어있으면 명시적 placeholder |
@@ -191,35 +195,56 @@
 
 **진입 조건**: Phase 1 완료 (summary.json 에 11지표 데이터 완전).
 
-**Steps** (리포트 구조를 먼저 분리해 개선 여지 확보):
-- **2.0** 리포트 모듈 분리 (진입용 리팩터, Q4 의 부분 착수)
-  - `eval_runner/reporting/{state,html,translate}.py` 패키지 신설
-  - `test_runner.py:247–987` (약 ~400 LOC) 의 HTML/번역 로직을 이전
-  - 골든 하네스 byte-match 유지 (기능 변화 0)
-- **2.1** R1 — 임원 요약 헤더
-  - 단일 스크린: 전체 pass rate, 11지표 막대, latency P50/P95/P99, total tokens, judge meta, dataset meta, build link
-  - Jenkins 빌드 페이지에서 "이 빌드가 괜찮은지" 를 3초 내 판단 가능한 밀도
-- **2.2** R2 — 11지표 대시보드
-  - 지표 카드 11개: pass rate %, threshold, 점수 분포 히스토그램(ASCII SVG 또는 inline chart), 경계 case 수
-  - Faithfulness/Recall/Precision 은 RAG context 있는 subset 만 포함 — "N/A" 표시 명확
-- **2.3** R3 — Case drill-down 재구성
-  - conversation accordion → turn row → input/output/Judge reason 토글
-  - Judge reason 을 메트릭 옆 **상시 노출** (현재는 summary 에 묻힘)
+**Steps** (리포트 구조·LLM 내러티브 인프라 먼저, 이후 R1~R6 순차 구현):
+
+- **2.0** 리포트 모듈 분리 **+ LLM 내러티브 인프라** (진입용 리팩터 + R1.1~R3.2 공통 기반, Q4 부분 착수)
+  - **(a) 모듈 분리 (완료된 선행 작업 일부 포함)**: `eval_runner/reporting/{__init__,html,translate}.py` 패키지 신설. 기존 `test_runner.py` 의 HTML 렌더·번역 로직(~700 LOC) 이전. `render_summary_html(state)` 가 SUMMARY_STATE 를 인자로 받도록 시그니처 변경. 골든 하네스에 `test_render_summary_html_smoke` 추가.
+  - **(b) LLM 생성기 일반화**: `reporting.translate._translate_with_ollama` 를 `reporting/llm.py` 의 `generate_with_ollama(prompt, *, cache_key, temperature=0, num_predict=...)` 로 승격. 번역·요약·해석·조치 권장 전부 이 함수 하나로 라우팅.
+  - **(c) 결정론적 캐시**: LLM 호출 결과를 `(role, cache_key)` 로 캐시. `role` ∈ `{translate, exec_summary, indicator_narrative, easy_explanation, remediation}`. `cache_key` 는 입력 fields 의 canonical JSON (sha256). temperature=0 이어도 캐시가 결정성 확보.
+  - **(d) Opt-in/out 환경변수 선언 (기본값 정책 포함)**:
+    - `SUMMARY_LLM_EXEC_SUMMARY`: 기본 **on** (R1.1 핵심 기능, 빌드당 1 call)
+    - `SUMMARY_LLM_EASY_EXPLANATION`: 기본 **on** (R3.1, 하드코딩 fallback 보존)
+    - `SUMMARY_LLM_INDICATOR_NARRATIVE`: 기본 **off** (R2.1, 최대 11 calls/빌드 — 비용 고려)
+    - `SUMMARY_LLM_REMEDIATION_HINTS`: 기본 **off** (R3.2, 실패 case 당 1 call)
+    - `SUMMARY_LLM_TIMEOUT_SEC`: 기본 20 (개별 호출 실패 시 fallback)
+  - **(e) 프롬프트 가드레일**: 각 role 별 system prompt 고정화, 공통 문구 — "주어진 JSON 필드의 사실만 사용. 추측·새 해석·외부 지식 금지. score/case_id/숫자/URL 원문 유지. 출력 길이 N 문장 제한."
+  - **(f) Fallback 체계**: LLM timeout/error/네트워크 실패 시 기존 하드코딩 텍스트(`_easy_explanation` if-else, `_fallback_localize_common_phrases`) 로 graceful degrade. 리포트에 "🤖 LLM 생성" 또는 "📋 기본 메시지" 배지로 구분.
+  - **(g) REPORT_SPEC 업데이트**: `eval_runner/docs/REPORT_SPEC.md` 에 §3.1.1 (R1.1), §3.2.1 (R2.1), §3.3.1 (R3.1), §3.3.2 (R3.2) 신규 섹션 추가. AC9~AC12 acceptance criteria 추가 (예: AC9 "실패 빌드 리포트에 LLM 요약이 30단어 이내, JSON 사실 포함 여부 체크").
+  - **(h) 골든 하네스 확장**: `generate_with_ollama` 를 monkeypatch stub 으로 주입해 결정론 테스트 가능하도록. LLM off 상태에서도 리포트 정상 생성 확인.
+
+- **2.1** R1 + **R1.1** — 임원 요약 헤더 + LLM 요약 문단
+  - R1: 단일 스크린 대시보드 (전체 pass rate, 11지표 막대, latency P50/P95/P99, total tokens, judge/dataset 메타, build link)
+  - **R1.1**: 헤더 최상단에 "🤖 이번 빌드 한 줄 요약" 섹션 추가 — LLM 이 summary.json 의 totals/indicators/실패 case 핵심을 읽어 2~3 문장 ("이번 빌드는 대화 10건 중 1건 실패. 주원인은 Policy Violation (PII 노출) 1건. 권장 조치: 프롬프트에 PII 금지 강화."). 빌드당 1 call. 결과를 summary.json 의 `aggregate.exec_summary: {text, generated_by, cached}` 에도 기록해 영구 보존.
+
+- **2.2** R2 + **R2.1** — 11지표 대시보드 + 지표별 LLM 해석
+  - R2: 지표 카드 11개 (pass rate %, threshold, 점수 분포 히스토그램, 경계 case 수)
+  - **R2.1** (opt-in): `SUMMARY_LLM_INDICATOR_NARRATIVE=on` 일 때 각 카드 하단에 1줄 LLM 해석. 기본 off — UI 렌더에는 placeholder("지표 해석은 `SUMMARY_LLM_INDICATOR_NARRATIVE=on` 활성화 시 표시").
+
+- **2.3** R3 + **R3.1** + **R3.2** — Case drill-down + LLM 해설/조치
+  - R3: conversation accordion → turn row → input/output/Judge reason 토글
+  - **R3.1** (기본 on, LLM 실패 시 fallback): 기존 `_easy_explanation` 하드코딩을 LLM 생성으로 교체. case 당 1 call (caching 포함). "이 빌드의 이 턴에서 왜 실패했는지" 1 문장.
+  - **R3.2** (opt-in): `SUMMARY_LLM_REMEDIATION_HINTS=on` 일 때 각 실패 case 에 권장 조치 1~2 줄 ("system prompt 에 '반드시 XXX' 지시어 추가 권장").
+
 - **2.4** R4 — 시스템 에러 vs 품질 실패 섹션 분리
   - Q1 (`error_type` enum) 선행 필요 → Phase 3 와 연계. Phase 2 에서는 임시로 문자열 패턴 매칭 + Phase 3 에서 구조화 재활용
+
 - **2.5** R5 — Build-over-build delta (스트레치)
   - 이전 빌드 `summary.json` 을 `${BUILD_URL}/../lastSuccessfulBuild/artifact/...` 에서 fetch
   - Jenkins 에서 네트워크 접근 가능하면 활성, 아니면 placeholder
+  - R1.1 의 exec_summary 가 이전 빌드와 현재를 비교하는 문장 포함 옵션 (LLM 호출 추가 불필요 — 동일 1 call 안에서)
+
 - **2.6** R6 — Jenkins `publishHTML` 통합 검증
   - [04:483+](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline) post always 블록의 `publishHTML` 타겟 확인·개선
   - `AI Eval Summary` 탭이 기본 노출, 빈 상태 명시적 placeholder
 
 **검증 게이트**:
-- 골든 하네스가 새 HTML 을 byte-match (타임스탬프·빌드번호 정규화) 하도록 골든 스냅샷 재캡처 → 리뷰어 승인
+- 골든 하네스 10/10 이상 유지 + R1.1/R3.1 LLM stub 결정론 테스트 통과
 - Jenkins 에서 3가지 실제 실행 (성공 / 일부 실패 / 완전 실패) → 리포트가 각 상황을 명확히 표현하는지 수동 검토
 - 리포트 열람 시간 측정: 리뷰어가 "이 빌드 결과 요약" 을 **30초 이내** 에 이해 가능한지 A/B
+- **LLM 신뢰성 검증**: R1.1 의 생성된 요약이 JSON 에 없는 수치를 언급하는지 샘플 5건 수동 점검. 환각 있으면 프롬프트 재튜닝.
+- **비용 검증**: 기본 설정(R1.1 + R3.1 on) 에서 빌드당 추가 LLM 호출 수 = `1 + 실패 case 수` 로 측정. 20 case 중 5 실패 → 6 calls × ~5s ≈ 30s 추가. 수용 가능.
 
-**종료 조건**: 운영자가 Jenkins 탭만으로 빌드 결과를 판단·다음 조치 결정 가능.
+**종료 조건**: 운영자가 Jenkins 탭만으로 빌드 결과를 판단·다음 조치 결정 가능. 숫자가 아니라 **자연어 해설**이 1차 판단 도구로 기능.
 
 ---
 
@@ -321,10 +346,12 @@
 - [code-AI-quality-allinone/jenkinsfiles/04 AI평가.jenkinsPipeline](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline) — Phase 1 래퍼 연결, Phase 2 publishHTML, Phase 4 중복 제거
 
 **신규 파일 (계획 상)**:
-- `eval_runner/reporting/{__init__,state,html,translate}.py` (Phase 2)
+- `eval_runner/reporting/{__init__,html,translate}.py` (Phase 2.0 완료 중)
+- `eval_runner/reporting/llm.py` (Phase 2.0 — `generate_with_ollama` 일반화 + 캐시)
+- `eval_runner/reporting/narrative.py` (Phase 2.0 — role 별 프롬프트 + fallback 체계. R1.1/R2.1/R3.1/R3.2 호출 지점)
 - `eval_runner/{dataset,policy,scoring,runner}.py` (Phase 4)
-- `eval_runner/tests/{test_golden.py, fixtures/tiny_dataset.csv, fixtures/expected_summary.json}` (Phase 0)
-- `eval_runner/docs/REPORT_SPEC.md` (Phase 0)
+- `eval_runner/tests/{test_golden.py, fixtures/tiny_dataset.csv, fixtures/expected_golden.json}` (Phase 0 완료)
+- `eval_runner/docs/REPORT_SPEC.md` (Phase 0 작성, Phase 2.0 에서 §3.1.1/§3.2.1/§3.3.1/§3.3.2 + AC9~AC12 추가)
 - (이연) `eval_runner/openai_wrapper_api.py`, `eval_runner/gemini_wrapper_api.py` — G1/G2, 별도 phase
 
 ---
@@ -355,7 +382,7 @@
 |---|---|
 | 0 | 기획서 제거됨. `pytest tests/test_golden.py` 수동 재현 가능. |
 | 1 | Jenkins 모드 드롭다운이 `local_ollama_wrapper` 단일로 정리. summary.json 에 latency/usage 전체 기록. 미구현 모드 선택으로 인한 빌드 깨짐 0. |
-| 2 | Jenkins 탭 `AI Eval Summary` 이 **한눈에 보이는 대시보드** 로 바뀜 (헤더 + 11지표 카드 + case drill-down). |
+| 2 | Jenkins 탭 `AI Eval Summary` 이 **한눈에 보이는 대시보드** 로 바뀜 (헤더 + 11지표 카드 + case drill-down). 헤더에 **🤖 LLM 생성 임원 요약** (R1.1, 기본 on) + 각 실패 case 에 **LLM 쉬운 해설** (R3.1, 기본 on) 노출. 지표별 해석(R2.1) 과 조치 권장(R3.2) 은 env flag 로 opt-in. |
 | 3 | 모든 리포트가 Judge/Dataset 버전을 자기기록. 시스템 에러와 품질 실패가 색상·섹션 분리. |
 | 4 | `test_runner.py` 가 작아짐(≤100 LOC). Promptfoo 의존도 감소. |
 | 5 | 리포트에 "Judge 변동성 편차" 수치 노출, 경계 case N-repeat 옵션 활성화 가능. |
@@ -367,6 +394,10 @@
 - [ ] Jenkins 에서 `04 AI평가` Job 의 `TARGET_MODE=local_ollama_wrapper` 가 성공 실행 (현 phase 단일 모드)
 - [ ] Langfuse 크리덴셜 유무와 무관하게 11지표 전체 summary.json 기록
 - [ ] `AI Eval Summary` Jenkins 탭이 운영자 1차 판단 도구로 기능
+- [ ] **R1.1 LLM 임원 요약**이 모든 빌드에서 2~3 문장 생성, summary.json 의 `aggregate.exec_summary` 에 영구 기록
+- [ ] **R3.1 LLM 실패 해설**이 모든 실패 case 마다 1문장, 하드코딩 fallback 체계 검증
+- [ ] LLM 내러티브 결정론 캐시 동작 (동일 입력 → 동일 출력), timeout/error 시 graceful degrade
+- [ ] REPORT_SPEC §3.1.1/§3.2.1/§3.3.1/§3.3.2 반영 + AC9~AC12 통과
 - [ ] 모든 리포트가 `judge_meta`, `dataset_meta`, `error_type_breakdown` 3종 메타 포함
 - [ ] `test_runner.py` ≤ 100 LOC, `reporting/` + `dataset.py` + `policy.py` + `scoring.py` + `runner.py` 로 분리
 - [ ] Judge 변동성 관측 수단(보정 세트) 상시 가동, N-repeat 옵션 제공
