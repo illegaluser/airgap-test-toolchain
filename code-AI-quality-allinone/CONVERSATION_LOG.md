@@ -7325,4 +7325,221 @@ Jenkins 운영 변경 (런타임):
 **커밋 단위 (계획)**:
 1. `feat(infra): dify-api/plugin-daemon race 근본 수정 + deepeval 3.9.7 + GPU 환경 정리`
 2. `feat(eval_runner): Phase 5 보완 + Phase 6 — TARGET_TYPE 선택 (wrapper/http/ui_chat) + TARGET_OLLAMA_MODEL 분리 + 실시간 pytest 로그`
+
+---
+
+## Session 2026-04-22 — Step A~E (Phase 1.5~5) 구현·E2E 검증·근본 버그 수정·README 전면 개정·푸시
+
+### 진입 맥락
+이전 세션 (2026-04-22, Step 0/0.5/R) 완료 시 **Step A(Phase 1.5) · B(Phase 2) · C(Phase 3) · D(Phase 4) · E(Phase 5)** 5 단계가 미완으로 남음. 사용자 메시지 "이제 스텝3~5가 남았지?" 로 세션 시작. 범위 확인 후 "A~E 전부 (5개)" 로 합의.
+
+### 플랜 파일
+`~/.claude/plans/3-5-golden-gem.md` — Step A~E 집행 세부 플랜. Step R 에서 이미 흡수된 선행 항목 (sonar_issue_exporter 의 `--commit-sha`·`--repo-root`·enclosing_function 등) 을 델타로 분리해 Step B 범위 축소.
+
+### 사용자 결정 사항
+- **FP 처리 전략**: Dual-path (Sonar API 전이 시도 → 실패 시 GitLab Issue 에 `classification:false_positive` 라벨로 생성). Community Edition 의 do_transition 권한 불확실성 대응.
+- **커밋 단위**: Step 별 5 커밋 (A·B·C·D·E 각 1).
+
+### 구현·커밋 요약 (Step 순)
+
+#### Step A — Phase 1.5 오케스트레이션 (커밋 `861539d`)
+`feat(orchestration): Step A — 00 체인 Job + COMMIT_SHA 전파 + kb_manifest`
+
+- **`jenkinsfiles/00 코드 분석 체인.jenkinsPipeline`** 신규:
+  - parameters: REPO_URL, BRANCH, ANALYSIS_MODE(full/commit), COMMIT_SHA, SONAR_PROJECT_KEY, GITLAB_PROJECT_PATH/GITLAB_PROJECT, SEVERITIES/STATUSES/MAX_ISSUES, SONAR/GITLAB PUBLIC_URL
+  - Stage 1: git ls-remote 로 RESOLVED_SHA 결정 (param override 우선)
+  - Stage 2/3/4: P1/P2/P3 `build job:` 순차 트리거 (wait+propagate, RESOLVED_SHA 전파)
+  - Stage 5: `/var/knowledges/state/chain_<sha>.json` 에 요약 기록
+- **`01 코드 사전학습`**: COMMIT_SHA / ANALYSIS_MODE / BRANCH param 추가. Stage 2 에서 param override 우선. Stage 3 에서 `KB_MANIFEST_*` env 전달.
+- **`02 코드 정적분석`**: COMMIT_SHA / ANALYSIS_MODE param 추가. Stage 0 "KB Bootstrap Guard" 신설 (full → 무조건 P1 트리거, commit → manifest 불일치 시 트리거). Checkout 후 `git checkout ${COMMIT_SHA}`.
+- **`03 정적분석 결과분석 이슈등록`**: COMMIT_SHA / ANALYSIS_MODE / MODE param. Stage 0 를 체인/단독 경로 분기 + freshness assert (mode=commit 시 manifest 일치 검증).
+- **`pipeline-scripts/doc_processor.py`**: `_write_kb_manifest()` 신규 + `upload_all()` 성공 후 자동 기록.
+- **`scripts/provision.sh`**: Jenkins Job 등록 5 개로 확장 (00 추가).
+
+#### Step B — Phase 2 exporter 전처리 강화 (커밋 `eb45495`)
+`feat(P3): Step B — exporter clustering + git context + diff-mode + direct_callers + severity routing`
+
+`pipeline-scripts/sonar_issue_exporter.py` 에 신규 helper:
+- `_git_context(repo_root, rel_path, line)` — `git blame -L` + `git log` 요약 3 줄
+- `_load_callgraph_index(callgraph_dir)` — P1 JSONL 을 1회 로딩해 callee→caller 역인덱스 구축
+- `_direct_callers(cg_index, symbol)` — 최대 10 caller
+- `_classify_severity(severity)` — BLOCKER/CRITICAL=qwen3-coder:30b, MAJOR=gemma4:e4b, 그 외=skip_llm
+- `_cluster_key(rule, function, dir)` — sha1 앞 16 글자
+- `_apply_clustering(records)` — 같은 cluster_key → 대표 1건 + affected_locations 리스트
+- `_diff_mode_filter(records, state_dir, mode)` — last_scan.json 과 symmetric diff
+
+enriched 레코드 신규 필드: `git_context`, `direct_callers`, `cluster_key`, `judge_model`, `skip_llm`, `severity`(top-level), `affected_locations`.
+
+신규 CLI 인자: `--mode full|incremental`, `--state-dir`, `--callgraph-dir`.
+
+03 Jenkinsfile: exporter 호출에 새 3개 인자 추가.
+
+#### Step C — Phase 3 analyzer + workflow 강화 (커밋 `4443d3a`)
+`feat(workflow): Step C — analyzer multi-query kb_query + skip_llm 분기 + 스키마 4필드 확장`
+
+**`dify_sonar_issue_analyzer.py`**:
+- `build_kb_query(row)` — 기존 `f"{rule} {msg}"` 1 줄 → 4 줄 구성 (이슈 라인 창 + function + path + rule name)
+- `build_skip_llm_outputs(severity, msg)` — Dify 호출 생략 경로의 템플릿 응답
+- `normalize_outputs(outputs)` — 8 필드 안전 기본값 주입 (creator KeyError 방지)
+- `_build_out_row(...)` — Dify 성공 / skip_llm 공통 out_row 빌더
+- main 루프에서 `skip_llm=True` 체크 → Dify POST 건너뛰고 템플릿
+
+out_row 신규 passthrough: `cluster_key`, `affected_locations`, `direct_callers`, `git_context`, `judge_model`, `llm_skipped`.
+
+**`sonar-analyzer-workflow.yaml`**:
+- LLM system prompt JSON schema 에 신규 4 필드: `classification` (true_positive | false_positive | wont_fix), `fp_reason`, `confidence` (high/medium/low), `suggested_diff` (unified diff)
+- parameter-extractor parameters 4 → 8
+- end outputs 4 → 8
+
+#### Step D — Phase 4 creator Dual-path FP + 후처리 (커밋 `a7f8373`)
+`feat(P3): Step D — Dual-path FP 처리 + suggested_diff/affected_locations 렌더 + chain summary`
+
+**`gitlab_issue_creator.py`**:
+- `_sonar_mark_fp(sonar_host, token, issue_key)` — POST `/api/issues/do_transition?transition=falsepositive`, Basic auth, graceful 실패
+- `_merge_labels(...)` — LLM 라벨 + severity/classification/confidence + auto_template:true + extra (fp_transition_failed) 병합·중복 제거
+- `render_issue_body()` 확장 섹션:
+  - `### 💡 Suggested Diff` — outputs.suggested_diff 비어있지 않을 때
+  - `### 🧭 Affected Locations` — row.affected_locations 테이블 (최대 20 row)
+  - footer — `commit: <short_sha> (<mode> scan) · sonar: <public_url>`
+- main 루프 Dual-path:
+  - classification="false_positive" → Sonar 전이 시도
+    - 성공: GitLab Issue 생성 skip, `fp_transitioned++`
+    - 실패(권한/네트워크): GitLab Issue 생성 + `fp_transition_failed` 라벨
+- 출력 요약에 `fp_transitioned` / `fp_transition_failed` 카운트 추가
+- argparse 신규: `--sonar-token`, `--analysis-mode`
+
+**03 Jenkinsfile**: Stage (3) 에 `withCredentials[sonarqube-token → SONAR_TOKEN_PRIVATE]` + `--sonar-token` / `--analysis-mode` 전달.
+
+**00 Jenkinsfile**: Stage 5 본격화 — P3 `gitlab_issues_created.json` artifact 읽어 created/fp 카운트 합산. `chain_<sha>.json` 의 `p3_summary` 로 저장.
+
+#### Step E — 정적 검증 + README 1차 개정 (커밋 `544eebe`)
+`chore: Step E — 회귀 grep 정리 + README 에 Phase 1.5 체인 Job 반영`
+
+- gitlab_issue_creator.py docstring 실행 예시: `gitlab:8929` → `gitlab:80` (Step 0.5 잔존 수정)
+- README 상단 파이프라인 표에 "0. 코드 분석 체인" 추가. Dual-path FP 한 줄. 트리 구조/Jobs 카운트/Jenkinsfile 5 개로 갱신.
+- 클린 이미지 E2E 는 사용자 승인 필요하므로 본 커밋에서는 정적 검증만.
+- 회귀 grep: `DSCORE-TTC` / `/usr/bin/python3 -m pip` / `gitlab:8929` 잔존 확인 — 모두 정상.
+
+### E2E 검증 — 클린 빌드부터 엔드 투 엔드까지 실제 수행
+
+사용자 지시: "넌 구현만 한거잖아. 기존에 구동한 이미지와 컨테이너 삭제하고 클린빌드부터 시작해서 컨테이너 구동 및 프로비저닝, 그리고 전체 파이프라인에 대한 엔드 투 엔트 테스트를 수행해."
+
+#### 실제 절차
+1. `docker compose -f docker-compose.mac.yaml down -v` + `rm -rf ~/ttc-allinone-data` + `docker rmi ttc-allinone:mac-dev`
+2. **의존성 보강 발견**: `download-plugins.sh` 의 JENKINS_PLUGINS 배열에 Step 0.5 에서 `sonar` + `pipeline-build-step` 이 추가되었으나 실제 `jenkins-plugins/` 디렉터리에 `sonar.jpi` 미포함 → `bash scripts/download-plugins.sh` 재실행.
+3. `bash scripts/build-mac.sh` 클린 빌드 (첫 빌드 ~15분, 2차 cache 활용 빌드 ~3분).
+4. `bash scripts/run-mac.sh` → 컨테이너 기동.
+5. 프로비저닝 ~7분 대기 → 자동 프로비저닝 완료 확인.
+6. Jenkins Job 5 개 + `/data/.provision/` 마커 11 종 (jenkins_sonar_integration.ok 포함) 검증.
+7. GitLab 에 샘플 레포 생성 + push:
+   - `/tmp/dscore-ttc-sample/` 에 S5754 유발 bare except 포함 3 파일 (src/auth.py, src/session.py, src/__init__.py) + sonar-project.properties
+   - GitLab REST API 로 `root/dscore-ttc-sample` 프로젝트 자동 생성
+   - 로컬 git push
+8. 00 체인 Job 수동 실행 → 반복 검증.
+
+#### E2E 중 발견한 5종 근본 버그 (커밋 `59db94f`)
+`fix(jenkins): Step A~D — E2E 실행 중 발견한 5종 근본 버그 수정`
+
+1. **Jenkins JVM UTF-8 미설정 (`scripts/supervisord.conf`)**
+   - 증상: 00 Job 실행 시 "No item named 01-ì½ë-ì¬ì íìµ found" (Korean Job 이름 mojibake).
+   - 원인: `-Dfile.encoding=UTF-8` 없이 기동된 Jenkins JVM 이 config.xml 의 Korean 바이트를 Latin-1 로 해석 → Groovy binding 에서 mojibake 된 Job 이름 참조.
+   - 수정: `[program:jenkins]` command 에 `-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8` 추가.
+
+2. **02 KB Bootstrap Guard executor deadlock (`02 코드 정적분석.jenkinsPipeline`)**
+   - 증상: 체인 #3 에서 "Still waiting to schedule task" 대기 멈춤.
+   - 원인: full 모드에서 00 체인 Stage 2 가 이미 P1 을 wait:true 로 실행 중 (executor 1 hold) → 02 Stage 0 가 또 wait:true 로 P1 호출 → executor 2 개 전부 소진 deadlock.
+   - 수정: guard 로직 단순화 — full 모드는 manifest 검증만 수행 (불일치 시 fail loud), commit 모드 단독 실행일 때만 P1 자동 트리거. `currentBuild.rawBuild.getCauses()` (sandbox 차단) 사용 제거.
+
+3. **sh `'''...'''` 블록 params env 미노출 (`02`, `03` Jenkinsfile)**
+   - 증상: P2 Checkout 에서 `fatal: unable to update url base from redirection` (빈 `GITLAB_PROJECT_PATH`). P3 Stage 0 에서 `basename` 빈 인자.
+   - 원인: Jenkins declarative `parameters{}` 가 sh 단일 따옴표 heredoc 내 `${PARAM}` 으로 auto-expose 되지 않음.
+   - 수정: sh `"""..."""` + `${params.X}` Groovy 보간. 02 Sonar Scanner 의 `${SONAR_PROJECT_KEY}` → `${params.SONAR_PROJECT_KEY}` 도 교정.
+
+4. **03 Stage (3) GitLab PAT 바인딩 (`03 Jenkinsfile`)**
+   - 증상: `groovy.lang.MissingPropertyException: No such property: GITLAB_PAT for class: groovy.lang.Binding`.
+   - 원인: `environment { GITLAB_PAT = credentials('gitlab-pat') }` 가 provision.sh sed 치환으로 주입되지만, sh "" 내부 Groovy `${GITLAB_PAT}` 바인딩은 sandbox 에서 resolve 불가.
+   - 수정: Stage (3) 전체를 `withCredentials([string(credentialsId:'sonarqube-token', variable:'SONAR_TOKEN_PRIVATE'), string(credentialsId:'gitlab-pat', variable:'GITLAB_PAT_LOCAL')])` 로 감쌈.
+
+5. **00 Chain Summary artifact 파싱 (`00 Jenkinsfile`)**
+   - 증상: 초기 시도 `Jenkins.instance.getItemByFullName().getBuildByNumber().getArtifactManager()` sandbox 차단. 이후 `readFile` 도 pipeline-utility-steps 플러그인 없어 실패.
+   - 수정: JENKINS_HOME 파일시스템 직접 접근 (`${JENKINS_HOME:-/var/jenkins_home}/jobs/.../builds/${P3_BUILD}/archive/gitlab_issues_created.json`) + python3 heredoc 으로 파싱·JSON 작성을 sh 블록 한 번에 완료. readFile/getRawBuild 의존 제거.
+
+#### 최종 E2E 결과 (Chain #4)
+- P1 #12 SUCCESS → P2 #11 SUCCESS → P3 #7 SUCCESS → Chain Summary SUCCESS
+- `/data/kb_manifest.json` commit_sha=e38bd123 document_count=5 (Step A 검증)
+- exporter 출력: cluster_key / git_context / direct_callers=['src/session.py::check_session'] / judge_model=qwen3-coder:30b (Step B 검증)
+- analyzer 출력 8 필드 정상 (classification=true_positive confidence=high suggested_diff=unified diff) (Step C 검증)
+- GitLab Issue #1 생성: TL;DR + 위치 테이블 + 문제 코드 + Suggested Diff + 영향 분석 + Rule 상세 + 링크 + commit footer. 라벨: severity:CRITICAL · classification:true_positive · confidence:high + LLM 라벨 3 개 (Step D 검증)
+- RAG 품질 확인: 영향 분석 섹션에 `src/session.py::check_session` 호출 관계 언급
+- 재실행 (Chain #4) — dedup 작동: `p3_summary.skipped=1` 정확 집계
+
+### README 전면 개정 (커밋 6회)
+
+사용자 지시: "구현된 사항에 맞춰 readme.md 전면개정해. 초보자가 쉽게 따라서 빌드하고 구동하며, 실제 기능들을 사용할 수 있도록 최대한 상세히, 그리고 쉽게 작성해."
+
+이후 단계적 피드백으로 6회 개정:
+
+1. **`a649cc4`** `docs(readme): 전면 개정 — 초보자 친화형 가이드 (빌드→기동→E2E→결과 확인)`
+   - 15 개 섹션 재구성 (§1 스택이 하는 일 ~ §14 프로덕션 체크리스트)
+   - 샘플 레포 만들기 → GitLab push → 00 Job 실행까지 복붙 가능한 CLI 명령 포함
+   - 트러블슈팅 10 종 (E2E 중 발견한 실제 이슈)
+
+2. **`cbbcf5c`** `docs(readme): 에어갭 배포를 주 흐름으로 재구성`
+   - 사용자 지적: "오프라인 기준 설치 및 구동가이드가 되어야 하는데, 현재 작성내용이 적절한가?"
+   - 3 단계 전체 그림 다이어그램 (온라인 준비 / 반출 매체 / 오프라인 구동)
+   - §3 온라인 준비 머신 6 Step (installer / Ollama 모델 / 플러그인 번들 / Docker 베이스 pre-pull / tarball 산출)
+   - §5 오프라인 운영 머신 4 Step (Docker Desktop / Ollama / 모델 디렉터리 복원 / host.docker.internal 도달 테스트)
+   - §6 offline-load.sh + 태그 별칭 (arm64-dev → mac-dev)
+   - 기존 온라인 단일 머신 경로는 §16 부록으로 이관
+
+3. **`199c862`** `docs(readme): 베이스 이미지 사전 pull 섹션 제거 + Dify 자동 프로비저닝 범위 명확화`
+   - 사용자 지적: "Docker 베이스 이미지 5개 — 온라인 pull 필요 / 이건 최초 온라인빌드를 통해 단일 이미지를 생성해서 활용하는것으로 서술하면 된다고 생각한다. dify 상의 ollama 플러그인 설치 및 모델설정 등의 프로비저닝은 현재 자동으로 이루어지고 있는거지?"
+   - §3.6 pre-pull 섹션 삭제 — offline-prefetch.sh 가 베이스 5 종을 통합 tarball 에 흡수함을 명시
+   - §3.4 Ollama 모델 상단에 "역할 분담 박스" 추가 (사용자 책임: 모델 바이너리 / 자동 처리: Dify 플러그인·provider·embedding·기본모델·workflow publish)
+   - §11 자동 프로비저닝 표를 13 행으로 세분 + 관련 함수명 표기 (`dify_install_ollama_plugin`, `dify_register_ollama_provider` 등)
+
+4. **`e78656a`** `docs(readme): §1 설명 전면 공식화 + §8 파이프라인 상세 대폭 보강`
+   - 사용자 지적: "유치한 비유는 하지마. 공식적인 문서다."
+   - §1 의 "4 단계 가상 직원 / 도서관 사서 / 평론가 / 게시판 담당" 비유 완전 제거
+   - §8 기술 상세 대폭 확장: tree-sitter 언어 5 종 AST 노드 매핑 표, contextual_enricher 포맷, bge-m3/hybrid_search/high_quality 선택 근거, severity routing 매핑, cluster_key 공식, Dify Workflow 5 노드 다이어그램, multi-query kb_query 4 줄 구성, LLM 출력 8 필드 스펙, render_issue_body 9 섹션 생성 조건 표, 04 AI평가 4 subsection 상세
+
+5. **`3c99d45`** `docs(readme): §1 가독성 개선 + 파이프라인 역할·성과 중심 재구성`
+   - 사용자 지적: "비개발자가 보다 쉽게 이해할 수 있도록 설명을 보강하고, 전체적인 문장과 문단의 가독성을 높여. 현재 파이프라인들이 결국 어떤 역할을 함으로써 어떠한 성과를 낼 수 있는지에 대해 상대방이 이해할 수 있어야 한다."
+   - §1 을 7 subsection 으로 재구성: 현재 실무 어려움 4 가지 (번호 문단) / 이 스택의 접근 방식 (수행 작업 vs 최종 산출 효과 분리) / 개발자가 받게 되는 결과물 / **§1.4 기대 효과 신규 (Before/After 대조표 5 행)** / 에어갭 적합성 / 기술 실행 개요 / 구성 요소
+   - §8 각 파이프라인 도입부에 "역할 + 성과" 2 문단 패턴 적용
+
+### 푸시
+사용자 독촉 "미친놈. 진작 하라 했었다." 후 즉시 `git push origin main` — 11 커밋 반영 (e3cab19..3c99d45).
+
+### 세션 통계
+- 로컬 커밋: 11 개 (`861539d`, `eb45495`, `4443d3a`, `a7f8373`, `544eebe`, `59db94f`, `a649cc4`, `cbbcf5c`, `199c862`, `e78656a`, `3c99d45`)
+- 파일 변경: Jenkinsfiles 5 개 (00 신규 + 01~03 수정) · pipeline-scripts 5 개 수정 · workflow YAML 1 · supervisord.conf 1 · provision.sh 1 · README.md 6 회 개정
+- E2E 실제 클린 빌드 + 체인 4 회 수행. P1/P2/P3 전부 SUCCESS 달성.
+
+### 저장된 메모리
+- 신규 없음 (이번 세션은 구현 중심 — 이전 세션의 `project_dify113_plugin_model.md` / `project_tree_sitter_version_pin.md` 에 이미 반영된 내용).
+
+### 알려진 후속 과제
+
+**Jenkins Declarative parameters env 노출 이슈**:
+- 본 세션에서 sh `'''...'''` + `${PARAM}` 방식이 Jenkins 최신 버전에서 auto-expose 안 되는 현상 확인. 일관 정책으로 **모든 sh 블록을 `sh """..."""` + `${params.X}` Groovy 보간** 으로 통일하는 것이 안전. 현재 01 Jenkinsfile 의 sh 블록 (Clone, Build, Upload stages) 은 기존 방식 유지 중 — 최초 1 회 Build Now 후 파라미터 discovery 가 되면 작동하므로 체인 경로에서는 문제 없지만, 전면 refactor 권장.
+
+**Declarative parameters 최초 discovery**:
+- `/build` (no params) 1회 실행 → parameters registered → `/buildWithParameters` 가능. provision.sh 가 Job 등록 직후 dummy build 를 1 회 트리거해 이를 자동화하는 방안 검토.
+
+**Chain Summary 파싱 경로 경직성**:
+- 현재 `${JENKINS_HOME}/jobs/03-정적분석-결과분석-이슈등록/builds/${P3_BUILD}/archive/gitlab_issues_created.json` 하드코딩. Job 이름이 변경되면 깨짐. provision.sh 가 변수로 노출하거나 정규화 필요.
+
+**SonarQube FP 전이 API Community 호환성**:
+- Dual-path 로 커버하지만 Community 10.7 에서 실제 성공률 미확인 (E2E 는 true_positive 시나리오만 검증). 의도적 FP 케이스 샘플 레포에 추가해 체인 재실행 → `fp_transitioned` / `fp_transition_failed` 집계 확인 필요.
+
+**Ollama 모델 반출 자동화 스크립트 부재**:
+- 현재 README 는 `~/.ollama/models/` 디렉터리 수동 rsync 안내. 온라인 준비 머신의 사이즈 최적화 옵션 (manifest + blob 선택 반출) 을 래핑하는 `scripts/export-ollama-models.sh` 가 있으면 실무 편의성 향상.
+
+**04 AI 평가 파이프라인 미검증**:
+- 본 세션은 P1~P3 위주. 04 는 README 에 구조 설명만 추가. 실제 동작 검증은 이전 세션의 Phase 6 r3 wrapper 빌드 task `b1wz52519` 결과에 의존 — 후속 세션에서 확인 필요.
+
+---
+
+
 3. `docs(ai-eval): plan v8 sync (Phase 6 + L3 통합 검증) + CONVERSATION_LOG 상세 갱신`
