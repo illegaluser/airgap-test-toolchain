@@ -185,12 +185,15 @@ class GenericHttpAdapter(BaseAdapter):
                 error_message = f"HTTP {response.status_code}"
                 if detail:
                     error_message = f"{error_message}: {detail}"
+                # Phase 3.3 Q1: 5xx 는 인프라/가용성 이슈 → system, 4xx 는 요청 문제 → system 으로
+                # 통일 (대부분 upstream wrapper/config 문제). 상세 구분은 Phase 5+ 에서.
                 return UniversalEvalOutput(
                     input=input_text,
                     actual_output=actual_output or str(data),
                     http_status=response.status_code,
                     raw_response=raw_response,
                     error=error_message,
+                    error_type="system",
                     latency_ms=latency_ms,
                     usage=usage,
                 )
@@ -206,9 +209,11 @@ class GenericHttpAdapter(BaseAdapter):
             )
         except requests.exceptions.RequestException as exc:
             # 네트워크 예외를 표준 출력 구조로 감싸면 상위 평가 로직이 동일하게 처리할 수 있습니다.
+            # Phase 3.3 Q1: ConnError/Timeout 은 전부 system 에러.
             return UniversalEvalOutput(
                 input=input_text,
                 actual_output="",
                 error=f"Connection Error: {exc}",
+                error_type="system",
                 latency_ms=int((time.time() - start_time) * 1000),
             )

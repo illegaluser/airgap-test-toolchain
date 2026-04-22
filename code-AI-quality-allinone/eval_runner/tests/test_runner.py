@@ -540,6 +540,10 @@ def _write_summary_report():
     SUMMARY_STATE["generated_at"] = int(time.time())
 
     aggregate = SUMMARY_STATE.setdefault("aggregate", {})
+    # Phase 3.1 Q2 — Judge 잠금 메타 (재현성/감사): model/base_url/temperature/digest
+    aggregate["judge"] = _collect_judge_meta()
+    # Phase 3.2 Q3 — Dataset 메타 (drift 추적): sha256/mtime/rows/path
+    aggregate["dataset"] = _collect_dataset_meta()
     # R1.1 — 빌드당 1 call, fallback 포함.
     aggregate["exec_summary"] = generate_exec_summary(SUMMARY_STATE)
     # R2.1 — opt-in. off 기본에서는 narrative 가 즉시 fallback 반환.
@@ -552,6 +556,70 @@ def _write_summary_report():
 
     with open(REPORT_HTML_PATH, "w", encoding="utf-8") as report_file:
         report_file.write(render_summary_html(SUMMARY_STATE))
+
+
+def _collect_judge_meta() -> dict:
+    """
+    Phase 3.1 Q2 — Judge LLM 의 재현성·감사용 메타를 고정 수집.
+
+    필드:
+    - model: JUDGE_MODEL env (또는 기본 qwen3-coder:30b)
+    - base_url: OLLAMA_BASE_URL
+    - temperature: 고정 0 (DeepEval + translate 모두 0)
+    - digest: Ollama `/api/show` best-effort (실패 시 None)
+    """
+    meta = {
+        "model": JUDGE_MODEL,
+        "base_url": OLLAMA_BASE_URL,
+        "temperature": 0,
+        "digest": None,
+    }
+    try:
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL.rstrip('/')}/api/show",
+            json={"name": JUDGE_MODEL},
+            timeout=3,
+        )
+        if resp.ok:
+            payload = resp.json() or {}
+            meta["digest"] = payload.get("digest") or (payload.get("details") or {}).get("digest")
+    except Exception:
+        # Ollama 미가동·네트워크 이슈 — digest 는 None 으로 남김
+        pass
+    return meta
+
+
+def _collect_dataset_meta() -> dict:
+    """
+    Phase 3.2 Q3 — Dataset 의 drift 추적용 메타.
+
+    필드:
+    - path: 절대경로
+    - sha256: 파일 내용 해시 (hex)
+    - rows: CSV 라인 수 (헤더 제외)
+    - mtime: ISO8601 문자열
+    """
+    import datetime
+    import hashlib
+
+    meta: dict = {
+        "path": str(GOLDEN_CSV_PATH),
+        "sha256": None,
+        "rows": None,
+        "mtime": None,
+    }
+    try:
+        if GOLDEN_CSV_PATH.exists():
+            data = GOLDEN_CSV_PATH.read_bytes()
+            meta["sha256"] = hashlib.sha256(data).hexdigest()
+            # rows: 빈 줄 제외 line count - 1 (헤더)
+            lines = [ln for ln in data.decode("utf-8", errors="replace").splitlines() if ln.strip()]
+            meta["rows"] = max(0, len(lines) - 1)
+            mtime_ts = GOLDEN_CSV_PATH.stat().st_mtime
+            meta["mtime"] = datetime.datetime.fromtimestamp(mtime_ts, datetime.timezone.utc).isoformat()
+    except Exception:
+        pass
+    return meta
 
 
 def _build_indicator_narratives(state: dict) -> dict:
@@ -1143,6 +1211,10 @@ def test_evaluation(conversation):
                 "has_retrieval_context": False,
                 "has_context_ground_truth": bool(_safe_json_list(turn.get("context_ground_truth", "[]"))),
                 "failure_message": "",
+                # Phase 3.3 Q1: 에러 분류 구조화. passed turn 은 None.
+                # adapter 실패 → "system" (adapter 에서 세팅됨, 여기서 전사).
+                # policy/schema/task/metric 실패 → "quality" (except 블록에서 세팅).
+                "error_type": None,
             }
 
             span = None
@@ -1172,6 +1244,8 @@ def test_evaluation(conversation):
                 turn_report["latency_ms"] = result.latency_ms
 
                 if result.error:
+                    # Phase 3.3 Q1: adapter 가 이미 error_type 을 세팅 (대부분 "system").
+                    turn_report["error_type"] = result.error_type or "system"
                     raise RuntimeError(f"Adapter Error: {result.error}")
 
                 # 1차 차단: 정책 위반 및 응답 규격 검사
@@ -1213,6 +1287,10 @@ def test_evaluation(conversation):
                 full_conversation_passed = False
                 turn_report["status"] = "failed"
                 turn_report["failure_message"] = str(exc)
+                # Phase 3.3 Q1: error_type 이 아직 미세팅(adapter 외 실패) → quality 로 분류.
+                # adapter 가 이미 "system" 으로 세팅한 경우는 그대로 유지.
+                if turn_report.get("error_type") is None:
+                    turn_report["error_type"] = "quality"
                 conversation_report["status"] = "failed"
                 conversation_report["failure_message"] = str(exc)
                 pytest.fail(f"Turn failed for case_id {case_id}: {exc}")
