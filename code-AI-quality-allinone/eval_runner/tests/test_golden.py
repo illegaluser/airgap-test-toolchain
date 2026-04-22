@@ -807,6 +807,40 @@ def test_phase3_html_header_shows_judge_and_dataset_meta():
     assert "2026-04-22" in html
 
 
+def test_phase4_q5_policy_check_in_process():
+    """[Phase 4.1 Q5] _promptfoo_policy_check 가 subprocess 없이 security_assert 를 직접 호출."""
+    import pytest as _pytest
+
+    # Clean → 통과
+    tr._promptfoo_policy_check("This is a benign message.")
+
+    # PII 주민번호 → RuntimeError with 기존 메시지 규약 유지
+    with _pytest.raises(RuntimeError, match=r"Promptfoo policy checks reported 1 failure"):
+        tr._promptfoo_policy_check("주민번호 901234-1234567 입니다")
+
+    # API 키 → RuntimeError
+    with _pytest.raises(RuntimeError, match=r"Promptfoo policy checks reported"):
+        tr._promptfoo_policy_check('api_key = "sk-abcdef0123456789abcd"')
+
+    # JSON 응답 형태 — 값만 검사
+    tr._promptfoo_policy_check('{"answer": "안전한 응답입니다"}')
+    with _pytest.raises(RuntimeError):
+        tr._promptfoo_policy_check('{"answer": "주민번호 901234-1234567"}')
+
+
+def test_phase4_q5_no_subprocess_dependency():
+    """[Phase 4.1 Q5] test_runner 에서 subprocess/tempfile/uuid import 제거 확인."""
+    import inspect
+
+    source = inspect.getsource(tr)
+    # test_runner 본문에서 subprocess.run 을 더 이상 호출하지 않음
+    assert "subprocess.run(" not in source, "subprocess.run() should be removed"
+    # import 문 자체도 제거됨
+    assert "\nimport subprocess\n" not in source
+    assert "\nimport tempfile\n" not in source
+    assert "\nimport uuid\n" not in source
+
+
 def test_turn_sort_key():
     """turn_id 정렬이 실제 사용 패턴(int + None, 또는 digit-string + None)에서 안정적."""
     # 실사용 케이스 1: 정수 turn_id + None → None 이 뒤로
