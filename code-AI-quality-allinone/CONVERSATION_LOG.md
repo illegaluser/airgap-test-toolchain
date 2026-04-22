@@ -7543,3 +7543,86 @@ out_row 신규 passthrough: `cluster_key`, `affected_locations`, `direct_callers
 
 
 3. `docs(ai-eval): plan v8 sync (Phase 6 + L3 통합 검증) + CONVERSATION_LOG 상세 갱신`
+
+---
+
+## Session 2026-04-22 — 통합 브랜치 병합 (main + feat/ai-eval-pipeline → integrate/main-ai-eval-ttc)
+
+### 진입 맥락
+
+두 브랜치가 각각 독립적인 진화 경로를 거쳐 크게 diverge 되어 있었음:
+
+- **`main`** (11 커밋 ahead of `e3cab19`): Step A~E 파이프라인 구현 + E2E 중 발견한 5 종 근본 버그 수정 + README 6회 전면 개정.
+- **`feat/ai-eval-pipeline`** (24 커밋 ahead of `e3cab19`): eval_runner 의 Phase 0~6 전면 리팩터 + dify-api/plugin-daemon race fix + AI_EVAL_PIPELINE_README 신규 + deepeval 3.9.7 업그레이드.
+
+사용자 지시: "해당 브랜치의 구현내용과 메인브랜치의 구현내용을 readme.md 와 conversation_log.md 의 내용을 파악해서 동일 젠킨스 이미지에 병합해줘. 각각의 기능이 정상적으로 동작해야 한다. 현재 브랜치에서 새로운 통합브랜치를 생성한 후 메인브랜치와 머지작업을 진행하면 되겠다."
+
+### 통합 브랜치 생성
+
+- 출발점: `feat/ai-eval-pipeline` HEAD (`ae831a1`)
+- 브랜치명: `integrate/main-ai-eval-ttc`
+
+### 머지 결과 — 충돌 없이 auto-merge 성공
+
+`git merge main --no-ff` → ort 전략으로 충돌 없이 완료. 양쪽 변경이 대부분 상이한 파일 집합을 건드려서 구조적 충돌 없음.
+
+**main 쪽 반영 변경**:
+- 신규: `jenkinsfiles/00 코드 분석 체인.jenkinsPipeline` (Phase 1.5 오케스트레이터)
+- 수정: `jenkinsfiles/01·02·03 *.jenkinsPipeline` (COMMIT_SHA 전파 + Bootstrap Guard + Dual-path FP)
+- 수정: `pipeline-scripts/*.py` (exporter clustering/git context/diff-mode/direct_callers, analyzer multi-query/skip_llm, creator FP/suggested_diff/affected_locations, doc_processor kb_manifest)
+- 수정: `scripts/dify-assets/sonar-analyzer-workflow.yaml` (LLM 출력 8 필드 확장)
+- 수정: `scripts/provision.sh` (5 개 Job 등록)
+- 수정: `README.md` (전면 개정 → 에어갭 우선 16 섹션 구성)
+
+**ai-eval 쪽 보존 변경**:
+- 신규: `eval_runner/` 전면 재구조 (adapters / configs / reporting / policy.py / dataset.py / ollama_wrapper_api.py / tests / SUCCESS_CRITERIA_GUIDE.md)
+- 신규: `docs/AI_EVAL_PIPELINE_README.md` + `docs/PLAN_AI_EVAL_PIPELINE.md`
+- 수정: `jenkinsfiles/04 AI평가.jenkinsPipeline` (Phase 6 TARGET_TYPE 선택 + 대상/심판 모델 분리 + 실시간 pytest 로그)
+- 수정: `Dockerfile` (deepeval 3.9.7 업그레이드 + langchain pin 해제)
+- 수정: `requirements*.txt` (deepeval 선행 의존성)
+
+**auto-merge 된 공통 파일**:
+- `scripts/supervisord.conf` — main 의 `-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8` JVM 플래그 + ai-eval 의 dify-plugin-daemon race 수정 (수동 start 패턴) 모두 보존.
+
+### 통합 후 README §8.5 재작성
+
+auto-merge 직후 README §8.5 (04 AI평가 섹션) 가 main 쪽에서 작성된 추정 구조 (`ollama_adapter.py`, `metrics/answer_relevancy.py` 등) 로 기술되어 있었으나 실제 ai-eval 쪽 구현과 불일치. 실제 파일 구성 + 11 지표 × 5 단계 체계로 재작성:
+
+- 평가 지표표: 5 단계 (포맷·정책 / 과제검사 / 심층평가 / 다중턴 / 운영지표) × 11 지표 (Policy / Format / Task Completion / Answer Relevancy / Toxicity / Faithfulness / Contextual Recall / Contextual Precision / Multi-turn / Latency / Token Usage) 표로 정리. Fail-Fast 설명 추가.
+- 평가 대상 모드 3 가지 (`local_ollama_wrapper` / `http` / `ui_chat`) 와 대응 어댑터 명시.
+- 실제 eval_runner 하위 구조 반영 (`adapters/base.py`, `http_adapter.py`, `browser_adapter.py`, `registry.py` / `configs/` / `policy.py` / `dataset.py` / `reporting/` / `tests/` / `ollama_wrapper_api.py`).
+- 주요 파라미터: `TARGET_TYPE`, `TARGET_URL`, `TARGET_OLLAMA_MODEL`, `JUDGE_MODEL`, `ANSWER_RELEVANCY_THRESHOLD`, `TASK_COMPLETION_THRESHOLD`, `GOLDEN_DATASET`.
+- 결과물: `summary.json` + `summary.html` (LLM 자연어 요약 헤더 포함).
+- 상세 운영 가이드는 `docs/AI_EVAL_PIPELINE_README.md` (사용자 가이드), `eval_runner/README.md` (개발자용), `docs/PLAN_AI_EVAL_PIPELINE.md` (개선 계획서) 3 종 포인터.
+
+### 병합 후 검증
+
+- **Python 문법**: `pipeline-scripts/*.py` 6 개 + `eval_runner/` 하위 `*.py` 18 개 전부 `ast.parse` OK.
+- **Jenkinsfile 구조**: 5 개 파일 (`00·01·02·03·04`) 모두 `pipeline { ... stages { ... } }` 블록 존재.
+- **docker-compose YAML**: `docker-compose.mac.yaml` / `docker-compose.wsl2.yaml` 둘 다 ttc-allinone + gitlab 서비스 포함 구조 OK.
+- **Dify Workflow YAML**: parameter-extractor 8 필드 + end outputs 8 변수 모두 보존 (Step C 확장 반영).
+- **supervisord.conf**: `-Dfile.encoding=UTF-8` 1 회 존재 + `dify-plugin-daemon` + `dify-api` 수동 start 패턴 보존.
+- **eval_runner 구조**: `adapters/{base,browser_adapter,http_adapter,registry}.py` + `configs/` + `dataset.py` + `policy.py` + `reporting/` + `tests/` + `ollama_wrapper_api.py` + `Jenkinsfile` + `SUCCESS_CRITERIA_GUIDE.md` 모두 존재.
+
+### 기능 동시 동작 보장 근거
+
+본 이미지 한 개로 두 플로우가 독립 실행:
+
+1. **P0~P3 코드 품질 분석 흐름** — Jenkins 의 `00-코드-분석-체인` 클릭 → `01-코드-사전학습` → `02-코드-정적분석` → `03-정적분석-결과분석-이슈등록`. 의존 자산: Dify Workflow `Sonar Issue Analyzer`, Dify Dataset `code-context-kb`, Ollama `gemma4:e4b` + `bge-m3` + `qwen3-coder:30b`, SonarQube, GitLab.
+2. **P4 AI 평가 흐름** — Jenkins 의 `04-AI평가` 실행 → eval_runner 서브 파이프라인 → `/var/knowledges/eval/reports/build-<N>/summary.{json,html}`. 의존 자산: 호스트 Ollama (Judge 모델 + 평가 대상 모델), Golden Dataset CSV.
+
+두 흐름은 **공유 런타임** 은 (호스트 Ollama 데몬, 통합 컨테이너의 Jenkins, supervisord 기반 보조 서비스) 이지만 서로 간섭하지 않습니다. 지식 창고 (Dify code-context-kb) 와 이슈 트래커 (GitLab) 는 P0~P3 만 사용, 평가 리포트 경로 (/var/knowledges/eval) 는 P4 만 사용.
+
+### 미반영·후속 과제
+
+- **통합 브랜치 E2E 미실행** — 본 세션은 코드·문서 병합까지만 수행. 실제 통합 이미지에서 양 플로우가 동시 동작하는지의 End-to-End 검증은 후속 세션에서 수행 필요. 순서 권장: (1) 통합 브랜치에서 `offline-prefetch.sh` 로 이미지 재빌드 → (2) 클린 기동 + provision 완주 → (3) `00-코드-분석-체인` 1 회 실행 (Step A~E 검증) → (4) `04-AI평가` 1 회 실행 (Phase 0~6 검증) → (5) `chain_<sha>.json` + `summary.html` 동시 존재 확인.
+- **main 브랜치 병합 정책** — 통합 브랜치가 검증 완료되면 `main` 으로 FF-merge 또는 squash-merge 할지, `feat/ai-eval-pipeline` 을 먼저 `main` 에 반영 후 통합 브랜치 폐기할지는 팀 정책 결정 사항.
+
+### 커밋 (이번 세션)
+
+- `(병합 커밋)` `merge(main): Step A~E 파이프라인 + README 전면 개정 통합` — main 의 11 커밋을 ai-eval 위에 병합
+- `docs(readme): §8.5 04 AI평가 섹션을 실제 eval_runner 구조 + 11 지표 × 5 단계 체계로 재작성`
+- `docs(log): 통합 브랜치 병합 세션 요약 추가`
+
+---
+
