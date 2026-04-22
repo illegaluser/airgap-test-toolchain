@@ -1237,7 +1237,7 @@ Jenkins → `04-AI평가` → **"Build with Parameters"** → 아래 값 지정:
 | `UI_WAIT_TIMEOUT` | `60` (초) | 건드리지 않음 | `ui_chat` 응답 대기 |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | 그대로 | 심판 모델이 사는 Ollama 데몬 주소 |
 | `TARGET_OLLAMA_MODEL` | (드롭다운, 호스트 실재 모델) | **`gemma4:e4b`** | 평가 대상. 실무 운용 모델과 일치시켜야 회귀 검증 의미 |
-| `JUDGE_MODEL` | (드롭다운, 호스트 실재 모델) | **`qwen3-coder:30b`** 또는 **`gemma4:26b`** | 심판. 대상보다 크고 추론력 좋은 쪽이 신뢰할만한 채점 |
+| `JUDGE_MODEL` | (드롭다운, 호스트 실재 모델) | **`gemma4:e4b`** | 심판 기본값. 현재 운영 표준이며 호스트 표준 모델과 맞춰 즉시 실행하기 쉬움 |
 | `ANSWER_RELEVANCY_THRESHOLD` | `0.7` | `0.7` | ④ 답변 관련성 합격 기준 (0~1) |
 | `GOLDEN_CSV_PATH` | `/var/knowledges/eval/data/golden.csv` | 그대로 | 시험지 경로 (컨테이너 내부) |
 | `UPLOADED_GOLDEN_DATASET` | — | (선택) | 내 PC 의 CSV 업로드 → 위 경로에 덮어쓰기 |
@@ -2262,7 +2262,7 @@ Jenkinsfile 기본값이 호스트 Ollama 에 없는 모델을 가리킴. 증상
 ollama list
 
 # 2. "Build with Parameters" 에서 JUDGE_MODEL / TARGET_OLLAMA_MODEL 을 위 목록의 이름으로 교체 후 재실행
-#    (예: JUDGE_MODEL=qwen3-coder:30b, TARGET_OLLAMA_MODEL=gemma4:e4b)
+#    (예: JUDGE_MODEL=gemma4:e4b, TARGET_OLLAMA_MODEL=gemma4:e4b)
 
 # 3. 또는 누락 모델을 다운로드 (온라인 머신에서만 가능)
 ollama pull gemma4:e4b

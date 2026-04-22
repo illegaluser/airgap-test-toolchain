@@ -36,7 +36,7 @@ import requests
 # 설정 (환경변수 기반 opt-in/out + 공통 파라미터)
 # ============================================================================
 
-_JUDGE_MODEL_DEFAULT = os.environ.get("JUDGE_MODEL", "qwen3-coder:30b")
+_JUDGE_MODEL_DEFAULT = os.environ.get("JUDGE_MODEL", "gemma4:e4b")
 SUMMARY_NARRATIVE_MODEL = os.environ.get("SUMMARY_NARRATIVE_MODEL", "").strip() or _JUDGE_MODEL_DEFAULT
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
 

@@ -81,7 +81,7 @@
 ║  │ * = RAG 케이스만 적용                                       │ ║
 ║  └────────────────────────────────────────────────────────────┘ ║
 ║                                                                    ║
-║  Judge: qwen3-coder:30b @ ollama:11434  T=0  digest:sha256:7f3a   ║
+║  Judge: gemma4:e4b @ ollama:11434  T=0  digest:sha256:7f3a   ║
 ║  Dataset: golden.csv  rows=12  sha256:a1b2c3d  modified=04-21      ║
 ║  Errors: System(0) / Quality(1)                                    ║
 ╚════════════════════════════════════════════════════════════════════╝
@@ -389,7 +389,7 @@ publishHTML(target: [
     "overall_status": "passed"
   },
   "judge": {
-    "model": "qwen3-coder:30b",
+    "model": "gemma4:e4b",
     "base_url": "http://host.docker.internal:11434",
     "temperature": 0,
     "digest": "sha256:7f3a..."

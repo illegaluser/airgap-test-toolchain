@@ -21,7 +21,7 @@ import requests
 # 환경 변수 기반 설정 (translate.py 독립)
 # ============================================================================
 
-_JUDGE_MODEL_DEFAULT = os.environ.get("JUDGE_MODEL", "qwen3-coder:30b")
+_JUDGE_MODEL_DEFAULT = os.environ.get("JUDGE_MODEL", "gemma4:e4b")
 
 SUMMARY_TRANSLATE_TO_KOREAN = os.environ.get("SUMMARY_TRANSLATE_TO_KOREAN", "true").strip().lower() not in (
     "0",
