@@ -11,13 +11,14 @@
 #   E. Dify Sonar Analyzer Workflow import
 #   F. Dify API Key 발급 (Dataset, Workflow)
 #   G. GitLab root PAT 발급 via REST API
-#   H. Jenkins Credentials 자동 주입
+#   H. GitLab 샘플 프로젝트(dscore-ttc-sample) 자동 생성 + 초기 push
+#   I. Jenkins Credentials 자동 주입
 #       - dify-dataset-id
 #       - dify-knowledge-key
 #       - dify-workflow-key
 #       - gitlab-pat
-#   I. Jenkinsfile 사본에 credentials('gitlab-pat') 참조 삽입
-#   J. SonarQube 초기 비번 변경 + 토큰 발급 → Jenkins 'sonarqube-token' 주입
+#   J. Jenkinsfile 사본에 credentials('gitlab-pat') 참조 삽입
+#   K. SonarQube 초기 비번 변경 + 토큰 발급 → Jenkins 'sonarqube-token' 주입
 #
 # 필수 환경변수 (docker-compose 에서 주입):
 #   JENKINS_URL             http://127.0.0.1:${JENKINS_PORT:-28080}
@@ -52,6 +53,12 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
 
 GITLAB_URL="${GITLAB_URL_INTERNAL:-http://gitlab:80}"
 GITLAB_ROOT_PASSWORD="${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}"
+PROVISION_SAMPLE_PROJECT="${PROVISION_SAMPLE_PROJECT:-true}"
+SAMPLE_PROJECT_NAMESPACE="${SAMPLE_PROJECT_NAMESPACE:-root}"
+SAMPLE_PROJECT_NAME="${SAMPLE_PROJECT_NAME:-dscore-ttc-sample}"
+SAMPLE_PROJECT_PATH="${SAMPLE_PROJECT_PATH:-dscore-ttc-sample}"
+SAMPLE_PROJECT_VISIBILITY="${SAMPLE_PROJECT_VISIBILITY:-private}"
+SAMPLE_PROJECT_BRANCH="${SAMPLE_PROJECT_BRANCH:-main}"
 
 SONAR_URL="${SONAR_URL:-http://127.0.0.1:9000}"
 SONAR_ADMIN_NEW_PASSWORD="${SONAR_ADMIN_NEW_PASSWORD:-TtcAdmin!2026}"
@@ -719,6 +726,148 @@ gitlab_issue_root_pat() {
     fi
 }
 
+gitlab_ensure_sample_project() {
+    local pat="$1"
+    local state="$STATE_DIR/sample_project.ok"
+    local full_path="${SAMPLE_PROJECT_NAMESPACE}/${SAMPLE_PROJECT_PATH}"
+    local encoded_full_path
+    encoded_full_path=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$full_path")
+
+    case "$(printf '%s' "$PROVISION_SAMPLE_PROJECT" | tr '[:upper:]' '[:lower:]')" in
+        false|0|no)
+            log "GitLab 샘플 프로젝트 자동 생성 비활성화 — skip"
+            return 0
+            ;;
+    esac
+
+    [ -f "$state" ] && {
+        log "GitLab 샘플 프로젝트 이미 준비됨 — skip"
+        return 0
+    }
+
+    [ -z "$pat" ] && {
+        warn "GitLab 샘플 프로젝트 생성 skip — PAT 없음"
+        return 1
+    }
+
+    log "GitLab 샘플 프로젝트 보장: $full_path"
+
+    local namespace_id=""
+    local namespace_json
+    namespace_json=$(mktemp)
+    curl -sS -o "$namespace_json" \
+        -H "PRIVATE-TOKEN: $pat" \
+        "$GITLAB_URL/api/v4/namespaces?search=$SAMPLE_PROJECT_NAMESPACE" 2>/dev/null || true
+    namespace_id=$(python3 -c "import json,sys; items=json.load(open(sys.argv[1], encoding='utf-8')); exact=[n for n in items if n.get('path')==sys.argv[2]]; print((exact[0] if exact else {}).get('id',''))" "$namespace_json" "$SAMPLE_PROJECT_NAMESPACE" 2>/dev/null || true)
+    rm -f "$namespace_json"
+
+    local project_json project_id http_code
+    project_json=$(mktemp)
+    http_code=$(curl -sS -o "$project_json" -w "%{http_code}" \
+        -H "PRIVATE-TOKEN: $pat" \
+        "$GITLAB_URL/api/v4/projects/$encoded_full_path" 2>/dev/null || echo "000")
+
+    if [ "$http_code" = "200" ]; then
+        project_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('id',''))" "$project_json" 2>/dev/null || true)
+        log "  샘플 프로젝트 이미 존재: $full_path (id=${project_id:-unknown})"
+    else
+        local create_json create_code
+        local -a create_args
+        create_json=$(mktemp)
+        create_args=(
+            -sS -o "$create_json" -w "%{http_code}" -X POST
+            -H "PRIVATE-TOKEN: $pat"
+            --data-urlencode "name=$SAMPLE_PROJECT_NAME"
+            --data-urlencode "path=$SAMPLE_PROJECT_PATH"
+            --data-urlencode "visibility=$SAMPLE_PROJECT_VISIBILITY"
+            --data-urlencode "initialize_with_readme=false"
+        )
+        [ -n "$namespace_id" ] && create_args+=(--data-urlencode "namespace_id=$namespace_id")
+        create_args+=("$GITLAB_URL/api/v4/projects")
+        create_code=$(curl "${create_args[@]}" 2>/dev/null || echo "000")
+        if [ "$create_code" != "201" ]; then
+            warn "  샘플 프로젝트 생성 실패 (status=$create_code) — 응답: $(head -c 300 "$create_json" 2>/dev/null)"
+            rm -f "$project_json" "$create_json"
+            return 1
+        fi
+        project_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('id',''))" "$create_json" 2>/dev/null || true)
+        log "  샘플 프로젝트 생성 완료: $full_path (id=${project_id:-unknown})"
+        rm -f "$create_json"
+    fi
+    rm -f "$project_json"
+
+    local branch_code
+    branch_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+        -H "PRIVATE-TOKEN: $pat" \
+        "$GITLAB_URL/api/v4/projects/$encoded_full_path/repository/branches/$SAMPLE_PROJECT_BRANCH" 2>/dev/null || echo "000")
+    if [ "$branch_code" = "200" ]; then
+        touch "$state"
+        log "  샘플 프로젝트 브랜치 이미 존재 — 콘텐츠 push skip"
+        return 0
+    fi
+
+    local workdir remote_url
+    workdir=$(mktemp -d)
+    mkdir -p "$workdir/src"
+
+    cat > "$workdir/src/auth.py" <<'PY'
+"""Simple authentication helpers."""
+import hashlib, os
+
+def hash_password(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def verify_password(raw: str, stored: str) -> bool:
+    return hash_password(raw) == stored
+
+def login(username: str, password: str, user_store: dict) -> bool:
+    try:
+        stored = user_store[username]
+        return verify_password(password, stored)
+    except:  # noqa: E722 — Sonar python:S5754 CRITICAL
+        return False
+PY
+
+    cat > "$workdir/src/session.py" <<'PY'
+"""Session helpers that call login() — RAG 가 호출 관계를 잡아내는지 확인용."""
+from src.auth import login
+
+def check_session(token: str, user_store: dict) -> bool:
+    if not token or ":" not in token:
+        return False
+    user, pw = token.split(":", 1)
+    return login(user, pw, user_store)
+PY
+
+    : > "$workdir/src/__init__.py"
+
+    cat > "$workdir/sonar-project.properties" <<CFG
+sonar.projectKey=$SAMPLE_PROJECT_PATH
+sonar.projectName=$SAMPLE_PROJECT_NAME
+sonar.sources=src
+sonar.python.version=3.11
+sonar.sourceEncoding=UTF-8
+CFG
+
+    remote_url="${GITLAB_URL}/${full_path}.git"
+    (
+        cd "$workdir" || exit 1
+        git init -q -b "$SAMPLE_PROJECT_BRANCH"
+        git add -A
+        git -c user.email=test@ttc.local -c user.name=tester commit -q -m "initial"
+        git remote add origin "http://oauth2:${pat}@${remote_url#http://}"
+        git push -u origin "$SAMPLE_PROJECT_BRANCH" >/dev/null
+    ) || {
+        warn "  샘플 프로젝트 초기 push 실패"
+        rm -rf "$workdir"
+        return 1
+    }
+
+    rm -rf "$workdir"
+    touch "$state"
+    log "  샘플 프로젝트 초기 push 완료: $full_path ($SAMPLE_PROJECT_BRANCH)"
+}
+
 # ─ SonarQube: ready 대기 ────────────────────────────────────────────────────
 # 첫 기동은 ES 인덱스 bootstrap 때문에 3-8분 소요. 여유롭게 10분 timeout.
 sonar_wait_ready() {
@@ -852,13 +1001,14 @@ else
     warn "Dify setup 실패 — 후속 단계 건너뜀"
 fi
 
-# G. GitLab
+# G+H. GitLab + 샘플 프로젝트
 GITLAB_PAT=""
 if gitlab_wait_ready; then
     GITLAB_PAT=$(gitlab_issue_root_pat || echo "")
+    [ -n "$GITLAB_PAT" ] && gitlab_ensure_sample_project "$GITLAB_PAT" || true
 fi
 
-# J. SonarQube 초기 비번 변경 + 토큰 발급
+# K. SonarQube 초기 비번 변경 + 토큰 발급
 SONAR_TOKEN=""
 if sonar_wait_ready; then
     if sonar_change_initial_password; then
@@ -866,7 +1016,7 @@ if sonar_wait_ready; then
     fi
 fi
 
-# H. Jenkins Credentials 주입
+# I. Jenkins Credentials 주입
 log "Jenkins Credentials 주입..."
 [ -n "${DATASET_ID:-}" ]     && jenkins_upsert_string_credential "dify-dataset-id"   "$DATASET_ID"     "Dify Code Context Dataset ID"
 [ -n "${KNOWLEDGE_KEY:-}" ]  && jenkins_upsert_string_credential "dify-knowledge-key" "$KNOWLEDGE_KEY" "Dify Knowledge API Key"
@@ -878,7 +1028,7 @@ log "Jenkins Credentials 주입..."
 # 02 Jenkinsfile 의 `withSonarQubeEnv('dscore-sonar')` + `tool 'SonarScanner-CLI'` 바인딩.
 [ -n "$SONAR_TOKEN" ] && jenkins_configure_sonar_integration "$SONAR_URL" || true
 
-# I. Jenkinsfile credentials 참조 치환 (Credentials 주입 후)
+# J. Jenkinsfile credentials 참조 치환 (Credentials 주입 후)
 patch_jenkinsfile_gitlab_credentials
 
 # A (재실행). Jenkins 5개 Job 등록 — 00 은 Phase 1.5 체인 오케스트레이터
@@ -895,6 +1045,7 @@ log "  Jenkins    : $JENKINS_URL ($JENKINS_USER / $JENKINS_PASSWORD)"
 log "  Dify       : $DIFY_URL ($DIFY_ADMIN_EMAIL / $DIFY_ADMIN_PASSWORD)"
 log "  SonarQube  : http://localhost:29000 (admin / $SONAR_ADMIN_NEW_PASSWORD)"
 log "  GitLab     : http://localhost:28090 (root / $GITLAB_ROOT_PASSWORD)"
+log "  Sample Repo: http://localhost:28090/${SAMPLE_PROJECT_NAMESPACE}/${SAMPLE_PROJECT_PATH}"
 log "  Ollama     : $OLLAMA_BASE_URL (호스트)"
 if [ -z "$SONAR_TOKEN" ]; then
     log ""
