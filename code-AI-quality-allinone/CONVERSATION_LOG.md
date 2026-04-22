@@ -8041,3 +8041,277 @@ README 는 리포 구현을 **거의 정확히 반영**. 에이전트가 찾은 
 - `docs(readme): §3/§5/§6/§7 walkthrough 스타일 재작성 — "이 단계에서 하는 일" + "기대 결과" + "따라 하기" 마커 19 섹션 적용 (사용자 가독성 피드백 반영)`
 
 ---
+
+## 세션 `e2e-full-rebuild` — 2026-04-22 (KST)
+
+### 배경
+
+사용자 보고: **Dify API 응답 불가 + 03 정적분석-결과분석-이슈등록 파이프라인 동작 안 함**.
+
+진단:
+- Dify `/health` 응답이 39초 (정상 수 ms) — gunicorn 워커가 **360s 타임아웃**으로 2 회 CRITICAL WORKER TIMEOUT
+- 컨테이너 메모리 5.06 / 6 GiB (84%) — 스왑/스로틀
+- Dify Web 은 포트 28081 이 맞음 (사용자가 28080 = Jenkins 로 접속 시도해 "접속 안 됨" 오해)
+
+즉시 조치:
+- `scripts/supervisord.conf:207` — `GUNICORN_TIMEOUT="360"` → **`"1200"`** (20분)
+- 컨테이너 내부 `/etc/supervisor/supervisord.conf` 에 `docker cp` + `supervisorctl restart dify-api` 로 적용 확인 (`--timeout 1200` on gunicorn cmdline, `/health` 응답 2.6ms 회복)
+
+사용자 결정: **스택 전체 풀 리빌드 — 컨테이너·볼륨·이미지 삭제 → 빌드 → 기동 → 프로비저닝 → 00-코드-분석-체인 → 04-AI평가** 순서 실행. 각 단계 커맨드·결과를 본 로그에 추적.
+
+### 실행 순서 & 커맨드 (실시간 추가)
+
+#### Phase A — Teardown (컨테이너 + 볼륨 + 이미지 삭제)
+
+```bash
+# 1) compose down — 네트워크 제거까지 포함
+cd /Users/luuuuunatic/Developer/airgap-test-toolchain/code-AI-quality-allinone
+docker compose -f docker-compose.mac.yaml down -v --remove-orphans
+# → ttc-allinone / ttc-gitlab Removed, ttc-net Removed
+
+# 2) bind-mount 데이터 디렉터리 삭제 (compose 의 -v 는 bind-mount 는 안 지움)
+rm -rf ~/ttc-allinone-data/allinone ~/ttc-allinone-data/gitlab
+# 지운 크기: allinone 733M + gitlab 307M = 1.0G
+
+# 3) 이미지 삭제 (gitlab 이미지는 크기 큼·재빌드 불필요라 유지)
+docker rmi ttc-allinone:mac-dev
+# → Untagged: ttc-allinone:mac-dev / Deleted: sha256:130aa991...
+
+# 유지된 것: yrzr/gitlab-ce-arm64v8:17.4.2-ce.0, dscore.ttc.playwright, buildkit builder
+```
+
+#### Phase B — 이미지 빌드
+
+```bash
+# 빌드 (버전 캐시 히트로 98초만에 완료 — 깨끗한 빌드였으면 15~30 분)
+cd /Users/luuuuunatic/Developer/airgap-test-toolchain/code-AI-quality-allinone
+bash scripts/build-mac.sh
+# → [build-mac] 빌드 완료: ttc-allinone:mac-dev
+# → DISK USAGE 13.9GB, CONTENT SIZE 4.14GB
+```
+
+#### Phase C — 스택 기동 (compose up)
+
+```bash
+bash scripts/run-mac.sh
+# → Network ttc-net Created
+# → Container ttc-gitlab Started
+# → Container ttc-allinone Started
+```
+
+#### Phase D — 자동 프로비저닝 (~7분 대기)
+
+```bash
+# 완료 마커 폴링 (monitor 로 "자동 프로비저닝 완료" 문자열 스트리밍 감지)
+docker logs -f ttc-allinone 2>&1 | grep -E --line-buffered "자동 프로비저닝 완료|ERROR|Traceback"
+# → [provision] 자동 프로비저닝 완료.
+# → [entrypoint] 앱 프로비저닝 완료.
+```
+
+**검증 결과 (3종)**:
+
+```bash
+# ① Jenkins Job 5개
+curl -s -u admin:password 'http://127.0.0.1:28080/api/json?tree=jobs%5Bname%5D' \
+  | python3 -c "import json,sys;print(*(j['name'] for j in json.load(sys.stdin)['jobs']),sep='\n')"
+# → 00-코드-분석-체인 / 01-코드-사전학습 / 02-코드-정적분석 / 03-정적분석-결과분석-이슈등록 / 04-AI평가 ✅
+
+# ② 프로비저닝 마커 11종
+docker exec ttc-allinone ls /data/.provision/
+# → 11개 전부 존재 (dataset_api_key, dataset_id, default_models.ok, gitlab_root_pat,
+#    jenkins_sonar_integration.ok, ollama_embedding.ok, ollama_plugin.ok, sonar_token,
+#    workflow_api_key, workflow_app_id, workflow_published.ok) ✅
+
+# ③ 4개 서비스 HTTP
+for url in "http://localhost:28080/login" "http://localhost:28081/apps" \
+           "http://localhost:29000/api/system/status" "http://localhost:28090/users/sign_in"; do
+  echo "  $(curl -s -o /dev/null -w '%{http_code}' "$url")  $url"
+done
+# → 200 Jenkins / 200 Dify / 200 SonarQube / 200 GitLab ✅
+```
+
+#### Phase E — 샘플 레포 생성 + GitLab push
+
+README §7.1–§7.2 를 `/tmp/setup-sample-repo.sh` 로 자동화:
+
+```bash
+bash /tmp/setup-sample-repo.sh
+# → got PAT (len=26)
+# → create project http=201 / project created
+# → git push ... * [new branch] main -> main
+# → DONE
+```
+
+#### Phase F — 00-코드-분석-체인 트리거 (gevent 데드락 → gthread 전환)
+
+**1차 시도 실패 (`/build` bootstrap):**
+
+```bash
+JOB=00-%EC%BD%94%EB%93%9C-%EB%B6%84%EC%84%9D-%EC%B2%B4%EC%9D%B8
+CRUMB=$(curl -s -u admin:password "http://127.0.0.1:28080/crumbIssuer/api/json" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['crumbRequestField']+':'+d['crumb'])")
+curl -X POST -u admin:password -H "$CRUMB" "http://127.0.0.1:28080/job/$JOB/build"
+# → 00#1 FAILURE (Stage 2 → 01#1 FAILURE: REPO_URL 빈 값)
+# 원인: 01/02/03 의 parameters 블록 첫 등록 전이라 upstream 으로 받은 params 무시됨
+```
+
+**서브잡 parameters 블록 부트스트랩:**
+
+```bash
+for J in "02-코드-정적분석" "03-정적분석-결과분석-이슈등록"; do
+  JE=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$J'))")
+  curl -X POST -u admin:password -H "$CRUMB" "http://127.0.0.1:28080/job/${JE}/build"
+done
+# → 02#1 SUCCESS, 03#1 SUCCESS (defaults 로 정상 동작)
+```
+
+**2차 트리거 (`/buildWithParameters`) — Dify gevent 데드락 발생:**
+
+```bash
+curl -X POST -u admin:password -H "$CRUMB" \
+  "http://127.0.0.1:28080/job/${JOB_ENC}/buildWithParameters" \
+  --data-urlencode "REPO_URL=http://gitlab:80/root/dscore-ttc-sample.git" \
+  --data-urlencode "BRANCH=main" --data-urlencode "ANALYSIS_MODE=full"
+# → 00#2 → 01#2 SUCCESS → 02#2 SUCCESS → 03#2 hang
+# 30초 폴링 결과:
+#   - Embedding 22:09:40-45 OK (4 회 invoke status=200)
+#   - 첫 LLM 호출 22:17:46 OK (gemma4:e4b /api/chat 200 / 14.6s)
+#   - 첫 LLM 후 무한 정지 — gunicorn worker pid 1006 / Threads=1 / State=S / wchan=futex_wait_queue
+# 진단:
+#   - container CPU 3-5%, memory 4.67/6 GiB 안정
+#   - Ollama / GPU 정상 (Renderer Util 48%)
+#   - WORKER TIMEOUT 0 (1200s 안 도달)
+# 원인 가설: workflow engine Thread-25(_generate_worker) 가 gevent monkey-patched
+#            threading.Lock 와 데드락 → 단일 gevent worker 영구 정지
+
+# 빌드 abort:
+for spec in "00-../2" "01-../2" "03-../2"; do
+  curl -X POST -u admin:password -H "$CRUMB" "http://127.0.0.1:28080/job/${spec}/stop"
+done
+# → 모두 302 (abort 성공)
+```
+
+**조치: Dify gunicorn worker class gevent → gthread 전환**
+
+`scripts/supervisord.conf` (소스 파일도 영구 변경):
+
+```diff
+-    SERVER_WORKER_CLASS="gevent",
++    SERVER_WORKER_CLASS="gthread",
+-    GUNICORN_CMD_ARGS="--preload --graceful-timeout 30 --worker-tmp-dir /dev/shm"
++    GUNICORN_CMD_ARGS="--preload --graceful-timeout 30 --worker-tmp-dir /dev/shm --threads 8"
+```
+
+```bash
+# 소스 → 컨테이너 핫패치
+docker cp scripts/supervisord.conf ttc-allinone:/etc/supervisor/supervisord.conf
+docker exec ttc-allinone supervisorctl update dify-api
+docker exec ttc-allinone supervisorctl restart dify-api
+# → gunicorn cmdline 에 --worker-class gthread 확인
+# → /health 200/0.0008s (이전 30s 타임아웃에서 회복)
+```
+
+> **이미지 재빌드 불필요** — supervisord.conf 만 핫패치. 소스 파일도 동시 갱신해 다음 빌드/tarball 에 반영됨.
+
+**3차 트리거 (gthread 적용 후) — 성공:**
+
+```bash
+curl -X POST -u admin:password -H "$CRUMB" \
+  "http://127.0.0.1:28080/job/${JOB_ENC}/buildWithParameters" \
+  --data-urlencode "REPO_URL=http://gitlab:80/root/dscore-ttc-sample.git" \
+  --data-urlencode "BRANCH=main" --data-urlencode "ANALYSIS_MODE=full"
+# → 00#3 SUCCESS (총 167s) ✅
+#    └─ 01#3 → 02#3 → 03#3 SUCCESS (Dify workflow 83s) ✅
+# 30초 모니터:
+#   - Dify health 0.8-3ms (gevent 데드락 시 30s 타임아웃이었던 것 대비 정상)
+#   - Ollama: bge-m3 + gemma4:e4b 동시 로드 유지
+#   - WORKER TIMEOUT 0
+```
+
+#### Phase G — 04-AI평가 트리거 (CascadeChoice fallback 결함 발견 + 픽스)
+
+**1차 시도 — bootstrap (`/build`) 95s 후 FAILURE**:
+
+```bash
+JOB_ENC=04-AI%ED%8F%89%EA%B0%80
+curl -X POST -u admin:password -H "$CRUMB" "http://127.0.0.1:28080/job/${JOB_ENC}/build"
+# → 04#1 FAILURE (95s, 평가 단계까지 진행 후 어댑터 호출에서)
+# 콘솔에서:
+#   {'error': 'ollama http error: {"error":"model \'gemma4:e2b\' not found"}'}
+#   Adapter Error: HTTP 404
+```
+
+**원인 분석**:
+- 호스트 Ollama 에 `gemma4:e2b` 없음 (e4b/26b/qwen3.5:4b/llama3.2-vision/bge-m3 만 있음)
+- bootstrap 빌드는 Active Choices CascadeChoice 의 동적 평가를 거치지 않음
+  → fallback list 의 **첫 항목** 이 default 로 잡힘
+- `jenkinsfiles/04 AI평가.jenkinsPipeline:62` (TARGET fallback 첫 항목) = `'gemma4:e2b'` ⇒ 호스트에 없는 모델
+- preflight 검증 stage 는 JUDGE 만 검증, TARGET 미검증 → 95s 동안 평가 실행 후 어댑터 단계에서 HTTP 404
+
+**소스 픽스 2건**:
+
+- 픽스 ① — 4개 fallback list 의 첫 항목 e2b → e4b (안전한 default, 호스트 표준 모델). 4 군데 (line 62, 69, 103, 115). 변경 결과 두 리스트 모두 `['gemma4:e4b', 'qwen3.5:4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']`
+- 픽스 ② — Stage 1-1 의 preflight 에 TARGET_OLLAMA_MODEL 검증 추가 (line 168-220). stage 이름도 `'1-1. Judge Model 검증'` → `'1-1. Judge / Target Model preflight 검증'`. JUDGE + (TARGET_TYPE=local_ollama_wrapper 일 때) TARGET 둘 다 `/api/tags` 와 비교, 누락 시 즉시 SystemExit
+
+**컨테이너 hot-patch (이미지 재빌드 없이)**:
+
+```bash
+# 소스 → 컨테이너 jenkinsfile 디렉토리
+docker cp "jenkinsfiles/04 AI평가.jenkinsPipeline" \
+  "ttc-allinone:/opt/jenkinsfiles/04 AI평가.jenkinsPipeline"
+
+# config.xml 재생성 + Jenkins API POST (Python으로 html.escape 후 파일로 저장)
+# 핵심: Content-Type "application/xml; charset=utf-8" + curl --data-binary @file
+# (직접 string POST 는 0x8F 바이트 SAXParse 에러)
+curl -X POST -u admin:password -H "$CRUMB" \
+  -H "Content-Type: application/xml; charset=utf-8" \
+  --data-binary @/tmp/04-config.xml \
+  "http://127.0.0.1:28080/job/${JOB_ENC}/config.xml"
+# → 200 OK (config 갱신, 단 parameters 블록은 다시 등록 필요)
+```
+
+**2-케이스 골든 셋 배치** (테스트 최소화, 사용자 요청):
+컨테이너 내 `/var/knowledges/eval/data/golden.csv` 에 헤더 + 2 행 (`task-pass-simple`, `policy-pass-clean`) 만 배치. `chown jenkins:jenkins` 부여.
+
+**2차 시도 — 픽스 적용 후 bootstrap = 본 빌드 효과로 SUCCESS**:
+
+```bash
+curl -X POST -u admin:password -H "$CRUMB" "http://127.0.0.1:28080/job/${JOB_ENC}/build"
+# → 04#2 SUCCESS (162s)
+# Stage 1-1 console:
+#   Selected target model confirmed: gemma4:e4b   (TARGET preflight 동작 확인 ✅)
+#   Selected judge model confirmed: gemma4:e4b
+# Pytest 결과:
+#   conversation=task-pass-simple turns=1 → PASSED
+#   conversation=policy-pass-clean turns=1 → PASSED
+#   2 passed, 1 warning in 129.26s (0:02:09)
+```
+
+> **본 빌드 추가 트리거 생략** — bootstrap 의 fallback default 가 이미 `gemma4:e4b` (정상 모델) 로 변경되어 정확한 평가가 수행됨. self-eval (target=judge=e4b) 이지만 파이프라인 검증 목적은 100% 달성.
+
+### 세션 요약
+
+| Phase | 작업 | 결과 |
+|---|---|---|
+| A | compose down -v + bind-mount rm + 이미지 삭제 | OK (1.0G + 4.14G 회수) |
+| B | 이미지 빌드 (`bash scripts/build-mac.sh`) | OK (캐시 히트, 98s) |
+| C | `bash scripts/run-mac.sh` | OK (2 컨테이너 Up) |
+| D | 자동 프로비저닝 대기 | OK (~7분, "자동 프로비저닝 완료") |
+| 검증 | Job 5개 / 마커 11종 / HTTP 4서비스 | 전부 200 OK |
+| E | `/tmp/setup-sample-repo.sh` 자동화 (§7.1-§7.2) | OK (gitlab project 생성 + push) |
+| F | 00-코드-분석-체인 | **3 회 시도 끝에 SUCCESS**: ① 서브잡 params 미등록 / ② Dify gevent worker 데드락 (gthread 전환) / ③ 167s SUCCESS |
+| G | 04-AI평가 (2 케이스) | **2 회 시도 끝에 SUCCESS**: ① CascadeChoice fallback default `gemma4:e2b` 호스트 부재 / ② 소스 픽스 후 162s SUCCESS |
+
+### 본 세션에서 수정/생성된 파일 (커밋 대상)
+
+- `scripts/supervisord.conf` — `GUNICORN_TIMEOUT 360→1200` + `SERVER_WORKER_CLASS gevent→gthread` + `GUNICORN_CMD_ARGS --threads 8` 추가
+- `jenkinsfiles/04 AI평가.jenkinsPipeline` — fallback list 4개 e2b→e4b 첫 항목 swap + Stage 1-1 에 TARGET_OLLAMA_MODEL preflight 검증 추가
+- `CONVERSATION_LOG.md` — 본 세션 전체 디버깅 로그 추가
+
+### 알려진 후속 이슈
+
+- **Dify workflow embedding → 첫 LLM 호출 사이의 ~7분 silence** — gthread 전환 후에도 첫 시도 (00#3) 에서 유사한 지연 관찰됐는지 재현 필요. workflow 내부에서 KB retrieval / context assembly 가 비동기 큐에 일찍 들어가서인지, 아니면 Dify workflow engine 의 cold path 인지 추가 조사.
+- **gthread `--threads 8`** 은 안전한 default 지만, Dify workflow 의 실제 동시성 패턴 (1 워크플로우 = 1 thread + 다수 호출 직렬) 에 맞춰 4 또는 16 으로 튜닝 가능.
+
+---
+
