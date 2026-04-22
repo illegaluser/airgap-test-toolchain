@@ -14,6 +14,7 @@ pydantic
 sentry-sdk
 pytest-repeat
 portalocker
+# deepeval 3.9.7 은 langchain_core 최신과 호환. 버전 pin 해제 (pip 가 deps 로 resolve).
 langchain
 langchain-core
 langchain-openai
