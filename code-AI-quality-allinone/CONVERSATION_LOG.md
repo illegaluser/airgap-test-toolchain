@@ -6456,3 +6456,79 @@ Jenkins artifact fetch 환경 의존으로 본 phase 에서는 스펙만 유지.
 - **5.1 Q7-a 보정 세트**: Golden dataset 에 `calib: true` 컬럼 허용, 매 실행 포함. summary 에 보정 case 점수 편차(std) 기록, 리포트 헤더에 노출.
 - **5.2 Q7-b 경계 case N-repeat**: `--repeat-borderline N` CLI (opt-in). 점수가 임계치 ±0.05 이내 case 만 N 회 재실행, median 채택. Judge 호출량 증가 영향 측정 → 리포트 `judge_calls_total` 기록.
 - 검증: 보정 세트가 빈 경우에도 리포트 정상 동작, N-repeat off 가 기본.
+
+---
+
+### ▣ 세션 — Phase 5 (Evaluation Robustness, Q7)
+
+#### 사용자 요청
+> "페이즈5 전부 진행하자"
+
+#### 5.1 Q7-a 보정 세트 ✅
+- `dataset.py`:
+    - `_is_truthy_flag(value)` 신규 — boolean-like 문자열 정규화 ("true"/"1"/"yes"/"y"/"t"/"on"/"calib" 수락, None/NaN/빈값/"false" → False)
+- `tests/fixtures/tiny_dataset.csv`:
+    - `calib` 컬럼 추가. `policy-pass-clean` + `task-pass-simple` 2 case 에 `true` 마킹 (결정론적 PASS case)
+- `tests/test_runner.py`:
+    - `dataset._is_truthy_flag` re-export
+    - `_recompute_summary_totals` 루프에서 calib turn 의 per-metric score 수집 → `SUMMARY_STATE["_calib_raw"]`
+    - `_build_calibration_block()` 신규 — `{enabled, turn_count, case_ids, per_metric:{count,mean,std,min,max}, overall:{score_count,mean,std}}` 반환
+    - `_write_summary_report` 에 `aggregate.calibration` 주입 (빈 경우 `enabled=False` placeholder)
+- `reporting/html.py`:
+    - `_render_calibration_line(state)` 신규 — R1 헤더에 `Judge 변동성: 보정 σ=<std> (mean=<mean>) · Judge calls=<n>` 노출
+
+#### 5.2 Q7-b 경계 case N-repeat ✅
+- 환경변수: `REPEAT_BORDERLINE_N` (기본 1 = off), `BORDERLINE_MARGIN` (기본 0.05)
+- `tests/test_runner.py`:
+    - `JUDGE_CALL_COUNT` 모듈-level 카운터 + `_increment_judge_call_count()` / `_reset_judge_call_count()`
+    - `_median(values)` — airgap (statistics 의존 회피), None 필터
+    - `_stdev(values)` — 표본 표준편차 (분모 n-1), 1 개 이하 → 0.0
+    - `_borderline_config()` — env 해석 + fallback
+    - `_is_borderline(score, threshold, margin)` — ±margin epsilon(1e-9) 포함 경계 판정
+    - `_rescore_borderline(initial_score, remeasure_fn, threshold)` — 경계 내부면 N-1 회 재측정 후 median 채택
+- Scoring 통합:
+    - `_score_task_completion`: GEval measure 후 `_rescore_borderline(..., TASK_COMPLETION_THRESHOLD)` 적용
+    - `_score_deepeval_metrics`: 각 metric.measure 후 `_rescore_borderline(..., metric.threshold)`; `metric.score` 를 median 값으로 업데이트 (downstream 로직 일관성)
+    - 모든 measure 호출에 `_increment_judge_call_count()` 삽입 → `aggregate.judge_calls_total`
+- `_write_summary_report` 에 `aggregate.judge_calls_total` + `aggregate.borderline_policy = {repeat_n, margin}` 주입
+- HTML 헤더: N=1(기본) 이면 재실행 배지 미출력, N>1 일 때만 "경계 재실행 N=3 (±0.05)" 표시
+
+#### 신규 골든 테스트 (13종)
+- `test_phase5_is_truthy_flag` — 8 falsy + 10 truthy + native types
+- `test_phase5_calib_column_in_dataset` — tiny_dataset 에서 정확히 2 case 가 calib=True
+- `test_phase5_median_helper` — odd/even/empty/None 필터
+- `test_phase5_stdev_helper` — 표본 std (n-1), 1 개 이하 → 0.0
+- `test_phase5_borderline_detection` — boundary/inside/outside/None
+- `test_phase5_borderline_config_defaults_and_env` — 기본 (1, 0.05), env override, 이상값 fallback
+- `test_phase5_rescore_borderline_noop_when_n_one` — N=1 remeasure 호출 0
+- `test_phase5_rescore_borderline_noop_when_outside_margin` — 경계 밖 remeasure 호출 0
+- `test_phase5_rescore_borderline_uses_median_when_inside` — 경계 내 median 채택
+- `test_phase5_calibration_block_empty` — enabled=False, 빈 구조
+- `test_phase5_calibration_block_with_scores` — per_metric {mean,std,min,max,count} + overall
+- `test_phase5_html_header_shows_calibration_and_judge_calls` — 보정 σ + Judge calls + 경계 재실행 배지
+- `test_phase5_html_header_calibration_disabled` — 빈 보정 세트 placeholder 정상
+
+#### Phase 5 종료 게이트 결과
+- ✅ L1 골든 하네스 **42/42 PASS** (Phase 4 29 + Phase 5 13)
+- ✅ L2 `pytest --collect-only` 10 tests (regression 없음)
+- ✅ 변경 범위 `eval_runner/` 내 (Jobs 01/02/03 영향 0)
+- ✅ `REPEAT_BORDERLINE_N=1` 기본 off 확인
+- ✅ REPORT_SPEC AC13 (보정 세트) + AC14 (N-repeat) 기반 완성
+- ✅ 부동소수점 경계(0.75 vs 0.7 + 0.05) 는 `_is_borderline` 의 1e-9 epsilon 으로 흡수
+
+#### 구현 메모
+- `metric.score` 를 median 값으로 덮어쓴 이유: 이후 로직(`metric.is_successful()`, `span.score`, `metric_results[].score`, metric_averages 집계) 이 `metric.score` 단일 값을 가정. 별도 필드로 분기하면 연쇄 수정 필요 → median 치환으로 일관성 확보.
+- calib score 집계는 _rescore 이후의 최종 score 사용 — 이는 의도적. Judge 변동성 관측은 "실제 리포트에 기록될 최종 점수의 분산" 이 맞는 타깃.
+
+#### 커밋 (이번 세션)
+- (예정) `feat(eval_runner): Phase 5 — Judge 변동성 방어선 (Q7 보정 세트 + 경계 재실행)`
+- (예정) `docs(ai-eval): plan v7 sync (Phase 5 done) + CONVERSATION_LOG 갱신`
+
+#### 전체 로드맵 완료 상태
+- Phase 0 (Foundation) ✅
+- Phase 1 (Spec Compliance) ✅
+- Phase 2 (Report Overhaul) ✅
+- Phase 3 (Metadata & Traceability) ✅
+- Phase 4 (Structure Cleanup) ✅ (4.3 이연)
+- Phase 5 (Evaluation Robustness) ✅
+- 잔여: L3 Jenkins 통합 테스트 (실 Jenkins 빌드) — 사용자 수동 실행

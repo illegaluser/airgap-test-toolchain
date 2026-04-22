@@ -81,6 +81,7 @@ from dataset import (  # noqa: F401
     MODULE_ROOT as _DATASET_MODULE_ROOT,
     _collect_dataset_meta,
     _is_blank_value,
+    _is_truthy_flag,
     _resolve_existing_path,
     _turn_sort_key,
     load_dataset,
@@ -297,6 +298,11 @@ def _recompute_summary_totals():
     tokens_total_sum = 0
     tokens_turn_count = 0
 
+    # Phase 5.1 Q7-a 보정 세트 — turn.calib=True 인 경우의 metric 점수만 별도 수집.
+    calib_case_ids = set()
+    calib_turn_count = 0
+    calib_metric_scores: dict = {}
+
     # Phase 2.2 R2: per-indicator 집계. UI (11지표 카드) 와 R2.1 내러티브 호출 입력으로 사용.
     indicators: dict = {}
 
@@ -410,6 +416,18 @@ def _recompute_summary_totals():
                 tokens_total_sum += usage_norm["total"]
                 tokens_turn_count += 1
 
+            # Phase 5.1 Q7-a: turn 이 보정(calib) 세트 소속이면 metric 점수를 별도 수집.
+            if _is_truthy_flag(turn.get("calib")):
+                calib_turn_count += 1
+                if case_id:
+                    calib_case_ids.add(str(case_id))
+                tc = turn.get("task_completion")
+                if tc and tc.get("score") is not None:
+                    calib_metric_scores.setdefault(tc["name"], []).append(float(tc["score"]))
+                for metric_detail in turn.get("metrics", []) or []:
+                    if metric_detail.get("score") is not None:
+                        calib_metric_scores.setdefault(metric_detail["name"], []).append(float(metric_detail["score"]))
+
     total_conversations = len(conversations)
     latency_samples.sort()
     SUMMARY_STATE["totals"] = {
@@ -479,6 +497,56 @@ def _recompute_summary_totals():
         metric_name: round(sum(scores) / len(scores), 4) for metric_name, scores in metric_scores.items() if scores
     }
 
+    # Phase 5.1 Q7-a — _build_calibration_block() 이 읽을 수 있도록 raw 수집값 저장.
+    SUMMARY_STATE["_calib_raw"] = {
+        "turn_count": calib_turn_count,
+        "case_ids": sorted(calib_case_ids),
+        "per_metric_scores": calib_metric_scores,
+    }
+
+
+def _build_calibration_block() -> dict:
+    """
+    Phase 5.1 Q7-a — 보정 세트 집계 블록 생성.
+    SUMMARY_STATE["_calib_raw"] 을 읽어 per-metric {mean, std, count} + overall std 산출.
+    보정 case 가 0 이면 `{"enabled": False, ...}` 로 graceful.
+    """
+    raw = SUMMARY_STATE.get("_calib_raw") or {}
+    turn_count = int(raw.get("turn_count") or 0)
+    case_ids = list(raw.get("case_ids") or [])
+    per_metric_scores = raw.get("per_metric_scores") or {}
+
+    per_metric: dict = {}
+    all_scores: list = []
+    for name, scores in per_metric_scores.items():
+        if not scores:
+            continue
+        xs = [float(s) for s in scores if s is not None]
+        if not xs:
+            continue
+        per_metric[name] = {
+            "count": len(xs),
+            "mean": round(sum(xs) / len(xs), 4),
+            "std": round(_stdev(xs), 4),
+            "min": round(min(xs), 4),
+            "max": round(max(xs), 4),
+        }
+        all_scores.extend(xs)
+
+    overall = {
+        "score_count": len(all_scores),
+        "mean": round(sum(all_scores) / len(all_scores), 4) if all_scores else None,
+        "std": round(_stdev(all_scores), 4) if len(all_scores) >= 2 else 0.0,
+    }
+
+    return {
+        "enabled": turn_count > 0,
+        "turn_count": turn_count,
+        "case_ids": case_ids,
+        "per_metric": per_metric,
+        "overall": overall,
+    }
+
 
 # _render_metric_list / _skipped_metric / _format_token_usage 는 Phase 2.0 에서
 # `reporting.html` 로 이전됨 (render_summary_html 내부 전용이었으므로).
@@ -530,6 +598,106 @@ def _percentile(sorted_values, percentile: float):
     return sorted_values[min(rank, n) - 1]
 
 
+# ============================================================================
+# Phase 5 — Evaluation Robustness (Q7)
+# 5.1 Q7-a 보정 세트 집계 + 5.2 Q7-b 경계 case N-repeat + judge_calls_total
+# ============================================================================
+
+JUDGE_CALL_COUNT = 0  # measure() 호출 누적. summary.aggregate.judge_calls_total 로 기록.
+
+
+def _reset_judge_call_count() -> None:
+    global JUDGE_CALL_COUNT
+    JUDGE_CALL_COUNT = 0
+
+
+def _increment_judge_call_count(n: int = 1) -> None:
+    global JUDGE_CALL_COUNT
+    JUDGE_CALL_COUNT += int(n)
+
+
+def _median(values):
+    """빈 시퀀스 None. airgap 환경이므로 statistics 의존 회피."""
+    if not values:
+        return None
+    s = sorted(float(v) for v in values if v is not None)
+    n = len(s)
+    if n == 0:
+        return None
+    if n % 2 == 1:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def _stdev(values):
+    """표본 표준편차(분모 n-1). 1 개 이하면 0.0."""
+    if not values or len(values) < 2:
+        return 0.0
+    xs = [float(v) for v in values if v is not None]
+    if len(xs) < 2:
+        return 0.0
+    mean = sum(xs) / len(xs)
+    var = sum((x - mean) ** 2 for x in xs) / (len(xs) - 1)
+    return var ** 0.5
+
+
+def _borderline_config():
+    """환경변수로부터 (N, margin) 읽기. 기본 (1, 0.05) — off."""
+    try:
+        n = int(os.environ.get("REPEAT_BORDERLINE_N", "1"))
+    except (TypeError, ValueError):
+        n = 1
+    try:
+        margin = float(os.environ.get("BORDERLINE_MARGIN", "0.05"))
+    except (TypeError, ValueError):
+        margin = 0.05
+    return max(1, n), max(0.0, margin)
+
+
+def _is_borderline(score, threshold, margin) -> bool:
+    """
+    score 가 threshold ± margin 이내이면 True. None 은 False.
+    float 정밀도 흡수용 epsilon(1e-9) 포함.
+    """
+    if score is None or threshold is None:
+        return False
+    try:
+        return abs(float(score) - float(threshold)) <= float(margin) + 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
+def _rescore_borderline(initial_score, remeasure_fn, threshold, *, n=None, margin=None):
+    """
+    initial_score 가 borderline 이면 remeasure_fn() 을 (n-1) 번 더 호출해 median 채택.
+    반환: (final_score, samples). off(n<=1) / 비경계 / threshold 없음 → (initial_score, [initial_score or empty]).
+    remeasure_fn 은 부작용 없이 새 점수만 반환해야 하며, JUDGE_CALL_COUNT 는 호출 측에서 관리.
+    """
+    if n is None or margin is None:
+        cfg_n, cfg_m = _borderline_config()
+        n = cfg_n if n is None else n
+        margin = cfg_m if margin is None else margin
+    if initial_score is None:
+        return initial_score, []
+    samples = [float(initial_score)]
+    if n <= 1 or threshold is None:
+        return float(initial_score), samples
+    if not _is_borderline(initial_score, threshold, margin):
+        return float(initial_score), samples
+    for _ in range(n - 1):
+        try:
+            extra = remeasure_fn()
+        except Exception:
+            continue
+        if extra is None:
+            continue
+        try:
+            samples.append(float(extra))
+        except (TypeError, ValueError):
+            continue
+    return _median(samples), samples
+
+
 # _build_task_completion_display / _build_deepeval_metrics_display /
 # _build_multi_turn_display 는 Phase 2.0 에서 `reporting.html` 로 이전됨.
 
@@ -552,6 +720,12 @@ def _write_summary_report():
     aggregate["judge"] = _collect_judge_meta()
     # Phase 3.2 Q3 — Dataset 메타 (drift 추적): sha256/mtime/rows/path
     aggregate["dataset"] = _collect_dataset_meta()
+    # Phase 5 Q7 — Judge 변동성 관측: 총 measure() 호출 수 + 경계 재실행 설정 메타
+    aggregate["judge_calls_total"] = JUDGE_CALL_COUNT
+    _rep_n, _rep_margin = _borderline_config()
+    aggregate["borderline_policy"] = {"repeat_n": _rep_n, "margin": _rep_margin}
+    # Phase 5.1 Q7-a — 보정 세트 편차 (mean/std/count) — 리포트 헤더에 노출해 Judge 변동성 관측.
+    aggregate["calibration"] = _build_calibration_block()
     # R1.1 — 빌드당 1 call, fallback 포함.
     aggregate["exec_summary"] = generate_exec_summary(SUMMARY_STATE)
     # R2.1 — opt-in. off 기본에서는 narrative 가 즉시 fallback 반환.
@@ -878,8 +1052,21 @@ def _score_task_completion(turn, result, judge, span=None):
                 expected_output=success_criteria,
             )
             task_completion_metric.measure(completion_test_case)
-            score = float(task_completion_metric.score)
+            _increment_judge_call_count()
+            initial_score = float(task_completion_metric.score)
             reason = task_completion_metric.reason
+
+            def _remeasure_task_completion():
+                task_completion_metric.measure(completion_test_case)
+                _increment_judge_call_count()
+                return float(task_completion_metric.score)
+
+            # Phase 5.2 Q7-b — 경계 case N-repeat. REPEAT_BORDERLINE_N=1(기본) 이면 no-op.
+            score, _ = _rescore_borderline(
+                initial_score,
+                _remeasure_task_completion,
+                TASK_COMPLETION_THRESHOLD,
+            )
     else:
         score = 1.0 if result.http_status < 400 else 0.0
         reason = "No success_criteria provided; falling back to HTTP success."
@@ -937,8 +1124,28 @@ def _score_deepeval_metrics(turn, result, judge, span=None):
                 context=_safe_json_list(turn.get("context_ground_truth", "[]")),
             )
             metric.measure(compact_test_case)
+            _chosen_test_case = compact_test_case
         else:
             metric.measure(base_test_case)
+            _chosen_test_case = base_test_case
+        _increment_judge_call_count()
+
+        # Phase 5.2 Q7-b — 경계 case N-repeat. 에러/None score 는 skip.
+        if not metric.error and metric.score is not None:
+            def _remeasure(m=metric, tc=_chosen_test_case):
+                m.measure(tc)
+                _increment_judge_call_count()
+                return m.score
+
+            final_score, _samples = _rescore_borderline(
+                metric.score, _remeasure, metric.threshold
+            )
+            if final_score is not None and final_score != metric.score:
+                try:
+                    metric.score = float(final_score)
+                except Exception:
+                    pass
+
         if span:
             span.score(name=metric.__class__.__name__, value=metric.score, comment=metric.reason)
         metric_results.append(

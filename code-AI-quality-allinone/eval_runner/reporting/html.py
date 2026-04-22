@@ -436,6 +436,45 @@ def _render_dataset_meta_line(state: dict) -> str:
     return f"<p>데이터셋: {' '.join(parts)}</p>"
 
 
+def _render_calibration_line(state: dict) -> str:
+    """
+    Phase 5.1 Q7-a — 보정 세트 편차 + judge_calls_total 노출.
+    calibration.enabled=False 면 안내 문구, True 면 overall mean/std + 경계재실행 정책.
+    """
+    aggregate = state.get("aggregate") or {}
+    calib = aggregate.get("calibration") or {}
+    judge_calls = aggregate.get("judge_calls_total")
+    border = aggregate.get("borderline_policy") or {}
+
+    parts = []
+    if calib.get("enabled"):
+        overall = calib.get("overall") or {}
+        turn_count = calib.get("turn_count", 0)
+        mean = overall.get("mean")
+        std = overall.get("std")
+        score_count = overall.get("score_count", 0)
+        mean_str = "—" if mean is None else f"{mean:.3f}"
+        std_str = "—" if std is None else f"{std:.3f}"
+        parts.append(
+            f"<span class='meta-inline' title='보정 세트 turn {turn_count} · 점수 {score_count}개'>"
+            f"보정 σ={escape(std_str)} (mean={escape(mean_str)})</span>"
+        )
+    else:
+        parts.append("<span class='meta-inline'>보정 세트: 미설정</span>")
+
+    if judge_calls is not None:
+        parts.append(f"<span class='meta-inline'>Judge calls={escape(str(judge_calls))}</span>")
+
+    repeat_n = border.get("repeat_n")
+    margin = border.get("margin")
+    if repeat_n is not None and int(repeat_n) > 1:
+        parts.append(
+            f"<span class='meta-inline'>경계 재실행 N={escape(str(repeat_n))} (±{escape(str(margin))})</span>"
+        )
+
+    return f"<p>Judge 변동성: {' '.join(parts)}</p>"
+
+
 def classify_failure_buckets(state: dict) -> dict:
     """
     R4 집계 — 전체 실패를 {system, quality} 로 나눈 카운트.
@@ -829,6 +868,7 @@ def render_summary_html(state: dict) -> str:
     <p>평가 대상: {escape(str(state.get('target_url') or ''))} ({escape(str(state.get('target_type') or ''))})</p>
     {_render_judge_meta_line(state)}
     {_render_dataset_meta_line(state)}
+    {_render_calibration_line(state)}
     <p>Langfuse 사용: {'사용' if state.get('langfuse_enabled') else '미사용'}</p>
     <div class="note">
       이 화면의 Turn 수는 <strong>실제로 실행된 턴</strong> 기준입니다. 대화 중간 실패 시 남은 턴은 실행되지 않을 수 있습니다.

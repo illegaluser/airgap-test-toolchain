@@ -490,6 +490,8 @@ Phase 2 종료 게이트로 사용. **각 항목은 측정 가능해야 함.**
 - [ ] **AC10 (R3.1)** — 모든 실패 case 에 🤖 쉬운 해설 1 문장. `SUMMARY_LLM_EASY_EXPLANATION=off` 로 실행 시 하드코딩 fallback 으로 degrade, 문장 내용은 계속 존재.
 - [ ] **AC11 (LLM 결정성)** — 동일 summary.json 을 입력한 두 리포트 생성의 LLM 문장이 **bit-identical** (동일 `(role, canonical JSON sha256)` → 캐시 hit).
 - [ ] **AC12 (LLM graceful degrade)** — `OLLAMA_BASE_URL=http://127.0.0.1:0` 로 LLM 접근 불가 상태에서 리포트 생성이 예외 없이 완주, 모든 role 의 narrative 가 `source="fallback"` 으로 출력.
+- [ ] **AC13 (Phase 5.1 보정 세트)** — `golden.csv` 에 `calib=true` 가 하나라도 있으면 summary.json 의 `aggregate.calibration` 이 `{enabled, turn_count, case_ids, per_metric, overall:{mean,std,score_count}}` 완전 채워짐. HTML 헤더 "Judge 변동성" 라인에 `보정 σ=<std>` 노출. 보정 세트 빈 경우 `enabled=False` + "보정 세트: 미설정" 배지.
+- [ ] **AC14 (Phase 5.2 N-repeat)** — `REPEAT_BORDERLINE_N=1` (기본) 에선 임의 metric 실행이 `measure()` 1 회만 호출. `REPEAT_BORDERLINE_N=3 BORDERLINE_MARGIN=0.05` 에선 점수가 임계치 ±0.05 경계 case 만 추가 2 회 재실행되어 3 샘플의 median 이 채택. summary.json 의 `aggregate.judge_calls_total` 이 전체 measure 호출 수와 일치. HTML 헤더에 `Judge calls=<n>` + `경계 재실행 N=3` 노출.
 
 ---
 

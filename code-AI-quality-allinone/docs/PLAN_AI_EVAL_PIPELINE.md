@@ -305,17 +305,21 @@
 **진입 조건**: Phase 4 완료 (Phase 4.3 이연 수락). 개입 지점은 현재 test_runner.py 내 DeepEval metric 실행 구간.
 
 **Steps**:
-- **5.1** Q7-a 보정 세트(calibration subset)
-  - Golden dataset 에 `calib: true` 컬럼 허용, 매 실행 포함
-  - summary 에 보정 case 점수 편차(std) 기록, 리포트 헤더에 노출
-- **5.2** Q7-b 경계 case N-repeat (opt-in)
-  - `--repeat-borderline N` CLI, 기본 비활성
-  - 점수가 임계치 ±0.05 이내 case 만 N 회 재실행, median 채택
-  - Judge 호출량 증가 영향 측정 → 리포트 `judge_calls_total` 기록
+- **5.1** Q7-a 보정 세트(calibration subset) ✅ 완료
+  - `golden.csv` 에 `calib` 컬럼 허용 (`_is_truthy_flag` 로 "true"/"1"/"yes"/"t"/"on"/"calib" 수락)
+  - `_recompute_totals` 이 calib turn 의 per-metric score 를 수집 → `SUMMARY_STATE["_calib_raw"]`
+  - `_build_calibration_block()` → `aggregate.calibration = {enabled, turn_count, case_ids, per_metric:{mean,std,min,max,count}, overall:{mean,std,score_count}}`
+  - `reporting/html._render_calibration_line` 가 R1 헤더에 `Judge 변동성: 보정 σ=<std> (mean=<mean>)` 노출. 빈 경우 `보정 세트: 미설정` placeholder
+- **5.2** Q7-b 경계 case N-repeat ✅ 완료
+  - 환경변수 `REPEAT_BORDERLINE_N` (기본 1 = off), `BORDERLINE_MARGIN` (기본 0.05)
+  - `_rescore_borderline(initial_score, remeasure_fn, threshold)` 헬퍼: 경계 밖 → no-op, 경계 안 → remeasure_fn() N-1 회 호출 후 median
+  - `_score_task_completion` (GEval) + `_score_deepeval_metrics` 양쪽에 통합
+  - 모든 `measure()` 호출이 `_increment_judge_call_count()` 로 집계 → `aggregate.judge_calls_total` 기록
+  - 리포트 헤더에 `Judge calls=<n>` + (N>1 시) `경계 재실행 N=3 (±0.05)` 표시
 
-**검증 게이트**: 보정 세트가 빈 경우에도 리포트가 정상, N-repeat off 가 기본.
+**검증 게이트**: ✅ L1 골든 하네스 42/42 PASS (Phase 4 의 29 + Phase 5 신규 13). ✅ L2 `pytest --collect-only` 10 tests 유지. ✅ 보정 세트 빈 경우 enabled=False + placeholder 정상. ✅ `REPEAT_BORDERLINE_N=1` (기본) 에서 remeasure 호출 0.
 
-**종료 조건**: Judge 변동성이 관측 가능(편차 수치 노출) + opt-in 완화 로직 작동.
+**종료 조건**: ✅ Judge 변동성 관측 가능 (보정 σ + judge_calls_total 리포트 헤더 노출). ✅ opt-in N-repeat 동작 (경계 case 만 median). ✅ 골든 하네스 회귀 0.
 
 ---
 
