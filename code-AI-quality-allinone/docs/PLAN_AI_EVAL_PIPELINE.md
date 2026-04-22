@@ -323,6 +323,59 @@
 
 ---
 
+### Phase 6 — Target Flexibility (README §5.1 정본 복귀)
+
+**목적**: Phase 1 G4 에서 실동작 보호 목적으로 `local_ollama_wrapper` 단일로 축소했던 `TARGET_TYPE` 선택을 README §5.1 정본 스펙대로 복원. 사용자 지정 외부 AI(REST API 또는 웹 UI)도 평가 가능하게 한다.
+
+**진입 조건**: Phase 5 완료 + L3 Jenkins 빌드에서 `local_ollama_wrapper` 정상 통과 확인. GPU 활성화로 Judge 추론 성능 확보.
+
+**배경**:
+- README §5.1: `대상 분기: TARGET_TYPE ∈ {http, ui_chat}`
+- 코드 자산 이미 존재: [adapters/http_adapter.py](code-AI-quality-allinone/eval_runner/adapters/http_adapter.py), [adapters/browser_adapter.py](code-AI-quality-allinone/eval_runner/adapters/browser_adapter.py), `AdapterRegistry`
+- Phase 1 G4 는 미구현 OpenAI/Gemini 모드로 빌드가 크래시되는 위험만 차단한 조치 — http/ui_chat 자체는 금지한 적 없음
+
+**Steps**:
+- **6.1 Jenkinsfile 04 파라미터 재구성**
+  - `TARGET_TYPE` Choice: `local_ollama_wrapper` / `http` / `ui_chat`
+  - 조건부 파라미터 (ActiveChoiceReactive 플러그인 활용):
+    - `TARGET_URL` — TYPE≠wrapper 일 때 필수
+    - `TARGET_AUTH_HEADER` — TYPE=http (옵션, Password 타입)
+    - `TARGET_REQUEST_SCHEMA` — TYPE=http (`standard` / `openai_compat`)
+    - `UI_INPUT_SELECTOR` / `UI_OUTPUT_SELECTOR` / `UI_SEND_SELECTOR` / `UI_WAIT_TIMEOUT` — TYPE=ui_chat
+  - `JUDGE_MODEL` CascadeChoice 유지 (기존)
+- **6.2 Stage 1-2 조건부 wrapper**
+  - TYPE=`local_ollama_wrapper` 일 때만 Stage 1-2 실행
+  - TYPE=`http`/`ui_chat` 일 때 TARGET_URL 도달성 probe 로 대체
+- **6.3 http_adapter 확장**
+  - `TARGET_REQUEST_SCHEMA=standard`: 기존 포맷 유지 (`{query, messages}` → `{answer, docs, usage}`)
+  - `TARGET_REQUEST_SCHEMA=openai_compat`: OpenAI Chat Completions 호환 (`{messages:[{role,content}]}` → `{choices:[{message:{content}}]}`)
+  - `TARGET_AUTH_HEADER` 주입 (Authorization/X-API-Key 등 `"Header: value"` 형식)
+- **6.4 browser_adapter 검증·강화**
+  - selector 파라미터 env 주입
+  - 대기 정책: `UI_WAIT_TIMEOUT` 내 응답 DOM 변화 polling
+  - retrieval_context 는 해당 없음 (UI 기반)
+- **6.5 골든 하네스 확장**
+  - `test_phase6_target_type_routing` — AdapterRegistry 분기 매핑
+  - `test_phase6_http_adapter_openai_compat` — openai_compat 요청/응답 변환
+  - `test_phase6_http_adapter_auth_header_injection` — auth header 통과
+- **6.6 REPORT_SPEC 업데이트** — 헤더에 TARGET_TYPE / TARGET_URL 메타 표시
+- **6.7 L3 Jenkins 검증 3종** — wrapper / http / ui_chat 각 1회 성공 빌드
+
+**검증 게이트**:
+- L1 골든 하네스 무회귀 + 신규 3종 PASS
+- L3 wrapper 빌드 = Phase 5 결과 byte-equivalent
+- L3 http 빌드 = Dify workflow 를 TARGET 으로 지정 성공
+- L3 ui_chat 빌드 = Dify chat app 페이지를 TARGET 으로 지정 성공
+- Phase 1~5 회귀 0
+
+**종료 조건**: Jenkins UI 의 TARGET_TYPE 드롭다운에서 3가지 선택 가능하고 각 선택이 실동작 (build 성공 + summary.html 생성) 된다. Judge 모델은 호스트 Ollama 모델 중 자유 선택.
+
+**이연 가능**:
+- OpenAI/Gemini 전용 어댑터 (G1/G2) — `http + openai_compat` 로 충분 커버
+- `TARGET_REQUEST_SCHEMA=custom_jsonpath` — Phase 7 이연
+
+---
+
 ## 4. Scope
 
 ### In
@@ -410,3 +463,143 @@
 - [ ] Judge 변동성 관측 수단(보정 세트) 상시 가동, N-repeat 옵션 제공
 - [ ] Jobs 01/02/03 동작에 영향 0 을 각 Phase 마다 재검증
 - [ ] `CONVERSATION_LOG.md` 에 각 Phase 세션 요약 기록
+
+---
+
+## 8. 커밋 계획 (2026-04-22 ~16:00 시점 스냅샷)
+
+현재 브랜치 `feat/ai-eval-pipeline` 에 12 개 파일 변경 (11 modified + 1 untracked). 의미 단위 3 커밋 분할 후 `origin` 에 푸시. 미완 L3 검증 항목(실 Jenkins 빌드에서 10/10 FAIL 관찰 → num_ctx 축소 조치 필요) 은 본 커밋에 포함하지 않고 **다음 커밋**에서 처리 (사용자가 "지금까지 구현한 내용 커밋" 지시했으므로 현 시점 스냅샷까지만).
+
+### C1 — 인프라 근본 수정 (dify/deepeval/supervisord)
+
+**커밋 메시지**:
+
+```
+feat(infra): dify-api/plugin-daemon race 근본 수정 + deepeval 3.9.7 + langchain pin 해제
+
+- dify-api: supervisord 에 stopasgroup/killasgroup/stopwaitsecs=30 추가.
+  gunicorn master 가 죽고 worker 가 init 에 reparent 되어 port 5001 을 계속
+  점유 → 재기동 루프 [Errno 98] 반복 후 FATAL 되는 race 를 차단.
+  GUNICORN_CMD_ARGS 에 --preload --graceful-timeout 30 --worker-tmp-dir /dev/shm 주입.
+- dify-worker / dify-worker-beat 에도 동일 stop 옵션 예방 적용.
+- dify-plugin-daemon: autostart=false + startretries=20. PG 기동 전 3회 재시도를
+  모두 써 FATAL 되는 race 차단. entrypoint.sh 가 PG 헬스 확인 후 수동 start.
+- Dockerfile: deepeval==1.3.5 --no-deps → deepeval==3.9.7. --no-deps 제거하여
+  deps 자동 resolve. eval_runner 의 deepeval 3.x API (OllamaModel/GEval/
+  FaithfulnessMetric 등) 와 이미지 버전 정합.
+- requirements.txt: langchain<0.2 pin 해제. deepeval 3.x 는 langchain_core
+  최신과 호환하므로 고정 불필요.
+
+변경 파일: Dockerfile, requirements.txt, scripts/supervisord.conf, scripts/entrypoint.sh.
+```
+
+파일:
+- `code-AI-quality-allinone/Dockerfile`
+- `code-AI-quality-allinone/requirements.txt`
+- `code-AI-quality-allinone/scripts/supervisord.conf`
+- `code-AI-quality-allinone/scripts/entrypoint.sh`
+
+### C2 — eval_runner Phase 5 보완 + Phase 6 Target Flexibility
+
+**커밋 메시지**:
+
+```
+feat(eval_runner): Phase 5 보완 + Phase 6 — TARGET_TYPE 선택 + 대상/심판 모델 분리
+
+Phase 5 회귀 보완:
+- _build_judge_model() 정의 추가 (Phase 리팩터 중 누락. L1 골든은 property
+  test 라 미감지, L3 실빌드에서 NameError 로 발현).
+- dataset.py: pandas df.where(NaN, None) 이 numeric column 에서 None 치환
+  안 되는 한계 우회. records 레벨에서 NaN→None 재치환하여 _parse_success_
+  criteria_mode 의 "token in NaN" TypeError 방지.
+- test_runner.py _parse_success_criteria_mode: isinstance(criteria, str)
+  가드 추가.
+
+Phase 6 (README §5.1 TARGET_TYPE ∈ {http, ui_chat} 정본 복귀):
+- Jenkinsfile 04 parameters 전면 재구성.
+  - TARGET_TYPE Choice (local_ollama_wrapper / http / ui_chat)
+  - TARGET_URL / TARGET_AUTH_HEADER (Password) / TARGET_REQUEST_SCHEMA
+  - UI_INPUT_SELECTOR / UI_SEND_SELECTOR / UI_OUTPUT_SELECTOR / UI_WAIT_TIMEOUT
+  - TARGET_OLLAMA_MODEL (신규, CascadeChoice) — wrapper 의 대상 모델을
+    JUDGE_MODEL 재사용 강제 구조에서 분리. 사용자가 대상/심판 모델을
+    별도 선택 가능.
+  - JUDGE_MODEL + TARGET_OLLAMA_MODEL 모두 sandbox=false 로 전환해
+    Ollama /api/tags 동적 로드 활성화.
+  - 모든 파라미터 description 을 HTML/예시 포함 초보자 가이드로 재작성.
+- Stage 1-2 에 when { TARGET_TYPE=='local_ollama_wrapper' } 조건부.
+  wrapper 기동 시 OLLAMA_MODEL="$TARGET_OLLAMA_MODEL" 사용.
+- Stage 1-2 말미에 Judge 모델 pre-load (/api/generate ping + keep_alive=10m).
+  TARGET+JUDGE 두 모델이 VRAM 에 공존하지 못해 매 호출 swap 하는 상황 완화.
+- Wrapper invoke probe timeout 20 → 120 → 300. 실패 시 FATAL 대신 WARN 만
+  남기고 pytest 진입 (pytest 자체가 warm-up 역할).
+- Stage 2 env 분기: adapterKind = ui_chat ? 'ui_chat' : 'http'. TARGET_URL /
+  SCHEMA / AUTH_HEADER / UI_* / ADAPTER_TIMEOUT_SEC 주입.
+- pytest 실시간 로그 복구: -n 1 (xdist) 제거 + PYTHONUNBUFFERED=1 python3 -u
+  + -v -s --tb=short. test_evaluation 진입부에 "[eval] ▶ conversation=..."
+  print(flush=True). 이전엔 xdist buffering 으로 10 case 끝까지 콘솔 침묵.
+- http_adapter.py:
+  - TARGET_REQUEST_SCHEMA 분기 (standard / openai_compat). 후자는
+    {"model", "messages":[{"role","content"}]} payload + choices[0].message.
+    content 파싱.
+  - _extract_actual_output: "message" dict 의 "content" / choices 배열
+    fallback 추가.
+  - ADAPTER_TIMEOUT_SEC env 로 timeout 조정 가능 (기본 300).
+- post always 의 junit step 을 try/catch(NoSuchMethodError) 로 wrap.
+  JUnit plugin 미설치 에어갭 환경에서 post 블록이 깨지지 않음.
+- 골든 하네스 4종 신규: adapter registry 분기, openai_compat payload,
+  standard 회귀, auth header 주입. 46/46 PASS.
+
+변경 파일: eval_runner/dataset.py, tests/test_runner.py, tests/test_golden.py,
+adapters/http_adapter.py, jenkinsfiles/04 AI평가.jenkinsPipeline.
+```
+
+파일:
+- `code-AI-quality-allinone/eval_runner/dataset.py`
+- `code-AI-quality-allinone/eval_runner/tests/test_runner.py`
+- `code-AI-quality-allinone/eval_runner/tests/test_golden.py`
+- `code-AI-quality-allinone/eval_runner/adapters/http_adapter.py`
+- `code-AI-quality-allinone/jenkinsfiles/04 AI평가.jenkinsPipeline`
+
+### C3 — 문서 (PLAN + CONVERSATION_LOG + 신규 사용자 가이드)
+
+**커밋 메시지**:
+
+```
+docs(ai-eval): Phase 6 + L3 통합 세션 기록 + AI_EVAL_PIPELINE_README 신규
+
+- docs/PLAN_AI_EVAL_PIPELINE.md: Phase 6 (Target Flexibility) 섹션 추가.
+  README §5.1 정본 복귀 배경, 파라미터 재구성 설계, 6.1~6.7 steps,
+  검증 게이트, 리스크, 이연 후보 정리.
+- CONVERSATION_LOG.md: L3 통합 테스트 + Phase 6 세션을 시간순으로 상세
+  기록. 사용자 발화 → 진단 → 결정 → 조치 → 결과 4요소 순서 유지하여
+  후속 디버깅·재현 가능한 수준. 3가지 근본 원인(dify-api 좀비 /
+  plugin-daemon FATAL / deepeval mismatch), GPU 활성 진단·조치,
+  Phase 5 내 결함 2건, Phase 6 구현 단계, 이미지 재빌드 4회 + L3 빌드
+  이력, 수정 파일 목록, 의사결정 8건 모두 수록.
+- docs/AI_EVAL_PIPELINE_README.md (신규): 본 AI 평가 파이프라인 사용자
+  가이드. 외부 문서 참조 없이 자기완결. §1 의의 + §2 빌드/구동/프로비
+  저닝 단계별 + §3 사용법 + summary.html 화면 해설. 초보자가 처음
+  PC 받아서 첫 평가까지 그대로 따라 할 수 있는 수준.
+```
+
+파일:
+- `code-AI-quality-allinone/docs/PLAN_AI_EVAL_PIPELINE.md`
+- `code-AI-quality-allinone/docs/AI_EVAL_PIPELINE_README.md` (신규)
+- `code-AI-quality-allinone/CONVERSATION_LOG.md`
+
+### 푸시
+
+```
+git push origin feat/ai-eval-pipeline
+```
+
+### 이 커밋에 **포함하지 않는** 것 (다음 세션 과제)
+
+- L3 실 빌드 10/10 FAIL (Ollama VRAM 부족으로 2 모델 swap → adapter timeout) 의 근본 조치:
+  - `ollama_wrapper_api.py` 에 `OLLAMA_NUM_CTX` env 지원 (context length 축소로 VRAM 점유량 완화)
+  - DeepEval OllamaModel 쪽에도 동일 옵션 주입
+  - 호스트 Ollama 의 `OLLAMA_MAX_LOADED_MODELS=2` + `OLLAMA_KEEP_ALIVE=10m` 공식 가이드
+- `TARGET_TYPE=http` 와 `TARGET_TYPE=ui_chat` 의 실 엔드포인트 대상 L3 검증
+- 호스트 Ollama 의 `bge-m3` 모델 부재로 인한 Job 01 RAG 경고
+- Jenkins SonarQube Groovy 설정 실패 (Job 02 관련)
+- JUnit plugin 정식 설치 (현재 try/catch 로 회피)
