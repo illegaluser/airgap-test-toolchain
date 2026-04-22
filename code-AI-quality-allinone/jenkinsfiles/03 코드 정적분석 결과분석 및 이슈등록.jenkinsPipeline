@@ -12,6 +12,11 @@ pipeline {
     // 기본값은 docker-compose 호스트 포트 매핑. 운영 환경에 맞게 override.
     string(name: 'SONAR_PUBLIC_URL',  defaultValue: 'http://localhost:29000', description: 'GitLab Issue 본문에 렌더링될 SonarQube 외부 URL')
     string(name: 'GITLAB_PUBLIC_URL', defaultValue: 'http://localhost:28090', description: 'GitLab Issue 본문의 blob/commit 링크에 쓸 GitLab 외부 URL')
+
+    // Phase 1.5: 체인 Job 전파 파라미터. 빈 COMMIT_SHA → 단독 실행 흐름 (git ls-remote 로 해석).
+    string(name: 'COMMIT_SHA', defaultValue: '', description: '특정 커밋 SHA (체인 Job 전달). 빈 값이면 BRANCH HEAD 자동 해석.')
+    choice(name: 'ANALYSIS_MODE', choices: ['full', 'commit'], description: 'full: KB freshness assert skip | commit: kb_manifest.commit_sha 불일치 시 fail')
+    choice(name: 'MODE', choices: ['full', 'incremental'], description: 'exporter diff-mode — full: last_scan.json 리셋 후 전수, incremental: last_scan 차이분만 emit')
   }
 
   environment {
@@ -26,38 +31,74 @@ pipeline {
   }
 
   stages {
-    // Step R 신규 — GitLab branch HEAD SHA 를 git ls-remote 로 해석해 전 단계에
-    // 일관 전달. 또한 enclosing_function 추출을 위해 레포를 /var/knowledges/codes
-    // 아래에 얕게 clone (Step R 임시 — Phase 1.5 에서 체인 Job 이 COMMIT_SHA 와
-    // 코드 경로를 직접 전달하도록 대체될 예정).
+    // Phase 1.5: 체인 Job 이 params.COMMIT_SHA 를 전달하면 ls-remote 해석 skip.
+    // 빈 값이면 기존 단독 실행 경로 (git ls-remote 로 BRANCH HEAD 해석). 이어서
+    // enclosing_function 추출용으로 /var/knowledges/codes 아래 얕게 clone/fetch.
+    // ANALYSIS_MODE=commit 경우 /data/kb_manifest.json 의 commit_sha 와 일치 확인
+    // (freshness assert) — 불일치 시 fail.
     stage('(0) Resolve Commit SHA + Fetch Repo') {
       steps {
         withCredentials([string(credentialsId: 'gitlab-pat', variable: 'GITLAB_PAT')]) {
           script {
-            def shaOut = sh(
-              script: "git ls-remote http://oauth2:\${GITLAB_PAT}@gitlab:80/${params.GITLAB_PROJECT}.git refs/heads/${params.BRANCH} | head -1 | awk '{print \$1}'",
-              returnStdout: true
-            ).trim()
-            env.COMMIT_SHA = shaOut
-            echo "[Resolve] commit_sha=${env.COMMIT_SHA}"
+            def sha = (params.COMMIT_SHA ?: '').trim()
+            if (!sha) {
+              sha = sh(
+                script: "git ls-remote http://oauth2:\${GITLAB_PAT}@gitlab:80/${params.GITLAB_PROJECT}.git refs/heads/${params.BRANCH} | head -1 | awk '{print \$1}'",
+                returnStdout: true
+              ).trim()
+              echo "[Resolve] COMMIT_SHA not provided — resolved via ls-remote: ${sha}"
+            } else {
+              echo "[Resolve] COMMIT_SHA from chain Job: ${sha}"
+            }
+            if (!sha) {
+              error "commit SHA 해석 실패 — GITLAB_PROJECT / BRANCH 확인"
+            }
+            env.COMMIT_SHA = sha
+
+            if (params.ANALYSIS_MODE == 'commit') {
+              def check = sh(
+                script: '''
+                    if [ ! -f /data/kb_manifest.json ]; then
+                        echo "MISSING"
+                        exit 0
+                    fi
+                    python3 -c "import json;print(json.load(open('/data/kb_manifest.json')).get('commit_sha',''))" 2>/dev/null || echo ""
+                ''',
+                returnStdout: true
+              ).trim()
+              if (check == 'MISSING') {
+                error "[Freshness] /data/kb_manifest.json 부재 — ANALYSIS_MODE=commit 은 P1 을 먼저 돌리거나 체인 Job 경유 실행 필요"
+              } else if (check != sha) {
+                error "[Freshness] kb_manifest.commit_sha=${check} 이 요청 COMMIT_SHA=${sha} 와 불일치 — P1 재실행 필요"
+              } else {
+                echo "[Freshness] KB manifest 일치 (${check})"
+              }
+            } else {
+              echo "[Freshness] mode=full — assert skip"
+            }
           }
-          sh '''
+          sh """
             set -e
-            REPO_NAME=$(basename "${GITLAB_PROJECT}")
-            REPO_ROOT="/var/knowledges/codes/${REPO_NAME}"
+            REPO_NAME=\$(basename "${params.GITLAB_PROJECT}")
+            REPO_ROOT="/var/knowledges/codes/\${REPO_NAME}"
             # 레포가 없거나 현재 HEAD 가 commit_sha 와 다르면 얕게 clone/fetch.
             # enclosing_function 추출용 — P1 이 이미 clone 해 두었으면 재사용.
-            if [ ! -d "${REPO_ROOT}/.git" ]; then
-                mkdir -p "$(dirname ${REPO_ROOT})"
-                rm -rf "${REPO_ROOT}"
-                git clone --depth 50 --branch "${BRANCH}" \
-                    "http://oauth2:${GITLAB_PAT}@gitlab:80/${GITLAB_PROJECT}.git" \
-                    "${REPO_ROOT}"
+            if [ ! -d "\${REPO_ROOT}/.git" ]; then
+                mkdir -p "\$(dirname \${REPO_ROOT})"
+                rm -rf "\${REPO_ROOT}"
+                git clone --depth 50 --branch "${params.BRANCH}" \\
+                    "http://oauth2:\${GITLAB_PAT}@gitlab:80/${params.GITLAB_PROJECT}.git" \\
+                    "\${REPO_ROOT}"
             else
-                (cd "${REPO_ROOT}" && git fetch --depth 50 origin "${BRANCH}" && git checkout -f "origin/${BRANCH}")
+                (cd "\${REPO_ROOT}" && git fetch --depth 50 origin "${params.BRANCH}" && git checkout -f "origin/${params.BRANCH}")
             fi
-            echo "[Resolve] repo_root=${REPO_ROOT}"
-          '''
+            # COMMIT_SHA 가 명시되면 해당 커밋으로 체크아웃 (git_context/enclosing 용).
+            if [ -n "${env.COMMIT_SHA ?: ''}" ]; then
+                (cd "\${REPO_ROOT}" && git checkout -f "${env.COMMIT_SHA ?: ''}" 2>/dev/null) || \\
+                    echo "[Resolve:WARN] ${env.COMMIT_SHA ?: ''} checkout 실패 — shallow clone 깊이 초과 가능. 기본 HEAD 사용."
+            fi
+            echo "[Resolve] repo_root=\${REPO_ROOT}"
+          """
         }
       }
     }
@@ -76,6 +117,9 @@ pipeline {
               --statuses "${params.STATUSES}" \
               --commit-sha "${env.COMMIT_SHA}" \
               --repo-root "/var/knowledges/codes/\${REPO_NAME}" \
+              --mode "${params.MODE}" \
+              --state-dir "/var/knowledges/state" \
+              --callgraph-dir "/var/knowledges/docs/result" \
               --output "sonar_issues.json"
           """
         }
@@ -105,25 +149,32 @@ pipeline {
 
     stage('(3) Create GitLab Issues (Dedup)') {
       steps {
-        sh """
-          set -e
-          # GITLAB_TOKEN 은 런타임에 provision.sh 가 동일 라인을
-          # "\${GITLAB_PAT}" (credentials('gitlab-pat')) 참조로 치환한다.
-          set +x
-          GITLAB_TOKEN=""
-
-          python3 ${SCRIPTS_DIR}/gitlab_issue_creator.py \
-            --gitlab-host-url "${GITLAB_HOST_URL}" \
-            --gitlab-token "\$GITLAB_TOKEN" \
-            --gitlab-project "${params.GITLAB_PROJECT}" \
-            --gitlab-public-url "${params.GITLAB_PUBLIC_URL}" \
-            --gitlab-branch "${params.BRANCH}" \
-            --commit-sha "${env.COMMIT_SHA}" \
-            --input "llm_analysis.jsonl" \
-            --output "gitlab_issues_created.json" \
-            --sonar-host-url "${SONAR_HOST_URL}" \
-            --sonar-public-url "${params.SONAR_PUBLIC_URL}"
-        """
+        // Step D — sonarqube-token + gitlab-pat 을 withCredentials 로 한 번에 바인딩.
+        // provision.sh 의 sed 치환 (`GITLAB_PAT = credentials('gitlab-pat')`) 은
+        // declarative environment{} 블록에서 동작하지만 Groovy `${GITLAB_PAT}` 바인딩이
+        // 로컬 sh 블록에서 해석되지 않는 경우가 있어 명시적으로 credential 주입.
+        withCredentials([
+          string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN_PRIVATE'),
+          string(credentialsId: 'gitlab-pat',     variable: 'GITLAB_PAT_LOCAL')
+        ]) {
+          sh """
+            set -e
+            set +x
+            python3 ${SCRIPTS_DIR}/gitlab_issue_creator.py \
+              --gitlab-host-url "${GITLAB_HOST_URL}" \
+              --gitlab-token "\${GITLAB_PAT_LOCAL}" \
+              --gitlab-project "${params.GITLAB_PROJECT}" \
+              --gitlab-public-url "${params.GITLAB_PUBLIC_URL}" \
+              --gitlab-branch "${params.BRANCH}" \
+              --commit-sha "${env.COMMIT_SHA}" \
+              --input "llm_analysis.jsonl" \
+              --output "gitlab_issues_created.json" \
+              --sonar-host-url "${SONAR_HOST_URL}" \
+              --sonar-public-url "${params.SONAR_PUBLIC_URL}" \
+              --sonar-token "\${SONAR_TOKEN_PRIVATE}" \
+              --analysis-mode "${params.ANALYSIS_MODE}"
+          """
+        }
       }
     }
   }

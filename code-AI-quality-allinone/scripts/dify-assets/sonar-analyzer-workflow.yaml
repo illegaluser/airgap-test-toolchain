@@ -17,11 +17,15 @@
 #   enclosing_lines       그 함수의 라인 범위 "a-b" (Step R 신규, optional)
 #   commit_sha            분석 대상 커밋 SHA (Step R 신규, optional)
 #
-# 출력 (Step R 에서 4 필드로 개편 — creator 가 deterministic header/footer 조립):
+# 출력 (Step R 4필드 + Step C 신규 4필드 = 총 8):
 #   title                      한줄 요약 제목
 #   labels                     라벨 배열
 #   impact_analysis_markdown   영향 분석 (헤딩 없는 3~6줄 markdown)
 #   suggested_fix_markdown     수정 제안 (코드펜스 diff/python 1개. 빈 문자열 허용)
+#   classification             "true_positive" | "false_positive" | "wont_fix"  (Step C)
+#   fp_reason                  classification=false_positive 일 때만 의미 (Step C)
+#   confidence                 "high" | "medium" | "low"  (Step C)
+#   suggested_diff             unified diff 문자열 (없으면 ""). suggested_fix_markdown 과 별개 (Step C)
 # 이전 `description_markdown` (자유서술 5섹션) 은 제거 — 위치/코드/룰 설명은
 # creator 가 사실 정보로 렌더하고, LLM 은 해석 필요한 두 섹션에만 집중.
 #
@@ -212,12 +216,16 @@ workflow:
                 당신은 SonarQube 정적분석 결과를 GitLab Issue 로 변환하는 시니어 엔지니어입니다.
                 응답은 반드시 하나의 JSON 객체로만 출력하세요. 코드펜스(```)나 다른 설명 금지.
 
-                JSON 스키마 (2개 서술 필드 + title + labels):
+                JSON 스키마 (8개 필드):
                 {
                   "title": "<한줄 요약 제목, 80자 이내>",
                   "labels": ["<Severity>", "<Type>", "<추가 도메인 태그>"],
                   "impact_analysis_markdown": "<markdown 3~6줄. 이 이슈가 실제 동작에 어떤 영향을 미치는지.>",
-                  "suggested_fix_markdown": "<markdown. 코드펜스 diff 또는 python 블록 1개. 명확한 수정안이 없으면 빈 문자열 \"\">"
+                  "suggested_fix_markdown": "<markdown. 코드펜스 diff 또는 python 블록 1개. 명확한 수정안이 없으면 빈 문자열 \"\">",
+                  "classification": "<true_positive | false_positive | wont_fix>",
+                  "fp_reason": "<classification=false_positive 일 때만 비지 않음. 왜 오탐인지 1-2줄. 아니면 빈 문자열 \"\">",
+                  "confidence": "<high | medium | low — 본 판정에 대한 확신도>",
+                  "suggested_diff": "<unified diff 문자열. 없으면 빈 문자열 \"\". suggested_fix_markdown 과 별개로 기계 적용 가능한 형식일 때만 채움.>"
                 }
 
                 중요 규칙 (위반 시 본문이 중복되어 가독성 떨어짐):
@@ -234,6 +242,13 @@ workflow:
                     * 바로 적용 가능한 diff 가 가장 좋음. 없으면 before/after python 블록도 허용.
                     * 코드펜스 1개만. 주석 설명은 코드펜스 바깥 1~2줄만.
                     * 확실한 수정안이 없으면 반드시 빈 문자열 "". 추측성 제안 금지.
+                - classification: Sonar 가 실제 문제를 맞췄는지 판정.
+                    * true_positive: 실제로 수정 필요.
+                    * false_positive: Sonar 가 오판. 프로젝트 관행/테스트 픽스처/의도된 예외 등.
+                    * wont_fix: 실제 문제지만 비용/우선순위상 고치지 않는 것이 합리적.
+                - fp_reason: classification=false_positive 일 때만 1~2줄로 이유. 아니면 빈 문자열.
+                - confidence: 본 판정 (classification) 에 대한 확신도. 근거가 RAG/코드에 명확하면 high, 룰 설명만으로 판단했으면 medium/low.
+                - suggested_diff: 기계 적용 가능한 unified diff 가 확실할 때만. 애매하면 빈 문자열.
                 - labels: 최소 2개 (severity, type), 도메인 태그 자유.
             - role: user
               text: |
@@ -310,12 +325,29 @@ workflow:
               type: string
               required: false
               description: '수정 제안 markdown (코드펜스 1개). 명확한 수정안이 없으면 빈 문자열.'
+            - name: classification
+              type: string
+              required: false
+              description: 'true_positive | false_positive | wont_fix 중 하나. 빈 문자열 가능 — analyzer 가 기본값 true_positive 로 fallback.'
+            - name: fp_reason
+              type: string
+              required: false
+              description: 'classification=false_positive 일 때 1~2줄 이유. 아니면 빈 문자열.'
+            - name: confidence
+              type: string
+              required: false
+              description: 'high | medium | low. 본 판정에 대한 확신도.'
+            - name: suggested_diff
+              type: string
+              required: false
+              description: 'unified diff 문자열. 없으면 빈 문자열.'
           reasoning_mode: prompt
           instruction: |
-            위 LLM 응답에서 title, labels, impact_analysis_markdown,
-            suggested_fix_markdown 4개 필드를 추출하여 구조화된 파라미터로 반환하세요.
-            원본 값을 가공하지 말 것. 특히 suggested_fix_markdown 이 빈 문자열이면
-            그대로 빈 문자열로 반환 (억지로 채우지 말 것).
+            위 LLM 응답에서 아래 8개 필드를 추출하여 구조화된 파라미터로 반환하세요:
+              title, labels, impact_analysis_markdown, suggested_fix_markdown,
+              classification, fp_reason, confidence, suggested_diff
+            원본 값을 가공하지 말 것. 특히 suggested_fix_markdown / suggested_diff /
+            fp_reason 이 빈 문자열이면 그대로 빈 문자열로 반환 (억지로 채우지 말 것).
 
       # ────────────────────────────────────────────────────────────────────
       # End — 4개 출력 (title, labels, impact_analysis_markdown, suggested_fix_markdown)
@@ -349,4 +381,24 @@ workflow:
               value_selector:
                 - extractor
                 - suggested_fix_markdown
+              value_type: string
+            - variable: classification
+              value_selector:
+                - extractor
+                - classification
+              value_type: string
+            - variable: fp_reason
+              value_selector:
+                - extractor
+                - fp_reason
+              value_type: string
+            - variable: confidence
+              value_selector:
+                - extractor
+                - confidence
+              value_type: string
+            - variable: suggested_diff
+              value_selector:
+                - extractor
+                - suggested_diff
               value_type: string

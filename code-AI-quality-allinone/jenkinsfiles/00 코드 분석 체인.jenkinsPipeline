@@ -1,0 +1,231 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(
+            name: 'REPO_URL',
+            defaultValue: 'http://gitlab:80/root/dscore-ttc-sample.git',
+            description: '분석 대상 Git 레포지토리 URL (컨테이너 내부 경로)'
+        )
+        string(
+            name: 'BRANCH',
+            defaultValue: 'main',
+            description: '분석 대상 브랜치'
+        )
+        choice(
+            name: 'ANALYSIS_MODE',
+            choices: ['full', 'commit'],
+            description: 'full: HEAD 전수 재분석 (KB 강제 재빌드) | commit: 특정 커밋 스냅샷 (KB manifest 일치 시 재활용)'
+        )
+        string(
+            name: 'COMMIT_SHA',
+            defaultValue: '',
+            description: 'ANALYSIS_MODE=commit 에서 지정할 커밋 SHA. 빈 값이면 HEAD 자동 해석.'
+        )
+        string(
+            name: 'SONAR_PROJECT_KEY',
+            defaultValue: 'dscore-ttc-sample',
+            description: 'SonarQube Project Key'
+        )
+        string(
+            name: 'GITLAB_PROJECT_PATH',
+            defaultValue: 'root/dscore-ttc-sample',
+            description: 'GitLab Project Path (02 checkout 용)'
+        )
+        string(
+            name: 'GITLAB_PROJECT',
+            defaultValue: 'root/dscore-ttc-sample',
+            description: 'GitLab Project Path (03 이슈 등록 용)'
+        )
+        string(
+            name: 'SEVERITIES',
+            defaultValue: 'BLOCKER,CRITICAL',
+            description: 'Sonar severities'
+        )
+        string(
+            name: 'STATUSES',
+            defaultValue: 'OPEN,REOPENED,CONFIRMED',
+            description: 'Sonar statuses'
+        )
+        string(
+            name: 'MAX_ISSUES',
+            defaultValue: '1',
+            description: 'PoC: Dify 에 보낼 이슈 건수'
+        )
+        string(
+            name: 'SONAR_PUBLIC_URL',
+            defaultValue: 'http://localhost:29000',
+            description: 'GitLab Issue 본문 링크용 SonarQube 외부 URL'
+        )
+        string(
+            name: 'GITLAB_PUBLIC_URL',
+            defaultValue: 'http://localhost:28090',
+            description: 'GitLab Issue 본문 링크용 GitLab 외부 URL'
+        )
+    }
+
+    environment {
+        STATE_DIR     = '/var/knowledges/state'
+        ANALYSIS_MODE = "${params.ANALYSIS_MODE}"
+        REPO_URL_ENV  = "${params.REPO_URL}"
+        BRANCH_ENV    = "${params.BRANCH}"
+    }
+
+    stages {
+        stage('1. Resolve Commit SHA') {
+            steps {
+                withCredentials([string(credentialsId: 'gitlab-pat', variable: 'GITLAB_PAT')]) {
+                    script {
+                        def resolved = params.COMMIT_SHA?.trim() ?: ''
+                        if (!resolved) {
+                            resolved = sh(
+                                script: "git ls-remote http://oauth2:\${GITLAB_PAT}@gitlab:80/${params.GITLAB_PROJECT}.git refs/heads/${params.BRANCH} | head -1 | awk '{print \$1}'",
+                                returnStdout: true
+                            ).trim()
+                        }
+                        if (!resolved) {
+                            error "Commit SHA 해석 실패 — REPO_URL/BRANCH/GITLAB_PROJECT 확인 필요"
+                        }
+                        env.RESOLVED_SHA = resolved
+                        echo "[Chain] resolved_sha=${env.RESOLVED_SHA} mode=${params.ANALYSIS_MODE}"
+                    }
+                }
+            }
+        }
+
+        stage('2. Trigger P1 (사전학습)') {
+            steps {
+                script {
+                    env.CHAIN_STARTED_AT = "${System.currentTimeMillis() / 1000L}"
+                    def b = build(
+                        job: '01-코드-사전학습',
+                        parameters: [
+                            string(name: 'REPO_URL',      value: params.REPO_URL),
+                            string(name: 'COMMIT_SHA',    value: env.RESOLVED_SHA),
+                            string(name: 'BRANCH',        value: params.BRANCH),
+                            string(name: 'ANALYSIS_MODE', value: params.ANALYSIS_MODE),
+                            booleanParam(name: 'ENRICH_CONTEXT', value: true)
+                        ],
+                        wait: true,
+                        propagate: true
+                    )
+                    env.P1_BUILD  = "${b.number}"
+                    env.P1_RESULT = "${b.result}"
+                    echo "[Chain] P1 #${b.number} ${b.result}"
+                }
+            }
+        }
+
+        stage('3. Trigger P2 (정적분석)') {
+            steps {
+                script {
+                    def b = build(
+                        job: '02-코드-정적분석',
+                        parameters: [
+                            string(name: 'SONAR_PROJECT_KEY',   value: params.SONAR_PROJECT_KEY),
+                            string(name: 'GITLAB_PROJECT_PATH', value: params.GITLAB_PROJECT_PATH),
+                            string(name: 'BRANCH',              value: params.BRANCH),
+                            string(name: 'COMMIT_SHA',          value: env.RESOLVED_SHA),
+                            string(name: 'ANALYSIS_MODE',       value: params.ANALYSIS_MODE)
+                        ],
+                        wait: true,
+                        propagate: true
+                    )
+                    env.P2_BUILD  = "${b.number}"
+                    env.P2_RESULT = "${b.result}"
+                    echo "[Chain] P2 #${b.number} ${b.result}"
+                }
+            }
+        }
+
+        stage('4. Trigger P3 (이슈 등록)') {
+            steps {
+                script {
+                    def exporterMode = (params.ANALYSIS_MODE == 'full') ? 'full' : 'incremental'
+                    def b = build(
+                        job: '03-정적분석-결과분석-이슈등록',
+                        parameters: [
+                            string(name: 'SONAR_PROJECT_KEY', value: params.SONAR_PROJECT_KEY),
+                            string(name: 'SEVERITIES',        value: params.SEVERITIES),
+                            string(name: 'STATUSES',          value: params.STATUSES),
+                            string(name: 'MAX_ISSUES',        value: params.MAX_ISSUES),
+                            string(name: 'GITLAB_PROJECT',    value: params.GITLAB_PROJECT),
+                            string(name: 'BRANCH',            value: params.BRANCH),
+                            string(name: 'COMMIT_SHA',        value: env.RESOLVED_SHA),
+                            string(name: 'SONAR_PUBLIC_URL',  value: params.SONAR_PUBLIC_URL),
+                            string(name: 'GITLAB_PUBLIC_URL', value: params.GITLAB_PUBLIC_URL),
+                            string(name: 'ANALYSIS_MODE',     value: params.ANALYSIS_MODE),
+                            string(name: 'MODE',              value: exporterMode)
+                        ],
+                        wait: true,
+                        propagate: true
+                    )
+                    env.P3_BUILD  = "${b.number}"
+                    env.P3_RESULT = "${b.result}"
+                    echo "[Chain] P3 #${b.number} ${b.result}"
+                }
+            }
+        }
+
+        stage('5. Chain Summary') {
+            steps {
+                // Step D — P3 의 gitlab_issues_created.json 을 읽어 created/fp 카운트 추출.
+                // pipeline-utility-steps (readFile/readJSON) 플러그인 의존을 피하기 위해
+                // sh 블록 안에서 파싱 + JSON 쓰기를 한 번에 완료.
+                sh '''
+                    set -e
+                    mkdir -p "${STATE_DIR}"
+                    JH="${JENKINS_HOME:-/var/jenkins_home}"
+                    P3_ARTIFACT="${JH}/jobs/03-정적분석-결과분석-이슈등록/builds/${P3_BUILD}/archive/gitlab_issues_created.json"
+
+                    if [ -f "${P3_ARTIFACT}" ]; then
+                        echo "[Chain] P3 artifact: ${P3_ARTIFACT}"
+                    else
+                        echo "[Chain:WARN] P3 artifact not found at ${P3_ARTIFACT} — counts=0"
+                    fi
+
+                    ENDED_AT=$(date +%s)
+                    OUTPUT="${STATE_DIR}/chain_${RESOLVED_SHA}.json"
+                    python3 - > "${OUTPUT}" <<PY
+import json, os
+p3_path = "${P3_ARTIFACT}"
+counts = {"created": 0, "skipped": 0, "failed": 0, "fp_transitioned": 0, "fp_transition_failed": 0}
+if os.path.isfile(p3_path):
+    try:
+        with open(p3_path) as f:
+            d = json.load(f)
+        for k in counts:
+            counts[k] = len(d.get(k, []))
+    except Exception as e:
+        print(f"// P3 artifact parse fail: {e}", flush=True)
+
+summary = {
+    "mode":        "${ANALYSIS_MODE}",
+    "commit_sha":  "${RESOLVED_SHA}",
+    "repo_url":    "${REPO_URL_ENV}",
+    "branch":      "${BRANCH_ENV}",
+    "p1_build":    "${P1_BUILD}",
+    "p1_result":   "${P1_RESULT}",
+    "p2_build":    "${P2_BUILD}",
+    "p2_result":   "${P2_RESULT}",
+    "p3_build":    "${P3_BUILD}",
+    "p3_result":   "${P3_RESULT}",
+    "p3_summary":  counts,
+    "started_at":  ${CHAIN_STARTED_AT:-0},
+    "ended_at":    ${ENDED_AT},
+}
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+PY
+                    echo "[Chain] summary written: ${OUTPUT}"
+                    cat "${OUTPUT}"
+                    cp "${OUTPUT}" "${WORKSPACE}/chain_summary.json"
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'chain_summary.json', allowEmptyArchive: true, fingerprint: true
+                }
+            }
+        }
+    }
+}
