@@ -143,7 +143,7 @@ RUN /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages
     /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
         -r /tmp/requirements-pipelines.txt && \
     /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
-        deepeval==1.3.5 --no-deps && \
+        deepeval==3.9.7 && \
     /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
         "tree-sitter<0.22" "tree-sitter-languages==1.10.2" jedi
 
