@@ -1056,60 +1056,76 @@ LLM 제안 라벨 + severity:<sev> + classification:<cls> + confidence:<conf>
 
 ---
 
-### 8.5 `04-AI평가` — 골든 데이터셋 기반 LLM 응답 평가 (선택)
+### 8.5 `04-AI평가` — 11 지표 × 5 단계 AI 응답 자동 평가 (선택)
 
-**역할**: 사내에서 운영 중인 LLM 서비스(챗봇, API 등)의 응답 품질이 기대 수준을 유지하는지 Golden Dataset 기반으로 정기 검증합니다. P1~P3 의 코드 품질 분석과는 **별개 목적** 의 독립 도구입니다.
+**역할**: 운영 중인 AI 에이전트(챗봇·RAG 시스템·LLM 워크플로 등)의 응답 품질을 Golden Dataset 기반으로 정기 검증합니다. LLM-as-Judge 방식으로 **다른 LLM 에게 채점을 맡기고**, 결과를 summary.html 리포트로 집계합니다. P1~P3 의 코드 품질 파이프라인과는 **목적이 다른 별개 도구**입니다.
 
-**성과**: 운영 중인 LLM 서비스가 일정 기간마다 자동 평가되며, 회귀(품질 저하)가 발생하면 즉시 파악할 수 있습니다. 평가 결과는 HTML/JSON 리포트로 보관됩니다.
+**성과**: 빌드마다 동일한 시험지로 AI 를 재평가하여 회귀(품질 저하)를 자동 감지합니다. summary.html 에 LLM 이 직접 실패 원인·권장 조치까지 자연어로 작성해 비개발자도 결과 해석이 가능합니다. **모든 평가는 호스트 Ollama** 에서 수행되어 외부 API 의존·데이터 유출이 없습니다.
 
-#### 8.5.1 구성
+#### 8.5.1 평가 지표 — 11 항목 × 5 단계 (Fail-Fast)
+
+한 건의 평가는 아래 5 단계를 순차 통과하며, 앞 단계가 실패하면 뒷 단계는 skipped 로 기록 후 종료됩니다.
+
+| 단계 | 지표 | 판정 방식 | 용도 |
+|:---:|------|----------|------|
+| **1. 포맷·정책** | ① Policy Violation · ② Format Compliance | 정규식 / JSON Schema (결정론) | PII·API key 등 민감정보, 스키마 위반을 LLM 호출 전에 차단 |
+| **2. 과제검사** | ③ Task Completion | LLM Judge 또는 결정론 매칭 | 시험지의 `success_criteria` 충족 여부 |
+| **3. 심층평가** | ④ Answer Relevancy · ⑤ Toxicity · ⑥ Faithfulness * · ⑦ Contextual Recall * · ⑧ Contextual Precision * | DeepEval 메트릭 + LLM Judge | 답변 품질 / 유해성 / 환각 여부 / RAG 검색 품질 |
+| **4. 다중턴** | ⑨ Multi-turn Consistency | LLM Judge (대화 종료 후 1회) | 같은 `conversation_id` 안 답변들 간 모순 여부 |
+| **5. 운영지표** | ⑩ Latency · ⑪ Token Usage | 어댑터 실측값 기록 (합/불 없음) | p50/p95/p99 응답시간, 토큰 사용량 추세 |
+
+`*` 표시된 ⑥⑦⑧ 은 시험지의 `context_ground_truth` 컬럼이 있는 케이스에서만 평가.
+
+#### 8.5.2 평가 대상 지원 방식 (3 가지 모드)
+
+| `TARGET_TYPE` | 설명 | 어댑터 |
+|--------------|------|-------|
+| `local_ollama_wrapper` | 호스트 Ollama 를 OpenAI-compatible 로 래핑한 내장 엔드포인트를 평가 (Phase 1 기본 모드) | `ollama_wrapper_api.py` + `http_adapter.py` |
+| `http` | 사용자가 지정한 HTTP 엔드포인트 (예: 사내 Dify 챗앱, 자체 LLM API) | `http_adapter.py` |
+| `ui_chat` | 웹 UI 챗봇을 Playwright 로 조작해 응답 수집 | `browser_adapter.py` (Chromium + Playwright 내장) |
+
+#### 8.5.3 모듈 구성
 
 ```
 eval_runner/
-├── runner.py              # DeepEval 엔트리포인트
-├── adapters/
-│   ├── ollama_adapter.py      # TARGET_MODE=local_ollama_wrapper → 호스트 Ollama 직접 호출
-│   ├── browser_adapter.py     # TARGET_TYPE=ui_chat → Playwright 로 웹 UI 조작
-│   ├── openai_adapter.py      # (placeholder)
-│   └── gemini_adapter.py      # (placeholder)
-├── metrics/
-│   ├── answer_relevancy.py    # DeepEval AnswerRelevancy (0~1 점수)
-│   └── llm_judge.py           # Ollama judge 모델로 pass/fail 분류
-└── datasets/
-    └── golden_<project>.csv   # 질문 ↔ 기대답변 쌍 (수동 작성)
+├── adapters/            # UniversalEvalOutput + BaseAdapter + HTTP/Browser 구현
+│   ├── base.py
+│   ├── http_adapter.py
+│   ├── browser_adapter.py
+│   └── registry.py
+├── configs/             # schema.json (Format Compliance), security.yaml/.py (Policy)
+├── dataset.py           # Golden Dataset 로더
+├── policy.py            # Policy Violation 검출
+├── reporting/           # summary.json → summary.html 변환 + LLM 내러티브 헤더
+├── tests/               # test_runner.py (pytest 진입점)
+├── ollama_wrapper_api.py   # 로컬 Ollama → OpenAI-compatible 래퍼
+├── Jenkinsfile          # 내부 서브 파이프라인
+└── SUCCESS_CRITERIA_GUIDE.md   # Golden Dataset 작성 가이드
 ```
 
-#### 8.5.2 주요 파라미터
+#### 8.5.4 주요 파라미터
 
 | 이름 | 예시 | 의미 |
 |------|------|------|
-| `TARGET_TYPE` | `http_api` / `ui_chat` | 평가 대상이 API 엔드포인트인가, 웹 UI 챗봇인가 |
-| `TARGET_MODE` | `local_ollama_wrapper` / `direct` / (미구현 openai/gemini) | 어떤 어댑터로 호출하는가 |
-| `TARGET_URL` | `http://api.example.com/chat` | 대상 URL (TARGET_TYPE 에 따라 해석 다름) |
-| `JUDGE_MODEL` | `qwen3-coder:30b` | LLM-as-Judge 로 쓸 Ollama 모델 이름 |
-| `GOLDEN_DATASET` | `datasets/golden_myproject.csv` | 질문-기대답변 시험지 경로 |
-| `BUILD_NUMBER` | Jenkins 자동 | 리포트 디렉터리 suffix |
+| `TARGET_TYPE` | `local_ollama_wrapper` / `http` / `ui_chat` | 평가 대상 호출 방식 |
+| `TARGET_URL` | `http://api.example.com/chat` 또는 UI URL | TARGET_TYPE 에 따라 해석 |
+| `TARGET_OLLAMA_MODEL` | `gemma4:e4b` | `local_ollama_wrapper` 모드에서 평가 대상으로 쓸 모델 |
+| `JUDGE_MODEL` | `qwen3-coder:30b` | LLM-as-Judge 가 사용할 Ollama 모델 |
+| `ANSWER_RELEVANCY_THRESHOLD` | `0.7` | ④ 통과 기준. 빌드별 조정 가능 |
+| `TASK_COMPLETION_THRESHOLD` | `0.5` | ③ 통과 기준 |
+| `GOLDEN_DATASET` | `/var/knowledges/eval/data/golden.csv` | 질문·기대답변·컨텍스트·성공기준 컬럼을 가진 CSV |
 
-#### 8.5.3 처리 흐름
+#### 8.5.5 결과물
 
-```
-1. Golden Dataset 로드 (CSV: question, expected_answer)
-2. 각 행에 대해:
-   ├─ adapter 로 TARGET 에 question 전송 → actual_answer 수집
-   ├─ metrics/answer_relevancy.py — 의미 유사도 0~1 점수
-   └─ metrics/llm_judge.py — "actual 이 expected 와 같은 의도인가" pass/fail
-3. 결과를 /var/knowledges/eval/reports/build-${BUILD_NUMBER}/{report.json,report.html} 로 저장
-4. archiveArtifacts 로 Jenkins 에 보관
-```
+- `/var/knowledges/eval/reports/build-<N>/summary.json` — 11 지표 × 턴 단위 상세 + 집계
+- `/var/knowledges/eval/reports/build-<N>/summary.html` — LLM 이 작성한 자연어 임원 요약 헤더 + 지표별 표 + 실패 케이스 심층 분석
+- `archiveArtifacts` 로 Jenkins 에 빌드별 보관
 
-#### 8.5.4 UI 자동화 (ui_chat)
+**상세 운영 가이드** (빌드·구동·파라미터·리포트 해석·트러블슈팅)는 다음 두 문서에 별도로 정리되어 있습니다:
 
-통합 이미지에 **Chromium + Playwright** 가 사전 설치되어 있어 headless 모드 웹 자동화가 즉시 동작:
-
-- `TARGET_TYPE=ui_chat` + `TARGET_URL=https://chatbot.example.com` 지정 시
-- `browser_adapter.py` 가 페이지 열기 → 입력창 찾기 → question 타이핑 → 응답 수신까지 자동화
-
-**이 파이프라인은 P1~P3 와 독립** 입니다. 본 문서는 주로 P1~P3 의 코드 품질 파이프라인을 다루며, P4 상세 운영 가이드는 `eval_runner/` 내부 문서를 참고하세요.
+- [`docs/AI_EVAL_PIPELINE_README.md`](docs/AI_EVAL_PIPELINE_README.md) — 사용자 가이드 (비개발자도 따라 할 수 있는 단계별 설명)
+- [`eval_runner/README.md`](eval_runner/README.md) — 개발자용 모듈 구조 / 정본 스펙 / 개선 로드맵
+- [`docs/PLAN_AI_EVAL_PIPELINE.md`](docs/PLAN_AI_EVAL_PIPELINE.md) — Phase 0~5 개선 계획서
 
 ---
 
