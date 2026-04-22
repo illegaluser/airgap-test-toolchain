@@ -104,8 +104,10 @@ pipeline {
                     # upload 성공 후 /data/kb_manifest.json 기록 (env 로 repo/branch/commit 전달).
                     export KB_MANIFEST_REPO_URL="${REPO_URL}"
                     export KB_MANIFEST_BRANCH="${BRANCH}"
-                    export KB_MANIFEST_COMMIT_SHA="${COMMIT_SHA:-}"
-                    export KB_MANIFEST_ANALYSIS_MODE="${ANALYSIS_MODE:-full}"
+                    KB_MANIFEST_COMMIT_SHA="${COMMIT_SHA}"
+                    KB_MANIFEST_ANALYSIS_MODE="${ANALYSIS_MODE}"
+                    [ -n "${KB_MANIFEST_ANALYSIS_MODE}" ] || KB_MANIFEST_ANALYSIS_MODE="full"
+                    export KB_MANIFEST_COMMIT_SHA KB_MANIFEST_ANALYSIS_MODE
                     python3 ${SCRIPTS_DIR}/doc_processor.py upload \
                         "$DIFY_API_KEY" \
                         "$DIFY_DATASET_ID" \
