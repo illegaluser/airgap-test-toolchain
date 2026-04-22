@@ -672,6 +672,141 @@ def test_classify_error_type():
     assert result == {"system": 1, "quality": 1}
 
 
+def test_phase3_judge_meta_collection():
+    """[Phase 3.1 Q2] _collect_judge_meta 가 JUDGE_MODEL + base_url + temperature 를 기록."""
+    meta = tr._collect_judge_meta()
+    assert "model" in meta
+    assert "base_url" in meta
+    assert meta["temperature"] == 0  # 결정성 고정
+    # digest 는 best-effort — Ollama unreachable 환경에서는 None 허용
+    assert "digest" in meta
+
+
+def test_phase3_dataset_meta_collection():
+    """[Phase 3.2 Q3] _collect_dataset_meta 가 sha256/rows/mtime 을 기록."""
+    meta = tr._collect_dataset_meta()
+    assert "path" in meta
+    # tiny_dataset.csv 가 실제 존재하므로 sha/rows/mtime 이 채워져야 함
+    assert meta["sha256"] is not None, "sha256 should be computed"
+    assert len(meta["sha256"]) == 64, "sha256 hex length"
+    assert meta["rows"] and meta["rows"] >= 10, f"rows={meta['rows']} (expected ≥10)"
+    assert meta["mtime"] is not None
+
+
+def test_phase3_error_type_field_on_universal_eval_output():
+    """[Phase 3.3 Q1] UniversalEvalOutput 에 error_type 필드 + to_dict 포함."""
+    from adapters.base import UniversalEvalOutput, ErrorType  # noqa: F401
+
+    out = UniversalEvalOutput(input="x", actual_output="y")
+    assert out.error_type is None  # 기본값
+
+    out2 = UniversalEvalOutput(input="x", actual_output="", error="HTTP 500", error_type="system")
+    d = out2.to_dict()
+    assert d["error_type"] == "system"
+
+
+def test_phase3_http_adapter_tags_system_error():
+    """[Phase 3.3 Q1] http_adapter 가 ConnError/5xx 에 error_type='system' 설정."""
+    import types as _types
+    import requests as _requests
+    from adapters.http_adapter import GenericHttpAdapter
+
+    adapter = GenericHttpAdapter("http://127.0.0.1:0/invoke")
+
+    # Case 1: Connection Error (requests.exceptions.RequestException)
+    class _FakeConnError(_requests.exceptions.ConnectionError):
+        pass
+
+    def _raise(*a, **kw):
+        raise _FakeConnError("refused")
+
+    original_post = _requests.post
+    try:
+        _requests.post = _raise  # monkeypatch
+        result = adapter.invoke("ping")
+        assert result.error is not None
+        assert result.error_type == "system"
+    finally:
+        _requests.post = original_post
+
+    # Case 2: 5xx response → error_type="system"
+    class _FakeResponse:
+        status_code = 503
+        text = "unavailable"
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"error": "upstream down"}
+
+    def _fake_post_5xx(*a, **kw):
+        return _FakeResponse()
+
+    try:
+        _requests.post = _fake_post_5xx
+        result = adapter.invoke("ping")
+        assert result.http_status == 503
+        assert result.error_type == "system"
+    finally:
+        _requests.post = original_post
+
+
+def test_phase3_classify_error_type_uses_explicit_field():
+    """[Phase 3.3 Q1] _classify_error_type 이 turn['error_type'] 구조화 필드 우선 사용."""
+    from reporting.html import _classify_error_type
+
+    # Phase 2.4 와 동일: explicit 필드 > 휴리스틱
+    assert _classify_error_type({"status": "failed", "error_type": "system", "failure_message": "metric failed"}) == "system"
+    assert _classify_error_type({"status": "failed", "error_type": "quality", "failure_message": "Adapter Error"}) == "quality"
+    # 명시 없음 → 휴리스틱 fallback
+    assert _classify_error_type({"status": "failed", "failure_message": "Adapter Error"}) == "system"
+    assert _classify_error_type({"status": "failed", "failure_message": "Metrics failed"}) == "quality"
+
+
+def test_phase3_html_header_shows_judge_and_dataset_meta():
+    """[Phase 3.1 + 3.2] 렌더된 HTML 에 judge/dataset 메타가 노출된다."""
+    from reporting.html import render_summary_html
+
+    state = {
+        "run_id": "p3-001",
+        "target_url": "", "target_type": "http", "judge_model": "",
+        "langfuse_enabled": False,
+        "thresholds": {}, "metric_guide": {},
+        "totals": {
+            "conversations": 0, "passed_conversations": 0, "failed_conversations": 0,
+            "turns": 0, "passed_turns": 0, "failed_turns": 0,
+            "conversation_pass_rate": 0, "turn_pass_rate": 0,
+        },
+        "metric_averages": {},
+        "indicators": {},
+        "conversations": [],
+        "aggregate": {
+            "judge": {
+                "model": "qwen3-coder:30b",
+                "base_url": "http://host.docker.internal:11434",
+                "temperature": 0,
+                "digest": "sha256:abcd1234567890",
+            },
+            "dataset": {
+                "path": "/var/knowledges/eval/data/golden.csv",
+                "sha256": "fedcba9876543210abcdef0123456789",
+                "rows": 42,
+                "mtime": "2026-04-22T08:00:00+00:00",
+            },
+        },
+    }
+
+    html = render_summary_html(state)
+    # Judge 메타
+    assert "qwen3-coder:30b" in html
+    assert "T=0" in html
+    assert "digest=…abcd12345678" in html  # 12자 truncated
+    # Dataset 메타
+    assert "golden.csv" in html
+    assert "sha256=…fedcba987654" in html
+    assert "rows=42" in html
+    assert "2026-04-22" in html
+
+
 def test_turn_sort_key():
     """turn_id 정렬이 실제 사용 패턴(int + None, 또는 digit-string + None)에서 안정적."""
     # 실사용 케이스 1: 정수 turn_id + None → None 이 뒤로

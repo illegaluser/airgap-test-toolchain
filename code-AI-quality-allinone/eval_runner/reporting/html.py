@@ -393,6 +393,49 @@ def _classify_error_type(turn: dict) -> str:
     return "quality"
 
 
+def _render_judge_meta_line(state: dict) -> str:
+    """
+    Phase 3.1 Q2 — R1 헤더에 Judge 잠금 메타 노출.
+    기존 `judge_model` 필드는 레거시 호환. aggregate.judge 가 있으면 우선.
+    """
+    judge = (state.get("aggregate") or {}).get("judge") or {}
+    model = judge.get("model") or state.get("judge_model") or ""
+    if not model:
+        return ""
+    base_url = judge.get("base_url") or state.get("ollama_base_url") or ""
+    temperature = judge.get("temperature")
+    digest = judge.get("digest") or ""
+
+    parts = [f"<strong>{escape(str(model))}</strong>"]
+    if base_url:
+        parts.append(f"<span class='meta-inline'>@ {escape(str(base_url))}</span>")
+    if temperature is not None:
+        parts.append(f"<span class='meta-inline'>T={escape(str(temperature))}</span>")
+    if digest:
+        short_digest = digest.split(":", 1)[-1][:12] if ":" in digest else str(digest)[:12]
+        parts.append(f"<span class='meta-inline' title='{escape(str(digest))}'>digest=…{escape(short_digest)}</span>")
+    return f"<p>심판 모델: {' '.join(parts)}</p>"
+
+
+def _render_dataset_meta_line(state: dict) -> str:
+    """Phase 3.2 Q3 — R1 헤더에 Dataset 메타 (sha/rows/mtime) 노출."""
+    dataset = (state.get("aggregate") or {}).get("dataset") or {}
+    path = dataset.get("path") or state.get("golden_csv_path") or ""
+    if not path:
+        return ""
+    parts = [f"<span class='meta-inline'>{escape(str(path))}</span>"]
+    sha = dataset.get("sha256")
+    if sha:
+        parts.append(f"<span class='meta-inline' title='{escape(str(sha))}'>sha256=…{escape(str(sha)[:12])}</span>")
+    rows = dataset.get("rows")
+    if rows is not None:
+        parts.append(f"<span class='meta-inline'>rows={escape(str(rows))}</span>")
+    mtime = dataset.get("mtime")
+    if mtime:
+        parts.append(f"<span class='meta-inline'>mtime={escape(str(mtime))}</span>")
+    return f"<p>데이터셋: {' '.join(parts)}</p>"
+
+
 def classify_failure_buckets(state: dict) -> dict:
     """
     R4 집계 — 전체 실패를 {system, quality} 로 나눈 카운트.
@@ -784,7 +827,8 @@ def render_summary_html(state: dict) -> str:
   <div class="meta">
     <p>실행 ID: <strong>{escape(str(state['run_id']))}</strong></p>
     <p>평가 대상: {escape(str(state.get('target_url') or ''))} ({escape(str(state.get('target_type') or ''))})</p>
-    <p>심판 모델: {escape(str(state.get('judge_model') or ''))}</p>
+    {_render_judge_meta_line(state)}
+    {_render_dataset_meta_line(state)}
     <p>Langfuse 사용: {'사용' if state.get('langfuse_enabled') else '미사용'}</p>
     <div class="note">
       이 화면의 Turn 수는 <strong>실제로 실행된 턴</strong> 기준입니다. 대화 중간 실패 시 남은 턴은 실행되지 않을 수 있습니다.
