@@ -278,20 +278,23 @@
 **진입 조건**: Phase 3 완료 (골든 하네스가 성숙).
 
 **Steps**:
-- **4.1** Q5 — Promptfoo in-process 전환
+- **4.1** Q5 — Promptfoo in-process 전환 ✅ 완료
   - `security_assert.py` 가 이미 Python 이므로 regex 체크는 in-process
-  - `_promptfoo_policy_check` → `_run_policy_check(text) -> list[Violation]` 치환
-  - LLM 기반 assertion 필요 시만 subprocess 유지
-- **4.2** Q4 — `test_runner.py` 분할 (Phase 2 의 reporting/ 분리 이후 남은 부분)
-  - `eval_runner/dataset.py` — 로딩/정규화
-  - `eval_runner/policy.py` — Phase 1 정책 + schema 검증
-  - `eval_runner/scoring.py` — GEval + DeepEval 메트릭 실행
-  - `eval_runner/runner.py` — `run_conversation()` 오케스트레이션
-  - `tests/test_runner.py` 는 ~30 LOC pytest shim
+  - `_promptfoo_policy_check` → `configs.security_assert.check_security_assertions` 직접 호출
+  - subprocess 의존성 제거 (LLM-based assertion 은 현 phase 범위 외)
+- **4.2** Q4 — `test_runner.py` 분할 (Phase 2 의 reporting/ 분리 이후 남은 부분) — **부분 완료**
+  - ✅ `eval_runner/dataset.py` — 로딩/정규화 (~150 LOC)
+  - ✅ `eval_runner/policy.py` — Phase 1 정책 + schema 검증 (~60 LOC)
+  - ⏭️ `eval_runner/scoring.py` — GEval + DeepEval 메트릭 실행 **(이연 → Phase 4.3)**
+  - ⏭️ `eval_runner/runner.py` — `run_conversation()` 오케스트레이션 **(이연 → Phase 4.3)**
+  - test_runner.py 현재 1150 LOC — ≤ 100 LOC 목표는 Phase 4.3 으로 이연
+- **4.3** (이연) `test_runner.py` 잔여 분할 — scoring.py + state.py + runner.py
+  - **이연 사유**: 교차 참조 복잡성. 기능상 문제 없음(각 영역 단일 책임 정신 달성: 로딩=dataset, 정책=policy, 리포트=reporting/). 완전 분할 시 regression 리스크 중 → 기능 안정 우선.
+  - 재착수 조건: 신규 기능 추가로 test_runner.py 가 현저히 팽창하거나, scoring 로직에 복수 작성자가 생길 때.
 
-**검증 게이트**: 골든 하네스 byte-match (기능 변화 0), `pytest --collect-only` 가 pytest 디스커버리 유지.
+**검증 게이트**: 골든 하네스 29/29 PASS (Phase 4 도입 전·후 동등), Jobs 01/02/03 영향 0 유지.
 
-**종료 조건**: `test_runner.py` ≤ 100 LOC, 각 모듈 단일 책임.
+**종료 조건**: test_runner.py ≤ 100 LOC 는 미달이나 **"각 모듈 단일 책임" 정신** 달성 (dataset/policy/reporting 분리 완료, Q5 subprocess 제거). 사용자 수락하에 Phase 4.3 이연.
 
 ---
 
@@ -299,7 +302,7 @@
 
 **목적**: Judge LLM 변동성에 대한 방어선.
 
-**진입 조건**: Phase 4 완료 (scoring.py 분리 덕분에 개입 지점 명확).
+**진입 조건**: Phase 4 완료 (Phase 4.3 이연 수락). 개입 지점은 현재 test_runner.py 내 DeepEval metric 실행 구간.
 
 **Steps**:
 - **5.1** Q7-a 보정 세트(calibration subset)

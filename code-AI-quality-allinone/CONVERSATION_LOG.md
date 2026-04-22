@@ -6392,3 +6392,67 @@ Jenkins artifact fetch 환경 의존으로 본 phase 에서는 스펙만 유지.
 - **4.2 Q4** `test_runner.py` 분할: `dataset.py` / `policy.py` / `scoring.py` / `runner.py` 로 책임 분리. `tests/test_runner.py` 는 ~30 LOC pytest shim 으로 축소.
 - Q6 는 Phase 1 의 모드 단순화로 이미 자동 해소됨 (skipped).
 - 검증: 골든 하네스 byte-match (기능 변화 0), `pytest --collect-only` 로 pytest 디스커버리 유지.
+
+---
+
+### ▣ 세션 — Phase 4 (Structure Cleanup, partial)
+
+#### 사용자 요청
+> "페이즈4 진행하자"  
+> (Phase 4 마감 판단 시점) "2로 가자. 기능상으론 문제없잖아."
+
+#### 4.1 Q5 — Promptfoo in-process 전환 ✅
+- `eval_runner/policy.py` 신규 — `test_runner.py` 에서 Fail-Fast (Policy + Format) 로직 분리
+- `_promptfoo_policy_check(raw_text)`:
+    - 기존: subprocess 로 Promptfoo 호출 (외부 의존)
+    - 신규: `configs.security_assert.check_security_assertions` 직접 import + 호출 (in-process)
+    - 실패 메시지 기존 규약 유지 — `"Promptfoo policy checks reported 1 failure(s)"` (narrative fallback 키워드 매칭 호환)
+- `_schema_validate(raw_text)`: jsonschema 기반 Format Compliance 검증 (기능 변화 0)
+- configs 모듈 부재 시 검사 skip (graceful fallback)
+- 신규 골든 테스트 2종:
+    - `test_phase4_q5_policy_check_in_process` — security_assert 호출 확인
+    - `test_phase4_q5_no_subprocess_dependency` — subprocess import 부재 확인
+
+#### 4.2 Q4 — test_runner.py 분할 (부분 완료)
+- `eval_runner/dataset.py` 신규 (~150 LOC):
+    - `MODULE_ROOT`, `DEFAULT_GOLDEN_PATHS`, `GOLDEN_CSV_PATH`
+    - `_resolve_existing_path`, `_is_blank_value`, `_turn_sort_key`
+    - `load_dataset()` — CSV → conversation 단위 list
+    - `_collect_dataset_meta()` — sha256/rows/mtime
+- `eval_runner/policy.py` 신규 (~60 LOC) — 위 §4.1 참조
+- `tests/test_runner.py`:
+    - dataset + policy 로 이관된 함수들을 aggressive re-export (backward compat)
+    - `MODULE_ROOT = _DATASET_MODULE_ROOT` 로 기존 참조 유지
+    - 현재 1150 LOC (1170 → 1150, 20 LOC 감소)
+- **test_runner.py ≤ 100 LOC 목표 미달**: scoring/state/runner 분리는 Phase 4.3 으로 이연
+
+#### Phase 4 마감 판단 — 사용자 결정
+제시한 선택지:
+1. Phase 4.3 완전 분할: scoring.py + state.py 신규 (~650 LOC 이동), test_runner.py ≤ 100 LOC 달성. 교차 참조 regression 리스크 중.
+2. Phase 4 partial 마감: dataset + policy + Q5 로 "모듈 단일 책임" 정신 달성. Phase 5 진입. Phase 4.3 는 계획서에 이연 명시.
+
+사용자 선택: **옵션 2** ("2로 가자. 기능상으론 문제없잖아.")
+
+#### 계획서 갱신
+- `PLAN_AI_EVAL_PIPELINE.md`:
+    - Phase 4.1 ✅ 완료 표시
+    - Phase 4.2 **부분 완료** 표시 — dataset.py + policy.py 완료, scoring.py + runner.py 이연
+    - **Phase 4.3** 신규 — scoring + state + runner.py 잔여 분할 (이연)
+    - 종료 조건: ≤ 100 LOC 목표는 미달이나 "각 모듈 단일 책임" 정신 달성 (dataset/policy/reporting 분리 완료, Q5 subprocess 제거)
+    - Phase 5 진입 조건 갱신 — scoring.py 분리 전제 제거, 현재 test_runner.py 내 DeepEval metric 구간을 개입 지점으로 명시
+- working copy `~/.claude/plans/effervescent-wondering-petal.md` 동기화
+
+#### Phase 4 종료 게이트 결과
+- ✅ L1 골든 하네스 **29/29 PASS** (기존 27 + Q5 신규 2)
+- ✅ L2 pytest 디스커버리 유지 (기존 test_runner.py 10 tests regression 없음)
+- ✅ 변경 범위 `eval_runner/` 내 (Jobs 01/02/03 영향 0)
+- ⏭️ test_runner.py ≤ 100 LOC 미달 — Phase 4.3 이연 수락
+
+#### 커밋 (이번 세션)
+- `6430fab` `refactor(eval_runner): Phase 4 — dataset/policy 분리 + Promptfoo in-process`
+- (예정) `docs(ai-eval): plan v6 sync (Phase 4 partial close, 4.3 defer)`
+
+#### 다음 단계 — Phase 5 (Evaluation Robustness, Q7)
+- **5.1 Q7-a 보정 세트**: Golden dataset 에 `calib: true` 컬럼 허용, 매 실행 포함. summary 에 보정 case 점수 편차(std) 기록, 리포트 헤더에 노출.
+- **5.2 Q7-b 경계 case N-repeat**: `--repeat-borderline N` CLI (opt-in). 점수가 임계치 ±0.05 이내 case 만 N 회 재실행, median 채택. Judge 호출량 증가 영향 측정 → 리포트 `judge_calls_total` 기록.
+- 검증: 보정 세트가 빈 경우에도 리포트 정상 동작, N-repeat off 가 기본.
