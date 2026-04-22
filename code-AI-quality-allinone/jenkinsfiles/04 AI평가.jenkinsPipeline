@@ -1,13 +1,91 @@
-// Phase 1 G4: Wrapper 모드를 local_ollama_wrapper 단일로 단순화.
-// OpenAI/Gemini/direct 모드 및 관련 파라미터(API_KEY, TARGET_URL, TARGET_AUTH_HEADER,
-// OPENAI_*, GEMINI_*)는 향후 phase 로 이연 — 미구현 모드 선택으로 인한 빌드 크래시 0.
+// Phase 6: TARGET_TYPE 을 README §5.1 정본대로 복원 (local_ollama_wrapper / http / ui_chat).
+//  - local_ollama_wrapper: 컨테이너 내 ollama_wrapper_api.py 를 띄워 호스트 Ollama 재호출 (자기평가)
+//  - http:                평가대상 AI 의 REST API 를 직접 호출 (TARGET_URL + AUTH header + schema)
+//  - ui_chat:             평가대상 AI 의 웹 UI 를 Playwright 로 조작해 문답 수집
+// Phase 1 G4 시절의 openai_wrapper/gemini_wrapper 별도 모드는 여전히 이연 — 표준 http+openai_compat
+//  으로 커버 가능하기 때문. 관련 파라미터(OPENAI_*/GEMINI_*) 역시 재도입 안 함.
 properties([
     parameters([
-        [$class: 'StringParameterDefinition', name: 'OLLAMA_BASE_URL', defaultValue: 'http://host.docker.internal:11434', description: '심판(Judge) + 대상(local_ollama_wrapper) 공통 Ollama 주소. 예: http://host.docker.internal:11434'],
+        [$class: 'ChoiceParameterDefinition', name: 'TARGET_TYPE',
+            choices: 'local_ollama_wrapper\nhttp\nui_chat',
+            description: '''<b>평가 대상 AI 에게 어떻게 말을 걸지</b> 고르세요.
+<ul>
+<li><b>local_ollama_wrapper</b> — 이 컨테이너에 띄워진 wrapper 가 호스트 PC 의 Ollama 로 질문을 보내고 답을 받습니다. 외부 서비스 없이 자기평가/smoke 용도로 가장 간단하게 돌아갑니다. 이 모드에서는 <code>TARGET_URL</code> 이 필요 없습니다.</li>
+<li><b>http</b> — 평가 대상 AI 가 자체 REST API 를 제공합니다. 질문을 POST 로 보내고 JSON 으로 답변을 받습니다. <code>TARGET_URL</code> 에 API endpoint 를 넣어 주세요. 필요하면 <code>TARGET_AUTH_HEADER</code> 에 인증 헤더를 넣고, 요청 포맷이 OpenAI 스타일이면 <code>TARGET_REQUEST_SCHEMA=openai_compat</code> 을 선택합니다.</li>
+<li><b>ui_chat</b> — 평가 대상 AI 가 웹 채팅 UI 형태로 제공됩니다. Playwright 브라우저가 해당 페이지를 열고 질문 입력창에 타이핑 → 전송 → 응답 DOM 수집 순으로 자동 조작합니다. <code>TARGET_URL</code> 에 채팅 페이지 URL 을, <code>UI_*_SELECTOR</code> 에 입력/전송/응답 요소의 CSS selector 를 채워 주세요.</li>
+</ul>'''],
+        [$class: 'StringParameterDefinition', name: 'TARGET_URL', defaultValue: '',
+            description: '''<b>평가 대상 AI 의 접속 주소</b>. TARGET_TYPE 에 따라 의미가 달라집니다.
+<ul>
+<li><b>http</b>: REST endpoint (예: <code>http://127.0.0.1:28081/v1/chat-messages</code>, OpenAI 호환 서비스면 <code>.../v1/chat/completions</code>)</li>
+<li><b>ui_chat</b>: 사용자가 직접 질문을 타이핑하는 채팅 웹 페이지 URL (예: <code>http://127.0.0.1:28081/chat/&lt;app-id&gt;</code>)</li>
+<li><b>local_ollama_wrapper</b>: 비워 두세요. wrapper 가 자동으로 <code>127.0.0.1:8000/invoke</code> 로 기동됩니다</li>
+</ul>'''],
+        [$class: 'PasswordParameterDefinition', name: 'TARGET_AUTH_HEADER',
+            description: '''<b>(선택, TARGET_TYPE=http 전용)</b> API 가 인증을 요구할 때 붙일 헤더.<br>
+예시: <code>Authorization: Bearer sk-xxxxx</code> 또는 <code>X-API-Key: my-key-abc</code><br>
+콜론(<code>:</code>) 앞은 헤더 이름, 뒤는 값. 콜론이 없으면 <code>Authorization</code> 헤더에 그대로 들어갑니다. <b>비워 두면 인증 없이 호출</b>합니다. 값은 Jenkins 에서 암호로 저장돼 빌드 로그에 노출되지 않습니다.'''],
+        [$class: 'ChoiceParameterDefinition', name: 'TARGET_REQUEST_SCHEMA',
+            choices: 'standard\nopenai_compat',
+            description: '''<b>(TARGET_TYPE=http 전용) 요청/응답 포맷</b>.
+<ul>
+<li><b>standard</b>: 이 평가 러너의 기본 포맷. 요청 <code>{"messages":[…], "query":"…", "input":"…"}</code>, 응답은 <code>answer</code>/<code>response</code>/<code>text</code>/<code>output</code> 중 하나에 답변이 있다고 가정. Dify Chatflow/ 자체 구현 API 등에 맞습니다.</li>
+<li><b>openai_compat</b>: OpenAI Chat Completions 호환. 요청 <code>{"model":"…", "messages":[{"role":"user","content":"…"}]}</code>, 응답 <code>{"choices":[{"message":{"content":"…"}}]}</code>. OpenAI/GPT 호환 프록시, 많은 오픈소스 LLM 게이트웨이가 이 형식을 씁니다.</li>
+</ul>'''],
+        [$class: 'StringParameterDefinition', name: 'UI_INPUT_SELECTOR', defaultValue: 'textarea, input[type=text]',
+            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> 채팅 페이지의 <b>질문 입력창</b> CSS selector. 기본값은 가장 흔한 패턴(모든 textarea 또는 text input). 동작이 어색하면 개발자도구(F12)에서 해당 입력창을 선택해 정확한 selector 를 넣으세요. 예: <code>textarea[data-testid="chat-input"]</code>'],
+        [$class: 'StringParameterDefinition', name: 'UI_SEND_SELECTOR', defaultValue: 'button[type=submit]',
+            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> <b>전송 버튼</b> CSS selector. 버튼이 없고 Enter 로만 보내는 UI 라면 비워 두세요 — 자동으로 Enter 키를 입력합니다.'],
+        [$class: 'StringParameterDefinition', name: 'UI_OUTPUT_SELECTOR', defaultValue: '.answer, [role=assistant], .message-content',
+            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> <b>응답 메시지</b> CSS selector. 매칭되는 요소 중 <b>마지막 요소</b>의 텍스트를 답변으로 채택. 스트리밍 UI 에선 완성된 마지막 메시지 노드가 필요합니다. 예: <code>div.markdown-body:last-of-type</code>'],
+        [$class: 'StringParameterDefinition', name: 'UI_WAIT_TIMEOUT', defaultValue: '60',
+            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> 응답이 나타날 때까지 최대 대기 시간(초). 복잡한 질문이나 느린 모델이면 120~300 으로 키우세요.'],
+        [$class: 'StringParameterDefinition', name: 'OLLAMA_BASE_URL', defaultValue: 'http://host.docker.internal:11434',
+            description: '<b>심판(Judge) 모델</b>이 돌고 있는 Ollama 데몬 주소. WSL2/Docker Desktop 에서는 호스트 PC 의 Ollama 를 가리키기 위해 <code>http://host.docker.internal:11434</code> 를 그대로 두세요. 다른 머신이면 해당 IP:포트로.'],
         [
             $class: 'CascadeChoiceParameter',
             choiceType: 'PT_SINGLE_SELECT',
-            description: 'OLLAMA 모델 목록에서 선택. 예: qwen3-coder:30b',
+            description: '''<b>(TARGET_TYPE=local_ollama_wrapper 전용)</b> <b>평가 대상 AI 역할</b>을 맡을 Ollama 모델.<br>
+즉 채점 받을 "응시자" 모델. 이 Job 은 로컬 Ollama 를 wrapper 로 감싸 평가 대상으로 사용하는 경우 여기에 지정한 모델이 답변자 역할을 수행합니다.<br>
+권장: 작고 빠른 모델(<b>gemma4:e2b</b>, <b>qwen3.5:4b</b>) — 답변 품질보다 평가 파이프라인 검증이 목적이라면 가벼울수록 좋습니다.<br>
+<b>Judge 모델과 같아도 되고 달라도 됩니다.</b> (같으면 자기평가 구조)''',
+            filterLength: 1,
+            filterable: true,
+            name: 'TARGET_OLLAMA_MODEL',
+            randomName: 'target-ollama-model-choice',
+            referencedParameters: 'OLLAMA_BASE_URL',
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [
+                    classpath: [],
+                    sandbox: true,
+                    script: "return ['gemma4:e2b', 'qwen3.5:4b', 'gemma4:e4b', 'llama3.2-vision:latest', 'qwen3-coder:30b']"
+                ],
+                script: [
+                    classpath: [],
+                    sandbox: false,
+                    script: '''
+                        import groovy.json.JsonSlurperClassic
+                        def defaultModels = ['gemma4:e2b', 'qwen3.5:4b', 'gemma4:e4b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
+                        def baseUrl = (OLLAMA_BASE_URL ?: 'http://host.docker.internal:11434').trim()
+                        if (!baseUrl) { return defaultModels }
+                        try {
+                            def apiUrl = baseUrl.endsWith('/') ? "${baseUrl}api/tags" : "${baseUrl}/api/tags"
+                            def connection = new URL(apiUrl).openConnection()
+                            connection.setConnectTimeout(3000); connection.setReadTimeout(5000)
+                            def payload = new JsonSlurperClassic().parse(connection.getInputStream().newReader('UTF-8'))
+                            def models = ((payload?.models ?: []) as List).collect { it?.name?.toString() }.findAll { it }.unique().sort()
+                            return models ?: defaultModels
+                        } catch (Throwable ignored) { return defaultModels }
+                    '''
+                ]
+            ]
+        ],
+        [
+            $class: 'CascadeChoiceParameter',
+            choiceType: 'PT_SINGLE_SELECT',
+            description: '''<b>심판 모델 (Judge LLM)</b>. 평가 대상 AI 의 답변을 채점할 LLM. 호스트 Ollama 에 올라와 있는 모델 중 선택. <code>OLLAMA_BASE_URL</code> 을 바꾸면 이 목록도 자동 갱신.<br>
+권장: <b>qwen3.5:4b</b>(빠름, 일상 평가), <b>gemma4:e4b</b>(정확도 우선, 느림). 대상 모델보다 조금 더 큰 쪽이 신뢰할만한 채점을 합니다.''',
             filterLength: 1,
             filterable: true,
             name: 'JUDGE_MODEL',
@@ -19,48 +97,43 @@ properties([
                     classpath: [],
                     sandbox: true,
                     script: '''
-                        // Active Choices 스크립트 권한 문제가 있어도 드롭다운이 비지 않도록
-                        // 최소 선택지를 항상 반환합니다.
-                        return ['qwen3-coder:30b', 'qwen2:7b']
+                        // Active Choices 스크립트 권한/네트워크 문제로 동적 로드가 실패해도
+                        // 드롭다운을 비우지 않기 위한 최소 선택지. 호스트에 실존할 가능성이 높은
+                        // 모델들을 먼저 두되, 실제로는 OLLAMA_BASE_URL 기반 동적 스크립트가 이겨야 정상.
+                        return ['qwen3.5:4b', 'gemma4:e4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
                     '''
                 ],
                 script: [
                     classpath: [],
-                    sandbox: true,
+                    // sandbox: false — URL/openConnection/JsonSlurperClassic 을 쓰기 위해 필요.
+                    // Active Choices 는 관리자 승인이 들어간 Job 의 스크립트만 실행하므로
+                    // 내부용 파이프라인에서는 허용 가능.
+                    sandbox: false,
                     script: '''
                         import groovy.json.JsonSlurperClassic
 
-                        // ScriptApproval/네트워크 이슈가 있을 때에도 Build 화면 선택이 가능해야 하므로
-                        // fallback 가능한 기본 목록을 유지합니다.
-                        def defaultModels = ['qwen3-coder:30b', 'qwen2:7b']
+                        def defaultModels = ['qwen3.5:4b', 'gemma4:e4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
                         def baseUrl = (OLLAMA_BASE_URL ?: 'http://host.docker.internal:11434').trim()
-                        if (!baseUrl) {
-                            return defaultModels
-                        }
-
+                        if (!baseUrl) { return defaultModels }
                         try {
                             def apiUrl = baseUrl.endsWith('/') ? "${baseUrl}api/tags" : "${baseUrl}/api/tags"
                             def connection = new URL(apiUrl).openConnection()
-                            connection.setConnectTimeout(3000)
-                            connection.setReadTimeout(5000)
+                            connection.setConnectTimeout(3000); connection.setReadTimeout(5000)
                             def payload = new JsonSlurperClassic().parse(connection.getInputStream().newReader('UTF-8'))
                             def models = ((payload?.models ?: []) as List)
-                                .collect { it?.name?.toString() }
-                                .findAll { it }
-                                .unique()
-                                .sort()
+                                .collect { it?.name?.toString() }.findAll { it }.unique().sort()
                             return models ?: defaultModels
-                        } catch (Throwable ignored) {
-                            // UI 렌더링 시점 네트워크/권한 이슈가 있어도 최소 선택지는 노출합니다.
-                            return defaultModels
-                        }
+                        } catch (Throwable ignored) { return defaultModels }
                     '''
                 ]
             ]
         ],
-        [$class: 'StringParameterDefinition', name: 'ANSWER_RELEVANCY_THRESHOLD', defaultValue: '0.7', description: '답변 관련성 합격 기준(0~1). 초보자 권장: 0.7, 엄격 평가: 0.8'],
-        [$class: 'StringParameterDefinition', name: 'GOLDEN_CSV_PATH', defaultValue: '/var/knowledges/eval/data/golden.csv', description: '시험지 CSV 경로. 예: /var/knowledges/eval/data/golden.csv'],
-        [$class: 'FileParameterDefinition', name: 'UPLOADED_GOLDEN_DATASET', description: '(선택) 내 PC의 golden.csv 업로드. 업로드하면 GOLDEN_CSV_PATH 위치로 덮어쓰기']
+        [$class: 'StringParameterDefinition', name: 'ANSWER_RELEVANCY_THRESHOLD', defaultValue: '0.7',
+            description: '<b>답변 관련성</b> 합격 기준 (0.0~1.0). 이 점수 미만이면 해당 턴이 "품질 실패"로 집계됩니다. <b>0.7</b> 이 일반 권장, <b>0.8+</b> 는 엄격 평가, <b>0.5</b> 는 초기 도입 단계에서 관대하게.'],
+        [$class: 'StringParameterDefinition', name: 'GOLDEN_CSV_PATH', defaultValue: '/var/knowledges/eval/data/golden.csv',
+            description: '<b>시험지(Golden Dataset) 파일 경로</b>. 컨테이너 내부 경로. 각 행이 하나의 질문/기대 응답 케이스가 됩니다. 아래 <code>UPLOADED_GOLDEN_DATASET</code> 로 새 파일을 업로드하면 이 경로에 덮어쓰기됩니다.'],
+        [$class: 'FileParameterDefinition', name: 'UPLOADED_GOLDEN_DATASET',
+            description: '<b>(선택)</b> 내 PC 의 <code>golden.csv</code> 업로드. 업로드하면 위 <code>GOLDEN_CSV_PATH</code> 위치로 복사되고, 이후 평가는 이 새 시험지로 진행됩니다. 비워 두면 기존 파일 사용.']
     ])
 ])
 
@@ -149,10 +222,16 @@ PY
             }
         }
         stage('1-2. 로컬 Ollama Wrapper 기동 + 연결 검증') {
+            when {
+                // Phase 6: local_ollama_wrapper 모드에서만 wrapper 를 기동한다.
+                // http / ui_chat 모드는 외부/다른 어댑터를 쓰므로 wrapper 를 띄우지 않는다.
+                expression { (params.TARGET_TYPE ?: 'local_ollama_wrapper') == 'local_ollama_wrapper' }
+            }
             steps {
                 withEnv([
                     "OLLAMA_BASE_URL=${params.OLLAMA_BASE_URL}",
                     "JUDGE_MODEL=${params.JUDGE_MODEL ?: ''}",
+                    "TARGET_OLLAMA_MODEL=${params.TARGET_OLLAMA_MODEL ?: ''}",
                     "REPORT_DIR=${env.REPORT_DIR}",
                 ]) {
                     sh '''
@@ -162,14 +241,21 @@ PY
                     EFFECTIVE_TARGET_URL_FILE=".effective_target_url"
                     rm -f "$EFFECTIVE_TARGET_URL_FILE"
 
-                    EFFECTIVE_JUDGE_MODEL="${JUDGE_MODEL:-}"
-                    if [ -f .effective_judge_model ]; then
-                        EFFECTIVE_JUDGE_MODEL="$(cat .effective_judge_model)"
+                    # 평가 대상 모델 (wrapper 가 답변자로 사용). TARGET_OLLAMA_MODEL 이 없으면
+                    # JUDGE_MODEL 로 fallback (자기평가). Phase 6 에서 분리.
+                    EFFECTIVE_TARGET_MODEL="${TARGET_OLLAMA_MODEL:-}"
+                    if [ -z "$EFFECTIVE_TARGET_MODEL" ]; then
+                        EFFECTIVE_TARGET_MODEL="${JUDGE_MODEL:-}"
+                        if [ -f .effective_judge_model ]; then
+                            EFFECTIVE_TARGET_MODEL="$(cat .effective_judge_model)"
+                        fi
                     fi
-                    if [ -z "$EFFECTIVE_JUDGE_MODEL" ]; then
-                        echo "Cannot start wrapper: effective judge model is empty."
+                    if [ -z "$EFFECTIVE_TARGET_MODEL" ]; then
+                        echo "Cannot start wrapper: both TARGET_OLLAMA_MODEL and JUDGE_MODEL are empty."
                         exit 2
                     fi
+                    echo "$EFFECTIVE_TARGET_MODEL" > .effective_target_model
+                    echo "Wrapper target model: $EFFECTIVE_TARGET_MODEL"
 
                     # 이전 빌드의 wrapper 프로세스 잔재 정리
                     if [ -f "$WRAPPER_PID_FILE" ]; then
@@ -187,7 +273,7 @@ PY
                         OLLAMA_WRAPPER_HOST=0.0.0.0 \
                         OLLAMA_WRAPPER_PORT=8000 \
                         OLLAMA_BASE_URL="$OLLAMA_BASE_URL" \
-                        OLLAMA_MODEL="$EFFECTIVE_JUDGE_MODEL" \
+                        OLLAMA_MODEL="$EFFECTIVE_TARGET_MODEL" \
                         python3 /var/jenkins_home/scripts/eval_runner/ollama_wrapper_api.py \
                         > "$REPORT_DIR/wrapper.log" 2>&1 &
                     WRAPPER_PID="$!"
@@ -270,17 +356,43 @@ try:
             f"local_ollama_wrapper health probe failed with HTTP {health_response.status_code}. "
             f"body={compact_body[:500]}"
         )
+except requests.RequestException as exc:
+    raise SystemExit(f"Wrapper endpoint TCP reachable, but /health probe failed: {exc}")
 
-    response = requests.post(target_url, json={"input": "ping"}, timeout=20)
+# 첫 invoke 는 Ollama 가 모델을 RAM/VRAM 에 로드하는 시간을 포함. 로컬 LLM (>=4B) 은
+# cold-start 시 수 분 이상 걸릴 수 있으며, 모델이 이전 빌드와 다르면 GPU 에서 교체
+# 로드가 필요하다. probe 실패는 FATAL 로 올리지 말고 경고만 남기고 진행 —
+# Stage 2 의 pytest 가 동일 wrapper 를 호출하므로 거기서 실 error 로 수집된다.
+try:
+    response = requests.post(target_url, json={"input": "ping"}, timeout=300)
     print(f"Wrapper invoke probe response: HTTP {response.status_code}")
     if response.status_code >= 400:
         compact_body = " ".join((response.text or "").split())
-        raise SystemExit(
-            f"local_ollama_wrapper invoke probe failed with HTTP {response.status_code}. "
-            f"body={compact_body[:500]}"
+        print(
+            f"WARN: invoke probe returned HTTP {response.status_code} "
+            f"(body={compact_body[:200]}) — continuing; pytest will surface if real issue."
         )
 except requests.RequestException as exc:
-    raise SystemExit(f"Wrapper endpoint TCP reachable, but probe request failed: {exc}")
+    print(f"WARN: invoke probe failed: {exc}. Continuing to pytest (cold-start timeout)")
+
+# Phase 6: Judge 모델도 본 pytest 전에 한 번 VRAM 에 올려둔다 (warm-up).
+# 이렇게 하지 않으면 첫 케이스의 첫 Judge 호출 시 TARGET 모델과 동시 상주가 안 돼 swap
+# 이 발생 → Ollama 가 매 호출마다 모델을 내렸다 다시 올려 60~120 초 지연이 반복된다.
+# 호스트 Ollama 의 `OLLAMA_MAX_LOADED_MODELS=2` 이상 권장 (없으면 swap 지속).
+import os as _os
+_ollama_base = _os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
+_judge_model = _os.environ.get("JUDGE_MODEL", "").strip()
+if _judge_model:
+    try:
+        _r = requests.post(
+            f"{_ollama_base}/api/generate",
+            json={"model": _judge_model, "prompt": "ping", "stream": False,
+                  "options": {"num_predict": 4}, "keep_alive": "10m"},
+            timeout=300,
+        )
+        print(f"Judge warm-up ({_judge_model}): HTTP {_r.status_code}")
+    except requests.RequestException as exc:
+        print(f"WARN: Judge warm-up failed: {exc}. pytest 가 cold-start 겪을 수 있음.")
 PY
                     '''
                 }
@@ -291,19 +403,34 @@ PY
                 script {
                     // Langfuse 유무와 무관하게 동일한 평가 명령을 재사용하기 위한 클로저입니다.
                     def runEval = { ->
+                        // Phase 6: TARGET_TYPE 에 따라 어댑터 선택 + env 분기
+                        def targetType = params.TARGET_TYPE ?: 'local_ollama_wrapper'
+                        // local_ollama_wrapper → http_adapter + wrapper URL (127.0.0.1:8000/invoke)
+                        // http                 → http_adapter + 사용자 TARGET_URL
+                        // ui_chat              → browser_adapter + 사용자 TARGET_URL
+                        def adapterKind = (targetType == 'ui_chat') ? 'ui_chat' : 'http'
+                        def requestSchema = params.TARGET_REQUEST_SCHEMA ?: 'standard'
                         sh """
                         set +x
                         echo "=================================================="
                         echo "             STARTING EVALUATION RUN              "
                         echo "=================================================="
-                        echo "TARGET_MODE: local_ollama_wrapper"
+                        echo "TARGET_TYPE: ${targetType} (adapter=${adapterKind})"
                         EFFECTIVE_TARGET_URL=""
-                        if [ -f .effective_target_url ]; then
-                          EFFECTIVE_TARGET_URL="\$(cat .effective_target_url)"
-                        fi
-                        if [ -z "\$EFFECTIVE_TARGET_URL" ]; then
-                          echo "Effective target URL missing — Stage 1-2 did not run?"
-                          exit 2
+                        if [ "${targetType}" = "local_ollama_wrapper" ]; then
+                          if [ -f .effective_target_url ]; then
+                            EFFECTIVE_TARGET_URL="\$(cat .effective_target_url)"
+                          fi
+                          if [ -z "\$EFFECTIVE_TARGET_URL" ]; then
+                            echo "Effective target URL missing — Stage 1-2 did not run?"
+                            exit 2
+                          fi
+                        else
+                          EFFECTIVE_TARGET_URL="${params.TARGET_URL}"
+                          if [ -z "\$EFFECTIVE_TARGET_URL" ]; then
+                            echo "TARGET_URL is required when TARGET_TYPE=${targetType}"
+                            exit 2
+                          fi
                         fi
                         echo "TARGET_URL: \$EFFECTIVE_TARGET_URL"
                         EFFECTIVE_JUDGE_MODEL="${params.JUDGE_MODEL ?: ''}"
@@ -316,12 +443,22 @@ PY
                         fi
                         echo "JUDGE_MODEL: \$EFFECTIVE_JUDGE_MODEL"
                         echo "OLLAMA_BASE_URL: ${params.OLLAMA_BASE_URL}"
+                        echo "TARGET_REQUEST_SCHEMA: ${requestSchema}"
                         echo "ANSWER_RELEVANCY_THRESHOLD: ${params.ANSWER_RELEVANCY_THRESHOLD}"
                         echo "GOLDEN_CSV_PATH: ${params.GOLDEN_CSV_PATH}"
                         echo "REPORT_DIR: ${env.REPORT_DIR}"
                         echo "--------------------------------------------------"
                         export TARGET_URL="\$EFFECTIVE_TARGET_URL"
-                        export TARGET_TYPE='http'
+                        export TARGET_TYPE='${adapterKind}'
+                        export TARGET_REQUEST_SCHEMA='${requestSchema}'
+                        # TARGET_AUTH_HEADER 는 Password 파라미터로 받아 워크스페이스 로그에 노출되지 않도록 env 에만 주입.
+                        export TARGET_AUTH_HEADER='${params.TARGET_AUTH_HEADER ?: ''}'
+                        export UI_INPUT_SELECTOR='${params.UI_INPUT_SELECTOR ?: ''}'
+                        export UI_SEND_SELECTOR='${params.UI_SEND_SELECTOR ?: ''}'
+                        export UI_OUTPUT_SELECTOR='${params.UI_OUTPUT_SELECTOR ?: ''}'
+                        export UI_WAIT_TIMEOUT='${params.UI_WAIT_TIMEOUT ?: '60'}'
+                        # adapter HTTP timeout. 기본 300s. 로컬 Ollama 가 모델 swap 중이면 더 필요할 수 있음.
+                        export ADAPTER_TIMEOUT_SEC="${env.ADAPTER_TIMEOUT_SEC ?: '300'}"
                         export JUDGE_MODEL="\$EFFECTIVE_JUDGE_MODEL"
                         export OLLAMA_BASE_URL='${params.OLLAMA_BASE_URL}'
                         export ANSWER_RELEVANCY_THRESHOLD='${params.ANSWER_RELEVANCY_THRESHOLD}'
@@ -330,8 +467,14 @@ PY
                         export PYTHONPATH='${env.PYTHONPATH}'
                         set -x
 
-                        python3 -m pytest /var/jenkins_home/scripts/eval_runner/tests/test_runner.py \
-                          -n 1 \
+                        # Phase 6: pytest 실시간 진행 노출
+                        #  - xdist(-n 1) 제거: 단일 worker 로 쓸 때 출력을 버퍼링해 Jenkins 콘솔에서
+                        #    모든 case 가 끝날 때까지 진행을 전혀 볼 수 없었다.
+                        #  - PYTHONUNBUFFERED=1 + python3 -u: stdout/stderr 라인 버퍼 무효화.
+                        #  - -v / --tb=short: 각 케이스 시작·종료 라인이 즉시 한 줄씩 찍힌다.
+                        #  - -s (capture=no): test_runner 내부 print(연결/LLM 호출 등) 도 즉시 flush.
+                        PYTHONUNBUFFERED=1 python3 -u -m pytest /var/jenkins_home/scripts/eval_runner/tests/test_runner.py \
+                          -v -s --tb=short \
                           --junitxml=${env.REPORT_DIR}/results.xml
                         """
                     }
@@ -378,7 +521,13 @@ PY
                 mkdir -p '${artifactDir}'
                 find '${env.REPORT_DIR}' -maxdepth 1 -type f -exec cp -f {} '${artifactDir}/' \\;
                 """
-                junit testResults: "${artifactDir}/results.xml", allowEmptyResults: true
+                // junit step 은 JUnit plugin 의존. 플러그인 미설치 에어갭 환경에서 post always 를
+                // 깨뜨리지 않도록 try/catch 로 감싼다. 결과는 results.xml 아카이브로 대체 노출.
+                try {
+                    junit testResults: "${artifactDir}/results.xml", allowEmptyResults: true
+                } catch (NoSuchMethodError e) {
+                    echo "junit DSL unavailable (JUnit plugin missing) — skipping results aggregation; results.xml 은 archiveArtifacts 로 보존"
+                }
                 archiveArtifacts artifacts: "${artifactDir}/*", allowEmptyArchive: true
 
                 def safeBuildTag = (env.BUILD_TAG ?: env.BUILD_ID ?: 'manual').replaceAll('[^a-zA-Z0-9_.-]', '')

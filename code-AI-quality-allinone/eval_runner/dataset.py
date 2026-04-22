@@ -125,6 +125,18 @@ def load_dataset():
     df = pd.read_csv(GOLDEN_CSV_PATH)
     df = df.where(pd.notnull(df), None)
     records = df.to_dict(orient="records")
+    # pd.DataFrame.where 는 numeric column 의 dtype 을 유지하느라 None 이 다시 float NaN 으로
+    # 저장되는 경우가 있다. records 레벨에서 한 번 더 NaN → None 치환해 downstream 의
+    # `token in criteria` 같은 string-operation 에서 `argument of type 'float' is not iterable`
+    # 에러를 방지한다.
+    for record in records:
+        for key, value in list(record.items()):
+            if isinstance(value, float):
+                try:
+                    if pd.isna(value):
+                        record[key] = None
+                except (TypeError, ValueError):
+                    pass
 
     if "conversation_id" not in df.columns:
         return [[record] for record in records]
