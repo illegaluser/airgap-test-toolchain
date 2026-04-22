@@ -6320,3 +6320,75 @@ Jenkins artifact fetch 환경 의존으로 본 phase 에서는 스펙만 유지.
 - **3.2 Q3** Dataset 메타: `load_dataset()` 이 SHA256 + mtime + rows 계산 → `dataset: {path, sha256, rows, mtime}`.
 - **3.3 Q1** Error type enum 구조화: `UniversalEvalOutput.error_type: Literal["system","quality"] | None` 추가. Phase 2.4 의 임시 문자열 매칭을 구조 필드로 교체 (`_classify_error_type` 의 explicit 분기 활성화).
 - 검증: 골든 하네스 통과 유지, 리포트 헤더에 3종 메타 상시 노출.
+
+---
+
+### ▣ AI 평가 파이프라인 개선 — Phase 3 (Metadata & Traceability)
+**브랜치**: `feat/ai-eval-pipeline` (Phase 2 이어서)
+
+#### 진입 맥락 + 테스트 게이트 강화
+사용자 피드백: "각 페이즈별로 테스트는 진행하고 있나? 테스트를 통과한 후에 다음 페이즈로 진입하도록 해." 이에 따라 **3-레벨 테스트 프로토콜** 확정:
+- L1 자동: 골든 하네스 pytest (매 커밋 후)
+- L2 정적: import smoke + `pytest --collect-only` (매 커밋 후, 로컬에 deepeval 설치 후 가능)
+- L3 통합: Jenkins 실 빌드 + 3 시나리오 + LLM 환각 체크 (최종 통합 테스트 시 사용자 수행)
+
+로컬에 deepeval 3.9.7 설치 완료. `test_runner.py --collect-only` 가 tiny_dataset 기반 10 conversations 수집 확인.
+
+#### 3.1 Q2 — Judge 잠금 메타 (커밋 `00b24b3`)
+- `test_runner._collect_judge_meta()`:
+    - `model` (JUDGE_MODEL env, 기본 qwen3-coder:30b)
+    - `base_url` (OLLAMA_BASE_URL)
+    - `temperature=0` (DeepEval + translate 공통 고정)
+    - `digest` — Ollama `/api/show` POST best-effort, 실패 시 None
+- `SUMMARY_STATE["aggregate"]["judge"]` 에 저장 → summary.json 영구 보존
+- `reporting/html._render_judge_meta_line(state)`:
+    - R1 헤더에 "심판 모델: qwen3-coder:30b @ ollama:11434 T=0 digest=…abcd12345678" 표시
+    - 기존 `state["judge_model"]` 레거시 호환 유지
+
+#### 3.2 Q3 — Dataset 메타
+- `test_runner._collect_dataset_meta()`:
+    - `path` (절대경로), `sha256` (hex 64), `rows` (CSV 라인 수 − 헤더), `mtime` (ISO8601 UTC)
+    - 파일 부재 시 값 None — 예외 대신 None 채워 리포트 렌더 깨지지 않음
+- `SUMMARY_STATE["aggregate"]["dataset"]` 에 저장
+- `reporting/html._render_dataset_meta_line(state)`:
+    - R1 헤더에 "데이터셋: /path/golden.csv sha256=…fedcba987654 rows=42 mtime=…" 표시
+
+#### 3.3 Q1 — UniversalEvalOutput.error_type enum 구조화
+- `adapters/base.py`:
+    - `ErrorType = Optional[Literal["system", "quality"]]` 선언
+    - `UniversalEvalOutput.error_type: ErrorType = None` 필드 추가
+    - `to_dict()` 에 error_type 포함
+- `adapters/http_adapter.py`:
+    - 5xx/4xx HTTP 응답 → `error_type="system"`
+    - `requests.RequestException` (ConnError/Timeout) → `error_type="system"`
+- `adapters/browser_adapter.py`:
+    - Playwright 미설치 / 자동화 실패 → `error_type="system"`
+- `test_runner.py`:
+    - `turn_report` 초기화에 `error_type=None` 추가
+    - adapter 실패 분기에서 `result.error_type` 을 turn_report 로 전사
+    - except 블록에서 error_type 미세팅 시 `"quality"` 로 default (policy/schema/task/metric 실패 커버)
+- `reporting/html._classify_error_type`: 이미 Phase 2.4 에서 explicit 필드 우선 로직 구현됨. 이제 실제로 값이 채워지므로 휴리스틱 의존도 감소.
+
+#### Phase 3 종료 게이트 결과
+- ✅ L1 골든 하네스 **27/27 PASS** (기존 21 + 신규 6)
+- ✅ L2 `test_runner.py --collect-only` 10 tests (regression 없음)
+- ✅ 변경 6개 파일 모두 `eval_runner/` 범위 (Jobs 01/02/03 영향 0)
+- ✅ REPORT_SPEC AC6 (R1 헤더 judge digest + dataset sha256) 기반 완성
+
+#### 신규 골든 테스트 (6종)
+- `test_phase3_judge_meta_collection` — model/base_url/T=0/digest key 존재
+- `test_phase3_dataset_meta_collection` — sha256 64자 hex + rows + mtime
+- `test_phase3_error_type_field_on_universal_eval_output` — 필드 + to_dict
+- `test_phase3_http_adapter_tags_system_error` — ConnError + 5xx 양쪽
+- `test_phase3_classify_error_type_uses_explicit_field` — explicit > 휴리스틱
+- `test_phase3_html_header_shows_judge_and_dataset_meta` — R1 헤더 노출
+
+#### 커밋 (이번 세션)
+- `00b24b3` `feat(eval_runner): Phase 3 — Metadata & Traceability (Q1/Q2/Q3)`
+- (예정) `docs(ai-eval): plan v5 sync + Phase 3 종료 + CONVERSATION_LOG 갱신`
+
+#### 다음 단계 — Phase 4 (Structure Cleanup)
+- **4.1 Q5** Promptfoo subprocess → in-process 전환: `security_assert.py` 가 이미 Python 이므로 regex 체크는 in-process, LLM 기반 assertion 필요 시만 subprocess 유지.
+- **4.2 Q4** `test_runner.py` 분할: `dataset.py` / `policy.py` / `scoring.py` / `runner.py` 로 책임 분리. `tests/test_runner.py` 는 ~30 LOC pytest shim 으로 축소.
+- Q6 는 Phase 1 의 모드 단순화로 이미 자동 해소됨 (skipped).
+- 검증: 골든 하네스 byte-match (기능 변화 0), `pytest --collect-only` 로 pytest 디스커버리 유지.
