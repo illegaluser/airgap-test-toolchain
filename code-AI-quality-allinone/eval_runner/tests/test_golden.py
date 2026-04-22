@@ -1049,6 +1049,113 @@ def test_phase5_html_header_shows_calibration_and_judge_calls():
     assert "경계 재실행 N=3" in html
 
 
+# ============================================================================
+# Phase 6 — Target Flexibility
+# ============================================================================
+
+
+def test_phase6_adapter_registry_target_type_routing():
+    """[Phase 6.1] AdapterRegistry 가 TARGET_TYPE 문자열에 맞는 어댑터 클래스를 선택."""
+    from adapters.registry import AdapterRegistry
+    from adapters.http_adapter import GenericHttpAdapter
+
+    http = AdapterRegistry.get_instance("http", "http://127.0.0.1:5001/x")
+    assert isinstance(http, GenericHttpAdapter)
+
+    # ui_chat 은 Playwright 미설치 환경에서도 인스턴스 생성까지는 가능해야 함
+    # (실 .invoke 만 Playwright 의존). 여기서는 클래스 명 확인.
+    try:
+        ui = AdapterRegistry.get_instance("ui_chat", "http://127.0.0.1:28081/chat")
+        assert type(ui).__name__ == "BrowserUIAdapter"
+    except ImportError:
+        pytest.skip("Playwright not installed in this env")
+
+    # 알 수 없는 이름 → 기본 http
+    fallback = AdapterRegistry.get_instance("unknown_kind", "http://127.0.0.1:x")
+    assert isinstance(fallback, GenericHttpAdapter)
+
+
+def test_phase6_http_adapter_openai_compat_payload(monkeypatch):
+    """[Phase 6.2] TARGET_REQUEST_SCHEMA=openai_compat 일 때 payload 가 OpenAI 호환 구조."""
+    import types as _types
+    from adapters.http_adapter import GenericHttpAdapter
+
+    monkeypatch.setenv("TARGET_REQUEST_SCHEMA", "openai_compat")
+    monkeypatch.setenv("JUDGE_MODEL", "gemma4:e4b")
+    adapter = GenericHttpAdapter("http://127.0.0.1:5001/v1/chat/completions")
+
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+        text = '{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}'
+        def raise_for_status(self): pass
+        def json(self):
+            import json as _j
+            return _j.loads(self.text)
+
+    def _fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"] = url; captured["json"] = json; captured["headers"] = headers
+        return _FakeResp()
+
+    import requests as _requests
+    monkeypatch.setattr(_requests, "post", _fake_post)
+
+    out = adapter.invoke("hi")
+    payload = captured["json"]
+    assert set(payload.keys()) == {"model", "messages"}
+    assert payload["model"] == "gemma4:e4b"
+    assert payload["messages"] == [{"role": "user", "content": "hi"}]
+    # 응답은 choices[0].message.content 에서 추출
+    assert out.actual_output == "hello"
+    assert out.usage.get("promptTokens") == 3
+
+
+def test_phase6_http_adapter_standard_payload_unchanged(monkeypatch):
+    """[Phase 6.2] TARGET_REQUEST_SCHEMA=standard 기본에서는 기존 payload 형태 유지 (회귀)."""
+    from adapters.http_adapter import GenericHttpAdapter
+
+    monkeypatch.delenv("TARGET_REQUEST_SCHEMA", raising=False)
+    adapter = GenericHttpAdapter("http://127.0.0.1:5001/x")
+
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+        text = '{"answer":"ok"}'
+        def raise_for_status(self): pass
+        def json(self):
+            import json as _j
+            return _j.loads(self.text)
+
+    import requests as _requests
+
+    def _fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResp()
+
+    monkeypatch.setattr(_requests, "post", _fake_post)
+    out = adapter.invoke("hi")
+    keys = set(captured["json"].keys())
+    assert {"messages", "query", "input", "user"}.issubset(keys)
+    assert out.actual_output == "ok"
+
+
+def test_phase6_http_adapter_auth_header_injection(monkeypatch):
+    """[Phase 6.1] TARGET_AUTH_HEADER 가 "Header: value" 형식으로 주입된다."""
+    from adapters.http_adapter import GenericHttpAdapter
+
+    adapter = GenericHttpAdapter("http://127.0.0.1:5001/x", auth_header="X-API-Key: abc123")
+    headers = adapter._build_headers()
+    assert headers.get("X-API-Key") == "abc123"
+    assert headers.get("Content-Type") == "application/json"
+
+    # ":" 없으면 Bearer 로 Authorization 에 삽입
+    adapter2 = GenericHttpAdapter("http://127.0.0.1:5001/x", auth_header="sk-xxx")
+    h2 = adapter2._build_headers()
+    assert h2.get("Authorization") == "sk-xxx"
+
+
 def test_phase5_html_header_calibration_disabled():
     """[Phase 5.1] 보정 세트 미설정 시에도 헤더 라인 정상 (placeholder)."""
     from reporting.html import render_summary_html

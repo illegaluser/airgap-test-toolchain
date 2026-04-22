@@ -13,6 +13,7 @@ http_adapter.py — HTTP API 기반 AI 에이전트 평가 어댑터
 """
 
 import json
+import os
 import time
 from typing import Dict, List, Optional
 
@@ -25,7 +26,16 @@ class GenericHttpAdapter(BaseAdapter):
     """
     HTTP API 기반 AI 에이전트를 호출하고 결과를 UniversalEvalOutput으로 표준화하는 어댑터.
     대화 기록(history)을 포함한 다중 턴 요청을 지원합니다.
+
+    Phase 6: 요청/응답 포맷 선택 지원 (TARGET_REQUEST_SCHEMA env).
+    - "standard" (기본): 기존 `{messages, query, input}` → `{answer, docs, usage}` 포맷
+    - "openai_compat":   OpenAI Chat Completions 호환 `{model, messages}` →
+                         `{choices:[{message:{content}}], usage:{prompt_tokens,...}}`
     """
+
+    def __init__(self, target_url: str, api_key: str = None, auth_header: str = None):
+        super().__init__(target_url, api_key, auth_header)
+        self.request_schema = (os.environ.get("TARGET_REQUEST_SCHEMA") or "standard").strip().lower()
 
     @staticmethod
     def _extract_usage(data: Dict) -> Dict[str, int]:
@@ -59,6 +69,7 @@ class GenericHttpAdapter(BaseAdapter):
         """
         실제 답변 텍스트가 들어 있을 가능성이 높은 필드들을 순서대로 탐색합니다.
         가장 먼저 발견된 값을 평가용 actual_output으로 사용합니다.
+        Phase 6: OpenAI 호환 응답(`choices[0].message.content`) 도 fallback 으로 탐색.
         """
         if not isinstance(data, dict):
             return ""
@@ -66,7 +77,25 @@ class GenericHttpAdapter(BaseAdapter):
         for key in ("answer", "response", "text", "output", "message"):
             value = data.get(key)
             if value is not None:
+                # OpenAI 의 message 필드는 dict → 그 안의 content 를 꺼낸다
+                if key == "message" and isinstance(value, dict):
+                    content = value.get("content")
+                    if content is not None:
+                        return str(content)
+                    continue
                 return str(value)
+
+        # OpenAI Chat Completions: choices[0].message.content
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                msg = first.get("message")
+                if isinstance(msg, dict) and msg.get("content") is not None:
+                    return str(msg["content"])
+                text = first.get("text")
+                if text is not None:
+                    return str(text)
         return ""
 
     @staticmethod
@@ -150,20 +179,35 @@ class GenericHttpAdapter(BaseAdapter):
                 messages.append({"role": "assistant", "content": turn["actual_output"]})
         messages.append({"role": "user", "content": input_text})
 
-        # 다양한 외부 API와의 호환성을 위해 query, input, messages를 함께 보냅니다.
-        payload = {
-            "messages": messages,
-            "query": input_text,
-            "input": input_text,
-            "user": "eval-runner",
-        }
+        # Phase 6: TARGET_REQUEST_SCHEMA 에 따라 payload 포맷을 분기한다.
+        if self.request_schema == "openai_compat":
+            # OpenAI Chat Completions 호환 — `model` 필드는 JUDGE_MODEL 환경변수를 재사용.
+            # 대상 측이 model 을 무시할 수 있으므로 default 로 "auto" 사용.
+            payload = {
+                "model": os.environ.get("JUDGE_MODEL") or "auto",
+                "messages": messages,
+            }
+        else:
+            # standard: eval_runner 표준 포맷. 다양한 외부 API 와의 호환성 위해 query/input/messages 병용.
+            payload = {
+                "messages": messages,
+                "query": input_text,
+                "input": input_text,
+                "user": "eval-runner",
+            }
 
+        # Phase 6: adapter timeout 을 env 로 조정 가능. 로컬 Ollama 가 모델 swap 으로
+        # 첫 몇 호출이 느릴 때 60s 기본값이 부족한 경우가 많다. 기본 300s, env override.
+        try:
+            timeout_sec = int(os.environ.get("ADAPTER_TIMEOUT_SEC") or "300")
+        except (TypeError, ValueError):
+            timeout_sec = 300
         try:
             response = requests.post(
                 self.target_url,
                 json=payload,
                 headers=headers,
-                timeout=60,
+                timeout=timeout_sec,
             )
             latency_ms = int((time.time() - start_time) * 1000)
 

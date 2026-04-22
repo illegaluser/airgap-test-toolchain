@@ -740,6 +740,18 @@ def _write_summary_report():
         report_file.write(render_summary_html(SUMMARY_STATE))
 
 
+def _build_judge_model():
+    """
+    Judge 용 Ollama LLM 인스턴스 생성. deepeval 3.x 의 OllamaModel 은 base_url 과 model 을
+    받는다. temperature=0 고정 (결정성 확보).
+    """
+    return OllamaModel(
+        model=JUDGE_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0,
+    )
+
+
 def _collect_judge_meta() -> dict:
     """
     Phase 3.1 Q2 — Judge LLM 의 재현성·감사용 메타를 고정 수집.
@@ -884,12 +896,13 @@ def _compact_output_for_relevancy(text: str) -> str:
 
 
 
-def _parse_success_criteria_mode(criteria: str) -> str:
+def _parse_success_criteria_mode(criteria) -> str:
     """
     success_criteria가 규칙 DSL인지, 자연어 GEval 기준인지, 비어 있는지를 판별합니다.
     기존 시험지 문법과 문서 예시를 동시에 지원하기 위한 분기 함수입니다.
+    pandas NaN(float) 같은 비-문자열 입력은 "none" 으로 방어 처리.
     """
-    if not criteria:
+    if not criteria or not isinstance(criteria, str):
         return "none"
     if any(token in criteria for token in ("status_code=", "raw~r/", "json.")):
         return "dsl"
@@ -1183,6 +1196,8 @@ def test_evaluation(conversation):
 
     conversation_history = []
     full_conversation_passed = True
+    # Phase 6: Jenkins 콘솔에서 진행 상황을 실시간으로 볼 수 있도록 시작 라인을 flush.
+    print(f"[eval] ▶ conversation={conv_id} turns={len(conversation)} target_type={TARGET_TYPE}", flush=True)
     adapter = AdapterRegistry.get_instance(TARGET_TYPE, TARGET_URL, API_KEY, TARGET_AUTH_HEADER)
     judge = _build_judge_model()
     conversation_report = {
