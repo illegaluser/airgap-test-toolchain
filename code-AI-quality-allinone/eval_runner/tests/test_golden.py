@@ -173,6 +173,44 @@ def test_is_blank_value():
         assert tr._is_blank_value(non_blank) is False, f"expected non-blank: {non_blank!r}"
 
 
+def test_normalize_usage(expected):
+    """[Phase 1 G3] usage 딕셔너리의 camelCase/snake_case 키를 정규화."""
+    for case in expected["usage_normalization"]:
+        got = tr._normalize_usage(case["input"])
+        assert got == case["expected"], f"case={case} got={got}"
+
+
+def test_percentile(expected):
+    """[Phase 1 G3] nearest-rank percentile 계산이 고정된 값을 낸다."""
+    for case in expected["percentile_cases"]:
+        values = sorted(case["values"])
+        got = tr._percentile(values, case["percentile"])
+        assert got == case["expected"], f"case={case} got={got}"
+
+
+def test_summary_totals_aggregates_latency_and_tokens(expected):
+    """[Phase 1 G3] _recompute_summary_totals 가 latency 분포 + 토큰 합계를 기록."""
+    # SUMMARY_STATE 를 격리된 샘플로 교체 후 재집계
+    expected_case = expected["summary_totals"]
+    original = tr.SUMMARY_STATE
+    try:
+        tr.SUMMARY_STATE = {
+            **(original or {}),
+            "conversations": expected_case["conversations"],
+            "totals": {},
+            "metric_averages": {},
+        }
+        tr._recompute_summary_totals()
+        totals = tr.SUMMARY_STATE["totals"]
+    finally:
+        tr.SUMMARY_STATE = original
+
+    assert totals["latency_ms"] == expected_case["expected_latency_ms"], \
+        f"latency_ms 불일치: {totals['latency_ms']}"
+    assert totals["tokens"] == expected_case["expected_tokens"], \
+        f"tokens 불일치: {totals['tokens']}"
+
+
 def test_turn_sort_key():
     """turn_id 정렬이 실제 사용 패턴(int + None, 또는 digit-string + None)에서 안정적."""
     # 실사용 케이스 1: 정수 turn_id + None → None 이 뒤로

@@ -299,6 +299,10 @@ def _recompute_summary_totals():
     """
     conversation 결과 배열을 기준으로 총계와 metric 평균을 재계산합니다.
     중간에 특정 conversation이 실패하더라도 최신 상태가 summary 파일에 반영되도록 매번 전체를 다시 계산합니다.
+
+    Phase 1 G3: Langfuse off 상태에서도 11지표 ⑩⑪(Latency / Token Usage) 를 summary.json
+    에 완전 기록. `totals.latency_ms.{count,min,max,p50,p95,p99}` 와
+    `totals.tokens.{turns_with_usage,prompt,completion,total}` 을 추가.
     """
     conversations = SUMMARY_STATE["conversations"]
     total_turns = 0
@@ -307,6 +311,11 @@ def _recompute_summary_totals():
     passed_conversations = 0
     failed_conversations = 0
     metric_scores = {}
+    latency_samples = []
+    tokens_prompt_sum = 0
+    tokens_completion_sum = 0
+    tokens_total_sum = 0
+    tokens_turn_count = 0
 
     for conversation in conversations:
         if conversation.get("status") == "passed":
@@ -332,7 +341,22 @@ def _recompute_summary_totals():
             for metric_detail in turn.get("metrics", []):
                 _append_metric_average(metric_scores, metric_detail["name"], metric_detail.get("score"))
 
+            latency_ms = turn.get("latency_ms")
+            if latency_ms is not None:
+                try:
+                    latency_samples.append(int(latency_ms))
+                except (TypeError, ValueError):
+                    pass
+
+            usage_norm = _normalize_usage(turn.get("usage"))
+            if usage_norm:
+                tokens_prompt_sum += usage_norm["prompt"]
+                tokens_completion_sum += usage_norm["completion"]
+                tokens_total_sum += usage_norm["total"]
+                tokens_turn_count += 1
+
     total_conversations = len(conversations)
+    latency_samples.sort()
     SUMMARY_STATE["totals"] = {
         "conversations": total_conversations,
         "passed_conversations": passed_conversations,
@@ -344,6 +368,20 @@ def _recompute_summary_totals():
         if total_conversations
         else 0.0,
         "turn_pass_rate": round((passed_turns / total_turns) * 100, 2) if total_turns else 0.0,
+        "latency_ms": {
+            "count": len(latency_samples),
+            "min": latency_samples[0] if latency_samples else None,
+            "max": latency_samples[-1] if latency_samples else None,
+            "p50": _percentile(latency_samples, 50),
+            "p95": _percentile(latency_samples, 95),
+            "p99": _percentile(latency_samples, 99),
+        },
+        "tokens": {
+            "turns_with_usage": tokens_turn_count,
+            "prompt": tokens_prompt_sum,
+            "completion": tokens_completion_sum,
+            "total": tokens_total_sum,
+        },
     }
     SUMMARY_STATE["metric_averages"] = {
         metric_name: round(sum(scores) / len(scores), 4) for metric_name, scores in metric_scores.items() if scores
@@ -425,6 +463,52 @@ def _format_token_usage(usage):
     if prompt is None and completion is None and total is None:
         return "-"
     return f"입력={int(prompt or 0)}, 출력={int(completion or 0)}, 합계={int(total or 0)}"
+
+
+def _normalize_usage(usage):
+    """
+    어댑터별 키 스타일(camelCase / snake_case)을 흡수해 토큰 사용량을
+    ``{"prompt": int, "completion": int, "total": int}`` 로 정규화한다.
+    값이 전부 0 이거나 없으면 None. Phase 1 G3 에서 summary.json 집계용.
+    """
+    if not usage or not isinstance(usage, dict):
+        return None
+
+    prompt = usage.get("promptTokens")
+    completion = usage.get("completionTokens")
+    total = usage.get("totalTokens")
+    if prompt is None:
+        prompt = usage.get("prompt_tokens")
+    if completion is None:
+        completion = usage.get("completion_tokens")
+    if total is None:
+        total = usage.get("total_tokens")
+
+    prompt = int(prompt) if prompt is not None else 0
+    completion = int(completion) if completion is not None else 0
+    if total is None:
+        total = prompt + completion
+    else:
+        total = int(total)
+
+    if prompt == 0 and completion == 0 and total == 0:
+        return None
+    return {"prompt": prompt, "completion": completion, "total": total}
+
+
+def _percentile(sorted_values, percentile: float):
+    """
+    nearest-rank percentile. `sorted_values` 는 오름차순 정렬 전제.
+    `percentile` 은 0~100 스케일. 빈 시퀀스는 None 반환.
+    Phase 1 G3 의 latency 분포 산출용. numpy/statistics 의존 회피 (airgap).
+    """
+    if not sorted_values:
+        return None
+    import math
+
+    n = len(sorted_values)
+    rank = max(1, math.ceil(percentile / 100.0 * n))
+    return sorted_values[min(rank, n) - 1]
 
 
 def _build_task_completion_display(turn: dict):
