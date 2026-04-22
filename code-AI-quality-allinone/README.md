@@ -218,6 +218,8 @@ Jenkins 빌드 Artifact 로 빌드마다 `build-<N>/summary.html` (+ `summary.js
 
 ## 3. 온라인 준비 머신 — 자산 수집
 
+> 📋 **이 섹션은 "따라 하기"** — 처음부터 끝까지 순서대로 실행하세요. 각 Step 은 이전 Step 의 결과물을 전제로 합니다. 이 섹션을 완주하면 오프라인 머신으로 옮길 **반출 패키지 1 벌** 이 준비됩니다 (≈ 45 분).
+
 ### 3.1 온라인 준비 머신 요구사항
 
 | 항목 | 권장 |
@@ -230,68 +232,89 @@ Jenkins 빌드 Artifact 로 빌드마다 `build-<N>/summary.html` (+ `summary.js
 
 **중요**: 오프라인 운영 머신과 **같은 아키텍처**에서 빌드해야 합니다 (arm64 ↔ arm64, amd64 ↔ amd64). Apple Silicon 운영 → Apple Silicon 준비 / WSL2 운영 → amd64 Linux 준비.
 
-### 3.2 Step 1: 레포 받기 + 디렉터리로 이동
+### 3.2 Step 1: 레포 받기 + 작업 디렉터리 설정
+
+**이 단계에서 하는 일**: 본 스택의 소스 코드를 온라인 준비 머신에 내려받아, 이후 모든 반출 자산의 작업 기준점이 될 `code-AI-quality-allinone` 폴더로 이동합니다. 이 폴더가 §3.3 부터 §3.6 까지의 모든 명령이 실행되는 **작업 디렉터리** 가 됩니다.
 
 ```bash
-git clone <이 레포 URL>
-cd airgap-test-toolchain/code-AI-quality-allinone
+# 레포 clone + 통합 브랜치 체크아웃 + 작업 디렉터리 진입
+git clone <이 레포 URL> airgap-test-toolchain
+cd airgap-test-toolchain
+git checkout integrate/main-ai-eval-ttc
+cd code-AI-quality-allinone
 ```
 
-**이후 온라인 준비 머신의 모든 명령은 이 `code-AI-quality-allinone` 폴더 안에서 실행합니다.**
+**기대 결과** — `pwd` 출력이 `.../code-AI-quality-allinone` 로 끝나고, `ls` 를 쳤을 때 `Dockerfile`, `docker-compose.mac.yaml`, `scripts/`, `pipeline-scripts/`, `eval_runner/` 등이 보이면 정상.
 
-### 3.3 Step 2: Docker Desktop + Ollama installer 받기
+**이후 온라인 준비 머신의 모든 명령은 이 폴더 안에서 실행합니다.** 셸을 새로 열 때마다 `cd` 로 다시 이동해야 합니다.
 
-오프라인 머신에 옮길 installer 들을 미리 다운로드해 두세요. (운영 머신에 이미 설치되어 있으면 스킵)
+### 3.3 Step 2: Docker Desktop + Ollama installer 미리 받기
+
+**이 단계에서 하는 일**: 오프라인 머신은 인터넷이 없으므로 Docker Desktop 과 Ollama 설치 파일 자체도 반출 매체에 넣어 가야 합니다. 지금 이 단계에서 운영 머신 OS 에 맞는 installer 를 미리 다운로드해 `installers/` 폴더에 모아둡니다.
+
+> **운영 머신에 이미 Docker / Ollama 가 깔려있다면 이 Step 은 건너뛰어도 됩니다.**
+
+**본인이 준비하는 운영 머신의 OS 를 확인한 뒤, 해당 분기 명령만 실행하세요** — 3 개 다 받을 필요 없습니다.
 
 ```bash
+# 작업 디렉터리에 installers/ 폴더 생성
 mkdir -p installers
 
-# === macOS (Apple Silicon 운영 시) ===
+# === 분기 ① macOS (Apple Silicon 운영 머신용) ===
 curl -fL -o installers/Docker.dmg \
   "https://desktop.docker.com/mac/main/arm64/Docker.dmg"
 curl -fL -o installers/Ollama-darwin.zip \
   "https://ollama.com/download/Ollama-darwin.zip"
 
-# === Windows (WSL2 amd64 운영 시) ===
+# === 분기 ② Windows (WSL2 amd64 운영 머신용) ===
 curl -fL -o installers/Docker-Desktop-Installer.exe \
   "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
 curl -fL -o installers/OllamaSetup.exe \
   "https://ollama.com/download/OllamaSetup.exe"
 
-# === Linux amd64 운영 시 (Ollama 바이너리) ===
+# === 분기 ③ Linux amd64 운영 머신용 (Ollama 바이너리만) ===
 curl -fL -o installers/ollama-linux-amd64 \
   "https://ollama.com/download/ollama-linux-amd64"
 chmod +x installers/ollama-linux-amd64
 ```
 
-### 3.4 Step 3: Ollama 모델 3종 다운로드
+**기대 결과** — `ls -lh installers/` 실행 시 본인 OS 의 파일 2 개(Linux 는 1 개)가 각각 수백 MB 이상으로 보여야 정상.
 
-> **역할 분담 한 줄 정리**
-> — **사용자 책임**: Ollama 데몬에 모델 바이너리가 있어야 함 (추론을 실제로 수행).
-> — **자동 처리**: Dify 에 Ollama 플러그인 설치 + provider 등록 + embedding 등록 + workspace 기본 모델 지정 + workflow publish — 이 전부를 `scripts/provision.sh` 가 최초 기동 시 자동 수행합니다. 사용자는 Dify UI 에서 별도로 모델 이름을 입력할 필요가 없습니다.
+### 3.4 Step 3: Ollama 모델 3 종 다운로드 및 반출 준비
 
-운영 머신에 그대로 옮길 수 있도록 준비 머신에 Ollama 를 설치해 모델을 받고, `~/.ollama/models/` 디렉터리를 통째로 반출합니다.
+**이 단계에서 하는 일**: 본 스택의 LLM 추론은 전부 호스트 Ollama 에서 수행됩니다. 오프라인 머신에서는 인터넷이 없어 `ollama pull` 이 불가능하므로, 지금 준비 머신에서 모델을 받아 **`~/.ollama/models/` 디렉터리를 통째로 반출 매체에 복사**할 것입니다.
+
+> **역할 분담** — 모델 바이너리를 Ollama 에 적재하는 것은 사용자 책임이지만, Dify 에 Ollama 플러그인을 설치하고 provider/embedding 을 등록하고 Workflow 를 publish 하는 것은 전부 §6 에서 `provision.sh` 가 자동 수행합니다. 사용자가 Dify UI 에서 모델 이름을 입력할 필요 없음.
+
+**Ollama 설치 + 기동** (준비 머신에 이미 있으면 건너뛰기):
 
 ```bash
-# 준비 머신에 Ollama 가 없다면 설치 후
-brew install ollama           # macOS
+# 준비 머신에 Ollama 설치
+brew install ollama                              # macOS
 # 또는
 curl -fsSL https://ollama.com/install.sh | sh    # Linux
 
-# 백그라운드 기동
+# 데몬 기동
 ollama serve &
 # (macOS 는 brew services start ollama 권장)
-
-# 필수 3 모델 (총 ~25GB, 30분 내외 소요)
-ollama pull gemma4:e4b          # Dify Workflow 기본 LLM        ~4GB
-ollama pull bge-m3              # Dify 임베딩                   ~1GB
-ollama pull qwen3-coder:30b     # BLOCKER/CRITICAL severity 라우팅  ~20GB
-
-# 확인
-curl http://localhost:11434/api/tags | python3 -m json.tool
 ```
 
-**모델 바이너리 위치** (반출 대상):
+**필수 모델 3 종 pull** (총 ≈ 25 GB, 네트워크 속도에 따라 20~40 분):
+
+```bash
+ollama pull gemma4:e4b          # Dify Workflow 기본 LLM        ~4 GB
+ollama pull bge-m3              # Dify 임베딩                   ~1 GB
+ollama pull qwen3-coder:30b     # BLOCKER/CRITICAL 이슈 라우팅용 ~20 GB
+```
+
+**기대 결과** — 다음 명령으로 3 개 모델이 전부 잡히면 정상:
+
+```bash
+curl http://localhost:11434/api/tags | python3 -m json.tool
+# → "models" 배열에 "gemma4:e4b", "bge-m3", "qwen3-coder:30b" 가 모두 있어야 함
+```
+
+**반출할 모델 디렉터리 경로** — 이 폴더 통째를 §4 의 반출 패키지에 넣습니다:
 
 | OS | 경로 |
 |----|------|
@@ -299,57 +322,65 @@ curl http://localhost:11434/api/tags | python3 -m json.tool
 | Linux | `/usr/share/ollama/.ollama/models/` 또는 `~/.ollama/models/` |
 | Windows | `%USERPROFILE%\.ollama\models\` |
 
-> **용량이 너무 크면** — `qwen3-coder:30b` 는 선택입니다. 받지 않으면 severity 라우팅이 CRITICAL 이슈를 `skip_llm` 템플릿으로 처리하거나, `pipeline-scripts/sonar_issue_exporter.py` 의 `_SEVERITY_ROUTING` 을 수정해 모든 severity 를 `gemma4:e4b` 로 매핑할 수 있습니다. `gemma4:e4b` + `bge-m3` 만으로도 End-to-end 동작합니다.
+> **용량이 너무 크다면** `qwen3-coder:30b` 는 선택입니다. 받지 않으면 CRITICAL 이슈가 `skip_llm` 템플릿으로 처리됩니다. `pipeline-scripts/sonar_issue_exporter.py` 의 `_SEVERITY_ROUTING` 을 수정해 모든 severity 를 `gemma4:e4b` 로 매핑하는 방법도 있습니다. `gemma4:e4b` + `bge-m3` 두 모델만으로도 End-to-end 동작합니다.
 
 ### 3.5 Step 4: Jenkins + Dify 플러그인 번들 수집
+
+**이 단계에서 하는 일**: 통합 이미지 빌드 시 Dockerfile 이 Jenkins 플러그인(`.jpi`) 과 Dify Ollama 플러그인(`.difypkg`) 을 이미지 안으로 COPY 합니다. 이 플러그인들은 온라인에서만 받을 수 있으므로 지금 미리 다운로드해 둡니다.
+
+**실행 명령** — 다운로드 스크립트 한 번 실행:
 
 ```bash
 bash scripts/download-plugins.sh
 ```
 
-결과:
+**기대 결과** — 다음 파일/폴더 4 개가 작업 디렉터리 아래에 생성됩니다:
 
 | 산출물 | 용도 | 크기 |
 |--------|------|------|
-| `jenkins-plugin-manager.jar` | 빌드 시 재사용 | ~7 MB |
-| `jenkins-plugins/*.jpi` | Jenkins 플러그인 전체 (의존성 재귀) | ~40 MB |
-| `dify-plugins/langgenius-ollama-*.difypkg` | Dify Ollama provider | ~1 MB |
-| `.plugins.txt` | 플러그인 목록 | ~1 KB |
+| `jenkins-plugin-manager.jar` | Jenkins 플러그인 다운로드 헬퍼 | ≈ 7 MB |
+| `jenkins-plugins/*.jpi` | Jenkins 플러그인 전체 (의존성 재귀 포함) | ≈ 40 MB |
+| `dify-plugins/langgenius-ollama-*.difypkg` | Dify Ollama provider 플러그인 | ≈ 1 MB |
+| `.plugins.txt` | 설치될 플러그인 목록 | ≈ 1 KB |
 
-> **왜 이게 필요한가?** 빌드 시 Dockerfile 이 이 파일들을 COPY 합니다. 오프라인 빌드는 불가능하지만, 온라인에서 한 번 받아두면 이후 반복 빌드는 캐시 재사용이 빠릅니다.
+`ls jenkins-plugins/ | wc -l` 이 수십 개를 출력하면 성공. 0 이면 §12.4 참고.
 
 ### 3.6 Step 5: 통합 이미지 빌드 + tarball 산출
 
+**이 단계에서 하는 일**: 지금까지 준비한 자산(소스 + Ollama 플러그인 + Jenkins 플러그인) + Dockerfile 의 베이스 이미지 5 종을 모두 흡수해 **단일 통합 Docker 이미지** 로 만듭니다. 그 이미지를 `docker save` 로 압축해 **오프라인 머신에 그대로 옮길 수 있는 tarball** 로 뽑습니다. 이 Step 이 §3 에서 가장 오래 걸리는 단계입니다 (≈ 9 분).
+
+**본인 운영 머신 아키텍처에 맞는 분기 하나만 실행**:
+
 ```bash
-# arm64 운영용 (macOS Apple Silicon)
+# 분기 ① arm64 운영용 (macOS Apple Silicon)
 bash scripts/offline-prefetch.sh --arch arm64
 
-# amd64 운영용 (WSL2, x86 Linux)
+# 분기 ② amd64 운영용 (WSL2, x86 Linux)
 bash scripts/offline-prefetch.sh --arch amd64
 ```
 
-이 스크립트가 내부적으로 수행하는 것 (총 **50 build stages**, 실측 소요 ≈ 9 분, M1 Max / 12 GB Docker VM 기준):
+**이 명령이 실제로 하는 일** — 총 **50 build stages**, M1 Max / 12 GB Docker VM 기준 ≈ 9 분:
 
-1. `docker buildx build` 로 `Dockerfile` 기준 통합 이미지 빌드. 빌드 중 `FROM` 의 **베이스 이미지 5종** (`langgenius/dify-api:1.13.3`, `langgenius/dify-web:1.13.3`, `langgenius/dify-plugin-daemon:0.5.3-local`, `sonarqube:10.7.0-community`, `jenkins/jenkins:lts-jdk21`) 을 자동 pull 해서 최종 이미지 layer 안에 모두 흡수.
+1. `docker buildx build` 로 `Dockerfile` 기준 통합 이미지 빌드. 빌드 중 `FROM` 의 **베이스 이미지 5 종** (`langgenius/dify-api:1.13.3`, `langgenius/dify-web:1.13.3`, `langgenius/dify-plugin-daemon:0.5.3-local`, `sonarqube:10.7.0-community`, `jenkins/jenkins:lts-jdk21`) 이 자동 pull 되어 최종 이미지 layer 안에 모두 흡수됩니다.
 2. 주요 stage 이정표 (진행 추적용): `pip install deepeval/langchain/pytest` → Playwright Chromium 설치 (stage ≈ 19/50) → Node v22 설치 (21/50) → Sonar + Jenkins plugins + Postgres init (30/50) → OCI export → tarball 압축 (50/50).
-3. `docker save` 로 통합 이미지를 tarball 로 저장.
-4. GitLab 런타임 이미지 (`gitlab-ce:17.4.2-ce.0` / arm64 는 `yrzr/gitlab-ce-arm64v8`) 를 별도로 pull 후 tarball 저장.
+3. 완성 이미지를 `docker save` 로 tarball 압축.
+4. GitLab 런타임 이미지(`gitlab-ce:17.4.2-ce.0` / arm64 는 `yrzr/gitlab-ce-arm64v8`)를 별도로 pull 후 두 번째 tarball 로 저장.
 
-빌드 중 `pip` resolver 의 `ERROR:` 경고가 몇 개 나올 수 있지만 비치명적 의존성 경고이며 빌드는 계속됩니다.
+빌드 도중 `pip` resolver 의 `ERROR:` 경고가 몇 개 나올 수 있지만 비치명적 의존성 경고이며 빌드는 계속 진행됩니다. 무시해도 됩니다.
 
-**핵심**: 베이스 이미지들은 **통합 tarball 안에 이미 포함**되므로 오프라인 머신에 따로 반출할 필요가 없습니다. 아래 두 tarball 만으로 완전합니다.
+**기대 결과** — 아래 4 개 파일이 `offline-assets/<arch>/` 아래에 생성됩니다:
 
-산출물:
-
-```
+```text
 offline-assets/<arch>/
-├── ttc-allinone-<arch>-dev.tar.gz          (~10 GB — 베이스 5종 포함 통합 이미지)
-├── ttc-allinone-<arch>-dev.meta            (sha256 + built_at)
-├── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.tar.gz    (~1.5 GB — 별도 런타임)
+├── ttc-allinone-<arch>-dev.tar.gz          ~10 GB   ← 베이스 5 종 포함 통합 이미지
+├── ttc-allinone-<arch>-dev.meta                      sha256 + built_at
+├── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.tar.gz  ~1.5 GB ← 별도 GitLab 런타임
 └── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.meta
 ```
 
-**두 tarball 을 반드시 함께** 반출해야 합니다. `ttc-allinone` 은 통합 런타임, `gitlab-*` 은 별도 서비스입니다.
+**핵심 이해** — 베이스 이미지들은 **통합 tarball 안에 이미 포함**되므로 오프라인 머신에 별도로 반출할 필요가 없습니다. 위 **두 tarball 만으로 완전**합니다. 단, `ttc-allinone` 은 통합 런타임 · `gitlab-*` 은 별도 서비스이므로 **반드시 함께** 반출해야 합니다.
+
+**다음 단계** — §4 로 이동해 지금까지 만든 자산을 매체(USB / SSD / NAS) 에 모읍니다.
 
 ---
 
@@ -406,9 +437,11 @@ sha256sum -c CHECKSUMS.sha256
 
 ## 5. 오프라인 운영 머신 — 런타임 설치
 
-**전제**: 이 머신은 인터넷 접근이 없습니다. 모든 것을 반출 매체에서 복원합니다.
+> 📋 **이 섹션은 "따라 하기"** — 반출 매체(USB/NAS/외장 SSD) 로 자산이 옮겨진 운영 머신에서 실행합니다. 이 머신은 **인터넷 접근이 없어야 정상** (airgap 환경). 모든 설치 파일 · 이미지 · 모델은 반출 매체에서만 복원합니다.
+>
+> 이 섹션 완주 시점에 Docker · Ollama · 모델 3 종 · 이 레포 전체가 운영 머신에 준비되어, §6 의 "스택 기동" 으로 진행할 수 있는 상태가 됩니다.
 
-### 5.1 운영 머신 요구사항
+### 5.1 운영 머신 요구사항 (참고용 체크리스트)
 
 | 항목 | 최소 | 권장 |
 |------|------|------|
@@ -417,206 +450,291 @@ sha256sum -c CHECKSUMS.sha256
 | 디스크 | 50 GB 여유 | 100 GB |
 | OS | macOS 13+ / Windows 11 + WSL2 / Linux (커널 5.x+) | — |
 
+**주의** — §3.1 의 온라인 준비 머신 아키텍처와 **반드시 일치** (arm64 → arm64, amd64 → amd64). 교차 빌드는 미지원.
+
 ### 5.2 Step 1: Docker Desktop 설치
 
-**macOS (Apple Silicon)**:
+**이 단계에서 하는 일**: 반출 매체에 담아온 Docker Desktop installer 를 운영 머신에 설치합니다. §6 에서 컨테이너를 기동하려면 Docker daemon 이 먼저 돌고 있어야 합니다.
+
+> **이미 Docker 가 깔려 있다면** `docker version` 으로 동작 확인 후 이 Step 전체를 건너뛸 수 있습니다.
+
+**본인 OS 에 맞는 분기 하나만 실행**:
+
+**분기 ① macOS (Apple Silicon)**:
+
 ```bash
-# 반출 매체에서 Docker.dmg 를 마운트한 뒤
+# 반출 매체의 Docker.dmg 마운트
 open /Volumes/ttc-airgap-bundle/installers/Docker.dmg
-# Applications 로 Docker 드래그 → Docker.app 실행 → 초기 설정 중 "Skip" 선택
-# 설정 → Resources → Memory 12GB 이상, Disk 60GB 이상 할당
+# → Applications 폴더로 Docker.app 드래그 → 실행 → 초기 설정 중 "Skip" 선택
+# → Docker Desktop 환경설정 → Resources → Memory 12 GB 이상, Disk 60 GB 이상 할당
 ```
 
-**Windows (WSL2)**:
-```
-installers\Docker-Desktop-Installer.exe 더블클릭 → 설치
-WSL2 백엔드 활성화 → 우분투 배포판에 접속
-```
+**분기 ② Windows (WSL2)**:
 
-설치 확인:
+반출 매체의 `installers\Docker-Desktop-Installer.exe` 더블클릭 → 설치 마법사 완주 → "WSL 2 backend" 체크 확인 → 재부팅 → WSL2 우분투 터미널 진입.
+
+**분기 ③ Linux**: 사내 배포판에 맞는 Docker CE / Docker Desktop Linux 패키지를 이미 준비했다는 가정 (배포판별 편차가 커 본 가이드 범위 밖).
+
+**기대 결과** — 다음 명령이 Client + Server 정보를 모두 출력하면 정상 설치:
+
 ```bash
 docker version
-# Client + Server 모두 출력되면 OK
+# → Client: Docker Engine - ...
+#   Server: Docker Engine - ...
 ```
+
+`Cannot connect to the Docker daemon` 에러면 Docker Desktop GUI 가 실행 중인지 확인 후 재시도.
 
 ### 5.3 Step 2: Ollama 설치
 
-**macOS**:
+**이 단계에서 하는 일**: 본 스택의 LLM 추론은 전부 호스트 Ollama 가 담당합니다. 다음 §5.4 에서 모델 바이너리를 복원하기 **전에 Ollama 데몬 자체를 먼저 설치**합니다.
+
+**본인 OS 에 맞는 분기 하나만 실행**:
+
+**분기 ① macOS**:
+
 ```bash
 unzip /Volumes/ttc-airgap-bundle/installers/Ollama-darwin.zip
 sudo mv Ollama.app /Applications/
 open -a Ollama
-# 메뉴바 아이콘이 뜨면 데몬 실행 중
+# → 메뉴바에 Ollama 아이콘이 뜨면 데몬 기동 완료
 ```
 
-**Windows**:
-```
-installers\OllamaSetup.exe 실행 → 설치 → Ollama 트레이 아이콘 확인
-```
+**분기 ② Windows**: 반출 매체의 `installers\OllamaSetup.exe` 실행 → 설치 완료 후 시스템 트레이의 Ollama 아이콘 확인.
 
-**Linux**:
+**분기 ③ Linux**:
+
 ```bash
 sudo install -m 755 /media/usb/installers/ollama-linux-amd64 /usr/local/bin/ollama
-ollama serve &       # 또는 systemd 유닛 등록
+ollama serve &       # 데몬 기동 (운영 환경은 systemd 유닛 등록 권장)
 ```
 
-설치 확인:
+**기대 결과** — Ollama HTTP API 가 응답하면 정상:
+
 ```bash
 curl http://localhost:11434/api/tags
-# {"models":[]} 같은 JSON 이 돌아오면 OK
+# → {"models":[]}
+# (모델은 §5.4 에서 복원할 것이므로 지금은 빈 배열이 정상)
 ```
 
 ### 5.4 Step 3: Ollama 모델 복원
 
-**중요**: Ollama 를 **일단 중지**한 뒤 모델 디렉터리를 통째로 덮어씁니다.
+**이 단계에서 하는 일**: §3.4 에서 온라인 준비 머신에 받아둔 `~/.ollama/models/` 디렉터리 전체를 운영 머신의 같은 위치로 옮깁니다. 이것으로 `gemma4:e4b` · `bge-m3` (· 선택 `qwen3-coder:30b`) 모델이 오프라인 환경에서 사용 가능해집니다.
+
+**절차** — Ollama 데몬을 먼저 끄고, 모델 디렉터리를 덮어쓴 뒤, 다시 켭니다 (덮어쓰기 중 데몬이 인덱스를 잡고 있으면 충돌 가능).
+
+**분기 ① macOS / Linux**:
 
 ```bash
-# macOS/Linux
-# 1. Ollama 중지
+# ① Ollama 데몬 중지
 launchctl unload ~/Library/LaunchAgents/com.ollama.*.plist 2>/dev/null || true
 pkill -f 'ollama serve' || true
 
-# 2. 모델 디렉터리 복원
+# ② 모델 디렉터리 복원 (반출 매체 → 홈 디렉터리)
 mkdir -p ~/.ollama
 rsync -av /Volumes/ttc-airgap-bundle/ollama-models/ ~/.ollama/models/
-# (Linux 시스템 Ollama 는 /usr/share/ollama/.ollama/models/ 경로)
+# (Linux 시스템 Ollama 는 /usr/share/ollama/.ollama/models/ 경로로 rsync)
 
-# 3. 재기동
+# ③ Ollama 재기동
 open -a Ollama                          # macOS
 # 또는
 ollama serve &                          # Linux
-
-# 4. 확인
-curl http://localhost:11434/api/tags | python3 -m json.tool
-# "gemma4:e4b", "bge-m3" 등이 나와야 함
 ```
 
-**Windows**:
+**분기 ② Windows** (PowerShell 관리자):
+
 ```powershell
-# PowerShell 관리자
+# ① Ollama 서비스 중지
 Stop-Service -Name Ollama -ErrorAction SilentlyContinue
+
+# ② 모델 디렉터리 복원 (E: 는 반출 매체 드라이브)
 Copy-Item -Path "E:\ttc-airgap-bundle\ollama-models\*" `
           -Destination "$env:USERPROFILE\.ollama\models\" -Recurse -Force
+
+# ③ Ollama 재기동
 Start-Process -FilePath "$env:LOCALAPPDATA\Programs\Ollama\ollama app.exe"
 ```
 
-**모델 동작 확인**:
+**기대 결과** — 아래 두 명령 중 하나로 모델이 적재됐는지 확인:
+
 ```bash
+# 빠른 확인: 모델 목록
+curl http://localhost:11434/api/tags | python3 -m json.tool
+# → "models" 배열에 "gemma4:e4b", "bge-m3" 가 보여야 함
+
+# 실제 추론 확인 (옵션, 1~2 분 소요)
 ollama run gemma4:e4b "hello"
-# 또는
-curl http://localhost:11434/api/generate \
-  -d '{"model":"gemma4:e4b","prompt":"hi","stream":false}' | python3 -m json.tool
 ```
 
-> **여기까지가 사용자 책임의 끝** — Ollama 에 모델만 적재되어 있으면 됩니다. 이후 §6 에서 스택을 기동하면 `provision.sh` 가 자동으로 Dify 에 Ollama 플러그인을 설치하고 `gemma4:e4b` / `bge-m3` 을 provider/embedding 으로 등록하며 workspace 기본 모델까지 지정합니다. Dify UI 에서 수동 설정은 필요 없습니다.
+> **여기까지가 사용자 책임의 끝** — Ollama 에 모델 바이너리만 적재되어 있으면 됩니다. 이후 §6 에서 스택을 기동하면 `provision.sh` 가 자동으로 Dify 에 Ollama 플러그인을 설치하고 `gemma4:e4b` / `bge-m3` 을 provider/embedding 으로 등록하며 workspace 기본 모델까지 지정합니다. Dify UI 에서 수동 설정은 필요 없습니다.
 
-**Docker 컨테이너에서 호스트 Ollama 로 도달 가능한지**:
+**추가 점검 — Docker 컨테이너가 호스트 Ollama 에 도달 가능한지**:
 
-- macOS / Windows Docker Desktop: `host.docker.internal` 자동 해석됨. 확인:
-  ```bash
-  docker run --rm curlimages/curl:latest \
-    curl -sf http://host.docker.internal:11434/api/tags
-  ```
-- Linux: Docker Desktop 이면 동일. 네이티브 Docker 면 `docker-compose.*.yaml` 에 `extra_hosts: ["host.docker.internal:host-gateway"]` 추가 필요 (기본 compose 파일에 이미 포함).
-- **Ollama 가 localhost 만 listen 하는 경우** (기본 macOS):
-  ```bash
-  # macOS: 네트워크 모든 인터페이스에서 listen
-  launchctl setenv OLLAMA_HOST "0.0.0.0"
-  # Ollama 재기동
-  ```
-
-### 5.5 Step 4: 반출한 레포 폴더 + 이미지 tarball 복사
+§6 에서 컨테이너가 기동되면 `host.docker.internal:11434` 로 호스트 Ollama 에 접속합니다. 지금 미리 확인하면 §6 진입 후 트러블슈팅 시간을 아낄 수 있습니다.
 
 ```bash
-# 반출 매체 → 운영 머신 로컬 디스크로 복사 (매체에서 직접 실행 X — 성능·안정성 이슈)
+# 컨테이너 → 호스트 Ollama 도달 테스트 (모델 목록 응답 오면 OK)
+docker run --rm curlimages/curl:latest \
+  curl -sf http://host.docker.internal:11434/api/tags
+```
+
+- **macOS / Windows Docker Desktop**: `host.docker.internal` 자동 해석됨. 위 명령이 바로 작동해야 정상.
+- **Linux 네이티브 Docker**: `docker-compose.*.yaml` 에 `extra_hosts: ["host.docker.internal:host-gateway"]` 추가 필요 (기본 compose 파일에 이미 포함되어 있음).
+- **macOS 에서 Ollama 가 `localhost` 만 listen 중이면** (기본 설정):
+
+  ```bash
+  # Ollama 를 모든 네트워크 인터페이스에서 listen 하게 변경
+  launchctl setenv OLLAMA_HOST "0.0.0.0"
+  # Ollama 재기동 필요
+  ```
+
+위 명령이 실패하면 §12.1 트러블슈팅 참고.
+
+### 5.5 Step 4: 반출한 레포 + 이미지 tarball 을 로컬 디스크로 복사
+
+**이 단계에서 하는 일**: 반출 매체에 담긴 `code-AI-quality-allinone/` 폴더 (소스 + tarball + 플러그인 일체) 를 운영 머신 로컬 디스크로 옮깁니다. **매체에서 직접 실행하지 마세요** — 이미지 load 시 수 GB I/O 가 발생하는데 USB 는 느리고 끊김이 있어 `docker load` 실패 가능성이 높습니다.
+
+```bash
+# 반출 매체 → 운영 머신 홈 디렉터리로 복사 (매체 포맷이 macOS 일 때 경로)
 cp -a /Volumes/ttc-airgap-bundle/code-AI-quality-allinone  ~/code-AI-quality-allinone
 cd ~/code-AI-quality-allinone
-
-# tarball 이 제 자리에 있는지 확인
-ls -lh offline-assets/<arch>/
-# ttc-allinone-*.tar.gz  (~10GB)
-# gitlab-*.tar.gz        (~1.5GB)
 ```
+
+**기대 결과** — 2 개 tarball 이 예상 크기로 위치해 있어야 정상:
+
+```bash
+ls -lh offline-assets/<arch>/
+# → ttc-allinone-<arch>-dev.tar.gz   ≈ 10 GB
+#   gitlab-gitlab-ce-17.4.2-ce.0-<arch>.tar.gz  ≈ 1.5 GB
+```
+
+둘 중 하나라도 없거나 크기가 비정상(수 MB 수준)이면 반출 매체에서 복사가 중간에 끊긴 것 — 다시 `cp -a` 수행.
+
+**다음 단계** — §6 "스택 기동" 으로 이동.
 
 ---
 
 ## 6. 오프라인 머신에서 스택 기동
 
-### 6.1 Step 1: Docker 이미지 복원
+> 📋 **이 섹션은 "따라 하기"** — §5 까지 완료된 운영 머신에서 4 단계만 거치면 Jenkins · Dify · SonarQube · GitLab 이 전부 올라간 상태가 됩니다. 각 단계의 의미와 예상 결과를 단계별로 설명하므로 순서대로 따라가면 ≈ 20 분 안에 "Jenkins UI 에 접속해 첫 빌드를 누를 수 있는 상태" 에 도달합니다.
+
+### 6.1 Step 1: Docker 이미지 복원 (tarball → docker image)
+
+**이 단계에서 하는 일**: §3.6 에서 준비한 2 개 tarball (`ttc-allinone-*.tar.gz` + `gitlab-*.tar.gz`) 을 운영 머신의 Docker 이미지 레지스트리에 적재합니다. Docker 는 네트워크 접근 없이도 로컬 tarball 에서 이미지를 불러올 수 있습니다.
+
+**실행 명령** — 작업 디렉터리로 이동 후 헬퍼 스크립트 실행 (권장):
 
 ```bash
 cd ~/code-AI-quality-allinone
 
-# 자동 (두 tarball 일괄 load)
-bash scripts/offline-load.sh --arch arm64          # macOS
-# 또는
-bash scripts/offline-load.sh --arch amd64          # WSL2/Linux
-
-# 완료되면 이미지가 보임:
-docker images | grep -E "ttc-allinone|gitlab"
-# ttc-allinone           arm64-dev    10GB
-# yrzr/gitlab-ce-arm64v8 17.4.2-ce.0  1.5GB
+# 본인 아키텍처에 맞는 하나만 실행
+bash scripts/offline-load.sh --arch arm64          # macOS Apple Silicon
+bash scripts/offline-load.sh --arch amd64          # Windows WSL2 / Linux
 ```
 
-**수동으로도 가능**:
+`offline-load.sh` 는 `offline-assets/<arch>/` 의 두 tarball 을 `gunzip | docker load` 로 순차 로드합니다.
+
+**기대 결과** — 아래 명령으로 두 이미지가 모두 보이면 정상 (≈ 10 분 소요, tarball 크기 때문):
+
+```bash
+docker images | grep -E "ttc-allinone|gitlab"
+# → ttc-allinone              arm64-dev       10 GB
+#   yrzr/gitlab-ce-arm64v8    17.4.2-ce.0    1.5 GB
+```
+
+**헬퍼 스크립트 대신 수동으로 하고 싶다면** (동일한 결과):
+
 ```bash
 gunzip -c offline-assets/arm64/ttc-allinone-arm64-dev.tar.gz | docker load
 gunzip -c offline-assets/arm64/gitlab-*.tar.gz | docker load
 ```
 
-### 6.2 Step 2: 이미지 태그 확인 (compose 파일이 찾는 이름)
+### 6.2 Step 2: 이미지 태그 정합성 맞추기 (compose 가 찾는 이름)
 
-`docker-compose.mac.yaml` 은 `ttc-allinone:mac-dev` 를 찾지만 offline-prefetch 는 `ttc-allinone:arm64-dev` 로 저장합니다. 태그를 맞춰주거나 env 로 override:
+**이 단계에서 하는 일**: Docker Compose 는 고정된 이미지 태그 (`ttc-allinone:mac-dev` / `ttc-allinone:wsl2-dev`) 를 찾도록 설정되어 있지만, §3.6 의 `offline-prefetch.sh` 는 아키텍처 기반 태그 (`ttc-allinone:arm64-dev` / `ttc-allinone:amd64-dev`) 로 저장합니다. 이 태그 불일치를 맞춰주지 않으면 §6.3 의 `docker compose up` 이 `image not found` 로 실패합니다.
 
-```bash
-# 옵션 A: compose 기본 태그로 별칭 추가
-docker tag ttc-allinone:arm64-dev ttc-allinone:mac-dev
+**둘 중 편한 방법 하나 선택** (옵션 A 권장 — 명시적이고 부작용 없음):
 
-# 옵션 B: compose 실행 시 env 로 주입
-export IMAGE=ttc-allinone:arm64-dev
-```
-
-WSL2 도 마찬가지 (`amd64-dev` ↔ `wsl2-dev`):
-```bash
-docker tag ttc-allinone:amd64-dev ttc-allinone:wsl2-dev
-```
-
-### 6.3 Step 3: 스택 기동
+**옵션 A**: `docker tag` 로 별칭 추가
 
 ```bash
 # macOS
+docker tag ttc-allinone:arm64-dev ttc-allinone:mac-dev
+
+# WSL2 / Linux
+docker tag ttc-allinone:amd64-dev ttc-allinone:wsl2-dev
+```
+
+**옵션 B**: compose 실행 시 환경변수로 override (매번 같은 셸에서 실행해야 함)
+
+```bash
+export IMAGE=ttc-allinone:arm64-dev
+# 이후 같은 셸에서 docker compose up 실행
+```
+
+**기대 결과** — 옵션 A 를 쓴 경우, 아래 명령으로 원래 태그와 별칭이 모두 잡히면 정상:
+
+```bash
+docker images ttc-allinone
+# → ttc-allinone    arm64-dev    (이미지 ID)
+#   ttc-allinone    mac-dev      (같은 이미지 ID — 별칭이라 동일)
+```
+
+### 6.3 Step 3: 스택 기동 (컨테이너 2 개 띄우기)
+
+**이 단계에서 하는 일**: Docker Compose 로 **`ttc-allinone`** (Jenkins + Dify + SonarQube + Postgres + Redis + Qdrant 통합) + **`ttc-gitlab`** (GitLab CE) 두 컨테이너를 한 번에 기동합니다. 이 명령 1 회가 곧 "전체 스택을 켜는 스위치" — 명령 자체는 즉시 리턴하지만, 컨테이너 **내부에서는 §6.4 에서 지켜볼 자동 프로비저닝이 이 순간부터 백그라운드로 계속 진행**됩니다.
+
+**본인 OS 에 맞는 분기 하나만 실행** — `run-*.sh` 는 `docker compose` 명령을 감싼 헬퍼 (편의용). 둘 중 무엇을 써도 같은 결과:
+
+```bash
+# === 분기 ① macOS ===
 bash scripts/run-mac.sh
-# 또는
+# 또는 같은 효과
 docker compose -f docker-compose.mac.yaml up -d
 
-# WSL2
+# === 분기 ② Windows WSL2 ===
 bash scripts/run-wsl2.sh
-# 또는
+# 또는 같은 효과
 docker compose -f docker-compose.wsl2.yaml up -d
 ```
 
-확인:
+**기대 결과** — 30 초 이내에 두 컨테이너가 `Up` 상태여야 정상:
+
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Status}}'
-# ttc-allinone    Up 30 seconds
-# ttc-gitlab      Up 30 seconds (health: starting)
+# → ttc-allinone    Up 30 seconds
+#   ttc-gitlab      Up 30 seconds (health: starting)
 ```
 
-### 6.4 Step 4: 자동 프로비저닝 대기 (~7분)
+`ttc-gitlab` 의 `(health: starting)` 은 **정상** 표시입니다 — GitLab 이 내부에서 reconfigure 중이라 아직 healthcheck 를 통과하지 못한 상태이며, 수 분 안에 자동으로 `(healthy)` 로 바뀝니다. 이상 시 §12.7 참고.
+
+**다음 단계** — 컨테이너는 올라왔지만 Jenkins Job · Dify Workflow · GitLab PAT 등은 아직 자동 생성되지 않은 상태입니다. §6.4 에서 이 프로비저닝 과정을 지켜봅니다.
+
+### 6.4 Step 4: 자동 프로비저닝 대기 (≈ 7 분)
+
+**이 단계에서 하는 일**: §6.3 에서 `ttc-allinone` 이 기동되는 순간 컨테이너 안의 `entrypoint.sh` 가 [`scripts/provision.sh`](scripts/provision.sh) 를 자동 실행합니다. 이 스크립트가 Dify 관리자 계정 setup · Ollama 플러그인 설치 · Workflow publish · GitLab root PAT 발급 · SonarQube admin 비번 변경 · Jenkins Credentials 5 종 주입 · Jenkins Job 5 개 등록 등 **총 14 개 작업을 자동 완수**합니다. 이 모든 게 끝나야 Jenkins UI 에서 실제로 파이프라인을 돌릴 수 있는 상태가 됩니다.
+
+> **왜 이 단계를 기다려야 하는가** — `docker compose up -d` 는 컨테이너 기동 직후 리턴하므로 "스택이 올라왔다" 는 잘못된 판단을 하기 쉽습니다. 실제로는 내부에서 프로비저닝이 7 분간 백그라운드로 계속 돌고 있으며, 완료 전에 Jenkins UI 에 접속해 Job 을 누르면 "Job 을 찾을 수 없음" / "credential 없음" 같은 오류가 납니다. §6.4 는 **이 내부 작업이 끝날 때까지 기다리는 게이트**.
+
+**진행 상황 실시간 모니터링** (시각적 확인):
 
 ```bash
-# 실시간 진행 상황
+# provision 로그만 필터링해 실시간 출력 (Ctrl+C 로 종료)
 docker logs -f ttc-allinone | grep -E "provision|entrypoint"
+```
 
-# 완료 시그널 대기 (스크립트용)
+**자동화 스크립트에서 쓰려면** — `자동 프로비저닝 완료` 문자열이 로그에 나올 때까지 blocking 대기:
+
+```bash
 until docker logs ttc-allinone 2>&1 | grep -q "자동 프로비저닝 완료"; do
     sleep 15
 done
 echo "PROVISION_DONE"
 ```
 
-완료 로그:
-```
+**기대 결과** — 아래와 같은 "완료 로그" 블록이 출력되면 성공:
+
+```text
 [provision] 자동 프로비저닝 완료.
 [provision]   Jenkins    : http://127.0.0.1:28080 (admin / password)
 [provision]   Dify       : http://127.0.0.1:28081 (admin@ttc.local / TtcAdmin!2026)
@@ -625,25 +743,48 @@ echo "PROVISION_DONE"
 [entrypoint] 앱 프로비저닝 완료.
 ```
 
-**기동 검증**:
+---
+
+**기동 검증** — 완료 로그를 확인한 뒤, 아래 3 가지 자동 검증으로 "실제로 Jenkins Job · 프로비저닝 마커 · 서비스 health 가 모두 정상" 인지 이중 확인합니다.
+
+**검증 ① Jenkins Job 5 개 전부 등록됐는지**:
 
 ```bash
-# 5개 Jenkins Job 이 다 등록됐나?
 curl -s -u admin:password 'http://127.0.0.1:28080/api/json?tree=jobs%5Bname%5D' \
   | python3 -c "import json,sys;print(*(j['name'] for j in json.load(sys.stdin)['jobs']),sep='\n')"
-# → 00-코드-분석-체인
-#   01-코드-사전학습
-#   02-코드-정적분석
-#   03-정적분석-결과분석-이슈등록
-#   04-AI평가
+```
 
-# 프로비저닝 마커 파일 11종이 다 있나?
+아래 5 개가 정확히 출력되어야 정상:
+
+```text
+00-코드-분석-체인
+01-코드-사전학습
+02-코드-정적분석
+03-정적분석-결과분석-이슈등록
+04-AI평가
+```
+
+한 개라도 누락되면 `provision.sh` 가 도중에 실패한 것 — §12.10 로그 위치 참고.
+
+**검증 ② 프로비저닝 마커 파일 11 종 존재 여부**:
+
+```bash
 docker exec ttc-allinone ls /data/.provision/
-# → dataset_api_key  dataset_id  default_models.ok  gitlab_root_pat
-#   jenkins_sonar_integration.ok  ollama_embedding.ok  ollama_plugin.ok
-#   sonar_token  workflow_api_key  workflow_app_id  workflow_published.ok
+```
 
-# 4개 외부 노출 서비스가 모두 HTTP 200 으로 응답하나?
+아래 11 개 파일이 모두 있어야 정상:
+
+```text
+dataset_api_key    dataset_id    default_models.ok    gitlab_root_pat
+jenkins_sonar_integration.ok    ollama_embedding.ok    ollama_plugin.ok
+sonar_token    workflow_api_key    workflow_app_id    workflow_published.ok
+```
+
+각 파일은 해당 자산(API key, Workflow publish 상태 등)이 생성됐음을 기록하는 flag 입니다.
+
+**검증 ③ 4 개 외부 노출 서비스 HTTP 응답 확인**:
+
+```bash
 for url in \
   "http://localhost:28080/login" \
   "http://localhost:28081/apps" \
@@ -652,33 +793,44 @@ for url in \
     code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
     echo "  $code  $url"
 done
-# → 200 또는 302 (GitLab login redirect) 가 나와야 정상
 ```
 
-**프로비저닝 실측 소요**:
+각 URL 이 **`200`** 또는 **`302`** (GitLab login redirect) 를 반환해야 정상. `000` 또는 `5xx` 면 해당 서비스 아직 기동 중이거나 실패 — 2~3 분 더 기다린 후 재시도, 지속되면 §12.1 (Ollama) · §12.7 (GitLab) · §12.10 (로그 위치) 참고.
+
+---
+
+**프로비저닝 내부 단계별 실측 소요** (참고용 — 중간 어느 지점에서 시간이 많이 걸리는지 궁금할 때):
 
 | 단계 | 소요 | 비고 |
 |------|------|------|
-| 컨테이너 기동 직후 ~ Dify 자동화 진입 | ≈ 1 분 | Jenkins/Sonar/Dify 3 개 앱 병렬 기동 |
+| 컨테이너 기동 직후 ~ Dify 자동화 진입 | ≈ 1 분 | Jenkins · Sonar · Dify 3 앱 병렬 기동 |
 | Dify Ollama 플러그인 설치 + provider 등록 | ≈ 2 분 | `langgenius-ollama-*.difypkg` 업로드 |
 | Dify Workflow import + publish | ≈ 30 초 | |
 | GitLab reconfigure + root PAT 발급 | ≈ 3 분 | arm64 에서는 5~10 분까지도 정상 |
-| SonarQube 초기화 + Jenkins Credentials 5종 + Jobs 5종 등록 | ≈ 1 분 | |
-| **총계** | **≈ 7 분** | 첫 기동 기준. 재기동은 마커 파일로 skip 되어 ≈ 30 초 |
+| SonarQube 초기화 + Jenkins Credentials 5 종 + Jobs 5 종 등록 | ≈ 1 분 | |
+| **총계** | **≈ 7 분** | 첫 기동 기준. 컨테이너 재기동은 마커 파일로 skip 되어 ≈ 30 초 |
+
+**다음 단계** — 4 서비스에 브라우저로 접속해볼 수 있습니다. 본격적으로 파이프라인을 돌려보려면 §7 로 이동.
 
 ---
 
 ## 7. 첫 실행 — 샘플 레포로 파이프라인 돌려보기
 
-GitLab 에 분석 대상 레포가 있어야 합니다. 본 스택은 레포를 자동 생성하지 **않으므로** 한 번만 수동으로 만들어 줍니다.
+> 📋 **이 섹션은 "따라 하기"** — §6 까지 완료된 환경에서 실제 분석 대상이 될 샘플 레포를 GitLab 에 만들고, `00-코드-분석-체인` Job 을 처음 실행해 GitLab Issue 가 자동 생성되는 과정을 확인합니다. 본 스택이 레포를 자동 생성하지는 **않으므로** §7.1~§7.2 에서 한 번 수동으로 샘플 레포를 만든 뒤, §7.3 부터 실제 체인을 돌립니다.
+>
+> §7.7 은 별개 파이프라인(04 AI 평가) 첫 실행 — `00` 체인과 독립이며 Ollama 모델·시험지만 있으면 언제든 시작 가능합니다.
 
-### 7.1 샘플 레포 만들기 (3 분)
+### 7.1 Step 1: 샘플 레포 만들기 (≈ 3 분)
+
+**이 단계에서 하는 일**: 본 스택의 코드 분석 대상으로 쓸 **의도적으로 버그가 있는 Python 미니 프로젝트** 를 로컬(호스트 머신의 `/tmp/`) 에 만듭니다. SonarQube 가 반드시 잡아내는 `bare except` 위반(rule `python:S5754`, severity CRITICAL) 을 심어놔서, 뒤이어 돌릴 `03-정적분석-결과분석-이슈등록` 파이프라인이 이걸 어떻게 찾아내고 해석하는지 확인할 수 있습니다.
+
+**실행 명령** — 아래 블록 전체를 셸에 붙여넣기 하면 됩니다 (`cat > ... <<'PY'` heredoc 으로 파일 3 개 + Sonar 설정 + git 초기화를 한 번에 수행):
 
 ```bash
-# 로컬에 샘플 코드 폴더
+# 샘플 프로젝트 디렉터리 생성 + 이동
 mkdir -p /tmp/dscore-ttc-sample/src && cd /tmp/dscore-ttc-sample
 
-# Sonar 가 잡을 bare except (python:S5754 CRITICAL) 의도적 포함
+# 파일 ① src/auth.py — 의도적 bare except (Sonar python:S5754 CRITICAL 유발)
 cat > src/auth.py <<'PY'
 """Simple authentication helpers."""
 import hashlib, os
@@ -697,6 +849,7 @@ def login(username: str, password: str, user_store: dict) -> bool:
         return False
 PY
 
+# 파일 ② src/session.py — login() 을 호출하는 함수 (RAG 가 호출관계 잡는지 확인용)
 cat > src/session.py <<'PY'
 """Session helpers that call login() — RAG 가 호출 관계를 잡아내는지 확인용."""
 from src.auth import login
@@ -710,6 +863,7 @@ PY
 
 touch src/__init__.py
 
+# 파일 ③ sonar-project.properties — Sonar 스캐너가 읽는 프로젝트 메타
 cat > sonar-project.properties <<'CFG'
 sonar.projectKey=dscore-ttc-sample
 sonar.projectName=dscore-ttc-sample
@@ -718,45 +872,82 @@ sonar.python.version=3.11
 sonar.sourceEncoding=UTF-8
 CFG
 
+# git 초기화 + 첫 커밋
 git init -q -b main
 git add -A
 git -c user.email=test@ttc.local -c user.name=tester commit -q -m "initial"
 ```
 
-### 7.2 GitLab 에 프로젝트 생성 + 푸시
+**기대 결과** — `ls -la` / `git log --oneline` 로 파일과 첫 커밋이 잡히면 정상:
 
 ```bash
-# provision.sh 가 자동 발급한 GitLab root PAT 를 컨테이너에서 가져옴
+ls src/
+# → __init__.py  auth.py  session.py
+
+git log --oneline
+# → <sha>  initial
+```
+
+### 7.2 Step 2: GitLab 에 프로젝트 생성 + 샘플 레포 푸시
+
+**이 단계에서 하는 일**: §7.1 에서 만든 로컬 레포를 운영 머신 안에서 돌고 있는 GitLab 에 프로젝트로 등록하고 push 합니다. 이후 `00` 체인이 이 GitLab URL 을 clone 해서 분석합니다.
+
+> **왜 별도 프로젝트가 필요한가** — 본 스택의 파이프라인은 "GitLab 레포의 특정 커밋 SHA 를 분석" 하는 방식으로 동작합니다. 따라서 최소 1 개의 프로젝트가 GitLab 에 존재해야 합니다. §6.4 의 provision.sh 가 자동 생성한 `root` 계정과 PAT 를 그대로 재사용합니다.
+
+**작업 디렉터리는 §7.1 에 이어 여전히 `/tmp/dscore-ttc-sample`** 인 상태로 시작합니다.
+
+**실행 명령**:
+
+```bash
+# ① provision.sh 가 자동 발급한 GitLab root PAT 를 컨테이너에서 꺼내 쉘 변수로
 GITLAB_PAT=$(docker exec ttc-allinone cat /data/.provision/gitlab_root_pat)
 
-# 프로젝트 생성 (REST API)
+# ② GitLab REST API 로 dscore-ttc-sample 프로젝트 생성
 curl -sS -X POST "http://localhost:28090/api/v4/projects" \
   -H "PRIVATE-TOKEN: $GITLAB_PAT" \
   -d "name=dscore-ttc-sample&visibility=private&initialize_with_readme=false"
 
-# 푸시
+# ③ remote 등록 + push
 cd /tmp/dscore-ttc-sample
 git remote add origin "http://oauth2:${GITLAB_PAT}@localhost:28090/root/dscore-ttc-sample.git"
 git push -u origin main
 ```
 
-GitLab UI ([http://localhost:28090/root/dscore-ttc-sample](http://localhost:28090/root/dscore-ttc-sample), `root` / `ChangeMe!Pass`) 에서 파일이 올라갔는지 확인.
+**기대 결과** — 두 가지로 확인:
 
-### 7.3 00 체인 Job 실행 (Jenkins UI)
+1. ② 의 `curl` 응답 JSON 에 `"id": <숫자>`, `"path": "dscore-ttc-sample"` 등이 보이면 프로젝트 생성 성공.
+2. ③ 의 `git push` 가 `To http://.../dscore-ttc-sample.git / * [new branch] main -> main` 으로 끝나면 push 성공.
 
-1. [http://localhost:28080](http://localhost:28080) 접속 (`admin` / `password`).
-2. **`00-코드-분석-체인`** Job 클릭.
-3. **"Build with Parameters"** 클릭. (최초 1회는 "Build Now" 로 한 번 눌러 parameter discovery 를 유도해야 할 수 있습니다 — 실패하면 10초 뒤 "Build with Parameters" 가 나타납니다.)
-4. 파라미터:
-   - `REPO_URL`: `http://gitlab:80/root/dscore-ttc-sample.git`
-   - `BRANCH`: `main`
-   - `ANALYSIS_MODE`: `full`
-   - 나머지 기본값
-5. **Build** 클릭.
+**브라우저 확인** — [http://localhost:28090/root/dscore-ttc-sample](http://localhost:28090/root/dscore-ttc-sample) 에 `root` / `ChangeMe!Pass` 로 로그인해서 `src/auth.py` 등이 업로드됐는지 눈으로 확인.
 
-### 7.4 모니터링
+### 7.3 Step 3: `00-코드-분석-체인` Job 실행 (Jenkins UI)
 
-Jenkins Stage View 에서 보거나 CLI:
+**이 단계에서 하는 일**: §7.2 에서 준비한 GitLab 레포를 분석 대상으로 지정해 **`00` 오케스트레이터 Job 을 클릭 한 번** 으로 실행합니다. `00` 이 내부적으로 `01-사전학습` → `02-정적분석` → `03-이슈등록` 을 순서대로 자동 연쇄 호출합니다.
+
+**Jenkins UI 에서 단계별로**:
+
+1. 브라우저로 [http://localhost:28080](http://localhost:28080) 접속 → `admin` / `password` 로 로그인.
+2. Job 목록에서 **`00-코드-분석-체인`** 클릭.
+3. 좌측 메뉴 **"Build with Parameters"** 클릭.
+   - 메뉴가 안 보이면 **"Build Now"** 를 한 번 눌러 실패시킴 (Jenkins Declarative Pipeline 의 parameter discovery 가 최초 1회 실행되어야 `Build with Parameters` 메뉴가 생김). 10초 뒤 Job 페이지 새로고침 → "Build with Parameters" 가 나타나면 다시 클릭.
+4. 파라미터 입력:
+   - `REPO_URL` = `http://gitlab:80/root/dscore-ttc-sample.git` (컨테이너 내부 이름 `gitlab` 사용, `localhost` 가 아님)
+   - `BRANCH` = `main`
+   - `ANALYSIS_MODE` = `full` (최초 실행이므로 KB 를 새로 짓는 full 모드)
+   - 나머지는 기본값 유지
+5. **"Build"** 클릭 → Job 실행 시작.
+
+**기대 결과** — 화면에 `#1` 빌드가 좌측 "Build History" 에 나타나고, Stage View 에 5 개 Stage(Resolve Commit SHA / Trigger P1 / Trigger P2 / Trigger P3 / Chain Summary) 가 순차로 초록색으로 채워져야 정상. 총 소요 ≈ 3~4 분.
+
+### 7.4 Step 4: 빌드 진행 모니터링
+
+**이 단계에서 하는 일**: `00` 체인 빌드가 어느 Stage 에서 어떻게 진행 중인지 실시간 확인합니다. Jenkins Stage View 가 가장 직관적이지만, CLI 를 쓰면 자동화 스크립트로도 활용 가능합니다.
+
+**방법 ① 브라우저 — Jenkins Stage View**
+
+Jenkins Job 페이지 상단에 Stage 5 개가 가로로 늘어선 표가 있습니다. 각 Stage 가 **회색 → 파란색 (진행 중) → 초록색 (성공) / 빨간색 (실패)** 로 변합니다. 클릭하면 해당 Stage 의 콘솔 로그가 펼쳐집니다.
+
+**방법 ② CLI — 현재 상태를 한 줄씩 dump**
 
 ```bash
 curl -s -u admin:password \
@@ -770,8 +961,9 @@ for s in d.get('stages',[]):
 "
 ```
 
-성공 시:
-```
+**기대 결과** — 전 Stage 성공 시 다음과 같이 출력:
+
+```text
 status: SUCCESS
   1. Resolve Commit SHA          SUCCESS    2.1s
   2. Trigger P1 (사전학습)        SUCCESS   45.3s
@@ -780,23 +972,59 @@ status: SUCCESS
   5. Chain Summary               SUCCESS    1.2s
 ```
 
-### 7.5 결과 확인
+어느 Stage 가 `FAILED` 면 해당 행 이름으로 대응: Trigger P1 실패 → `01-코드-사전학습/lastBuild/console` · P2 실패 → `02-코드-정적분석/lastBuild/console` · P3 실패 → `03-정적분석-결과분석-이슈등록/lastBuild/console` 로그를 확인.
 
-1. **GitLab Issue**: [http://localhost:28090/root/dscore-ttc-sample/-/issues](http://localhost:28090/root/dscore-ttc-sample/-/issues)
-   - `[CRITICAL] Specify an exception class to catch or reraise the exception` Issue #1 이 있어야 합니다.
-2. **SonarQube 대시보드**: [http://localhost:29000/dashboard?id=dscore-ttc-sample](http://localhost:29000/dashboard?id=dscore-ttc-sample)
-3. **Dify Studio**: [http://localhost:28081](http://localhost:28081) → Knowledge → `code-context-kb` → Recall Testing.
-4. **상태 파일**:
-   ```bash
-   docker exec ttc-allinone cat /data/kb_manifest.json
-   docker exec ttc-allinone cat /var/knowledges/state/chain_*.json
-   ```
+### 7.5 Step 5: 결과 확인 (4 곳)
 
-### 7.6 재실행 (dedup 작동 확인)
+**이 단계에서 하는 일**: `00` 체인이 성공적으로 끝났다면 **4 개의 산출물 위치** 를 한 번씩 훑어 "정말로 원하는 결과가 나왔는지" 확인합니다. 첫 실행에서는 특히 ① GitLab Issue 생성 여부가 가장 중요합니다 — 이게 본 스택의 최종 가치.
 
-같은 커밋으로 Job 을 한 번 더 눌러보세요:
-- `chain_<sha>.json` 의 `p3_summary.skipped=1` 로 dedup 이 잡힙니다.
-- GitLab Issues 페이지에 중복 Issue 가 생기지 **않습니다**.
+**① GitLab Issue** (가장 먼저 확인) — 개발자가 실제로 받게 되는 최종 산출물:
+
+- URL: [http://localhost:28090/root/dscore-ttc-sample/-/issues](http://localhost:28090/root/dscore-ttc-sample/-/issues)
+- 기대: **Issue #1 제목이 `[CRITICAL] Specify an exception class to catch or reraise the exception`** — §7.1 의 bare except 가 잡혀 GitLab Issue 로 등록됐어야 정상. Issue 본문은 §9 "GitLab Issue 결과물 읽는 법" 구조대로 렌더링되어 있어야 합니다.
+
+**② SonarQube 대시보드** — 원본 이슈 소스:
+
+- URL: [http://localhost:29000/dashboard?id=dscore-ttc-sample](http://localhost:29000/dashboard?id=dscore-ttc-sample)
+- 기대: "Issues" 탭에 python:S5754 CRITICAL 1 건. 이게 Sonar 원본이고 ①의 GitLab Issue 가 이걸 소스로 LLM 해석까지 붙인 결과.
+
+**③ Dify Studio — Knowledge Base 확인** (RAG 실제 데이터가 적재됐는지):
+
+- URL: [http://localhost:28081](http://localhost:28081) → Knowledge → `code-context-kb` → 우측 **"Recall Testing"** 클릭
+- 질의 예: `login function with error handling`
+- 기대: `src/auth.py::login` 청크가 상위 결과로 반환. §7.1 의 `session.check_session` 이 `login` 을 호출하는 관계도 함께 잡히면 RAG 건강.
+
+**④ 상태 파일 — 파이프라인 내부 메타**:
+
+```bash
+# P1 이 만든 KB 매니페스트 (어느 커밋·몇 개 청크로 적재됐는지)
+docker exec ttc-allinone cat /data/kb_manifest.json
+
+# 00 체인이 집계한 실행 요약 (P1/P2/P3 각 결과 + 카운트)
+docker exec ttc-allinone cat /var/knowledges/state/chain_*.json
+```
+
+기대 결과 요지: `chain_<sha>.json` 의 `p3_summary.created` 값이 1 (GitLab Issue 1 개 생성) 이면 정상 완주.
+
+### 7.6 Step 6: 재실행으로 dedup 동작 확인
+
+**이 단계에서 하는 일**: 같은 커밋에 대해 체인을 **한 번 더** 실행해 "이미 본 이슈는 중복 Issue 를 만들지 않는다" 는 dedup 로직이 정상 작동하는지 확인합니다. 실제 운영에서 여러 번 커밋-체인이 돌 때 GitLab Issues 가 중복으로 부풀지 않도록 하는 핵심 메커니즘.
+
+**작업** — §7.3 의 Jenkins UI 단계를 **동일 파라미터** (`REPO_URL`/`BRANCH`/`ANALYSIS_MODE=full`) 로 한 번 더 반복합니다. 파라미터는 그대로 두고 "Build" 버튼만 다시 클릭.
+
+**기대 결과**:
+
+- `chain_<sha>.json` 에 `p3_summary.skipped=1` 기록 (기존 Issue 는 skip 됐다는 뜻).
+
+  ```bash
+  docker exec ttc-allinone cat /var/knowledges/state/chain_*.json | python3 -m json.tool | grep -E "created|skipped"
+  # → "created": 0,
+  #   "skipped": 1,
+  ```
+
+- GitLab Issues 페이지에 **중복 Issue 가 생기지 않음** — 여전히 #1 한 개만 존재. 브라우저 새로고침으로 확인.
+
+dedup 은 Sonar 원본 이슈 key + GitLab Issue title 을 비교해 같은 것이면 작성을 건너뛰는 방식으로 동작합니다. 다음 단계 — 별개 파이프라인인 04 AI 평가를 돌려보려면 §7.7 로 이동.
 
 ### 7.7 `04-AI평가` 파이프라인 첫 실행
 
