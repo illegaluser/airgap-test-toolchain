@@ -85,7 +85,7 @@ properties([
             $class: 'CascadeChoiceParameter',
             choiceType: 'PT_SINGLE_SELECT',
             description: '''<b>심판 모델 (Judge LLM)</b>. 평가 대상 AI 의 답변을 채점할 LLM. 호스트 Ollama 에 올라와 있는 모델 중 선택. <code>OLLAMA_BASE_URL</code> 을 바꾸면 이 목록도 자동 갱신.<br>
-권장: <b>qwen3.5:4b</b>(빠름, 일상 평가), <b>gemma4:e4b</b>(정확도 우선, 느림). 대상 모델보다 조금 더 큰 쪽이 신뢰할만한 채점을 합니다.''',
+권장: <b>gemma4:e4b</b>(기본값, 현재 운영 표준), <b>qwen3.5:4b</b>(더 빠른 smoke 용). 대상 모델보다 조금 더 큰 쪽이 신뢰할만한 채점을 합니다.''',
             filterLength: 1,
             filterable: true,
             name: 'JUDGE_MODEL',
@@ -216,7 +216,7 @@ if judge_model:
         )
     effective_judge = judge_model
 else:
-    preferred = ["qwen3-coder:30b", "qwen2:7b"]
+    preferred = ["gemma4:e4b", "qwen3.5:4b", "qwen3-coder:30b", "qwen2:7b"]
     effective_judge = next((m for m in preferred if m in models), models[0])
     print(f"JUDGE_MODEL was empty. Auto-selected installed model: {effective_judge}")
 

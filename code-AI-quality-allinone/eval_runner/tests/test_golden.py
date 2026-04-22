@@ -197,7 +197,7 @@ def test_render_summary_html_smoke(expected):
         "run_id": "smoke-001",
         "target_url": "http://127.0.0.1:8000/invoke",
         "target_type": "http",
-        "judge_model": "qwen3-coder:30b",
+        "judge_model": "gemma4:e4b",
         "langfuse_enabled": False,
         "thresholds": {"answer_relevancy": 0.7, "task_completion": 0.5},
         "metric_guide": {"AnswerRelevancyMetric": {"description": "답변 관련성", "pass_rule": "≥ 0.7"}},
@@ -252,7 +252,7 @@ def test_render_summary_html_smoke(expected):
     assert "<!DOCTYPE html>" in html
     assert "AI 에이전트 평가 요약" in html
     assert "smoke-001" in html
-    assert "qwen3-coder:30b" in html
+    assert "gemma4:e4b" in html
     assert "sample-case" in html
     assert "단일턴 대화 결과" in html
     assert "멀티턴 대화 결과" in html
@@ -266,7 +266,7 @@ def test_render_summary_html_exec_summary_block():
         "run_id": "exec-001",
         "target_url": "http://127.0.0.1:8000/invoke",
         "target_type": "http",
-        "judge_model": "qwen3-coder:30b",
+        "judge_model": "gemma4:e4b",
         "langfuse_enabled": False,
         "thresholds": {},
         "metric_guide": {},
@@ -781,7 +781,7 @@ def test_phase3_html_header_shows_judge_and_dataset_meta():
         "conversations": [],
         "aggregate": {
             "judge": {
-                "model": "qwen3-coder:30b",
+                "model": "gemma4:e4b",
                 "base_url": "http://host.docker.internal:11434",
                 "temperature": 0,
                 "digest": "sha256:abcd1234567890",
@@ -797,7 +797,7 @@ def test_phase3_html_header_shows_judge_and_dataset_meta():
 
     html = render_summary_html(state)
     # Judge 메타
-    assert "qwen3-coder:30b" in html
+    assert "gemma4:e4b" in html
     assert "T=0" in html
     assert "digest=…abcd12345678" in html  # 12자 truncated
     # Dataset 메타
@@ -1028,7 +1028,7 @@ def test_phase5_html_header_shows_calibration_and_judge_calls():
         "indicators": {},
         "conversations": [],
         "aggregate": {
-            "judge": {"model": "qwen3-coder:30b", "base_url": "http://127.0.0.1:11434", "temperature": 0},
+            "judge": {"model": "gemma4:e4b", "base_url": "http://127.0.0.1:11434", "temperature": 0},
             "dataset": {"path": "/tmp/golden.csv", "sha256": "abc", "rows": 11, "mtime": "2026-04-22T08:00:00+00:00"},
             "calibration": {
                 "enabled": True,

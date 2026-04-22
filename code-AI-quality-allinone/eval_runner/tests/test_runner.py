@@ -112,7 +112,7 @@ LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY")
 LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST")
 
 # 심판 LLM(Evaluator) 설정: DeepEval/GEval이 사용하는 평가용 모델
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "qwen3-coder:30b")
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemma4:e4b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
 
 # 실행 식별자: Jenkins BUILD_TAG 또는 타임스탬프 (리포트/Langfuse 추적용)
@@ -757,7 +757,7 @@ def _collect_judge_meta() -> dict:
     Phase 3.1 Q2 — Judge LLM 의 재현성·감사용 메타를 고정 수집.
 
     필드:
-    - model: JUDGE_MODEL env (또는 기본 qwen3-coder:30b)
+    - model: JUDGE_MODEL env (또는 기본 gemma4:e4b)
     - base_url: OLLAMA_BASE_URL
     - temperature: 고정 0 (DeepEval + translate 모두 0)
     - digest: Ollama `/api/show` best-effort (실패 시 None)

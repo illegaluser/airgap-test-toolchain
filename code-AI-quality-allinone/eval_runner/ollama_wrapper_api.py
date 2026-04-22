@@ -24,7 +24,7 @@
 # - POST /invoke  : 질문을 받아 Ollama에 전달하고 표준 포맷으로 응답 반환
 #
 # [실행 예시]
-# OLLAMA_MODEL=qwen3-coder:30b python3 ollama_wrapper_api.py
+# OLLAMA_MODEL=gemma4:e4b python3 ollama_wrapper_api.py
 # ==================================================================================
 
 import json
@@ -41,7 +41,7 @@ from urllib.request import Request, urlopen
 HOST = os.environ.get("OLLAMA_WRAPPER_HOST", "0.0.0.0")        # 바인딩 호스트 (모든 인터페이스)
 PORT = int(os.environ.get("OLLAMA_WRAPPER_PORT", "8000"))       # 래퍼 서버 포트
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")  # Ollama API 주소
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-coder:30b")  # 사용할 LLM 모델명
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")  # 사용할 LLM 모델명
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat"    # Ollama 채팅 엔드포인트
 
 

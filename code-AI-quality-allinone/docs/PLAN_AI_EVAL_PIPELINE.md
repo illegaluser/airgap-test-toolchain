@@ -23,7 +23,7 @@
 - **4단계 다중턴**: ⑨ Multi-turn Consistency (GEval)
 - **5단계 운영**: ⑩ Latency (정보성), ⑪ Token Usage (API 전용)
 - **대상 분기**: `TARGET_TYPE ∈ {http, ui_chat}` + `retrieval_context` 유무
-- **Judge**: 기본 `qwen3-coder:30b`, temperature=0, env 오버라이드 허용
+- **Judge**: 기본 `gemma4:e4b`, temperature=0, env 오버라이드 허용
 - **Wrapper 모드 (현 phase)**: **`local_ollama_wrapper` 단일 모드로 한정**. README 정본은 4 모드를 정의하나, 사용자 결정으로 현 phase 에서는 로컬 LLM(Ollama) 만 사용. `openai_wrapper`/`gemini_wrapper`/`direct` 는 향후 phase 로 이연.
 
 ### 1.2 Langfuse 스코프

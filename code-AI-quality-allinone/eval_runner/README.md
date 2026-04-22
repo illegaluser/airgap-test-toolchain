@@ -30,7 +30,7 @@ eval_runner/
 
 - **Wrapper 모드**: `local_ollama_wrapper` 단일. OpenAI/Gemini 는 향후 phase 로 이연.
 - **Langfuse**: 조건부. 크리덴셜 미설정 시 자동 비활성. 11지표는 summary.json 만으로 완전 기록.
-- **Judge**: 기본 `qwen3-coder:30b`, temperature=0.
+- **Judge**: 기본 `gemma4:e4b`, temperature=0.
 
 ## 관련 문서
 
