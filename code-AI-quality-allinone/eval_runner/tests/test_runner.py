@@ -73,6 +73,24 @@ from reporting.narrative import (
     generate_remediation,
 )
 
+# Phase 4.2 Q4 — dataset/policy 분리 모듈. 아래 re-export 는 하위 호환을 위한 것
+# (test_golden 과 외부 호출자가 `tr._is_blank_value` 등으로 접근 중).
+from dataset import (  # noqa: F401
+    DEFAULT_GOLDEN_PATHS,
+    GOLDEN_CSV_PATH,
+    MODULE_ROOT as _DATASET_MODULE_ROOT,
+    _collect_dataset_meta,
+    _is_blank_value,
+    _resolve_existing_path,
+    _turn_sort_key,
+    load_dataset,
+)
+from policy import (  # noqa: F401
+    _config_path,
+    _promptfoo_policy_check,
+    _schema_validate,
+)
+
 try:
     from langfuse import Langfuse
 except Exception:
@@ -99,20 +117,13 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal
 # 실행 식별자: Jenkins BUILD_TAG 또는 타임스탬프 (리포트/Langfuse 추적용)
 RUN_ID = os.environ.get("BUILD_TAG") or os.environ.get("BUILD_ID") or str(int(time.time()))
 
-# 디렉터리 구성
-MODULE_ROOT = Path(__file__).resolve().parents[1]   # eval_runner/ 디렉터리
-CONFIG_ROOT = MODULE_ROOT / "configs"               # security.yaml, schema.json 등
+# 디렉터리 구성 — MODULE_ROOT/CONFIG_ROOT/DEFAULT_GOLDEN_PATHS 는 dataset.py/policy.py
+# 로 이전됨. 하위 호환을 위해 동일 이름으로 re-export.
+MODULE_ROOT = _DATASET_MODULE_ROOT
+CONFIG_ROOT = MODULE_ROOT / "configs"
 REPORT_DIR = Path(os.environ.get("REPORT_DIR", "/var/knowledges/eval/reports"))  # 리포트 출력 경로
 REPORT_JSON_PATH = REPORT_DIR / "summary.json"      # 프로그래밍 처리용 JSON 리포트
 REPORT_HTML_PATH = REPORT_DIR / "summary.html"      # Jenkins 아티팩트용 HTML 리포트
-
-# 평가 데이터셋(golden.csv) 탐색 경로: 환경변수가 없으면 아래 순서대로 검색
-DEFAULT_GOLDEN_PATHS = [
-    MODULE_ROOT / "data" / "golden.csv",                    # 개발 환경
-    Path("/var/knowledges/eval/data/golden.csv"),            # Jenkins 볼륨 마운트
-    Path("/var/jenkins_home/knowledges/eval/data/golden.csv"),  # Jenkins 홈 디렉터리
-    Path("/app/data/golden.csv"),                            # Docker 앱 디렉터리
-]
 
 # ============================================================================
 # [GEval 심판 프롬프트] DeepEval GEval 모듈에 전달되는 채점 기준 지시문
@@ -586,37 +597,8 @@ def _collect_judge_meta() -> dict:
     return meta
 
 
-def _collect_dataset_meta() -> dict:
-    """
-    Phase 3.2 Q3 — Dataset 의 drift 추적용 메타.
-
-    필드:
-    - path: 절대경로
-    - sha256: 파일 내용 해시 (hex)
-    - rows: CSV 라인 수 (헤더 제외)
-    - mtime: ISO8601 문자열
-    """
-    import datetime
-    import hashlib
-
-    meta: dict = {
-        "path": str(GOLDEN_CSV_PATH),
-        "sha256": None,
-        "rows": None,
-        "mtime": None,
-    }
-    try:
-        if GOLDEN_CSV_PATH.exists():
-            data = GOLDEN_CSV_PATH.read_bytes()
-            meta["sha256"] = hashlib.sha256(data).hexdigest()
-            # rows: 빈 줄 제외 line count - 1 (헤더)
-            lines = [ln for ln in data.decode("utf-8", errors="replace").splitlines() if ln.strip()]
-            meta["rows"] = max(0, len(lines) - 1)
-            mtime_ts = GOLDEN_CSV_PATH.stat().st_mtime
-            meta["mtime"] = datetime.datetime.fromtimestamp(mtime_ts, datetime.timezone.utc).isoformat()
-    except Exception:
-        pass
-    return meta
+# _collect_dataset_meta 는 Phase 4.2 Q4 에서 eval_runner/dataset.py 로 이전됨.
+# (파일 상단에서 re-export 됨 — 하위 호환 유지)
 
 
 def _build_indicator_narratives(state: dict) -> dict:
@@ -671,20 +653,8 @@ def _upsert_conversation_report(conversation_report: dict):
     _write_summary_report()
 
 
-def _resolve_existing_path(env_value: str, fallback_paths):
-    """
-    환경변수에 명시된 경로가 있으면 그것을 사용하고,
-    없으면 러너가 일반적으로 배포되는 위치들을 순서대로 탐색해 첫 번째 존재 경로를 선택합니다.
-    """
-    if env_value:
-        return Path(env_value).expanduser()
-    for path in fallback_paths:
-        if path.exists():
-            return path
-    return Path(fallback_paths[0])
-
-
-GOLDEN_CSV_PATH = _resolve_existing_path(os.environ.get("GOLDEN_CSV_PATH"), DEFAULT_GOLDEN_PATHS)
+# _resolve_existing_path + GOLDEN_CSV_PATH 는 Phase 4.2 Q4 에서 dataset.py 로 이전됨.
+# (파일 상단에서 re-export 됨)
 
 
 langfuse = None
@@ -700,78 +670,6 @@ SUMMARY_STATE = _build_summary_state()
 SUMMARY_STATE["golden_csv_path"] = str(GOLDEN_CSV_PATH)
 SUMMARY_STATE["langfuse_enabled"] = bool(langfuse)
 
-
-def _turn_sort_key(value):
-    """
-    turn_id를 정렬 가능한 값으로 바꿉니다.
-    숫자는 숫자 순서대로, 문자열은 문자열 순서대로, 누락값은 가장 뒤로 보냅니다.
-    """
-    if value is None:
-        return (1, 0)
-    try:
-        return (0, int(value))
-    except (TypeError, ValueError):
-        return (0, str(value))
-
-
-def _is_blank_value(value) -> bool:
-    """
-    CSV 로딩 후 들어오는 None/NaN/공백 문자열을 모두 비어 있는 값으로 취급합니다.
-    단일턴 케이스가 `conversation_id=nan`으로 잘못 묶이는 것을 막기 위한 정규화입니다.
-    """
-    if value is None:
-        return True
-    if pd.isna(value):
-        return True
-    if isinstance(value, str) and not value.strip():
-        return True
-    return False
-
-
-def load_dataset():
-    """
-    `golden.csv`를 읽어 conversation 단위로 그룹화합니다.
-    `conversation_id`가 있으면 멀티턴으로 묶고, 없으면 각 row를 단일 턴 대화 1개로 취급합니다.
-    """
-    if not GOLDEN_CSV_PATH.exists():
-        raise FileNotFoundError(f"Evaluation dataset not found at {GOLDEN_CSV_PATH}")
-
-    df = pd.read_csv(GOLDEN_CSV_PATH)
-    df = df.where(pd.notnull(df), None)
-    records = df.to_dict(orient="records")
-
-    if "conversation_id" not in df.columns:
-        # 레거시 단일 턴 포맷입니다.
-        return [[record] for record in records]
-
-    grouped_conversations = {}
-    grouped_order = []
-    single_turn_conversations = []
-
-    for record in records:
-        conversation_id = record.get("conversation_id")
-        if not _is_blank_value(conversation_id):
-            # 같은 conversation_id를 가진 row들을 하나의 대화로 모읍니다.
-            conversation_key = str(conversation_id)
-            if conversation_key not in grouped_conversations:
-                grouped_conversations[conversation_key] = []
-                grouped_order.append(conversation_key)
-            grouped_conversations[conversation_key].append(record)
-        else:
-            # conversation_id가 비어 있으면 독립 대화로 유지합니다.
-            record["conversation_id"] = None
-            single_turn_conversations.append([record])
-
-    conversations = []
-    for conversation_key in grouped_order:
-        turns = grouped_conversations[conversation_key]
-        if "turn_id" in df.columns:
-            # turn_id 기준 정렬로 사용자-에이전트 문맥 순서를 고정합니다.
-            turns = sorted(turns, key=lambda turn: _turn_sort_key(turn.get("turn_id")))
-        conversations.append(turns)
-
-    conversations.extend(single_turn_conversations)
-    return conversations
 
 
 def _safe_json_loads(raw_text: str):
@@ -810,70 +708,6 @@ def _compact_output_for_relevancy(text: str) -> str:
     first_line = re.sub(r"\s+", " ", first_line).strip()
     return first_line[:300]
 
-
-def _config_path(filename: str) -> Path:
-    """평가 러너 모듈 위치를 기준으로 설정 파일 절대경로를 계산합니다."""
-    return CONFIG_ROOT / filename
-
-
-def _build_judge_model():
-    """
-    DeepEval 최신 OllamaModel을 사용해 심판 LLM 객체를 생성합니다.
-    모든 DeepEval/GEval 호출이 동일한 모델 설정을 공유하도록 중앙화합니다.
-    """
-    return OllamaModel(model=JUDGE_MODEL, base_url=OLLAMA_BASE_URL.rstrip("/"))
-
-
-def _promptfoo_policy_check(raw_text: str):
-    """
-    Phase 4.1 Q5 — 규칙 기반 PII/금칙 패턴 검사를 **in-process** 로 수행.
-
-    기존에는 `promptfoo eval` CLI 를 subprocess 로 호출했으나:
-      - configs/security_assert.py 가 이미 순수 Python 으로 완전 구현
-      - promptfoo 는 단순히 이 함수를 호출하고 결과를 JSON 으로 패키징할 뿐
-      - subprocess 는 Node 의존성 + 실행 오버헤드 + 에러 추적 난이도만 증가
-
-    이 함수는 security_assert.check_security_assertions() 를 직접 호출해
-    동일한 실패 메시지 형식을 유지한다. 규약은 그대로 — LLM 기반 assertion 이
-    미래에 필요하면 subprocess 경로를 별도 함수로 재도입.
-
-    실패 메시지는 기존 subprocess 경로와 동일: "Promptfoo policy checks reported N failure(s)."
-    → narrative fallback 의 키워드 매칭(`_fallback_easy_explanation`) 호환 유지.
-    """
-    # security_assert 는 configs/ 에 있으며 eval_runner/ 가 PYTHONPATH 에 있으면
-    # import 가능 (Jenkins runtime 동일). 테스트 환경에서는 sys.path 에 eval_runner/
-    # 가 들어있으므로 역시 가능.
-    try:
-        from configs.security_assert import check_security_assertions
-    except ImportError:
-        # configs 모듈이 없는 환경 (매우 예외적) — 검사 skip 으로 안전한 방향
-        return
-
-    result = check_security_assertions(raw_text or "", context={})
-    if not result.get("pass", True):
-        reason = result.get("reason") or "unspecified violation"
-        # 기존 메시지 규약 유지 — narrative fallback 이 "Promptfoo policy checks reported" 로
-        # 키워드 매칭하므로 문구 변경 시 fallback 규칙도 함께 갱신 필요.
-        raise RuntimeError(f"Promptfoo policy checks reported 1 failure(s). Reason: {reason}")
-
-
-def _schema_validate(raw_text: str):
-    """
-    API 응답이 약속된 JSON 스키마를 만족하는지 검사합니다.
-    UI 평가처럼 비JSON 응답이 자연스러운 경우는 상위 호출부에서 이 함수를 건너뜁니다.
-    """
-    schema_path = _config_path("schema.json")
-    if not schema_path.exists():
-        return
-
-    with open(schema_path, "r", encoding="utf-8") as schema_file:
-        schema = json.load(schema_file)
-
-    try:
-        parsed = json.loads(raw_text or "")
-        validate(instance=parsed, schema=schema)
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise RuntimeError(f"Format Compliance Failed (schema.json): {exc}") from exc
 
 
 def _parse_success_criteria_mode(criteria: str) -> str:
