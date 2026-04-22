@@ -347,6 +347,9 @@ bash scripts/download-plugins.sh
 
 **이 단계에서 하는 일**: 지금까지 준비한 자산(소스 + Ollama 플러그인 + Jenkins 플러그인) + Dockerfile 의 베이스 이미지 5 종을 모두 흡수해 **단일 통합 Docker 이미지** 로 만듭니다. 그 이미지를 `docker save` 로 압축해 **오프라인 머신에 그대로 옮길 수 있는 tarball** 로 뽑습니다. 이 Step 이 §3 에서 가장 오래 걸리는 단계입니다 (≈ 9 분).
 
+> **중요 — 폐쇄망 운영 기준에서는 `build-mac.sh` / `build-wsl2.sh` 만으로 충분하지 않습니다.**
+> 이 스택은 `ttc-allinone` 외에 **별도 GitLab 런타임 컨테이너**도 함께 필요합니다. 따라서 폐쇄망 반출용 자산은 반드시 **`scripts/offline-prefetch.sh` 로 생성한 tarball 2개** (`ttc-allinone-*` + `gitlab-*`) 여야 합니다. 이 절차를 생략하고 `compose up` 을 실행하면 GitLab 이미지가 로컬에 없을 때 현장에서 `docker pull` 이 발생합니다. 이는 폐쇄망 운영 시나리오에 맞지 않습니다.
+
 **본인 운영 머신 아키텍처에 맞는 분기 하나만 실행**:
 
 ```bash
@@ -632,6 +635,8 @@ bash scripts/offline-load.sh --arch amd64          # Windows WSL2 / Linux
 
 `offline-load.sh` 는 `offline-assets/<arch>/` 의 두 tarball 을 `gunzip | docker load` 로 순차 로드합니다.
 
+> **중요 — 여기서 GitLab tarball까지 함께 load 되어야만** 다음 단계 `docker compose up` 이 네트워크 접근 없이 완료됩니다. `ttc-allinone` 만 load 하고 `gitlab-*` tarball 을 빼먹으면 Compose 가 GitLab 이미지를 찾지 못해 pull 을 시도할 수 있습니다.
+
 **기대 결과** — 아래 명령으로 두 이미지가 모두 보이면 정상 (≈ 10 분 소요, tarball 크기 때문):
 
 ```bash
@@ -681,6 +686,8 @@ docker images ttc-allinone
 ### 6.3 Step 3: 스택 기동 (컨테이너 2 개 띄우기)
 
 **이 단계에서 하는 일**: Docker Compose 로 **`ttc-allinone`** (Jenkins + Dify + SonarQube + Postgres + Redis + Qdrant 통합) + **`ttc-gitlab`** (GitLab CE) 두 컨테이너를 한 번에 기동합니다. 이 명령 1 회가 곧 "전체 스택을 켜는 스위치" — 명령 자체는 즉시 리턴하지만, 컨테이너 **내부에서는 §6.4 에서 지켜볼 자동 프로비저닝이 이 순간부터 백그라운드로 계속 진행**됩니다.
+
+> **사전 체크**: 이 단계에 오기 전에 `docker images | grep -E "ttc-allinone|gitlab"` 결과에 **통합 이미지와 GitLab 이미지가 둘 다** 보여야 합니다. 둘 중 하나라도 없으면 `compose up` 시점에 로컬 이미지 부족으로 pull 이 발생할 수 있습니다.
 
 **본인 OS 에 맞는 분기 하나만 실행** — `run-*.sh` 는 `docker compose` 명령을 감싼 헬퍼 (편의용). 둘 중 무엇을 써도 같은 결과:
 
@@ -2554,7 +2561,11 @@ bash scripts/run-mac.sh        # 또는 run-wsl2.sh
 
 이 흐름에서는 `offline-prefetch.sh` / `offline-load.sh` 를 건너뜁니다. 빌드된 이미지가 바로 Docker 데몬에 적재되어 `compose up` 이 찾습니다.
 
-**주의**: 이 단일 머신 테스트로 검증이 끝나면 **반드시 §3~§6 의 에어갭 절차로 실제 운영 환경에 재배포** 하세요. 개발 머신의 `~/ttc-allinone-data` 나 Docker 이미지를 그대로 옮기는 것은 권장하지 않습니다 (서비스별 런타임 상태가 경로·호스트명에 종속).
+**주의 1**: 이 단일 머신 테스트 흐름에서 `run-mac.sh` / `run-wsl2.sh` 를 바로 실행하면, 로컬 Docker 데몬에 GitLab 이미지가 없는 경우 Compose 가 GitLab 이미지를 pull 합니다. 즉 이 부록 흐름은 **온라인 또는 사내 네트워크 연결이 가능한 개발 검증용**이지, 폐쇄망 반입 검증 절차가 아닙니다.
+
+**주의 2**: 실제 폐쇄망 운영 검증은 **반드시 §3~§6 의 에어갭 절차**를 따르세요. 특히 `scripts/offline-prefetch.sh` 로 `ttc-allinone-*` 과 `gitlab-*` tarball 2개를 만들고, 운영 머신에서 `offline-load.sh` 로 둘 다 load 한 뒤 `compose up` 해야 합니다.
+
+**주의 3**: 개발 머신의 `~/ttc-allinone-data` 나 Docker 이미지를 그대로 옮기는 것은 권장하지 않습니다 (서비스별 런타임 상태가 경로·호스트명에 종속).
 
 ---
 
