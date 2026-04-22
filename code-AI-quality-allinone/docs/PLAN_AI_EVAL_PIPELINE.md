@@ -113,10 +113,37 @@
 - **0.1** 정본 문서 정리
   - `외부 AI 에이전트 평가 시스템 구축 프로젝트 계획서.md` 삭제
   - `CONVERSATION_LOG.md` 또는 `eval_runner/README.md` 에 "README §5.1 이 정본" 명시
-- **0.2** 골든 하네스 구축 (모든 후속 변경의 안전망)
-  - `eval_runner/tests/fixtures/tiny_dataset.csv` — 5 conversations, Type A/B/C 대표, L1 난이도
-  - `eval_runner/tests/test_golden.py` — Judge 를 `monkeypatch` 로 결정론적 stub → `expected_summary.json` 과 byte diff (타임스탬프 정규화)
-  - `main` 기준으로 골든 캡처 → 커밋
+- **0.2** 골든 하네스 구축 (모든 후속 변경의 안전망) — **property-based 접근**
+  - 전체 파이프라인 byte-match (DeepEval/Ollama mock 필요) 는 Phase 0 범위 초과로 판단 → 대안으로 **결정론적 유틸리티 함수들의 property test** 로 회귀 검출
+  - `eval_runner/tests/fixtures/tiny_dataset.csv` — **11 cases / 10 conversations**, 11지표 × 5단계 각각을 최소 1회 trigger
+  - `eval_runner/tests/test_golden.py` — 검증 대상: `load_dataset()`, `_parse_success_criteria_mode()`, `_schema_validate()`, `_evaluate_simple_contains_criteria()`, `_is_blank_value()`, `_turn_sort_key()`
+  - `eval_runner/tests/fixtures/expected_golden.json` — 각 함수 기대값 (dataset 그룹 구조, DSL/GEval 분기 매핑, 한/영 '포함' 템플릿 매칭 케이스, schema 통과/거부 샘플)
+  - **deepeval 미설치 환경에서도 동작**: test_golden.py 가 sys.modules 에 stub 주입, DeepEval/Ollama 의존성 없이 util 함수만 import
+  - **데이터셋 카테고리 매트릭스**:
+
+| # | case_id | conv_id | turn | 대상 지표(단계) | retrieval_context | 기대 동작 |
+|---|---|---|---|---|---|---|
+| 1 | `policy-fail-pii` | — | 1 | ① Policy Violation (1단계) | — | AI 응답에 SSN 포함 → Fail-Fast FAIL, 이후 단계 중단 |
+| 2 | `policy-pass-clean` | — | 1 | ① Policy Violation PASS | — | 정상 응답, 3단계로 진행 |
+| 3 | `format-fail-missing` | — | 1 | ② Format Compliance (1단계) | — | schema 위반 (answer 누락) → Fail-Fast FAIL |
+| 4 | `task-pass-simple` | — | 1 | ③ Task Completion (2단계) | — | success_criteria = "contains: 서울" 충족 → PASS |
+| 5 | `task-fail-criteria` | — | 1 | ③ Task Completion FAIL | — | criteria 미충족 → FAIL |
+| 6 | `deep-relevancy-offtopic` | — | 1 | ④ Answer Relevancy + ⑤ Toxicity (3단계, non-RAG) | — | 딴소리 응답 → Relevancy 낮음 (stub 결정론) |
+| 7 | `rag-faithful` | rag-1 | 1 | ⑥ Faithfulness + ⑦ Recall + ⑧ Precision (3단계, RAG) | 제공 | context 근거 응답 → 전체 지표 PASS |
+| 8 | `rag-hallucinate` | rag-2 | 1 | ⑥ Faithfulness FAIL | 제공 | context 없는 내용 생성 → Faithfulness 낮음 |
+| 9 | `multi-consistent-t1` | mt-1 | 1 | 기억 수립 | — | "제 이름은 김철수" 입력·수신 |
+| 10 | `multi-consistent-t2` | mt-1 | 2 | ⑨ Multi-turn Consistency (4단계) PASS | — | "이름이 뭔가요?" → "김철수" 응답, 일관성 PASS |
+| 11 | `ops-latency-probe` | — | 1 | ⑩ Latency + ⑪ Token Usage (5단계) | — | 정상 응답 + latency/usage 기록 확인 |
+
+  - **5단계 커버리지 확인**: 1~3(Fail-Fast) / 4~5(Task) / 6~8(심층, non-RAG·RAG) / 9~10(다중턴) / 11(운영) — 5단계 전부 hit.
+  - **11지표 커버리지 확인**: ① 1,2 / ② 3 / ③ 4,5 / ④ 2,6 / ⑤ 2,6 / ⑥⑦⑧ 7,8 / ⑨ 10 / ⑩⑪ 모든 PASS case — 11지표 전부 hit.
+  - **Target type**: 모두 `http` (ui_chat 은 browser stub 복잡성으로 골든 하네스 범위 외, Phase 1+ 에서 실 Jenkins smoke 로 검증).
+  - **Stub 전략**:
+    - `OllamaModel.generate()` → 지표명 기반 고정 응답 (예: Relevancy=0.9, Toxicity=0.05, Faithfulness=0.95, Recall=0.85, Precision=0.8, TaskCompletion GEval=1.0). 단 `*-fail-*` / `*-hallucinate*` / `*-offtopic*` case 는 낮은 점수로 분기.
+    - `requests.post` (http_adapter) → case_id 기반 고정 JSON 응답. 실 네트워크 호출 0.
+    - `subprocess.run` (Promptfoo) → `policy-fail-pii` 만 returncode=1, 나머지 returncode=0.
+  - **정규화 규칙**: 타임스탬프(ISO8601) → `<TIMESTAMP>`, build_number/ID → `<BUILD>`, UUID → `<UUID>`, latency_ms 실수치 → `<LATENCY>` 치환 후 diff.
+  - **실행 명령**: `LANGFUSE_PUBLIC_KEY="" OLLAMA_BASE_URL=http://127.0.0.1:0 pytest eval_runner/tests/test_golden.py -v`
 - **0.3** 리포트 acceptance spec 문서화
   - `eval_runner/docs/REPORT_SPEC.md` 신규 — R1~R6 의 레이아웃 목업·필수 필드 명시
   - Phase 2 의 설계 기준이 됨

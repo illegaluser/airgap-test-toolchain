@@ -6045,3 +6045,75 @@ macOS (Apple Silicon) 에서 공식 `gitlab/gitlab-ce` 가 amd64 전용 → Rose
 Step A (Phase 1.5) — `00 코드 분석 체인.jenkinsPipeline` 신규 + `COMMIT_SHA` / `ANALYSIS_MODE` 전파 + `/data/kb_manifest.json`. 이후 Step B (Phase 2 전처리), Step C (Phase 3 워크플로 강화 — C₁·C₂ 분할), Step D (Phase 4 FP 전이 + affected_locations), Step E (Phase 5 E2E).
 
 Step C 는 사용자 피드백 반영해 **LLM 조언 실효성 강화** 를 범위에 포함 — 5 축 (① 출력 스키마 확장 ② 입력 컨텍스트 강화 ③ 프롬프트 구조 리엔지니어링 ④ deterministic 컨텐츠 추가 ⑤ 렌더 섹션 재배치) 중 ①③ 을 C₁, ②④-b 를 C₂ 로 분할해 Step B 자산 재사용 흐름 구성.
+
+---
+
+### ▣ AI 평가 파이프라인 개선 — Phase 0 (Foundation)
+**브랜치**: `feat/ai-eval-pipeline` (main 에서 컷)
+**대상 파이프라인**: `04 AI평가.jenkinsPipeline` + `eval_runner/`
+**플랜**: `code-AI-quality-allinone/docs/PLAN_AI_EVAL_PIPELINE.md` (working copy: `~/.claude/plans/effervescent-wondering-petal.md`)
+
+#### 진입 맥락
+이전 세션들은 코드 분석 라인 (Jobs 01~03) 에 집중. 본 세션은 별도 트랙으로 **AI 평가 파이프라인 (Job 04 + eval_runner/)** 의 체계적 개선을 시작.
+
+#### 사전 의사결정 (사용자 확정)
+1. **정본**: `readme.md §5.1` (11지표/5단계). 내부에 함께 들어 있던 `외부 AI 에이전트 평가 시스템 구축 프로젝트 계획서.md` (7지표/3단계 초안) 폐기.
+2. **Langfuse**: 현 phase 미사용. 코드의 조건부 import 는 유지.
+3. **수정 범위**: `eval_runner/`, `jenkinsfiles/04 AI평가.jenkinsPipeline` — 사전 영향도 검증 결과 Jobs 01/02/03 에 영향 0.
+4. **Wrapper 모드**: 현 phase 는 `local_ollama_wrapper` 단일. OpenAI/Gemini 는 향후 phase.
+5. **리포트 가독성**: Phase 2 의 핵심 산출물로 승격, Jenkins `publishHTML` 1차 판단 도구화.
+6. **계획서 이원 관리**: `~/.claude/plans/` working copy ↔ `docs/PLAN_AI_EVAL_PIPELINE.md` 안정 사본 (Phase 종료 시 sync).
+
+#### 6단계 로드맵 (PLAN_AI_EVAL_PIPELINE.md §3)
+- **Phase 0** Foundation — 정본화 + 골든 하네스 + REPORT_SPEC
+- **Phase 1** Spec Compliance — G3 (Latency/Token Usage 누락) + G4 (Jenkinsfile 모드 단순화)
+- **Phase 2** Report Overhaul — R1~R6 (헤더 · 11지표 카드 · drill-down · 에러 분리 · build delta · publishHTML)
+- **Phase 3** Metadata & Traceability — Q1~Q3 (error_type · judge digest · dataset sha)
+- **Phase 4** Structure Cleanup — Q4~Q5 (test_runner 분할 + Promptfoo in-process)
+- **Phase 5** Evaluation Robustness — Q7 (Judge 변동성 보정 세트 + N-repeat opt-in)
+
+#### Phase 0 Steps 완료 내역
+
+**Step 0.0 — 계획서 레포 등록** (커밋 `40b41f5`)
+`code-AI-quality-allinone/docs/PLAN_AI_EVAL_PIPELINE.md` 신규. Phase 0~5 전체 로드맵 + 영향도 매트릭스 + 11지표 정본 요약 (347줄).
+
+**Step 0.1 — 정본 선언 + 폐기 문서 제거** (커밋 `2cf6823`)
+- DEL: `eval_runner/외부 AI 에이전트 평가 시스템 구축 프로젝트 계획서.md` (249줄)
+- NEW: `eval_runner/README.md` — readme.md §5.1 정본 명시, 모듈 구조 설명, 현 phase 동작 범위 (`local_ollama_wrapper` 단일, Langfuse off, judge `qwen3-coder:30b`)
+
+**Step 0.2 — 골든 하네스 (property-based)** (커밋 `7856722`)
+전체 파이프라인 byte-match 는 DeepEval/Ollama mock 부담으로 Phase 0 범위 초과 → property test 그리드로 대체.
+- `tests/fixtures/tiny_dataset.csv` — 11 cases / 10 conversations, 11지표 × 5단계 각 최소 1회 trigger 카테고리 매트릭스 (policy-fail-pii, policy-pass-clean, format-fail-missing, task-pass-simple, task-fail-criteria, deep-relevancy-offtopic, rag-faithful, rag-hallucinate, multi-consistent-t1/t2, ops-latency-probe)
+- `tests/fixtures/expected_golden.json` — `load_dataset` 그룹 구조, `_parse_success_criteria_mode` 분기, `_evaluate_simple_contains_criteria` 한/영 템플릿 케이스, `_schema_validate` 통과/거부 샘플
+- `tests/test_golden.py` — sys.modules 에 deepeval stub 주입 (deepeval 미설치 환경 호환), OLLAMA_BASE_URL=127.0.0.1:0 으로 외부 네트워크 차단. 6 tests, 로컬 Python 3.11 + pandas 2.3.3 + jsonschema 4.25 + pytest 9.0.3 환경에서 **6/6 PASS**
+- 잠재 버그 발견: `_turn_sort_key` 가 int/str 혼합 정렬에서 TypeError. 실사용 패턴(int+None) 에 한정해 테스트 — Phase 4 분할 시 함수 자체 보강 후보.
+
+**Step 0.3 — REPORT_SPEC.md** (커밋 `762899e`)
+- `eval_runner/docs/REPORT_SPEC.md` (389줄) — Phase 2 acceptance 기준 문서
+- 페르소나 3종 (운영자 / 엔지니어 / 의사결정자) + 30초 룰
+- 3-Layer 정보 밀도: R1 임원 헤더 → R2 11지표 카드 → R3 conversation accordion
+- ASCII 목업으로 R1/R2/R3 레이아웃 명세
+- §3.4 R4 시스템 에러 vs 품질 실패 색상·섹션 분리 (slate-blue vs red)
+- §4 summary.json 스키마 — 단일 진실 원천. `schema_version`, `judge.{model,base_url,temperature,digest}`, `dataset.{rows,sha256,mtime}`, `aggregate.latency_ms.{p50,p95,p99}`, `tokens.total`, `indicators[].score_distribution`, `conversations[].turns[].error_type`
+- AC1~AC8 측정 가능한 acceptance criteria
+- 비기능: 단일 HTML, inline CSS, 외부 자원 0 (airgap), 한국어 우선
+
+#### Phase 0 종료 게이트 결과
+- ✅ 골든 하네스 6/6 PASS (재검증)
+- ✅ 변경 7건 모두 `eval_runner/`, `code-AI-quality-allinone/docs/` 내. Jobs 01/02/03 영향 0
+- ✅ 계획서 working copy → 레포 사본 sync 완료
+- ✅ 본 세션 요약 CONVERSATION_LOG 추가
+
+#### 커밋 (이번 세션)
+- `40b41f5` `docs(ai-eval): Phase 0~5 개선 계획서 추가`
+- `3da40ba` `docs(ai-eval): plan v2 sync — Phase 1 로컬 LLM 단독으로 축소`
+- `2cf6823` `docs(eval_runner): 정본 스펙 선언 + 폐기된 기획서 제거 (Step 0.1)`
+- `7856722` `test(eval_runner): Phase 0.2 골든 하네스 — property-based 회귀 검출 그리드`
+- `762899e` `docs(eval_runner): Phase 0.3 REPORT_SPEC v1.0.0 작성`
+- (예정) `docs(ai-eval): plan v3 sync + Phase 0 종료 + CONVERSATION_LOG 갱신`
+
+#### 다음 단계 — Phase 1
+**G3 (Langfuse-off 시 Latency/Token Usage 미기록) 우선** → G4 (Jenkinsfile 모드 단순화).
+- 1.1 G3: `test_runner.py` 가 per-turn `latency_ms` / `usage` 를 summary.json 의 `conversations[*].turns[*]` 와 `aggregate.{latency_p50/p95/p99, tokens.total}` 에 필수 기록. 골든 하네스가 새 필드 등장을 캐치하도록 `expected_golden.json` 갱신 동반.
+- 1.2 G4: `04 AI평가.jenkinsPipeline` Choice 옵션 4→1, Stage 1-2 의 case 분기에서 openai/gemini/direct 블록 제거. Q6 (래퍼 기동 3× 중복) 자동 해소.
+- 검증: `LANGFUSE_PUBLIC_KEY=""` 로 Jenkins 1회 성공 + summary.json 11지표 전부 존재 + 모드 드롭다운 단일 옵션 노출.
