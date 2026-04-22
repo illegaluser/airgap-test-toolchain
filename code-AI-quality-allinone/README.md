@@ -1,11 +1,10 @@
 # TTC 5-Pipeline All-in-One — 에어갭 설치 & 구동 가이드
 
-> **본 가이드는 `integrate/main-ai-eval-ttc` 브랜치 기준**입니다. 단일 통합 이미지에 Jenkins Job 5개(`00 코드 분석 체인` / `01 사전학습` / `02 정적분석` / `03 결과분석+이슈등록` / `04 AI평가`) 가 공존합니다. `main` 브랜치 (4 Jobs, 04 없음) 를 기준으로 한 구 가이드가 아닙니다. 레포를 받은 뒤 반드시 이 브랜치로 전환 후 작업:
+> **본 가이드는 현재 `main` 브랜치 기준**입니다. 단일 통합 이미지에 Jenkins Job 5개(`00 코드 분석 체인` / `01 사전학습` / `02 정적분석` / `03 결과분석+이슈등록` / `04 AI평가`) 가 공존합니다. 과거 `04 AI평가` 가 없던 구 버전 가이드가 아니라, 현재 저장소 상태를 기준으로 작성했습니다. 레포를 받은 뒤 아래 경로로 진입해 작업:
 >
 > ```bash
 > git clone <repo-url> airgap-test-toolchain
 > cd airgap-test-toolchain
-> git checkout integrate/main-ai-eval-ttc
 > cd code-AI-quality-allinone
 > ```
 >
@@ -237,10 +236,9 @@ Jenkins 빌드 Artifact 로 빌드마다 `build-<N>/summary.html` (+ `summary.js
 **이 단계에서 하는 일**: 본 스택의 소스 코드를 온라인 준비 머신에 내려받아, 이후 모든 반출 자산의 작업 기준점이 될 `code-AI-quality-allinone` 폴더로 이동합니다. 이 폴더가 §3.3 부터 §3.6 까지의 모든 명령이 실행되는 **작업 디렉터리** 가 됩니다.
 
 ```bash
-# 레포 clone + 통합 브랜치 체크아웃 + 작업 디렉터리 진입
+# 레포 clone + 작업 디렉터리 진입
 git clone <이 레포 URL> airgap-test-toolchain
 cd airgap-test-toolchain
-git checkout integrate/main-ai-eval-ttc
 cd code-AI-quality-allinone
 ```
 
