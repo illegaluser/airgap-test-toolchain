@@ -1,0 +1,52 @@
+{
+  "_description": "tiny_dataset.csv 기준 결정론적 회귀 기대값. test_golden.py 가 이를 diff 한다.",
+  "dataset": {
+    "conversation_count": 10,
+    "multi_turn_count": 1,
+    "single_turn_case_ids": [
+      "rag-faithful",
+      "rag-hallucinate",
+      "policy-fail-pii",
+      "policy-pass-clean",
+      "format-fail-missing",
+      "task-pass-simple",
+      "task-fail-criteria",
+      "deep-relevancy-offtopic",
+      "ops-latency-probe"
+    ],
+    "multi_turn_conversations": [
+      {
+        "conversation_id": "mt-1",
+        "turn_ids": [1, 2],
+        "case_ids": ["multi-consistent-t1", "multi-consistent-t2"]
+      }
+    ]
+  },
+  "criteria_modes": [
+    {"criteria": "", "expected": "none"},
+    {"criteria": "status_code=200", "expected": "dsl"},
+    {"criteria": "raw~r/서울/", "expected": "dsl"},
+    {"criteria": "json.answer == 'ok'", "expected": "dsl"},
+    {"criteria": "응답에 서울이 포함되어야 함", "expected": "geval"},
+    {"criteria": "답변은 친절해야 한다", "expected": "geval"}
+  ],
+  "contains_criteria": [
+    {"criteria": "응답에 서울이 포함되어야 함", "actual_output": "대한민국의 수도는 서울입니다.", "expected": true},
+    {"criteria": "응답에 부산이 포함되어야 합니다", "actual_output": "서울입니다.", "expected": false},
+    {"criteria": "응답에 김철수가 포함되어야 함", "actual_output": "당신의 이름은 김철수 입니다", "expected": true},
+    {"criteria": "response must include 'Seoul'", "actual_output": "The capital is Seoul.", "expected": true},
+    {"criteria": "자유 서술형 평가 기준", "actual_output": "아무 내용", "expected": null},
+    {"criteria": "", "actual_output": "내용", "expected": null}
+  ],
+  "schema_cases": {
+    "valid": [
+      "{\"answer\": \"서울입니다.\"}",
+      "{\"answer\": \"OK\", \"docs\": [\"doc1\"]}"
+    ],
+    "invalid": [
+      "{\"result\": \"wrong field\"}",
+      "not json at all",
+      "{\"answer\": 123}"
+    ]
+  }
+}
