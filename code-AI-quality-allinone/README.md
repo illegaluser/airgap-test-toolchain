@@ -717,7 +717,7 @@ docker ps --format 'table {{.Names}}\t{{.Status}}'
 
 ### 6.4 Step 4: 자동 프로비저닝 대기 (≈ 7 분)
 
-**이 단계에서 하는 일**: §6.3 에서 `ttc-allinone` 이 기동되는 순간 컨테이너 안의 `entrypoint.sh` 가 [`scripts/provision.sh`](scripts/provision.sh) 를 자동 실행합니다. 이 스크립트가 Dify 관리자 계정 setup · Ollama 플러그인 설치 · Workflow publish · GitLab root PAT 발급 · SonarQube admin 비번 변경 · Jenkins Credentials 5 종 주입 · Jenkins Job 5 개 등록 등 **총 14 개 작업을 자동 완수**합니다. 이 모든 게 끝나야 Jenkins UI 에서 실제로 파이프라인을 돌릴 수 있는 상태가 됩니다.
+**이 단계에서 하는 일**: §6.3 에서 `ttc-allinone` 이 기동되는 순간 컨테이너 안의 `entrypoint.sh` 가 [`scripts/provision.sh`](scripts/provision.sh) 를 자동 실행합니다. 이 스크립트가 Dify 관리자 계정 setup · Ollama 플러그인 설치 · Workflow publish · GitLab root PAT 발급 · **샘플 GitLab 프로젝트(`dscore-ttc-sample`) 자동 생성 + 초기 push** · SonarQube admin 비번 변경 · Jenkins Credentials 5 종 주입 · Jenkins Job 5 개 등록 등 **총 15 개 작업을 자동 완수**합니다. 이 모든 게 끝나야 Jenkins UI 에서 실제로 파이프라인을 돌릴 수 있는 상태가 됩니다.
 
 > **왜 이 단계를 기다려야 하는가** — `docker compose up -d` 는 컨테이너 기동 직후 리턴하므로 "스택이 올라왔다" 는 잘못된 판단을 하기 쉽습니다. 실제로는 내부에서 프로비저닝이 7 분간 백그라운드로 계속 돌고 있으며, 완료 전에 Jenkins UI 에 접속해 Job 을 누르면 "Job 을 찾을 수 없음" / "credential 없음" 같은 오류가 납니다. §6.4 는 **이 내부 작업이 끝날 때까지 기다리는 게이트**.
 
@@ -745,6 +745,7 @@ echo "PROVISION_DONE"
 [provision]   Dify       : http://127.0.0.1:28081 (admin@ttc.local / TtcAdmin!2026)
 [provision]   SonarQube  : http://localhost:29000 (admin / TtcAdmin!2026)
 [provision]   GitLab     : http://localhost:28090 (root / ChangeMe!Pass)
+[provision]   Sample Repo: http://localhost:28090/root/dscore-ttc-sample
 [entrypoint] 앱 프로비저닝 완료.
 ```
 
@@ -771,7 +772,7 @@ curl -s -u admin:password 'http://127.0.0.1:28080/api/json?tree=jobs%5Bname%5D' 
 
 한 개라도 누락되면 `provision.sh` 가 도중에 실패한 것 — §12.10 로그 위치 참고.
 
-**검증 ② 프로비저닝 마커 파일 11 종 존재 여부**:
+**검증 ② 프로비저닝 마커 파일 12 종 존재 여부**:
 
 ```bash
 docker exec ttc-allinone ls /data/.provision/
@@ -782,7 +783,7 @@ docker exec ttc-allinone ls /data/.provision/
 ```text
 dataset_api_key    dataset_id    default_models.ok    gitlab_root_pat
 jenkins_sonar_integration.ok    ollama_embedding.ok    ollama_plugin.ok
-sonar_token    workflow_api_key    workflow_app_id    workflow_published.ok
+sample_project.ok    sonar_token    workflow_api_key    workflow_app_id    workflow_published.ok
 ```
 
 각 파일은 해당 자산(API key, Workflow publish 상태 등)이 생성됐음을 기록하는 flag 입니다.
@@ -811,7 +812,7 @@ done
 | 컨테이너 기동 직후 ~ Dify 자동화 진입 | ≈ 1 분 | Jenkins · Sonar · Dify 3 앱 병렬 기동 |
 | Dify Ollama 플러그인 설치 + provider 등록 | ≈ 2 분 | `langgenius-ollama-*.difypkg` 업로드 |
 | Dify Workflow import + publish | ≈ 30 초 | |
-| GitLab reconfigure + root PAT 발급 | ≈ 3 분 | arm64 에서는 5~10 분까지도 정상 |
+| GitLab reconfigure + root PAT 발급 + 샘플 프로젝트 생성 | ≈ 3 분 | arm64 에서는 5~10 분까지도 정상 |
 | SonarQube 초기화 + Jenkins Credentials 5 종 + Jobs 5 종 등록 | ≈ 1 분 | |
 | **총계** | **≈ 7 분** | 첫 기동 기준. 컨테이너 재기동은 마커 파일로 skip 되어 ≈ 30 초 |
 
@@ -821,21 +822,41 @@ done
 
 ## 7. 첫 실행 — 샘플 레포로 파이프라인 돌려보기
 
-> 📋 **이 섹션은 "따라 하기"** — §6 까지 완료된 환경에서 실제 분석 대상이 될 샘플 레포를 GitLab 에 만들고, `00-코드-분석-체인` Job 을 처음 실행해 GitLab Issue 가 자동 생성되는 과정을 확인합니다. 본 스택이 레포를 자동 생성하지는 **않으므로** §7.1~§7.2 에서 한 번 수동으로 샘플 레포를 만든 뒤, §7.3 부터 실제 체인을 돌립니다.
+> 📋 **이 섹션은 "따라 하기"** — §6 까지 완료된 환경에서는 프로비저닝이 이미 샘플 GitLab 프로젝트 `dscore-ttc-sample` 을 자동 생성해 둡니다. 따라서 바로 `00-코드-분석-체인` Job 을 실행해 GitLab Issue 가 자동 생성되는 과정을 확인할 수 있습니다. 필요하면 §7.1~§7.2 로 샘플 레포를 수동 재생성할 수도 있습니다.
 >
 > §7.7 은 별개 파이프라인(04 AI 평가) 첫 실행 — `00` 체인과 독립이며 Ollama 모델·시험지만 있으면 언제든 시작 가능합니다.
 
-### 7.1 Step 1: 샘플 레포 만들기 (≈ 3 분)
+### 7.1 Step 1: 샘플 레포 자동 생성 확인 (≈ 1 분)
 
-**이 단계에서 하는 일**: 본 스택의 코드 분석 대상으로 쓸 **의도적으로 버그가 있는 Python 미니 프로젝트** 를 로컬(호스트 머신의 `/tmp/`) 에 만듭니다. SonarQube 가 반드시 잡아내는 `bare except` 위반(rule `python:S5754`, severity CRITICAL) 을 심어놔서, 뒤이어 돌릴 `03-정적분석-결과분석-이슈등록` 파이프라인이 이걸 어떻게 찾아내고 해석하는지 확인할 수 있습니다.
+**이 단계에서 하는 일**: 프로비저닝이 만든 **의도적으로 버그가 있는 Python 미니 프로젝트** 가 GitLab 에 실제로 올라가 있는지 확인합니다. 이 프로젝트에는 SonarQube 가 반드시 잡아내는 `bare except` 위반(rule `python:S5754`, severity CRITICAL) 이 심어져 있어, 뒤이어 돌릴 `03-정적분석-결과분석-이슈등록` 파이프라인이 이걸 어떻게 찾아내고 해석하는지 검증할 수 있습니다.
 
-**실행 명령** — 아래 블록 전체를 셸에 붙여넣기 하면 됩니다 (`cat > ... <<'PY'` heredoc 으로 파일 3 개 + Sonar 설정 + git 초기화를 한 번에 수행):
+**브라우저 확인** — [http://localhost:28090/root/dscore-ttc-sample](http://localhost:28090/root/dscore-ttc-sample) 에 `root` / `ChangeMe!Pass` 로 로그인해서 `src/auth.py`, `src/session.py`, `sonar-project.properties` 가 보이면 정상.
+
+**CLI 확인**:
 
 ```bash
-# 샘플 프로젝트 디렉터리 생성 + 이동
+GITLAB_PAT=$(docker exec ttc-allinone cat /data/.provision/gitlab_root_pat)
+curl -sS -H "PRIVATE-TOKEN: $GITLAB_PAT" \
+  "http://localhost:28090/api/v4/projects/root%2Fdscore-ttc-sample/repository/tree?path=src&ref=main" \
+  | python3 -m json.tool
+```
+
+**기대 결과** — `src` 아래에 `__init__.py`, `auth.py`, `session.py` 가 보여야 정상.
+
+### 7.2 Step 2: 샘플 레포를 수동 재생성하고 싶다면 (선택)
+
+**기본 흐름에서는 이 단계가 필요 없습니다.** 프로비저닝이 이미 `dscore-ttc-sample` 프로젝트를 자동 생성하고 첫 커밋까지 push 해 두기 때문입니다.
+
+다만 아래 경우에는 수동 재생성이 유용합니다.
+- `PROVISION_SAMPLE_PROJECT=false` 로 자동 생성을 꺼둔 경우
+- 샘플 프로젝트를 지웠거나 내용을 초기 상태로 되돌리고 싶은 경우
+- 문서대로 GitLab 프로젝트 생성 + push 절차 자체를 검증하고 싶은 경우
+
+이 경우 아래 블록 전체를 셸에 붙여넣으면 됩니다 (`cat > ... <<'PY'` heredoc 으로 파일 3 개 + Sonar 설정 + git 초기화를 한 번에 수행):
+
+```bash
 mkdir -p /tmp/dscore-ttc-sample/src && cd /tmp/dscore-ttc-sample
 
-# 파일 ① src/auth.py — 의도적 bare except (Sonar python:S5754 CRITICAL 유발)
 cat > src/auth.py <<'PY'
 """Simple authentication helpers."""
 import hashlib, os
@@ -854,7 +875,6 @@ def login(username: str, password: str, user_store: dict) -> bool:
         return False
 PY
 
-# 파일 ② src/session.py — login() 을 호출하는 함수 (RAG 가 호출관계 잡는지 확인용)
 cat > src/session.py <<'PY'
 """Session helpers that call login() — RAG 가 호출 관계를 잡아내는지 확인용."""
 from src.auth import login
@@ -868,7 +888,6 @@ PY
 
 touch src/__init__.py
 
-# 파일 ③ sonar-project.properties — Sonar 스캐너가 읽는 프로젝트 메타
 cat > sonar-project.properties <<'CFG'
 sonar.projectKey=dscore-ttc-sample
 sonar.projectName=dscore-ttc-sample
@@ -877,53 +896,18 @@ sonar.python.version=3.11
 sonar.sourceEncoding=UTF-8
 CFG
 
-# git 초기화 + 첫 커밋
 git init -q -b main
 git add -A
 git -c user.email=test@ttc.local -c user.name=tester commit -q -m "initial"
-```
 
-**기대 결과** — `ls -la` / `git log --oneline` 로 파일과 첫 커밋이 잡히면 정상:
-
-```bash
-ls src/
-# → __init__.py  auth.py  session.py
-
-git log --oneline
-# → <sha>  initial
-```
-
-### 7.2 Step 2: GitLab 에 프로젝트 생성 + 샘플 레포 푸시
-
-**이 단계에서 하는 일**: §7.1 에서 만든 로컬 레포를 운영 머신 안에서 돌고 있는 GitLab 에 프로젝트로 등록하고 push 합니다. 이후 `00` 체인이 이 GitLab URL 을 clone 해서 분석합니다.
-
-> **왜 별도 프로젝트가 필요한가** — 본 스택의 파이프라인은 "GitLab 레포의 특정 커밋 SHA 를 분석" 하는 방식으로 동작합니다. 따라서 최소 1 개의 프로젝트가 GitLab 에 존재해야 합니다. §6.4 의 provision.sh 가 자동 생성한 `root` 계정과 PAT 를 그대로 재사용합니다.
-
-**작업 디렉터리는 §7.1 에 이어 여전히 `/tmp/dscore-ttc-sample`** 인 상태로 시작합니다.
-
-**실행 명령**:
-
-```bash
-# ① provision.sh 가 자동 발급한 GitLab root PAT 를 컨테이너에서 꺼내 쉘 변수로
 GITLAB_PAT=$(docker exec ttc-allinone cat /data/.provision/gitlab_root_pat)
-
-# ② GitLab REST API 로 dscore-ttc-sample 프로젝트 생성
 curl -sS -X POST "http://localhost:28090/api/v4/projects" \
   -H "PRIVATE-TOKEN: $GITLAB_PAT" \
   -d "name=dscore-ttc-sample&visibility=private&initialize_with_readme=false"
 
-# ③ remote 등록 + push
-cd /tmp/dscore-ttc-sample
 git remote add origin "http://oauth2:${GITLAB_PAT}@localhost:28090/root/dscore-ttc-sample.git"
 git push -u origin main
 ```
-
-**기대 결과** — 두 가지로 확인:
-
-1. ② 의 `curl` 응답 JSON 에 `"id": <숫자>`, `"path": "dscore-ttc-sample"` 등이 보이면 프로젝트 생성 성공.
-2. ③ 의 `git push` 가 `To http://.../dscore-ttc-sample.git / * [new branch] main -> main` 으로 끝나면 push 성공.
-
-**브라우저 확인** — [http://localhost:28090/root/dscore-ttc-sample](http://localhost:28090/root/dscore-ttc-sample) 에 `root` / `ChangeMe!Pass` 로 로그인해서 `src/auth.py` 등이 업로드됐는지 눈으로 확인.
 
 ### 7.3 Step 3: `00-코드-분석-체인` Job 실행 (Jenkins UI)
 
