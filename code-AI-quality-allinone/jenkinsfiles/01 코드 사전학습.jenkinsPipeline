@@ -26,18 +26,20 @@ pipeline {
             when { expression { params.REPO_URL != '' } }
             steps {
                 echo "[Clone] Git 레포지토리 클론 시작: ${params.REPO_URL}"
+                script {
+                    env.REPO_NAME = sh(script: "basename '${params.REPO_URL}' .git", returnStdout: true).trim()
+                }
                 withCredentials([string(credentialsId: 'gitlab-pat', variable: 'GITLAB_PAT')]) {
-                    sh '''
+                    sh """
                     set -e
-                    REPO_NAME=$(basename "${REPO_URL}" .git)
                     # REPO_URL 에 oauth2:${GITLAB_PAT}@ 주입. public/private 모두 작동.
-                    AUTH_URL=$(echo "${REPO_URL}" | sed -E "s|^(https?)://|\\1://oauth2:${GITLAB_PAT}@|")
+                    AUTH_URL=\$(printf '%s' '${params.REPO_URL}' | sed -E "s|^(https?)://|\\\\1://oauth2:\${GITLAB_PAT}@|")
                     # 기존 코드 디렉터리 초기화
-                    rm -rf ${WORKSPACE_CODES}/*
+                    rm -rf '${env.WORKSPACE_CODES}'/*
                     # Git 클론 (실제 저장소 이름으로 디렉터리 생성)
-                    git clone "${AUTH_URL}" ${WORKSPACE_CODES}/$REPO_NAME
+                    git clone "\$AUTH_URL" '${env.WORKSPACE_CODES}/${env.REPO_NAME}'
                     echo "[Clone] 완료"
-                    '''
+                    """
                 }
             }
         }
@@ -45,35 +47,36 @@ pipeline {
         stage('2. Build Context (AST chunks)') {
             steps {
                 script {
+                    if (!env.REPO_NAME?.trim()) {
+                        env.REPO_NAME = sh(script: "basename '${params.REPO_URL}' .git", returnStdout: true).trim()
+                    }
                     // Phase 1.5: params.COMMIT_SHA override 우선, 없으면 HEAD 자동 해석.
                     def shaOverride = (params.COMMIT_SHA ?: '').trim()
                     if (shaOverride) {
                         env.COMMIT_SHA = shaOverride
                     } else {
-                        def repoName = sh(script: "basename '${params.REPO_URL}' .git", returnStdout: true).trim()
                         env.COMMIT_SHA = sh(
-                            script: "cd ${WORKSPACE_CODES}/${repoName} 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo ''",
+                            script: "cd ${env.WORKSPACE_CODES}/${env.REPO_NAME} 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo ''",
                             returnStdout: true
                         ).trim()
                     }
                     echo "[Build] commit=${env.COMMIT_SHA?.take(8) ?: '(none)'} mode=${params.ANALYSIS_MODE}"
                 }
                 echo "[Build] tree-sitter AST 청킹 시작"
-                sh '''
+                sh """
                 set -e
-                REPO_NAME=$(basename "${REPO_URL}" .git)
                 # 이전 결과물(JSONL/MD) 완전 제거 후 새로 생성 — Dify 중복 upload 방지
-                rm -rf ${RESULT_DIR}/* 2>/dev/null || true
+                rm -rf '${env.RESULT_DIR}'/* 2>/dev/null || true
 
-                python3 ${SCRIPTS_DIR}/repo_context_builder.py \
-                    --repo_root ${WORKSPACE_CODES}/$REPO_NAME \
-                    --out ${RESULT_DIR} \
-                    --commit-sha "${COMMIT_SHA}"
+                python3 '${env.SCRIPTS_DIR}/repo_context_builder.py' \
+                    --repo_root '${env.WORKSPACE_CODES}/${env.REPO_NAME}' \
+                    --out '${env.RESULT_DIR}' \
+                    --commit-sha '${env.COMMIT_SHA}'
 
-                JSONL_COUNT=$(ls ${RESULT_DIR}/*.jsonl 2>/dev/null | wc -l)
-                CHUNK_COUNT=$(cat ${RESULT_DIR}/*.jsonl 2>/dev/null | wc -l)
-                echo "[Build] JSONL 파일 ${JSONL_COUNT} 개, 총 청크 ${CHUNK_COUNT} 개"
-                '''
+                JSONL_COUNT=\$(ls '${env.RESULT_DIR}'/*.jsonl 2>/dev/null | wc -l)
+                CHUNK_COUNT=\$(cat '${env.RESULT_DIR}'/*.jsonl 2>/dev/null | wc -l)
+                echo "[Build] JSONL 파일 \${JSONL_COUNT} 개, 총 청크 \${CHUNK_COUNT} 개"
+                """
             }
         }
 
@@ -97,24 +100,24 @@ pipeline {
                     string(credentialsId: 'dify-dataset-id', variable: 'DIFY_DATASET_ID')
                 ]) {
                     echo "[Upload] JSONL 청크 → Dify Dataset (high_quality 모드)"
-                    sh '''
+                    sh """
                     set -e
                     # doc_processor.py 는 RESULT_DIR 내 *.jsonl 각 line 을 1 document 로 업로드.
                     # JSONL 이 없으면 레거시 *.md 로 자동 폴백.
                     # upload 성공 후 /data/kb_manifest.json 기록 (env 로 repo/branch/commit 전달).
-                    export KB_MANIFEST_REPO_URL="${REPO_URL}"
-                    export KB_MANIFEST_BRANCH="${BRANCH}"
-                    KB_MANIFEST_COMMIT_SHA="${COMMIT_SHA}"
-                    KB_MANIFEST_ANALYSIS_MODE="${ANALYSIS_MODE}"
-                    [ -n "${KB_MANIFEST_ANALYSIS_MODE}" ] || KB_MANIFEST_ANALYSIS_MODE="full"
+                    export KB_MANIFEST_REPO_URL='${params.REPO_URL}'
+                    export KB_MANIFEST_BRANCH='${params.BRANCH}'
+                    KB_MANIFEST_COMMIT_SHA='${env.COMMIT_SHA}'
+                    KB_MANIFEST_ANALYSIS_MODE='${params.ANALYSIS_MODE}'
+                    [ -n "\${KB_MANIFEST_ANALYSIS_MODE}" ] || KB_MANIFEST_ANALYSIS_MODE="full"
                     export KB_MANIFEST_COMMIT_SHA KB_MANIFEST_ANALYSIS_MODE
-                    python3 ${SCRIPTS_DIR}/doc_processor.py upload \
-                        "$DIFY_API_KEY" \
-                        "$DIFY_DATASET_ID" \
-                        "$DOC_FORM" \
-                        "$DOC_LANGUAGE"
+                    python3 '${env.SCRIPTS_DIR}/doc_processor.py' upload \
+                        "\$DIFY_API_KEY" \
+                        "\$DIFY_DATASET_ID" \
+                        '${env.DOC_FORM}' \
+                        '${env.DOC_LANGUAGE}'
                     echo "[Upload] 완료"
-                    '''
+                    """
                 }
             }
         }

@@ -106,6 +106,15 @@ mkdir -p \
     /var/knowledges/eval/reports \
     /var/knowledges/state
 chown -R jenkins:jenkins /var/knowledges /var/jenkins_home/scripts /var/jenkins_home/tools 2>/dev/null || true
+
+# 평가 fixture 를 런타임 기본 위치로 1회 부트스트랩.
+# 사용자가 나중에 golden.csv 를 업로드/교체하면 기존 파일을 보존해야 하므로
+# 대상 파일이 없을 때만 복사한다.
+if [ -f /opt/eval_runner/tests/fixtures/tiny_dataset.csv ] && [ ! -f /var/knowledges/eval/data/golden.csv ]; then
+    cp /opt/eval_runner/tests/fixtures/tiny_dataset.csv /var/knowledges/eval/data/golden.csv
+    chown jenkins:jenkins /var/knowledges/eval/data/golden.csv 2>/dev/null || true
+    log "기본 평가 데이터셋 부트스트랩 완료: /var/knowledges/eval/data/golden.csv"
+fi
 log "Jenkins scripts 경로 매핑 + /var/knowledges 부트스트랩 완료"
 
 # ────────────────────────────────────────────────────────────────────────────
