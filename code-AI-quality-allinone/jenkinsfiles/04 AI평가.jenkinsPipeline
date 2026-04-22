@@ -59,14 +59,14 @@ properties([
                 fallbackScript: [
                     classpath: [],
                     sandbox: true,
-                    script: "return ['gemma4:e2b', 'qwen3.5:4b', 'gemma4:e4b', 'llama3.2-vision:latest', 'qwen3-coder:30b']"
+                    script: "return ['gemma4:e4b', 'qwen3.5:4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']"
                 ],
                 script: [
                     classpath: [],
                     sandbox: false,
                     script: '''
                         import groovy.json.JsonSlurperClassic
-                        def defaultModels = ['gemma4:e2b', 'qwen3.5:4b', 'gemma4:e4b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
+                        def defaultModels = ['gemma4:e4b', 'qwen3.5:4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
                         def baseUrl = (OLLAMA_BASE_URL ?: 'http://host.docker.internal:11434').trim()
                         if (!baseUrl) { return defaultModels }
                         try {
@@ -100,7 +100,7 @@ properties([
                         // Active Choices 스크립트 권한/네트워크 문제로 동적 로드가 실패해도
                         // 드롭다운을 비우지 않기 위한 최소 선택지. 호스트에 실존할 가능성이 높은
                         // 모델들을 먼저 두되, 실제로는 OLLAMA_BASE_URL 기반 동적 스크립트가 이겨야 정상.
-                        return ['qwen3.5:4b', 'gemma4:e4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
+                        return ['gemma4:e4b', 'qwen3.5:4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
                     '''
                 ],
                 script: [
@@ -112,7 +112,7 @@ properties([
                     script: '''
                         import groovy.json.JsonSlurperClassic
 
-                        def defaultModels = ['qwen3.5:4b', 'gemma4:e4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
+                        def defaultModels = ['gemma4:e4b', 'qwen3.5:4b', 'gemma4:e2b', 'llama3.2-vision:latest', 'qwen3-coder:30b']
                         def baseUrl = (OLLAMA_BASE_URL ?: 'http://host.docker.internal:11434').trim()
                         if (!baseUrl) { return defaultModels }
                         try {
@@ -165,15 +165,21 @@ pipeline {
                 }
             }
         }
-        stage('1-1. Judge Model 검증') {
+        stage('1-1. Judge / Target Model preflight 검증') {
             steps {
                 withEnv([
                     "OLLAMA_BASE_URL=${params.OLLAMA_BASE_URL}",
                     "JUDGE_MODEL=${params.JUDGE_MODEL ?: ''}",
+                    "TARGET_OLLAMA_MODEL=${params.TARGET_OLLAMA_MODEL ?: ''}",
+                    "TARGET_TYPE=${params.TARGET_TYPE ?: 'local_ollama_wrapper'}",
                 ]) {
                     sh '''
                     set -eu
-                    # 입력한 JUDGE_MODEL이 실제 Ollama 설치 목록에 있는지 먼저 검증합니다.
+                    # JUDGE_MODEL + (local_ollama_wrapper 모드일 때) TARGET_OLLAMA_MODEL 둘 다
+                    # 호스트 Ollama /api/tags 에 실제 등록돼 있는지 먼저 검증합니다.
+                    # 누락 시 즉시 fail — 평가 단계까지 가서 어댑터가 HTTP 404 로 깨지는 낭비를
+                    # 막는 게 목적입니다 (CascadeChoice fallback 이 호스트에 없는 모델을 default
+                    # 로 줄 수 있는 윈도우 차단).
                     NORMALIZED_OLLAMA_BASE_URL="$(printf '%s' "$OLLAMA_BASE_URL" | sed 's:/*$::')"
                     TAGS_URL="$NORMALIZED_OLLAMA_BASE_URL/api/tags"
                     TMP_JSON="$(mktemp)"
@@ -184,11 +190,13 @@ pipeline {
 
                     echo "--------------------------------------------------"
                     echo "Installed Ollama models:"
-                    python3 - "$TMP_JSON" "${JUDGE_MODEL:-}" "$EFFECTIVE_MODEL_FILE" <<'PY'
+                    python3 - "$TMP_JSON" "${JUDGE_MODEL:-}" "${TARGET_OLLAMA_MODEL:-}" "${TARGET_TYPE:-}" "$EFFECTIVE_MODEL_FILE" <<'PY'
 import json
 import sys
 
-payload_path, selected_model, output_path = sys.argv[1], sys.argv[2].strip(), sys.argv[3]
+payload_path, judge_model, target_model, target_type, output_path = (
+    sys.argv[1], sys.argv[2].strip(), sys.argv[3].strip(), sys.argv[4].strip(), sys.argv[5]
+)
 with open(payload_path, "r", encoding="utf-8") as fh:
     payload = json.load(fh) or {}
 
@@ -199,23 +207,38 @@ for model in models:
 if not models:
     raise SystemExit("No Ollama models were returned from /api/tags.")
 
-if selected_model:
-    if selected_model not in models:
+# JUDGE_MODEL: 항상 검증 (모든 TARGET_TYPE 에서 심판으로 사용)
+if judge_model:
+    if judge_model not in models:
         raise SystemExit(
-            f"Selected JUDGE_MODEL '{selected_model}' is not installed. "
+            f"Selected JUDGE_MODEL '{judge_model}' is not installed on host Ollama. "
             f"Choose one of: {', '.join(models)}"
         )
-    effective_model = selected_model
+    effective_judge = judge_model
 else:
     preferred = ["qwen3-coder:30b", "qwen2:7b"]
-    effective_model = next((m for m in preferred if m in models), models[0])
-    print("JUDGE_MODEL was empty. Auto-selected installed model:", effective_model)
+    effective_judge = next((m for m in preferred if m in models), models[0])
+    print(f"JUDGE_MODEL was empty. Auto-selected installed model: {effective_judge}")
+
+# TARGET_OLLAMA_MODEL: local_ollama_wrapper 모드일 때만 검증
+# (http / ui_chat 모드에서는 외부 어댑터를 쓰므로 이 필드가 의미 없음)
+if target_type == "local_ollama_wrapper":
+    if target_model:
+        if target_model not in models:
+            raise SystemExit(
+                f"Selected TARGET_OLLAMA_MODEL '{target_model}' is not installed on host Ollama. "
+                f"TARGET_TYPE=local_ollama_wrapper 모드에서는 호스트에 실재하는 모델만 선택 가능합니다. "
+                f"Choose one of: {', '.join(models)}"
+            )
+        print(f"Selected target model confirmed: {target_model}")
+    else:
+        print("TARGET_OLLAMA_MODEL was empty (will default to JUDGE_MODEL in wrapper).")
 
 with open(output_path, "w", encoding="utf-8") as fh:
-    fh.write(effective_model)
+    fh.write(effective_judge)
 
 print("--------------------------------------------------")
-print(f"Selected judge model confirmed: {effective_model}")
+print(f"Selected judge model confirmed: {effective_judge}")
 PY
                     '''
                 }
