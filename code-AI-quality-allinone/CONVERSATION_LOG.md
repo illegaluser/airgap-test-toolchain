@@ -6252,3 +6252,71 @@ reporting/html.py 의 render_summary_html 이 `reporting.narrative` 의 generate
 - **2.2**: 11지표 카드 + opt-in R2.1 지표 해설 placeholder.
 - **2.3**: R3 turn 카드의 "쉬운 해설" 을 narrative.generate_easy_explanation() 로 교체. 기존 `_easy_explanation` 하드코딩은 narrative 의 fallback 경로로 이동 (이미 완료).
 - **2.4~2.6**: 에러 분리, build delta, publishHTML 검증.
+
+---
+
+### ▣ AI 평가 파이프라인 개선 — Phase 2.1~2.6 (Report Overhaul 완성)
+
+**브랜치**: `feat/ai-eval-pipeline` (Phase 2.0 이어서)
+
+#### Step 2.1 — R1 + R1.1 임원 요약 헤더 (커밋 `368fd21`)
+- `test_runner._write_summary_report` 가 `generate_exec_summary(SUMMARY_STATE)` 1회 호출, 결과를 `SUMMARY_STATE["aggregate"]["exec_summary"]` 에 기록
+- `render_summary_html` 은 state 에서 읽기만 → 빌드당 LLM 호출 1회 보장
+- `_render_exec_summary_block(exec_summary)` 헬퍼: provenance 배지(🤖 LLM / 🤖 LLM 캐시 / 📋 기본) 노출
+- CSS `.exec-summary` (민트 배경), `.provenance.{llm,cached,fallback}`
+- 골든 하네스 5 시나리오 추가: llm / cached / fallback / 빈 state / 빈 text
+
+#### Step 2.2 — R2 + R2.1 11지표 카드 대시보드 (커밋 `28ee3ec` 일부)
+- `_recompute_summary_totals` 에 per-indicator 집계 추가: `SUMMARY_STATE["indicators"]` 신설
+    - 11개 각각 `{pass, fail, skipped, scores, threshold, failed_case_ids}`
+    - Latency/TokenUsage 는 `kind="informational"` + `stats` 서브딕트 (P50/P95/P99, total tokens 등)
+- `reporting/html.py:INDICATOR_ORDER` 상수: ①~⑪ 기호·이름·단계 매핑
+- `_render_indicator_cards(state)` + `_render_one_indicator_card`:
+    - 배지: 🟢 PASS / 🟡 WARN / 🔴 FAIL / ⚪ N/A / INFO(정보성)
+    - pass 비율 + threshold + 실패 case_id 최대 3개
+    - R2.1 narrative placeholder (opt-in off 기본)
+- `test_runner._build_indicator_narratives`: 11 지표 각각 narrative 생성 (off 기본 → fallback 텍스트)
+- CSS `.indicator-grid`, `.ind-card`, `.ind-head`, `.ind-metric`, `.ind-narrative`
+
+#### Step 2.3 — R3 + R3.1 + R3.2 Case drill-down + LLM 해설/조치
+- `test_runner._inject_turn_narratives(state)`:
+    - 실패 turn 마다 `generate_easy_explanation(turn)` 을 `turn["easy_explanation"]` 에 주입 (R3.1, 기본 on)
+    - `generate_remediation(turn)` 을 `turn["remediation"]` 에 주입 (R3.2, 기본 off → fallback=empty)
+- HTML turn row 에 `_easy_explanation_with_provenance(turn)` 통합. 주입 미흡 시 legacy 하드코딩으로 graceful fallback
+- detail_html 에 "쉬운 해설 🤖 LLM / 📋" 배지, remediation 섹션 (text 있을 때만)
+
+#### Step 2.4 — R4 시스템 vs 품질 에러 분리
+- `_classify_error_type(turn)`: 
+    - Phase 3 Q1 의 `error_type` enum 필드 우선 (미구현 → 문자열 휴리스틱으로 준비)
+    - 패턴 `Adapter Error / Connection / HTTP 5 / Timeout` → system, 나머지 실패 → quality
+- `classify_failure_buckets(state)`: 전체 system/quality 카운트
+- R1 헤더 하단에 error-breakdown 배지 2개 + turn 판정 옆 에러 분류 배지
+- CSS `.badge.system-err` (slate-blue), `.badge.quality-err` (red)
+
+#### Step 2.5 — R5 Build delta (스트레치, 이연)
+Jenkins artifact fetch 환경 의존으로 본 phase 에서는 스펙만 유지. summary.json 구조는 delta 필드 추가 가능하도록 설계됨.
+
+#### Step 2.6 — R6 publishHTML 통합 강화
+- `04 AI평가.jenkinsPipeline` post.always:
+    - summary.html missing 시 명시적 placeholder HTML 자동 생성 (원인 확인 가이드 포함)
+    - `publishHTML` `allowMissing: true` → `false` 로 강화
+- Jenkins 탭 `AI Eval Summary` 가 기본 노출 + 빈 상태도 명확한 guide 표시
+
+#### Phase 2 종료 게이트 결과
+- ✅ 골든 하네스 **21/21 PASS** (Phase 2.0 17 + 2.1 1 + 2.2~2.4 3)
+- ✅ Jobs 01/02/03 영향 0 (eval_runner/ + jenkinsfiles/04 범위)
+- ✅ AC1~AC8 (기본) + AC9~AC12 (LLM) 준수 기반 완성
+- ✅ REPORT_SPEC §3.1.1/§3.2.1/§3.3.1/§3.3.2 반영 완료
+
+#### 커밋 (이번 세션)
+- `1555692` refactor(eval_runner): Phase 2.0(a) reporting/ 패키지 분리
+- `ba01222` feat(eval_runner): Phase 2.0(b-h) LLM 내러티브 인프라 + REPORT_SPEC AC9~AC12
+- `368fd21` feat(eval_runner): Phase 2.1 R1.1 — 🤖 LLM 임원 요약 헤더 통합
+- `28ee3ec` feat(eval_runner): Phase 2.2~2.6 R2/R3/R4/R6 구현
+- (예정) docs(ai-eval): plan v4 sync + Phase 2 종료 + CONVERSATION_LOG 갱신
+
+#### 다음 단계 — Phase 3 (Metadata & Traceability)
+- **3.1 Q2** Judge 잠금 메타: `judge: {model, base_url, temperature, digest?}` summary 에 기록. digest 는 Ollama `/api/show` best-effort.
+- **3.2 Q3** Dataset 메타: `load_dataset()` 이 SHA256 + mtime + rows 계산 → `dataset: {path, sha256, rows, mtime}`.
+- **3.3 Q1** Error type enum 구조화: `UniversalEvalOutput.error_type: Literal["system","quality"] | None` 추가. Phase 2.4 의 임시 문자열 매칭을 구조 필드로 교체 (`_classify_error_type` 의 explicit 분기 활성화).
+- 검증: 골든 하네스 통과 유지, 리포트 헤더에 3종 메타 상시 노출.
