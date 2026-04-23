@@ -24,6 +24,7 @@ class Config:
     artifacts_dir: str
     viewport: tuple[int, int]
     slow_mo: int
+    headed_step_pause_ms: int
     step_interval_min_ms: int
     step_interval_max_ms: int
     heal_threshold: float
@@ -41,6 +42,7 @@ class Config:
             - ``ARTIFACTS_DIR`` → ``artifacts``
             - ``VIEWPORT_WIDTH`` / ``VIEWPORT_HEIGHT`` → ``1440`` / ``900``
             - ``SLOW_MO`` → ``800`` (Playwright 액션 단위 지연, 봇 패턴 회피)
+            - ``HEADED_STEP_PAUSE_MS`` → ``1500`` (headed 모드에서 각 step 후 추가 정지)
             - ``STEP_INTERVAL_MIN_MS`` / ``STEP_INTERVAL_MAX_MS`` → ``800`` / ``1500``
               (DSL 스텝 간 random sleep, 0 이면 비활성)
             - ``HEAL_THRESHOLD`` → ``0.8``
@@ -59,6 +61,7 @@ class Config:
                 int(os.getenv("VIEWPORT_HEIGHT", "900")),
             ),
             slow_mo=int(os.getenv("SLOW_MO", "800")),
+            headed_step_pause_ms=int(os.getenv("HEADED_STEP_PAUSE_MS", "1500")),
             step_interval_min_ms=int(os.getenv("STEP_INTERVAL_MIN_MS", "800")),
             step_interval_max_ms=int(os.getenv("STEP_INTERVAL_MAX_MS", "1500")),
             heal_threshold=float(os.getenv("HEAL_THRESHOLD", "0.8")),
