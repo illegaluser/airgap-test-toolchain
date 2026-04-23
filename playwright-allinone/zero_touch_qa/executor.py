@@ -91,6 +91,12 @@ class QAExecutor:
                         page, step, resolver, healer, artifacts
                     )
                     results.append(result)
+                    if headed and self.config.headed_step_pause_ms > 0:
+                        try:
+                            page.bring_to_front()
+                        except Exception:
+                            pass
+                        time.sleep(self.config.headed_step_pause_ms / 1000.0)
                     if result.status == "FAIL":
                         # 최종 실패 스크린샷
                         fail_path = os.path.join(artifacts, "error_final.png")
