@@ -3,9 +3,9 @@ pipeline {
 
   parameters {
     string(name: 'SONAR_PROJECT_KEY', defaultValue: 'dscore-ttc-sample', description: 'SonarQube Project Key')
-    string(name: 'SEVERITIES', defaultValue: 'BLOCKER,CRITICAL', description: 'Sonar severities')
-    string(name: 'STATUSES', defaultValue: 'OPEN,REOPENED,CONFIRMED', description: 'Sonar statuses')
-    string(name: 'MAX_ISSUES', defaultValue: '1', description: 'PoC: Dify에 보낼 이슈 건수(기본 1)')
+    string(name: 'SEVERITIES', defaultValue: 'BLOCKER,CRITICAL,MAJOR,MINOR,INFO', description: 'Sonar severities. 기본값은 모든 severity 포함')
+    string(name: 'STATUSES', defaultValue: 'OPEN,REOPENED,CONFIRMED', description: 'Sonar statuses. 기본값은 미해결 상태 전체')
+    string(name: 'MAX_ISSUES', defaultValue: '0', description: 'Dify에 보낼 이슈 건수. 0=전체')
     string(name: 'GITLAB_PROJECT', defaultValue: 'root/dscore-ttc-sample', description: 'GitLab project path (예: group/project)')
     string(name: 'BRANCH', defaultValue: 'main', description: 'Git 브랜치 (commit SHA 해석 + GitLab blob/commit URL 구성)')
     // GitLab Issue 본문 내 외부 링크용 — 사용자 브라우저가 실제 접근할 주소.
@@ -117,6 +117,7 @@ pipeline {
               --statuses "${params.STATUSES}" \
               --commit-sha "${env.COMMIT_SHA}" \
               --repo-root "/var/knowledges/codes/\${REPO_NAME}" \
+              --disable-clustering \
               --mode "${params.MODE}" \
               --state-dir "/var/knowledges/state" \
               --callgraph-dir "/var/knowledges/docs/result" \

@@ -339,23 +339,13 @@ def _direct_callers(cg_index: dict, symbol: str, limit: int = 10) -> list:
     return out
 
 
-_SEVERITY_ROUTING = {
-    "BLOCKER":  ("qwen3-coder:30b", False),
-    "CRITICAL": ("qwen3-coder:30b", False),
-    "MAJOR":    ("gemma4:e4b",     False),
-}
-
-
 def _classify_severity(severity: str) -> tuple:
-    """Step B — severity → (judge_model, skip_llm) 매핑.
+    """Step B — 모든 severity 를 gemma4:e4b 로 분석.
 
-    MINOR/INFO/UNKNOWN 은 LLM 호출 생략 (analyzer 의 skip_llm 분기).
+    severity 와 무관하게 Dify/LLM 분석을 수행하며 skip_llm 분기를 사용하지 않는다.
     """
-    s = (severity or "").upper()
-    if s in _SEVERITY_ROUTING:
-        model, skip = _SEVERITY_ROUTING[s]
-        return (model, skip)
-    return ("skip_llm", True)
+    _ = (severity or "").upper()
+    return ("gemma4:e4b", False)
 
 
 def _cluster_key(rule_key: str, enclosing_function: str, component: str) -> str:
@@ -530,6 +520,8 @@ def main():
                     help="last_scan.json 등 스캐너 상태 저장 경로.")
     ap.add_argument("--callgraph-dir", default="/var/knowledges/docs/result",
                     help="P1 이 남긴 JSONL 청크 디렉터리 — direct_callers 역인덱스 소스.")
+    ap.add_argument("--disable-clustering", action="store_true",
+                    help="같은 rule+function+dir 이슈를 대표 1건으로 합치지 않고 개별 emit.")
     args, _ = ap.parse_known_args()
 
     # SonarQube API 인증 헤더 (Basic Auth)
@@ -543,12 +535,17 @@ def main():
     issues = []
     p = 1
     while True:
-        url = _api_url(args.sonar_host_url, "/api/issues/search", {
+        query = {
             "componentKeys": args.project_key,  # 조회 대상 프로젝트
             "resolved": "false",                # 미해결 이슈만 조회
             "p": p, "ps": 100,                  # 페이지 번호 / 페이지 크기
             "additionalFields": "_all"          # 모든 부가 정보 포함
-        })
+        }
+        if args.severities.strip():
+            query["severities"] = args.severities.strip()
+        if args.statuses.strip():
+            query["statuses"] = args.statuses.strip()
+        url = _api_url(args.sonar_host_url, "/api/issues/search", query)
         try:
             res = _http_get_json(url, headers)
             items = res.get("issues", [])
@@ -638,10 +635,14 @@ def main():
     # ---------------------------------------------------------------
     # (a) Clustering: 같은 rule+function+dir 이슈 → 대표 1건 + affected_locations 리스트
     pre_cluster = len(enriched)
-    clustered = _apply_clustering(enriched)
-    cluster_reduced = pre_cluster - len(clustered)
-    if cluster_reduced > 0:
-        print(f"[INFO] clustering: {pre_cluster} → {len(clustered)} ({cluster_reduced} merged into affected_locations)", file=sys.stderr)
+    if args.disable_clustering:
+        clustered = enriched
+        print(f"[INFO] clustering disabled: {pre_cluster} issues kept as-is", file=sys.stderr)
+    else:
+        clustered = _apply_clustering(enriched)
+        cluster_reduced = pre_cluster - len(clustered)
+        if cluster_reduced > 0:
+            print(f"[INFO] clustering: {pre_cluster} → {len(clustered)} ({cluster_reduced} merged into affected_locations)", file=sys.stderr)
 
     # (b) Diff-mode: last_scan 과 비교해 이미 본 이슈는 skip (incremental) + snapshot 갱신
     filtered, skipped = _diff_mode_filter(clustered, args.state_dir, args.mode)

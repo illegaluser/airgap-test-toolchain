@@ -8,47 +8,103 @@ properties([
     parameters([
         [$class: 'ChoiceParameterDefinition', name: 'TARGET_TYPE',
             choices: 'local_ollama_wrapper\nhttp\nui_chat',
-            description: '''<b>평가 대상 AI 에게 어떻게 말을 걸지</b> 고르세요.
-<ul>
-<li><b>local_ollama_wrapper</b> — 이 컨테이너에 띄워진 wrapper 가 호스트 PC 의 Ollama 로 질문을 보내고 답을 받습니다. 외부 서비스 없이 자기평가/smoke 용도로 가장 간단하게 돌아갑니다. 이 모드에서는 <code>TARGET_URL</code> 이 필요 없습니다.</li>
-<li><b>http</b> — 평가 대상 AI 가 자체 REST API 를 제공합니다. 질문을 POST 로 보내고 JSON 으로 답변을 받습니다. <code>TARGET_URL</code> 에 API endpoint 를 넣어 주세요. 필요하면 <code>TARGET_AUTH_HEADER</code> 에 인증 헤더를 넣고, 요청 포맷이 OpenAI 스타일이면 <code>TARGET_REQUEST_SCHEMA=openai_compat</code> 을 선택합니다.</li>
-<li><b>ui_chat</b> — 평가 대상 AI 가 웹 채팅 UI 형태로 제공됩니다. Playwright 브라우저가 해당 페이지를 열고 질문 입력창에 타이핑 → 전송 → 응답 DOM 수집 순으로 자동 조작합니다. <code>TARGET_URL</code> 에 채팅 페이지 URL 을, <code>UI_*_SELECTOR</code> 에 입력/전송/응답 요소의 CSS selector 를 채워 주세요.</li>
-</ul>'''],
+            description: '''평가 대상 AI에 어떻게 질문을 전달할지 선택합니다.
+
+local_ollama_wrapper
+내 PC의 Ollama를 사용해 평가합니다.
+별도 서버 없이 가장 간단하게 테스트할 때 적합합니다.
+
+http
+평가 대상 AI가 REST API 형태로 제공될 때 사용합니다.
+TARGET_URL에 API 주소를 입력하세요.
+
+ui_chat
+평가 대상 AI가 웹 채팅 화면만 제공될 때 사용합니다.
+Playwright가 페이지를 열고 질문 입력, 전송, 응답 수집을 자동으로 수행합니다.'''],
         [$class: 'StringParameterDefinition', name: 'TARGET_URL', defaultValue: '',
-            description: '''<b>평가 대상 AI 의 접속 주소</b>. TARGET_TYPE 에 따라 의미가 달라집니다.
-<ul>
-<li><b>http</b>: REST endpoint (예: <code>http://127.0.0.1:28081/v1/chat-messages</code>, OpenAI 호환 서비스면 <code>.../v1/chat/completions</code>)</li>
-<li><b>ui_chat</b>: 사용자가 직접 질문을 타이핑하는 채팅 웹 페이지 URL (예: <code>http://127.0.0.1:28081/chat/&lt;app-id&gt;</code>)</li>
-<li><b>local_ollama_wrapper</b>: 비워 두세요. wrapper 가 자동으로 <code>127.0.0.1:8000/invoke</code> 로 기동됩니다</li>
-</ul>'''],
+            description: '''평가 대상 AI의 접속 주소입니다.
+TARGET_TYPE에 따라 의미가 달라집니다.
+
+http
+REST endpoint 주소를 입력하세요.
+예: http://127.0.0.1:28081/v1/chat-messages
+OpenAI 호환 서비스면 예: http://127.0.0.1:28081/v1/chat/completions
+
+ui_chat
+질문을 직접 입력하는 채팅 웹 페이지 URL을 입력하세요.
+예: http://127.0.0.1:28081/chat/app-id
+
+local_ollama_wrapper
+비워 두세요.
+wrapper가 자동으로 127.0.0.1:8000/invoke 로 기동됩니다.'''],
         [$class: 'PasswordParameterDefinition', name: 'TARGET_AUTH_HEADER',
-            description: '''<b>(선택, TARGET_TYPE=http 전용)</b> API 가 인증을 요구할 때 붙일 헤더.<br>
-예시: <code>Authorization: Bearer sk-xxxxx</code> 또는 <code>X-API-Key: my-key-abc</code><br>
-콜론(<code>:</code>) 앞은 헤더 이름, 뒤는 값. 콜론이 없으면 <code>Authorization</code> 헤더에 그대로 들어갑니다. <b>비워 두면 인증 없이 호출</b>합니다. 값은 Jenkins 에서 암호로 저장돼 빌드 로그에 노출되지 않습니다.'''],
+            description: '''선택 항목입니다. TARGET_TYPE=http 일 때만 사용합니다.
+API가 인증을 요구하면 요청 헤더를 입력하세요.
+
+입력 예시
+Authorization: Bearer sk-xxxxx
+X-API-Key: my-key-abc
+
+콜론 앞은 헤더 이름이고 뒤는 값입니다.
+콜론이 없으면 Authorization 헤더 값으로 처리합니다.
+비워 두면 인증 없이 호출합니다.
+값은 Jenkins에서 암호로 저장되며 빌드 로그에 그대로 노출되지 않습니다.'''],
         [$class: 'ChoiceParameterDefinition', name: 'TARGET_REQUEST_SCHEMA',
             choices: 'standard\nopenai_compat',
-            description: '''<b>(TARGET_TYPE=http 전용) 요청/응답 포맷</b>.
-<ul>
-<li><b>standard</b>: 이 평가 러너의 기본 포맷. 요청 <code>{"messages":[…], "query":"…", "input":"…"}</code>, 응답은 <code>answer</code>/<code>response</code>/<code>text</code>/<code>output</code> 중 하나에 답변이 있다고 가정. Dify Chatflow/ 자체 구현 API 등에 맞습니다.</li>
-<li><b>openai_compat</b>: OpenAI Chat Completions 호환. 요청 <code>{"model":"…", "messages":[{"role":"user","content":"…"}]}</code>, 응답 <code>{"choices":[{"message":{"content":"…"}}]}</code>. OpenAI/GPT 호환 프록시, 많은 오픈소스 LLM 게이트웨이가 이 형식을 씁니다.</li>
-</ul>'''],
+            description: '''TARGET_TYPE=http 일 때만 사용합니다.
+평가 대상 API의 요청과 응답 포맷을 선택하세요.
+
+standard
+이 평가 러너의 기본 포맷입니다.
+요청은 messages, query, input 필드를 사용합니다.
+응답은 answer, response, text, output 중 하나에 답변이 있다고 가정합니다.
+Dify Chatflow나 자체 구현 API에 적합합니다.
+
+openai_compat
+OpenAI Chat Completions 호환 포맷입니다.
+요청은 model 과 messages 배열을 사용합니다.
+응답은 choices[0].message.content 에 답변이 있다고 가정합니다.
+OpenAI 호환 프록시나 오픈소스 LLM 게이트웨이에 적합합니다.'''],
         [$class: 'StringParameterDefinition', name: 'UI_INPUT_SELECTOR', defaultValue: 'textarea, input[type=text]',
-            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> 채팅 페이지의 <b>질문 입력창</b> CSS selector. 기본값은 가장 흔한 패턴(모든 textarea 또는 text input). 동작이 어색하면 개발자도구(F12)에서 해당 입력창을 선택해 정확한 selector 를 넣으세요. 예: <code>textarea[data-testid="chat-input"]</code>'],
+            description: '''TARGET_TYPE=ui_chat 전용입니다.
+채팅 페이지의 질문 입력창 CSS selector 입니다.
+기본값은 가장 흔한 textarea 또는 text input 패턴입니다.
+동작이 어색하면 개발자도구에서 정확한 selector를 넣으세요.
+예: textarea[data-testid="chat-input"]'''],
         [$class: 'StringParameterDefinition', name: 'UI_SEND_SELECTOR', defaultValue: 'button[type=submit]',
-            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> <b>전송 버튼</b> CSS selector. 버튼이 없고 Enter 로만 보내는 UI 라면 비워 두세요 — 자동으로 Enter 키를 입력합니다.'],
+            description: '''TARGET_TYPE=ui_chat 전용입니다.
+전송 버튼 CSS selector 입니다.
+버튼이 없고 Enter로만 보내는 UI라면 비워 두세요.
+이 경우 자동으로 Enter 키를 입력합니다.'''],
         [$class: 'StringParameterDefinition', name: 'UI_OUTPUT_SELECTOR', defaultValue: '.answer, [role=assistant], .message-content',
-            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> <b>응답 메시지</b> CSS selector. 매칭되는 요소 중 <b>마지막 요소</b>의 텍스트를 답변으로 채택. 스트리밍 UI 에선 완성된 마지막 메시지 노드가 필요합니다. 예: <code>div.markdown-body:last-of-type</code>'],
+            description: '''TARGET_TYPE=ui_chat 전용입니다.
+응답 메시지 CSS selector 입니다.
+매칭된 요소 중 마지막 요소의 텍스트를 답변으로 사용합니다.
+스트리밍 UI에서는 완성된 마지막 메시지 노드를 가리켜야 합니다.
+예: div.markdown-body:last-of-type'''],
         [$class: 'StringParameterDefinition', name: 'UI_WAIT_TIMEOUT', defaultValue: '60',
-            description: '<b>(TARGET_TYPE=ui_chat 전용)</b> 응답이 나타날 때까지 최대 대기 시간(초). 복잡한 질문이나 느린 모델이면 120~300 으로 키우세요.'],
+            description: '''TARGET_TYPE=ui_chat 전용입니다.
+응답이 나타날 때까지 기다릴 최대 시간입니다.
+단위는 초입니다.
+질문이 복잡하거나 모델이 느리면 120에서 300까지 늘리세요.'''],
         [$class: 'StringParameterDefinition', name: 'OLLAMA_BASE_URL', defaultValue: 'http://host.docker.internal:11434',
-            description: '<b>심판(Judge) 모델</b>이 돌고 있는 Ollama 데몬 주소. WSL2/Docker Desktop 에서는 호스트 PC 의 Ollama 를 가리키기 위해 <code>http://host.docker.internal:11434</code> 를 그대로 두세요. 다른 머신이면 해당 IP:포트로.'],
+            description: '''심판 모델이 동작 중인 Ollama 데몬 주소입니다.
+WSL2 또는 Docker Desktop 환경에서는 보통 http://host.docker.internal:11434 를 그대로 사용합니다.
+다른 머신을 쓰면 해당 IP와 포트를 입력하세요.'''],
         [
             $class: 'CascadeChoiceParameter',
             choiceType: 'PT_SINGLE_SELECT',
-            description: '''<b>(TARGET_TYPE=local_ollama_wrapper 전용)</b> <b>평가 대상 AI 역할</b>을 맡을 Ollama 모델.<br>
-즉 채점 받을 "응시자" 모델. 이 Job 은 로컬 Ollama 를 wrapper 로 감싸 평가 대상으로 사용하는 경우 여기에 지정한 모델이 답변자 역할을 수행합니다.<br>
-권장: 작고 빠른 모델(<b>gemma4:e2b</b>, <b>qwen3.5:4b</b>) — 답변 품질보다 평가 파이프라인 검증이 목적이라면 가벼울수록 좋습니다.<br>
-<b>Judge 모델과 같아도 되고 달라도 됩니다.</b> (같으면 자기평가 구조)''',
+            description: '''TARGET_TYPE=local_ollama_wrapper 전용입니다.
+평가 대상 AI 역할을 맡을 Ollama 모델입니다.
+즉 채점 받을 응시자 모델입니다.
+이 모드에서는 여기에 지정한 모델이 답변자 역할을 수행합니다.
+
+권장 모델
+gemma4:e2b
+qwen3.5:4b
+
+Judge 모델과 같아도 되고 달라도 됩니다.
+같으면 자기평가 구조가 됩니다.''',
             filterLength: 1,
             filterable: true,
             name: 'TARGET_OLLAMA_MODEL',
@@ -84,8 +140,15 @@ properties([
         [
             $class: 'CascadeChoiceParameter',
             choiceType: 'PT_SINGLE_SELECT',
-            description: '''<b>심판 모델 (Judge LLM)</b>. 평가 대상 AI 의 답변을 채점할 LLM. 호스트 Ollama 에 올라와 있는 모델 중 선택. <code>OLLAMA_BASE_URL</code> 을 바꾸면 이 목록도 자동 갱신.<br>
-권장: <b>gemma4:e4b</b>(기본값, 현재 운영 표준), <b>qwen3.5:4b</b>(더 빠른 smoke 용). 대상 모델보다 조금 더 큰 쪽이 신뢰할만한 채점을 합니다.''',
+            description: '''심판 모델입니다.
+평가 대상 AI의 답변을 채점할 LLM을 선택하세요.
+OLLAMA_BASE_URL을 바꾸면 목록도 자동으로 갱신됩니다.
+
+권장 모델
+gemma4:e4b
+qwen3.5:4b
+
+보통은 대상 모델보다 약간 더 큰 모델이 채점 신뢰도가 높습니다.''',
             filterLength: 1,
             filterable: true,
             name: 'JUDGE_MODEL',
@@ -129,11 +192,24 @@ properties([
             ]
         ],
         [$class: 'StringParameterDefinition', name: 'ANSWER_RELEVANCY_THRESHOLD', defaultValue: '0.7',
-            description: '<b>답변 관련성</b> 합격 기준 (0.0~1.0). 이 점수 미만이면 해당 턴이 "품질 실패"로 집계됩니다. <b>0.7</b> 이 일반 권장, <b>0.8+</b> 는 엄격 평가, <b>0.5</b> 는 초기 도입 단계에서 관대하게.'],
+            description: '''답변 관련성 합격 기준입니다.
+값 범위는 0.0에서 1.0 사이입니다.
+이 점수 미만이면 해당 턴은 품질 실패로 집계됩니다.
+
+권장값
+0.7 일반 권장
+0.8 이상 엄격 평가
+0.5 초기 도입 단계에서 관대한 평가'''],
         [$class: 'StringParameterDefinition', name: 'GOLDEN_CSV_PATH', defaultValue: '/var/knowledges/eval/data/golden.csv',
-            description: '<b>시험지(Golden Dataset) 파일 경로</b>. 컨테이너 내부 경로. 각 행이 하나의 질문/기대 응답 케이스가 됩니다. 아래 <code>UPLOADED_GOLDEN_DATASET</code> 로 새 파일을 업로드하면 이 경로에 덮어쓰기됩니다.'],
+            description: '''시험지 데이터 파일 경로입니다.
+컨테이너 내부 경로를 사용합니다.
+CSV의 각 행이 하나의 질문과 기대 응답 케이스가 됩니다.
+아래 UPLOADED_GOLDEN_DATASET으로 새 파일을 올리면 이 경로에 덮어씁니다.'''],
         [$class: 'FileParameterDefinition', name: 'UPLOADED_GOLDEN_DATASET',
-            description: '<b>(선택)</b> 내 PC 의 <code>golden.csv</code> 업로드. 업로드하면 위 <code>GOLDEN_CSV_PATH</code> 위치로 복사되고, 이후 평가는 이 새 시험지로 진행됩니다. 비워 두면 기존 파일 사용.']
+            description: '''선택 항목입니다.
+내 PC의 golden.csv 파일을 업로드합니다.
+업로드하면 GOLDEN_CSV_PATH 위치로 복사되고 이후 평가는 이 파일을 사용합니다.
+비워 두면 기존 파일을 그대로 사용합니다.''']
     ])
 ])
 

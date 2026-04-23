@@ -39,18 +39,18 @@ pipeline {
         )
         string(
             name: 'SEVERITIES',
-            defaultValue: 'BLOCKER,CRITICAL',
-            description: 'Sonar severities'
+            defaultValue: 'BLOCKER,CRITICAL,MAJOR,MINOR,INFO',
+            description: 'Sonar severities. 기본값은 모든 severity 포함'
         )
         string(
             name: 'STATUSES',
             defaultValue: 'OPEN,REOPENED,CONFIRMED',
-            description: 'Sonar statuses'
+            description: 'Sonar statuses. 기본값은 미해결 상태 전체'
         )
         string(
             name: 'MAX_ISSUES',
-            defaultValue: '1',
-            description: 'PoC: Dify 에 보낼 이슈 건수'
+            defaultValue: '0',
+            description: 'Dify 에 보낼 이슈 건수. 0=전체'
         )
         string(
             name: 'SONAR_PUBLIC_URL',
