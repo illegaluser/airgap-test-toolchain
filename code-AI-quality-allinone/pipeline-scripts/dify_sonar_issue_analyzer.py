@@ -323,6 +323,13 @@ def main():
 
         print(f"\n[DEBUG] >>> Sending Issue {key}")
 
+        # Step R 공통 메타데이터는 skip_llm / llm 호출 경로 모두에서 사용한다.
+        # 기존에는 skip_llm 분기 아래에서 초기화되어 MINOR/INFO 라우팅 시
+        # UnboundLocalError 가 발생했다.
+        enclosing_fn = item.get("enclosing_function", "") or ""
+        enclosing_ln = item.get("enclosing_lines", "") or ""
+        commit_sha = item.get("commit_sha", "") or args.commit_sha or ""
+
         # Step C — exporter 가 severity routing 으로 skip_llm=True 로 태깅한 이슈는
         # Dify 호출 자체를 건너뛰고 템플릿 응답으로 out_row 를 구성. MINOR/INFO
         # 이하 이슈에서 LLM 비용을 줄이는 경로.
@@ -348,9 +355,6 @@ def main():
         # Step R: exporter 가 추출한 enclosing_function / enclosing_lines /
         # commit_sha 를 LLM 에 추가 힌트로 전달 (프롬프트에 "위치 사실은 별도
         # 렌더되므로 본문에 반복하지 말 것" 명시).
-        enclosing_fn = item.get("enclosing_function", "") or ""
-        enclosing_ln = item.get("enclosing_lines", "") or ""
-        commit_sha = item.get("commit_sha", "") or args.commit_sha or ""
         kb_query = build_kb_query(item)
         inputs = {
             "sonar_issue_key": key,
@@ -381,7 +385,10 @@ def main():
         # --- 3-e. API 호출 및 재시도 로직 ---
         # 최대 3회 시도하며, 실패 시 2초 대기 후 재시도합니다.
         # LLM 추론 과부하나 일시적 네트워크 문제에 대한 내결함성을 확보합니다.
+        # Dify 가 `succeeded` 를 반환해도 parameter-extractor 가 핵심 필드를 빈 채로
+        # 내보내는 플레이키 케이스가 있어 impact_analysis_markdown 비면 재시도로 간주.
         success = False
+        last_outputs = None
         for i in range(3):
             status, body = send_dify_request(target_api_url, args.dify_api_key, payload)
 
@@ -390,22 +397,27 @@ def main():
                     res = json.loads(body)
                     # Dify 워크플로우 내부 실행이 성공했는지 확인합니다.
                     if res.get("data", {}).get("status") == "succeeded":
-                        # Step C — out_row 는 공통 헬퍼로 구성. outputs 는 8 필드
-                        # (title/labels/impact/fix + classification/fp_reason/confidence/diff)
-                        # 로 정규화되어 creator 가 기본값 안전 접근 가능.
-                        rd = item.get("rule_detail", {}) or {}
-                        out_row = _build_out_row(
-                            item=item, key=key, severity=severity, msg=msg,
-                            line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
-                            commit_sha=commit_sha, rule=rule, rule_detail=rd,
-                            final_code=final_code,
-                            outputs=res["data"].get("outputs", {}),
-                            llm_skipped=False,
-                        )
-                        out_fp.write(json.dumps(out_row, ensure_ascii=False) + "\n")
-                        success = True
-                        print(f"   -> Success.")
-                        break
+                        outputs = res["data"].get("outputs", {}) or {}
+                        if (outputs.get("impact_analysis_markdown") or "").strip():
+                            # Step C — out_row 는 공통 헬퍼로 구성. outputs 는 8 필드
+                            # (title/labels/impact/fix + classification/fp_reason/confidence/diff)
+                            # 로 정규화되어 creator 가 기본값 안전 접근 가능.
+                            rd = item.get("rule_detail", {}) or {}
+                            out_row = _build_out_row(
+                                item=item, key=key, severity=severity, msg=msg,
+                                line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
+                                commit_sha=commit_sha, rule=rule, rule_detail=rd,
+                                final_code=final_code,
+                                outputs=outputs,
+                                llm_skipped=False,
+                            )
+                            out_fp.write(json.dumps(out_row, ensure_ascii=False) + "\n")
+                            success = True
+                            print(f"   -> Success.")
+                            break
+                        else:
+                            last_outputs = outputs
+                            print(f"   -> Dify succeeded but outputs empty (impact_analysis_markdown missing)", file=sys.stderr)
                     else:
                         # HTTP 200이지만 워크플로우 내부에서 실패한 경우
                         print(f"   -> Dify Internal Fail: {res}", file=sys.stderr)
@@ -415,7 +427,21 @@ def main():
             time.sleep(2)
 
         if not success:
-            print(f"[FAIL] Failed to analyze {key}", file=sys.stderr)
+            if last_outputs is not None:
+                # 3회 재시도가 전부 빈 outputs 로 끝난 경우 — 이슈 자체를 드롭하는 대신
+                # 마지막 빈 응답을 그대로 기록해 GitLab 이슈는 생성되도록 한다.
+                # creator 가 "LLM 이 영향 분석을 제공하지 않음" 폴백 텍스트로 렌더.
+                rd = item.get("rule_detail", {}) or {}
+                out_row = _build_out_row(
+                    item=item, key=key, severity=severity, msg=msg,
+                    line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
+                    commit_sha=commit_sha, rule=rule, rule_detail=rd,
+                    final_code=final_code, outputs=last_outputs, llm_skipped=False,
+                )
+                out_fp.write(json.dumps(out_row, ensure_ascii=False) + "\n")
+                print(f"[FAIL-EMPTY] {key} — 3 retries exhausted with empty outputs; row written anyway", file=sys.stderr)
+            else:
+                print(f"[FAIL] Failed to analyze {key}", file=sys.stderr)
 
     # ---------------------------------------------------------------
     # [4단계] 결과 파일 닫기

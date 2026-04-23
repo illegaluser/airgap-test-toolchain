@@ -69,6 +69,13 @@ OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://host.docker.internal:11434/
 # 사전에 호스트 머신에서 'ollama pull llama3.2-vision' 명령어로 모델을 받아둬야 함.
 VISION_MODEL = os.getenv("VISION_MODEL", "llama3.2-vision:latest")
 
+# Dify text document upload 안정성 튜닝
+# NodeGoat 같이 청크 수가 많은 레포는 연속 업로드 도중 reverse proxy/API 가
+# 간헐적으로 연결을 끊는 경우가 있어 짧은 throttle + retry 를 적용한다.
+DOC_UPLOAD_RETRIES = int(os.getenv("DOC_UPLOAD_RETRIES", "3"))
+DOC_UPLOAD_RETRY_BACKOFF_SEC = float(os.getenv("DOC_UPLOAD_RETRY_BACKOFF_SEC", "2"))
+DOC_UPLOAD_THROTTLE_MS = int(os.getenv("DOC_UPLOAD_THROTTLE_MS", "150"))
+
 # ============================================================================
 # [유틸리티] 공통 헬퍼 함수
 # ============================================================================
@@ -550,22 +557,47 @@ def upload_text_document(
         },
     }
 
-    r = requests.post(
-        url,
-        headers={**dify_headers(api_key), "Content-Type": "application/json"},
-        json=payload,
-        timeout=300,
-    )
+    headers = {**dify_headers(api_key), "Content-Type": "application/json"}
+    last_err = None
 
-    if r.status_code >= 400:
-        return False, f"HTTP {r.status_code} - {r.text[:200]}"
+    for attempt in range(DOC_UPLOAD_RETRIES + 1):
+        try:
+            r = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=300,
+            )
+            if r.status_code >= 500:
+                last_err = f"HTTP {r.status_code} - {r.text[:200]}"
+            elif r.status_code >= 400:
+                return False, f"HTTP {r.status_code} - {r.text[:200]}"
+            else:
+                try:
+                    res_data = r.json()
+                    doc_id = (
+                        res_data.get("document", {}).get("id")
+                        or res_data.get("id", "Unknown ID")
+                    )
+                    if DOC_UPLOAD_THROTTLE_MS > 0:
+                        time.sleep(DOC_UPLOAD_THROTTLE_MS / 1000.0)
+                    return True, f"OK (ID: {doc_id})"
+                except Exception:
+                    if DOC_UPLOAD_THROTTLE_MS > 0:
+                        time.sleep(DOC_UPLOAD_THROTTLE_MS / 1000.0)
+                    return True, "OK"
+        except requests.RequestException as e:
+            last_err = str(e)
 
-    try:
-        res_data = r.json()
-        doc_id = res_data.get("document", {}).get("id") or res_data.get("id", "Unknown ID")
-        return True, f"OK (ID: {doc_id})"
-    except Exception:
-        return True, "OK"
+        if attempt < DOC_UPLOAD_RETRIES:
+            wait_s = DOC_UPLOAD_RETRY_BACKOFF_SEC * (attempt + 1)
+            log(
+                f"[Upload:RETRY] {name} | attempt {attempt + 1}/{DOC_UPLOAD_RETRIES} "
+                f"| reason: {last_err} | wait={wait_s:.1f}s"
+            )
+            time.sleep(wait_s)
+
+    return False, f"upload failed after retries: {last_err}"
 
 
 def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
