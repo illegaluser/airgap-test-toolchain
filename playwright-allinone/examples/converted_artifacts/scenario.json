@@ -1,0 +1,162 @@
+[
+  {
+    "action": "navigate",
+    "target": "",
+    "value": "https://playwright.dev/",
+    "description": "https://playwright.dev/로 이동",
+    "step": 1,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "a[href=\"/docs/intro\"]",
+    "value": "Docs",
+    "description": "텍스트 'Docs' 확인",
+    "step": 2,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "a[href=\"/docs/intro\"]",
+    "value": "",
+    "description": "클릭",
+    "step": 3,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Installation",
+    "description": "텍스트 'Installation' 확인",
+    "step": 4,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "a[href=\"/docs/writing-tests\"]",
+    "value": "",
+    "description": "클릭",
+    "step": 5,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Writing tests",
+    "description": "텍스트 'Writing tests' 확인",
+    "step": 6,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "a[href=\"/docs/codegen-intro\"]",
+    "value": "",
+    "description": "클릭",
+    "step": 7,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Generating tests",
+    "description": "텍스트 'Generating tests' 확인",
+    "step": 8,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "a[href=\"/docs/running-tests\"]",
+    "value": "",
+    "description": "클릭",
+    "step": 9,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Running and debugging tests",
+    "description": "텍스트 'Running and debugging tests' 확인",
+    "step": 10,
+    "fallback_targets": []
+  },
+  {
+    "action": "navigate",
+    "target": "",
+    "value": "https://playwright.dev/docs/trace-viewer",
+    "description": "https://playwright.dev/docs/trace-viewer로 이동",
+    "step": 11,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Trace viewer",
+    "description": "텍스트 'Trace viewer' 확인",
+    "step": 12,
+    "fallback_targets": []
+  },
+  {
+    "action": "navigate",
+    "target": "",
+    "value": "https://playwright.dev/docs/browsers",
+    "description": "https://playwright.dev/docs/browsers로 이동",
+    "step": 13,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Browsers",
+    "description": "텍스트 'Browsers' 확인",
+    "step": 14,
+    "fallback_targets": []
+  },
+  {
+    "action": "navigate",
+    "target": "",
+    "value": "https://playwright.dev/docs/api/class-playwright",
+    "description": "https://playwright.dev/docs/api/class-playwright로 이동",
+    "step": 15,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "a[href=\"/docs/api/class-page\"]",
+    "value": "",
+    "description": "클릭",
+    "step": 16,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Page",
+    "description": "텍스트 'Page' 확인",
+    "step": 17,
+    "fallback_targets": []
+  },
+  {
+    "action": "navigate",
+    "target": "",
+    "value": "https://playwright.dev/community/welcome",
+    "description": "https://playwright.dev/community/welcome로 이동",
+    "step": 18,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "h1",
+    "value": "Welcome",
+    "description": "텍스트 'Welcome' 확인",
+    "step": 19,
+    "fallback_targets": []
+  },
+  {
+    "action": "verify",
+    "target": "",
+    "value": "",
+    "description": "요소 표시 확인",
+    "step": 20,
+    "fallback_targets": []
+  }
+]

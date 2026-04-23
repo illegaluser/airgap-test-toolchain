@@ -23,6 +23,7 @@ from .dify_client import DifyClient, DifyConnectionError
 from .executor import QAExecutor
 from .report import build_html_report, save_run_log, save_scenario
 from .regression_generator import generate_regression_test
+from .utils import parse_structured_doc_steps
 
 log = logging.getLogger("zero_touch_qa")
 
@@ -202,6 +203,13 @@ def _prepare_scenario(
             try:
                 doc_text = dify.extract_text_from_file(args.file)
                 if doc_text:
+                    structured = parse_structured_doc_steps(doc_text)
+                    if structured:
+                        log.info(
+                            "[Doc] 구조화된 step marker 감지 — Dify 생략, 로컬 파서 결과 사용 (%d스텝)",
+                            len(structured),
+                        )
+                        return structured
                     if srs_text:
                         srs_text = (
                             f"[첨부 문서 내용]\n{doc_text}\n\n"

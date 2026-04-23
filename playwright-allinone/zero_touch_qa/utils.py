@@ -98,6 +98,38 @@ def _parse_markdown_steps(text: str):
     return steps if steps else None
 
 
+def parse_structured_doc_steps(text: str):
+    """구조화된 문서 안의 machine-readable step marker 를 DSL step 리스트로 변환.
+
+    지원 포맷:
+      ZTQA_STEP|<step>|<action>|<target>|<value>|<description>
+
+    예:
+      ZTQA_STEP|1|navigate||https://playwright.dev/|메인 페이지로 이동
+      ZTQA_STEP|2|verify|a[href="/docs/intro"]|Docs|Docs 링크 표시 확인
+
+    PDF 텍스트 추출 과정에서 일반 표 구조는 줄바꿈/열 순서가 깨지기 쉬우므로,
+    문서 말미에 위와 같은 1-line marker 블록을 넣어 두고 우선 파싱한다.
+    """
+    step_re = re.compile(
+        r"^ZTQA_STEP\|(\d{1,4})\|([a-zA-Z_]+)\|([^|]*)\|([^|]*)\|(.+)$",
+        re.M,
+    )
+    steps = []
+    for m in step_re.finditer(text):
+        steps.append(
+            {
+                "step": int(m.group(1)),
+                "action": m.group(2).strip().lower(),
+                "target": m.group(3).strip(),
+                "value": m.group(4).strip(),
+                "description": m.group(5).strip(),
+                "fallback_targets": [],
+            }
+        )
+    return steps if steps else None
+
+
 def compress_image_to_b64(
     file_path: str, max_size: int = 1024, quality: int = 60
 ) -> str:
