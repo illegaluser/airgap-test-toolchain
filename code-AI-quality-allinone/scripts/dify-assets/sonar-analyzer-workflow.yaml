@@ -349,15 +349,6 @@ workflow:
             원본 값을 가공하지 말 것. 특히 suggested_fix_markdown / suggested_diff /
             fp_reason 이 빈 문자열이면 그대로 빈 문자열로 반환 (억지로 채우지 말 것).
 
-            필수 필드 규칙 (절대 빈 문자열로 반환하지 말 것):
-              - title: 최소 한 줄, 한글 또는 영문 요약.
-              - labels: 최소 1개 이상의 문자열을 포함한 배열.
-              - impact_analysis_markdown: 최소 3줄의 markdown. 만약 LLM 응답에
-                영향 분석이 없으면 code/rule 으로부터 유추해 최소한의 영향(코드 가독성,
-                유지보수, 잠재적 런타임 영향 중 적용 가능한 항목)을 기술하여 채울 것.
-            위 3 필드가 비면 downstream 검증 노드가 워크플로우를 실패시키므로
-            반드시 비어 있지 않게 채워 반환해야 함.
-
       # ────────────────────────────────────────────────────────────────────
       # End — 4개 출력 (title, labels, impact_analysis_markdown, suggested_fix_markdown)
       # creator 가 위 4개 + exporter 출력의 사실 정보를 조합해 최종 이슈 본문 렌더.
