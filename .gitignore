@@ -22,3 +22,8 @@ code-AI-quality-allinone/jenkins-plugin-manager.jar
 code-AI-quality-allinone/jenkins-plugins/
 code-AI-quality-allinone/dify-plugins/
 code-AI-quality-allinone/offline-assets/
+
+# static-analysis-samples: 외부 upstream 샘플 레포 (각각 자체 .git). README 참조해 clone.
+static-analysis-samples/BenchmarkJava/
+static-analysis-samples/NodeGoat/
+static-analysis-samples/sonar-training-examples/
