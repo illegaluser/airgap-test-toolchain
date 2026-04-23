@@ -171,8 +171,27 @@ class DifyClient:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
 
+        # 구조화된 doc step marker 가 있으면 truncation 전에 우선 보존한다.
+        # PDF 본문이 길어 뒤쪽 marker 블록이 잘리면 doc 모드의 로컬 deterministic
+        # 파서가 동작하지 못하고, 다시 LLM 비결정성 경로로 빠진다.
+        marker_lines = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip().startswith("ZTQA_STEP|")
+        ]
+
         if len(text) > max_chars:
-            text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars ...]"
+            if marker_lines:
+                marker_block = "\n".join(marker_lines)
+                remaining = max(0, max_chars - len(marker_block) - 64)
+                text = (
+                    marker_block
+                    + "\n\n"
+                    + text[:remaining]
+                    + f"\n\n[... truncated at {max_chars} chars ...]"
+                )
+            else:
+                text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars ...]"
         log.info("[Doc] 문서 텍스트 추출: %d 자 (%s)", len(text), os.path.basename(file_path))
         return text
 

@@ -852,7 +852,21 @@ class QAExecutor:
                     f"요소가 보이지 않습니다: {step.get('target')}"
                 )
             else:
-                actual = locator.inner_text() or locator.input_value()
+                actual = ""
+                try:
+                    actual = (locator.inner_text() or "").strip()
+                except Exception:
+                    actual = ""
+                if not actual:
+                    try:
+                        actual = (locator.text_content() or "").strip()
+                    except Exception:
+                        actual = ""
+                if not actual:
+                    try:
+                        actual = (locator.input_value() or "").strip()
+                    except Exception:
+                        actual = ""
                 assert str(value) in actual, (
                     f"텍스트 불일치: 기대='{value}', 실제='{actual}'"
                 )

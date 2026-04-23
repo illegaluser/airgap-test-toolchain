@@ -139,9 +139,9 @@ def _parse_playwright_line(line: str) -> dict | None:
             "description": f"텍스트 '{m.group(2)}' 확인",
         }
 
-    if re.search(r'expect\((.+?)\)\.to_be_visible', line):
-        m2 = re.search(r'expect\((.+?)\)', line)
-        verify_target = _extract_target(m2.group(1)) if m2 else ""
+    m = re.search(r'expect\((.+?)\)\.to_be_visible', line)
+    if m:
+        verify_target = _extract_target(m.group(1))
         return {
             "action": "verify", "target": verify_target, "value": "",
             "description": "요소 표시 확인",
@@ -154,7 +154,10 @@ def _extract_target(line: str) -> str:
     """Playwright 로케이터 코드에서 DSL target 문자열을 추출한다."""
 
     # get_by_role("button", name="로그인")
-    m = re.search(r'get_by_role\(["\'](.+?)["\'],\s*name=["\'](.+?)["\']\)', line)
+    m = re.search(
+        r'get_by_role\(["\'](.+?)["\'],\s*name=["\'](.+?)["\'](?:\s*,[^)]*)?\)',
+        line,
+    )
     if m:
         return f"role={m.group(1)}, name={m.group(2)}"
 
