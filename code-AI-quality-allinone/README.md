@@ -29,6 +29,7 @@
 | P1 RAG 품질 개선 (2026-04-25) | §8.2 tree-sitter pass 2 (callers / test_paths 역인덱스), §8.4 `context_filter` Code 노드 (self-exclusion + 카테고리 섹션화), `build_kb_query` 가 `callees:` / `test_for:` 구조화 쿼리 라인 추가 |
 | **P1.5 효과 증폭 (2026-04-25 저녁)** | **KB 품질**: vendor/minified 제외, trivial/dup 청크 필터 (nodegoat 실측 147→27 청크, vendor 오염 제거). **test heuristic 확장**: mocha/jest 스타일 파일명 기반 test_for 후보 + is_test 쿼리 라인. **retrieval**: weighted_score 재정렬 (semantic 0.7 / keyword 0.3) + score_threshold=0.35. **context filter**: 청크 score 표기 + has_context boolean. **confidence 가드**: RAG 빈 경우 `confidence=low` + `context:empty` 라벨 강제. **진단 리포트**: 04 Jenkinsfile `RAG Diagnostic Report` 탭 신설 (per-이슈 버킷 상태 + LLM citation rate) |
 | **P2 추가 액션 (2026-04-25 후속)** | **다언어 지원 확장**: Go/Rust/C#/Kotlin/C/C++ LANG_CONFIG 추가. **docstring 추출**: tree-sitter 로 함수 leading comment + Python docstring 을 청크 footer 의 `doc:` 라인에 추가 (의미 매칭 보강). **retry variation**: attempt 0/1/2 별로 다른 모양의 kb_query (구조화 / 자연어 / 식별자 중심). **HyDE (간소화)**: attempt=2 (마지막 retry) 에서만 호스트 Ollama 로 한 줄 자연어 변환 호출 → kb_query 보강. **임베딩 모델 환경변수 override** (운영자가 코드 특화 임베딩으로 교체 가능, §8.2.4.2). **자동 평가**: golden CSV vs llm_analysis.jsonl 비교 스크립트 `eval_rag_quality.py` (§8.4.2.2) — 변경 전후 metric 비교 |
+| **04 안정화 + GitLab UX 패치 (2026-04-25 심야)** | `gemma4:e4b` (thinking 모델) 이 원인이 된 04 파이프라인 "Dify succeeded but outputs empty" 대량 실패 해소. **(1) 진단**: workflow `json_parser` Code 노드에 `parse_status` / `llm_text_preview` / `parse_error_msg` 필드 노출, `dify_sonar_issue_analyzer.py` 가 empty 감지 시 stderr 에 LLM 원문 + 실패 유형 덤프 (`--print-first-errors N` 으로 샘플 수 제한). **(2) 근본 fix**: `<think>...</think>` reasoning block 제거 (종료·미종료 모두 대응), Workflow `max_tokens` 2048→16384, Ollama provider credential `max_tokens` 4096→16384 · `context_size` 8192→32768 (provision.sh 동시 반영), JSON string 내 raw `\n\r\t` + invalid `\escape` (regex 룰의 `\d\s\w` 등) 을 상태기계로 자동 fixup. **(3) UX**: analyzer stdout/stderr + `llm_analysis.jsonl` 을 line-buffered 로 전환 — Jenkins console 실시간 진행 로그 반영. **(4) GitLab 18.x Work Items UI**: description 기본 Truncate 가 본 스택 생성 이슈(3~5K자)에 불리 → webpack chunk 의 `truncationEnabled:!0 → !1` sed 패치 (`scripts/gitlab-truncate-patch.sh`, `run-mac.sh` · `run-wsl2.sh` 가 백그라운드 호출, 멱등). **(5) 로그 잡음**: `tree_sitter_languages` `FutureWarning` 60+ 줄 `warnings.filterwarnings` 로 억제. **결과**: MAX_ISSUES=10 실측 10/10 성공 (FAIL-EMPTY 0), Stage 3 까지 GitLab 이슈 자동 등록. 상세 트러블슈팅 §12.20. |
 | 빌드 방식 | `DOCKER_BUILDKIT=1 docker build` (legacy builder, buildx 미사용). export/load tarball 단계 제거로 같은 캐시 상태에서 14.9GB 이미지 빌드 ≈ 1 분 |
 | 최근 실측 검증 | Jenkins `28080`, Dify `28081`, SonarQube `29000`, GitLab `28090` 정상 응답 확인 |
 
@@ -2813,6 +2814,71 @@ docker exec ttc-allinone bash /opt/provision.sh
 
 본 이미지는 supervisord 의 `autostart=false` + entrypoint.sh 명시 start 패턴으로 race 를 근본 차단했지만, 이미 기동된 컨테이너에서 FATAL 이 남았다면 위 절차로 복구.
 
+### 12.18 04 Stage (2) 가 "Dify succeeded but outputs empty (impact_analysis_markdown missing)" 로 대량 실패
+
+**증상**: `04-정적분석-결과분석-이슈등록` 의 Stage 2 "Analyze by Dify Workflow" 에서 analyzer 가 이슈마다
+
+```
+-> Dify succeeded but outputs empty (impact_analysis_markdown missing) [parse_status=<사유코드>]
+```
+
+로그를 반복해 찍고, 3회 재시도 모두 빈 outputs 로 끝나 `[FAIL-EMPTY]` 로 마감됨. Dify workflow 자체는 HTTP 200 + `status=succeeded` 를 반환해 겉보기엔 정상.
+
+**근본 원인 3종**:
+
+1. **Thinking 모델의 reasoning block**. `gemma4:e4b` 는 추론 시 `<think>...</think>` 블록을 먼저 출력한 뒤 JSON 을 내놓는다. 이 블록 내부에 `{` 가 섞이면 파싱 정규식이 thinking 문맥부터 잡아 `json.loads` 가 실패.
+2. **max_tokens 부족**. 기본 2048 은 thinking 이 길어지면 `</think>` 도 나오기 전에 잘린다. 동시에 Dify Ollama provider credential 이 `max_tokens=4096` 을 num_predict 상한으로 강제하므로, workflow 의 `completion_params.max_tokens` 만 올려도 provider 가 400 을 뱉는다.
+3. **JSON string escape 위반**. 모델이 `suggested_diff` 같은 긴 문자열에 raw `\n\r\t` 를 그대로 넣거나, regex 룰 메시지의 `\d\s\w` 를 그대로 JSON 문자열에 넣는다. JSON 스펙은 `\"\\/bfnrt` 와 `\uXXXX` 만 허용 — 그 외 `\X` 는 "Invalid \escape".
+
+**현재 워크플로 대응 (자동)**:
+
+- `json_parser` Code 노드가 `<think>` 블록(종료·미종료 모두) 제거 → 코드펜스 제거 → `{...}` 추출 → 1차 `json.loads` → 실패 시 상태기계 fixup (raw control char escape + invalid backslash doubling) → 2차 `json.loads`. 최종 실패 시에도 `parse_status` / `parse_error_msg` / `llm_text_preview` 세 필드를 End 로 노출해 `analyzer.py` 가 stderr 에 원인 + LLM 원문을 덤프 (`--print-first-errors N` 으로 덤프 건수 제한).
+- `parse_status` 값 해석:
+  - `ok` — 정상
+  - `parsed_but_empty` — JSON 은 OK 인데 `impact_analysis_markdown` 이 비었음. 프롬프트 지시 재강조 (analyzer 의 retry_hint 가 자동 처리)
+  - `no_json_block` — 모델이 JSON 없이 자유 서술. system prompt 에 스키마 강제
+  - `json_decode_error` — `{...}` 있으나 파싱 실패. `parse_error_msg` 로 위치 확인, fixup 보강 여부 검토
+  - `thinking_unterminated` — `<think>` 는 있으나 `</think>` 없음 (max_tokens 소진). max_tokens 상향 필요
+  - `empty_llm_text` — LLM 빈 응답. Ollama 헬스·타임아웃 확인
+
+**GitLab Issue 본문에 해결방안·영향분석·소나큐브 링크 등이 안 보이는 문제는 §12.19 참조.**
+
+### 12.19 GitLab 18.x Work Items UI 에서 이슈 본문이 접혀 "Read more" 클릭 후에야 전체가 보임
+
+**증상**: `04` Stage 3 이 GitLab 이슈를 정상 생성했고 REST `GET /api/v4/projects/:p/issues/:iid` 로 description 이 3,000~5,000자 들어있는 것을 확인할 수 있지만, 웹 UI (`/-/issues/:iid` 또는 `/-/work_items/:iid`) 에서는 **제목 + 간단 라벨만 보이고 본문의 📍 위치·🔴 문제 코드·✅ 수정 제안·💡 Suggested Diff·📊 영향 분석·🔗 링크 섹션이 전혀 렌더되지 않은 것처럼** 보인다.
+
+**원인**: GitLab 18.x Work Items UI 의 per-user 설정 "Truncate descriptions" 가 **기본 ON**. 저장 위치는 서버가 아닌 브라우저 localStorage (`work_item_truncate_descriptions`) — 서버 API / Admin 설정으로 기본값을 바꿀 방법이 없다. description 이 본 스택의 LLM 출력(3~5K자) 처럼 길면 첫 몇 줄만 접혀 노출되고 "Read more" 클릭해야 전체가 보인다. 처음 사용자는 이슈에 내용이 없다고 오해.
+
+**대응 (영구 기본값 OFF)**: 본 스택은 `scripts/gitlab-truncate-patch.sh` 가 `run-mac.sh` · `run-wsl2.sh` 에서 백그라운드로 자동 실행되어, `ttc-gitlab` 컨테이너의 webpack chunk 14 개에 박혀있는 minified 초기값 `truncationEnabled:!0` (true) 을 `!1` (false) 로 sed 치환한다. 멱등 — 이미 패치된 chunk 는 `already_patched` 로 카운트만 올라간다.
+
+**수동 확인 / 재실행**:
+
+```bash
+bash code-AI-quality-allinone/scripts/gitlab-truncate-patch.sh
+# → [gitlab-truncate-patch]   patched=N already_patched=M minified_variant_mismatch=0
+```
+
+- `patched=N` (N>0): 최초 실행 — 다음 브라우저 강력 새로고침 (Cmd+Shift+R) 이후 description 바로 전체 노출.
+- `already_patched=14`: 이미 적용됨.
+- `minified_variant_mismatch > 0`: GitLab 버전업으로 minified 변수명 변경 — 본 섹션 재검증 필요.
+
+**개별 사용자 대응** (패치 안 하고 그 자리에서만 끄고 싶을 때): 이슈 우측 상단 **View options** → **Truncate descriptions** 체크 해제. 해당 브라우저 localStorage 에만 기록됨.
+
+### 12.20 이번 04 대량 실패 케이스의 종합 타임라인 (참고용)
+
+2026-04-25 심야에 쌓은 진단·수정 내역을 순서대로 정리. 같은 증상 재발 시 참고.
+
+1. **관찰**: 04 Stage 2 가 94 이슈 대부분에서 `Dify succeeded but outputs empty` 를 뱉고 `[FAIL-EMPTY]`.
+2. **1차 진단 추가**: `json_parser` 에 `parse_status` + `llm_text_preview` + `parse_error_msg` 필드 노출 → analyzer stderr 에 덤프.
+3. **1차 원인 확정**: preview 첫 줄이 `<think>` — thinking 모델의 reasoning block 을 regex 가 처리 못함. `<think>...</think>` 제거 로직 투입.
+4. **2차 원인**: `</think>` 도 나오기 전에 출력이 잘림 (max_tokens=2048). workflow max_tokens 16384 로 상향 시도 → Dify Ollama plugin 이 `num_predict ≤ 4096` 스키마 강제로 400.
+5. **Ollama provider credential 업데이트**: `/console/api/workspaces/current/model-providers/langgenius/ollama/ollama/models/credentials` PUT → `max_tokens: 16384`, `context_size: 32768`. `scripts/provision.sh` 의 `dify_register_ollama_provider` 도 동시 반영.
+6. **3차 원인**: 성공 비율 오르긴 하지만 여전히 일부 실패 — `parse_error_msg` 가 "Invalid control character". diff 문자열 내 raw 개행. 상태기계로 `\n\r\t` escape 자동화.
+7. **4차 원인**: 잔여 실패가 전부 "Invalid \escape". regex 룰 (javascript:S6353 등) 의 `\d\s\w` 메시지가 문자열에 섞임. 상태기계에 invalid backslash → `\\X` doubling 추가.
+8. **UX 보완**: analyzer stdout/jsonl 버퍼링으로 Jenkins console 진행이 뭉쳐 "멈춘 듯" 보임 — `sys.stdout.reconfigure(line_buffering=True)` + `open(buffering=1)` 로 라인 단위 즉시 반영.
+9. **GitLab UX**: 이슈 본문이 Work Items UI 기본 Truncate 로 안 보인다는 제보 → webpack chunk `truncationEnabled:!0 → !1` 패치 (`scripts/gitlab-truncate-patch.sh`, 멱등, run 스크립트에서 자동 호출).
+10. **검증**: MAX_ISSUES=10 으로 재실행 → 10/10 success, `FAIL-EMPTY=0`, `Dify Internal Fail=0`, Stage 3 까지 도달해 `created=9 fp_transitioned=1 failed=0`. 이슈 description 은 브라우저에서 접힘 없이 바로 노출.
+
 ---
 
 ## 13. 초기화 & 재시작
@@ -2901,6 +2967,7 @@ code-AI-quality-allinone/
     ├── offline-load.sh                     # (오프라인) tarball 로드
     ├── build-mac.sh / build-wsl2.sh        # 로컬 빌드 헬퍼 (prefetch 내부에서도 호출)
     ├── run-mac.sh / run-wsl2.sh            # compose up 헬퍼
+    ├── gitlab-truncate-patch.sh            # P3 후속: GitLab 18 Work Items UI 기본 Truncate OFF 패치
     ├── supervisord.conf                    # 11 프로세스 (UTF-8 JVM 포함)
     ├── nginx.conf                          # Dify gateway
     ├── pg-init.sh                          # Postgres initdb

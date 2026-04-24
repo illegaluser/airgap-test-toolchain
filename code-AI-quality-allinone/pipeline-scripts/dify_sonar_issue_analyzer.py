@@ -41,6 +41,16 @@ import re
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
+# Jenkins console 에서 실시간 진행 로그 확인을 위해 stdout/stderr 를 라인 버퍼링.
+# -u (PYTHONUNBUFFERED) 옵션 없이도 `[DEBUG] >>> Sending Issue ...` 같은 진행 표시가
+# 한 줄씩 즉시 console 에 반영된다. 파이프 모드에서 Python 기본 = 블록 버퍼링이라
+# 수십 줄이 한꺼번에 flush 되어 오래 기동 중인 듯 보이는 혼동 방지.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 
 def truncate_text(text, max_chars=1000):
     """
@@ -409,7 +419,10 @@ def main():
     if args.max_issues > 0: issues = issues[:args.max_issues]
 
     # 결과를 기록할 JSONL 파일 열기
-    out_fp = open(args.output, "w", encoding="utf-8")
+    # buffering=1 = line-buffered. 각 out_fp.write 뒤 명시적 flush 없이도 줄 단위로
+    # 디스크 반영됨 → 장기 실행 중 Jenkins 가 실시간 JSONL 을 읽어 진행 상황 확인
+    # 가능. text 모드에서 line buffering 은 Python 에서 합법.
+    out_fp = open(args.output, "w", encoding="utf-8", buffering=1)
 
     # Dify API 엔드포인트 구성
     # 사용자가 /v1 접미사를 빠뜨려도 자동으로 보정합니다.
@@ -419,6 +432,10 @@ def main():
     target_api_url = f"{base_url}/workflows/run"
 
     print(f"[INFO] Analyzing {len(issues)} issues...", file=sys.stderr)
+
+    # --print-first-errors: empty-output 사유 상세 덤프를 최대 N회만 출력.
+    # 0 이면 무제한. 매 빈 outputs 마다 parse_status + llm_text_preview 를 찍는다.
+    empty_debug_budget = [args.print_first_errors]  # list 로 감싸 inner scope 에서 뮤터블 참조
 
     # ---------------------------------------------------------------
     # [3단계] 각 이슈를 순회하며 Dify 워크플로우에 분석 요청
@@ -619,7 +636,42 @@ def main():
                             break
                         else:
                             last_outputs = outputs
-                            print(f"   -> Dify succeeded but outputs empty (impact_analysis_markdown missing)", file=sys.stderr)
+                            parse_status = outputs.get("parse_status") or "(workflow 미갱신? parse_status 미노출)"
+                            print(
+                                f"   -> Dify succeeded but outputs empty "
+                                f"(impact_analysis_markdown missing) [parse_status={parse_status}]",
+                                file=sys.stderr,
+                            )
+                            # 상세 덤프: 할당량 남아있을 때만 llm_text_preview 전문 출력
+                            if empty_debug_budget[0] != 0:
+                                preview = outputs.get("llm_text_preview") or ""
+                                parse_error = outputs.get("parse_error_msg") or ""
+                                ctx_raw = outputs.get("context_stats_json") or ""
+                                ctx_summary = ""
+                                if ctx_raw:
+                                    try:
+                                        cs = json.loads(ctx_raw)
+                                        ctx_summary = (
+                                            f"retrieved={cs.get('retrieved_total')}, "
+                                            f"kept={cs.get('kept_total')}, "
+                                            f"used={cs.get('used_total')}, "
+                                            f"buckets={cs.get('buckets')}"
+                                        )
+                                    except Exception:
+                                        ctx_summary = "(context_stats_json 파싱 실패)"
+                                print(
+                                    f"      [EMPTY-DEBUG] key={key} attempt={i} "
+                                    f"parse_status={parse_status}\n"
+                                    f"      [EMPTY-DEBUG] parse_error: {parse_error}\n"
+                                    f"      [EMPTY-DEBUG] context: {ctx_summary}\n"
+                                    f"      [EMPTY-DEBUG] llm_text_preview ({len(preview)} chars):\n"
+                                    f"------------------ LLM RAW ------------------\n"
+                                    f"{preview}\n"
+                                    f"---------------------------------------------",
+                                    file=sys.stderr,
+                                )
+                                if empty_debug_budget[0] > 0:
+                                    empty_debug_budget[0] -= 1
                     else:
                         # HTTP 200이지만 워크플로우 내부에서 실패한 경우
                         print(f"   -> Dify Internal Fail: {res}", file=sys.stderr)

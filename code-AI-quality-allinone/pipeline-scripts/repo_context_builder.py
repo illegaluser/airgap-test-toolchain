@@ -26,7 +26,18 @@ import argparse
 import json
 import os
 import subprocess
+import warnings
 from pathlib import Path
+
+# tree_sitter_languages (≥0.2) 가 내부적으로 구형 `Language(path, name)` 을 호출해
+# FutureWarning 을 파일당 1~2회씩 출력, 수백 줄 로그 잡음을 만든다. 실제 동작엔
+# 영향 없고 패키지 상류 수정 전까지 외부에서 억제만 가능.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Language\(path, name\) is deprecated.*",
+    category=FutureWarning,
+    module=r"tree_sitter(\..*)?",
+)
 
 try:
     from tree_sitter_languages import get_language, get_parser
