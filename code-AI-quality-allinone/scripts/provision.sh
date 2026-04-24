@@ -837,13 +837,22 @@ gitlab_ensure_sample_project() {
         return 1
     fi
 
-    if [ ! -f "$workdir/package.json" ]; then
-        warn "  샘플 프로젝트 템플릿 검증 실패 — package.json 없음"
+    # 템플릿 검증 — Python / Node 이든 최소 하나의 소스 파일이 있어야 함.
+    # 과거 'package.json 필수' 는 nodegoat 전용 가정이었고, ttc-sample-app 같은
+    # Python 템플릿을 지원하기 위해 일반화. package.json / pyproject.toml /
+    # requirements.txt / sonar-project.properties / src 디렉토리 중 하나.
+    if ! ( [ -f "$workdir/package.json" ] || [ -f "$workdir/pyproject.toml" ] \
+        || [ -f "$workdir/requirements.txt" ] || [ -f "$workdir/sonar-project.properties" ] \
+        || [ -d "$workdir/src" ] ); then
+        warn "  샘플 프로젝트 템플릿 검증 실패 — 알려진 프로젝트 마커 없음 (package.json / pyproject.toml / requirements.txt / src/)"
         rm -rf "$workdir"
         return 1
     fi
 
-    cat > "$workdir/sonar-project.properties" <<CFG
+    # 템플릿에 sonar-project.properties 가 이미 있으면 보존 (ttc-sample-app
+    # 같은 경우 자체 Sonar 설정을 들고 옴). 없으면 nodegoat 스타일 기본값 생성.
+    if [ ! -f "$workdir/sonar-project.properties" ]; then
+        cat > "$workdir/sonar-project.properties" <<CFG
 sonar.projectKey=$SAMPLE_PROJECT_PATH
 sonar.projectName=$SAMPLE_PROJECT_NAME
 sonar.sources=app,config,server.js
@@ -852,6 +861,9 @@ sonar.test.inclusions=test/**/*.js
 sonar.exclusions=**/node_modules/**,**/artifacts/**,**/.github/**,**/cypress/**
 sonar.sourceEncoding=UTF-8
 CFG
+    else
+        log "  템플릿의 기존 sonar-project.properties 보존"
+    fi
 
     remote_url="${GITLAB_URL}/${full_path}.git"
     (
@@ -1005,11 +1017,45 @@ else
     warn "Dify setup 실패 — 후속 단계 건너뜀"
 fi
 
-# G+H. GitLab + 샘플 프로젝트
+# G+H. GitLab + 샘플 프로젝트 (dual-track: nodegoat + ttc-sample-app)
+# 각 sample 은 gitlab_ensure_sample_project 를 env override subshell 로 호출.
+# SAMPLE_PROJECTS 환경변수로 기본 조합 override 가능:
+#   SAMPLE_PROJECTS="nodegoat"              → nodegoat 만
+#   SAMPLE_PROJECTS="ttc-sample-app"        → ttc-sample-app 만
+#   SAMPLE_PROJECTS="nodegoat,ttc-sample-app" → 기본 (둘 다)
 GITLAB_PAT=""
+SAMPLE_PROJECTS_LIST="${SAMPLE_PROJECTS:-nodegoat,ttc-sample-app}"
 if gitlab_wait_ready; then
     GITLAB_PAT=$(gitlab_issue_root_pat || echo "")
-    [ -n "$GITLAB_PAT" ] && gitlab_ensure_sample_project "$GITLAB_PAT" || true
+    if [ -n "$GITLAB_PAT" ]; then
+        IFS=',' read -ra _sample_arr <<< "$SAMPLE_PROJECTS_LIST"
+        for _name in "${_sample_arr[@]}"; do
+            _name=$(printf '%s' "$_name" | tr -d ' ')
+            [ -z "$_name" ] && continue
+            case "$_name" in
+                nodegoat)
+                    SAMPLE_PROJECT_NAME=nodegoat \
+                    SAMPLE_PROJECT_PATH=nodegoat \
+                    SAMPLE_PROJECT_TEMPLATE_DIR=/opt/sample-projects/nodegoat \
+                    SAMPLE_PROJECT_SOURCE_URL="${SAMPLE_PROJECT_SOURCE_URL:-https://github.com/OWASP/NodeGoat.git}" \
+                    SAMPLE_PROJECT_BRANCH=main \
+                        gitlab_ensure_sample_project "$GITLAB_PAT" || true
+                    ;;
+                ttc-sample-app)
+                    # 로컬 템플릿만 — 원격 clone fallback 비활성화 (빈 SOURCE_URL).
+                    SAMPLE_PROJECT_NAME=ttc-sample-app \
+                    SAMPLE_PROJECT_PATH=ttc-sample-app \
+                    SAMPLE_PROJECT_TEMPLATE_DIR=/opt/sample-projects/ttc-sample-app \
+                    SAMPLE_PROJECT_SOURCE_URL="" \
+                    SAMPLE_PROJECT_BRANCH=main \
+                        gitlab_ensure_sample_project "$GITLAB_PAT" || true
+                    ;;
+                *)
+                    warn "알 수 없는 sample 이름: $_name (nodegoat | ttc-sample-app 중 선택)"
+                    ;;
+            esac
+        done
+    fi
 fi
 
 # K. SonarQube 초기 비번 변경 + 토큰 발급

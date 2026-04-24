@@ -22,7 +22,7 @@
 | 항목 | 현재 상태 |
 |------|-----------|
 | 통합 이미지 베이스 | Jenkins `2.555.1-lts-jdk21`, SonarQube `26.4.0.121862-community`, Dify API/Web `1.13.3`, GitLab CE `18.11.0-ce.0` |
-| 기본 샘플 GitLab 프로젝트 | `root/nodegoat` 자동 생성 + 초기 push |
+| 기본 샘플 GitLab 프로젝트 (dual-track) | `root/nodegoat` (JavaScript, OWASP 실 패턴) + **`root/ttc-sample-app`** (Python+JS, **축 1 의도 결함 + 축 2 요구사항 traceability 시연용**) — provision 이 둘 다 자동 생성 + 초기 push |
 | Jenkins 기본 대상 프로젝트 | `01`~`05` 파이프라인 기본값이 모두 `nodegoat` 기준 |
 | 프로비저닝 결과 | Dify 관리자/모델/provider/workflow/dataset, Sonar 토큰, GitLab PAT, Jenkins Job 5개 자동 생성 (provision 재실행 시 동일명 App 삭제 후 재생성) |
 | P1 RAG 품질 개선 (2026-04-25) | §8.2 tree-sitter pass 2 (callers / test_paths 역인덱스), §8.4 `context_filter` Code 노드 (self-exclusion + 카테고리 섹션화), `build_kb_query` 가 `callees:` / `test_for:` 구조화 쿼리 라인 추가 |
@@ -971,22 +971,39 @@ done
 >
 > §7.7 은 별개 파이프라인(05 AI 평가) 첫 실행 — `01` 체인과 독립이며 Ollama 모델·시험지만 있으면 언제든 시작 가능합니다.
 
-### 7.1 Step 1: 샘플 레포 자동 생성 확인 (≈ 1 분)
+### 7.1 Step 1: 샘플 레포 자동 생성 확인 (≈ 1 분) — **dual-track**
 
-**이 단계에서 하는 일**: 프로비저닝이 만든 **의도적으로 취약점이 남아 있는 Node.js 샘플 프로젝트 `nodegoat`** 가 GitLab 에 실제로 올라가 있는지 확인합니다. 이 프로젝트는 정적분석과 LLM 해석 체인을 검증하기 위한 기본 대상이며, 실제 구조도 Python 미니 샘플이 아니라 OWASP NodeGoat 계열 트리(`app/`, `config/`, `server.js`)를 사용합니다.
+**이 단계에서 하는 일**: 프로비저닝이 GitLab 에 **두 개의 샘플 프로젝트**를 올립니다.
 
-**브라우저 확인** — [http://localhost:28090/root/nodegoat](http://localhost:28090/root/nodegoat) 에 `root` / `ChangeMe!Pass` 로 로그인해서 `app/`, `config/`, `server.js`, `sonar-project.properties` 가 보이면 정상.
+| 샘플 | 목적 | 언어 | GitLab URL |
+| --- | --- | --- | --- |
+| `root/nodegoat` | 실제 OWASP 계열 대형 예제 — 축 1 (코드품질 체인) 범용성 검증 | JavaScript | [http://localhost:28090/root/nodegoat](http://localhost:28090/root/nodegoat) |
+| `root/ttc-sample-app` | **축 1 의도 결함 10+ 패턴 + 축 2 요구사항 traceability 시연** | Python + JS | [http://localhost:28090/root/ttc-sample-app](http://localhost:28090/root/ttc-sample-app) |
 
-**CLI 확인**:
+`ttc-sample-app` 에는 추가로 **`requirements/` 디렉토리** (7 개 REQ-NNN-*.md with YAML front-matter) 와 **`docs/security-policy.md`** (의도된 결함 정답지) 가 포함되어 있어 미래 요구사항-구현율 파이프라인 개발 기반을 제공합니다. 상세는 [`sample-projects/ttc-sample-app/README.md`](sample-projects/ttc-sample-app/README.md).
+
+**브라우저 확인** — 위 두 URL 에 `root` / `ChangeMe!Pass` 로 로그인해서:
+
+- `nodegoat` 에는 `app/`, `config/`, `server.js`, `sonar-project.properties` 가 보여야 정상.
+- `ttc-sample-app` 에는 `src/`, `frontend/`, `tests/`, `requirements/`, `docs/`, `sonar-project.properties` 가 보여야 정상.
+
+**CLI 확인** (두 레포 각각):
 
 ```bash
 GITLAB_PAT=$(docker exec ttc-allinone cat /data/.provision/gitlab_root_pat)
+
+# nodegoat
 curl -sS -H "PRIVATE-TOKEN: $GITLAB_PAT" \
   "http://localhost:28090/api/v4/projects/root%2Fnodegoat/repository/tree?ref=main" \
   | python3 -m json.tool
+
+# ttc-sample-app
+curl -sS -H "PRIVATE-TOKEN: $GITLAB_PAT" \
+  "http://localhost:28090/api/v4/projects/root%2Fttc-sample-app/repository/tree?ref=main" \
+  | python3 -m json.tool
 ```
 
-**기대 결과** — JSON 목록에 `app`, `config`, `server.js`, `sonar-project.properties` 가 보여야 정상.
+> **Dual-track 모드 비활성화**: `SAMPLE_PROJECTS` 환경변수로 조정 가능 — `SAMPLE_PROJECTS=nodegoat` (기존과 동일하게 nodegoat 만 올림) 또는 `SAMPLE_PROJECTS=ttc-sample-app` (ttc-sample-app 만). 기본은 `nodegoat,ttc-sample-app` 둘 다.
 
 ### 7.2 Step 2: 샘플 레포를 수동 재생성하고 싶다면 (선택)
 
@@ -1026,12 +1043,17 @@ git push -u origin main
 2. Job 목록에서 **`01-코드-분석-체인`** 클릭.
 3. 좌측 메뉴 **"Build with Parameters"** 클릭.
    - 메뉴가 안 보이면 **"Build Now"** 를 한 번 눌러 실패시킴 (Jenkins Declarative Pipeline 의 parameter discovery 가 최초 1회 실행되어야 `Build with Parameters` 메뉴가 생김). 10초 뒤 Job 페이지 새로고침 → "Build with Parameters" 가 나타나면 다시 클릭.
-4. 파라미터 입력:
-   - `REPO_URL` = `http://gitlab:80/root/nodegoat.git` (컨테이너 내부 이름 `gitlab` 사용, `localhost` 가 아님)
-   - `BRANCH` = `main`
-   - `ANALYSIS_MODE` = `full` (최초 실행이므로 KB 를 새로 짓는 full 모드)
-   - 나머지는 기본값 유지
+4. 파라미터 입력 — 두 샘플 중 선택:
+   - **nodegoat (기본)** — OWASP 대형 실 예제:
+     - `REPO_URL` = `http://gitlab:80/root/nodegoat.git`
+     - `GITLAB_PROJECT` = `root/nodegoat`
+   - **ttc-sample-app** — 의도 결함 + 요구사항 traceability 시연 (Python+JS):
+     - `REPO_URL` = `http://gitlab:80/root/ttc-sample-app.git`
+     - `GITLAB_PROJECT` = `root/ttc-sample-app`
+   - 공통: `BRANCH` = `main`, `ANALYSIS_MODE` = `full` (최초 실행), 나머지 기본값.
 5. **"Build"** 클릭 → Job 실행 시작.
+
+> **어떤 샘플을 고를지**: "파이프라인이 돌기만 하면 되는지 확인" 은 `nodegoat`, "의도된 결함 패턴이 Sonar→LLM 에서 어떻게 해석되는지 정답지 대비 측정" 은 `ttc-sample-app`. `ttc-sample-app` 의 `docs/security-policy.md` 의 **Known Defects** 표가 LLM 답안의 정답지 역할을 하며, `eval_rag_quality.py` 의 golden CSV 출발점으로 그대로 복사 가능합니다 (§ 8.4.2.2).
 
 **기대 결과** — 화면에 `#1` 빌드가 좌측 "Build History" 에 나타나고, Stage View 에 5 개 Stage(Resolve Commit SHA / Trigger P1 / Trigger P2 / Trigger P3 / Chain Summary) 가 순차로 초록색으로 채워져야 정상. 총 소요 ≈ 3~4 분.
 
@@ -2762,12 +2784,24 @@ code-AI-quality-allinone/
 ├── requirements.txt                        # 통합 Python deps
 │
 ├── pipeline-scripts/                       # 파이프라인 1·3 Python (컨테이너에 COPY)
-│   ├── repo_context_builder.py             # P1 AST 청킹
+│   ├── repo_context_builder.py             # P1 AST 청킹 + callers pass 2 + K-4 doc
 │   ├── contextual_enricher.py              # P1 gemma4 요약 prepend
-│   ├── doc_processor.py                    # P1 Dify 업로드 + kb_manifest
+│   ├── doc_processor.py                    # P1 Dify 업로드 + kb_manifest + footer
 │   ├── sonar_issue_exporter.py             # P3(1) Sonar API + 보강
-│   ├── dify_sonar_issue_analyzer.py        # P3(2) Dify Workflow 호출
-│   └── gitlab_issue_creator.py             # P3(3) GitLab Issue + Dual-path FP
+│   ├── dify_sonar_issue_analyzer.py        # P3(2) Dify Workflow 호출 + HyDE
+│   ├── gitlab_issue_creator.py             # P3(3) GitLab Issue + Dual-path FP
+│   ├── diagnostic_report_builder.py        # P1.5 RAG Diagnostic Report HTML 생성
+│   ├── eval_rag_quality.py                 # P2 M-6 — golden CSV 대비 자동 평가
+│   └── dify_kb_wait_indexed.py             # P1 indexing 완료 polling
+│
+├── sample-projects/                        # GitLab 에 자동 push 될 샘플 레포들
+│   ├── nodegoat/                           # OWASP 대형 실 예제 (JavaScript)
+│   ├── ttc-sample-app/                     # P2 신규 — dual-track 시연
+│   │   ├── requirements/                   # 축 2: YAML front-matter 7 REQ + index
+│   │   ├── src/ frontend/ tests/ docs/     # 축 1: 의도 결함 10+ + Sonar 대상
+│   │   ├── sonar-project.properties
+│   │   └── README.md                       # 이 샘플의 내부 가이드
+│   └── golden_template.csv                 # P2 eval_rag_quality.py 출발점
 │
 ├── eval_runner/                            # 파이프라인 4 (DeepEval + Playwright)
 │
