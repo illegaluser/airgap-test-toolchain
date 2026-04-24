@@ -19,6 +19,9 @@ pipeline {
         // 통합 이미지 내부 Dify API / Ollama 주소. 스크립트 env override 로 사용.
         DIFY_API_BASE = 'http://127.0.0.1:5001/v1'
         OLLAMA_API_URL = 'http://host.docker.internal:11434/api/generate'
+        // P1.5 — Pre-training Report. publishHTML 대상.
+        REPORT_DIR = "${WORKSPACE}/pretraining-report"
+        REPORT_FILE = 'pretraining-report.html'
     }
 
     stages {
@@ -67,15 +70,19 @@ pipeline {
                 set -e
                 # 이전 결과물(JSONL/MD) 완전 제거 후 새로 생성 — Dify 중복 upload 방지
                 rm -rf '${env.RESULT_DIR}'/* 2>/dev/null || true
+                # P1.5 — Pre-training Report 출력 디렉터리 준비
+                mkdir -p '${env.REPORT_DIR}'
 
                 python3 '${env.SCRIPTS_DIR}/repo_context_builder.py' \
                     --repo_root '${env.WORKSPACE_CODES}/${env.REPO_NAME}' \
                     --out '${env.RESULT_DIR}' \
-                    --commit-sha '${env.COMMIT_SHA}'
+                    --commit-sha '${env.COMMIT_SHA}' \
+                    --report-html '${env.REPORT_DIR}/${env.REPORT_FILE}'
 
                 JSONL_COUNT=\$(ls '${env.RESULT_DIR}'/*.jsonl 2>/dev/null | wc -l)
                 CHUNK_COUNT=\$(cat '${env.RESULT_DIR}'/*.jsonl 2>/dev/null | wc -l)
                 echo "[Build] JSONL 파일 \${JSONL_COUNT} 개, 총 청크 \${CHUNK_COUNT} 개"
+                echo "[Build] Pre-training Report: ${env.REPORT_DIR}/${env.REPORT_FILE}"
                 """
             }
         }
@@ -150,6 +157,48 @@ pipeline {
     }
     
     post {
+        always {
+            // P1.5 — Pre-training Report (publishHTML).
+            // Stage 2 가 실패해도 일부 리포트가 남을 수 있도록 always 블록에서 시도.
+            // 리포트 파일이 없으면 placeholder 를 생성해 "왜 비었는지" 안내 (05 AI평가
+            // 와 동일 패턴). allowMissing=false 를 강제해 Jenkins 가 누락 자체를
+            // 실패 신호로 집계한다.
+            script {
+                sh """
+                mkdir -p '${env.REPORT_DIR}'
+                if [ ! -f '${env.REPORT_DIR}/${env.REPORT_FILE}' ]; then
+                    cat > '${env.REPORT_DIR}/${env.REPORT_FILE}' <<HTMLEOF
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>Pre-training Report (empty)</title></head><body>
+<h1>Pre-training Report — 데이터 없음</h1>
+<p>이 빌드에서 리포트 파일이 생성되지 않았습니다. 아래를 확인하세요:</p>
+<ul>
+<li>Stage 1 (Git Clone) 이 끝까지 성공했는지 — REPO_URL / gitlab-pat 자격</li>
+<li>Stage 2 (Build Context) 의 repo_context_builder.py 로그</li>
+<li>대상 레포에 tree-sitter 지원 언어 (.py/.java/.ts/.tsx/.js) 파일이 있는지</li>
+</ul>
+<p>Console Output 과 <em>Artifacts</em> 에서 로그를 먼저 확인하세요.</p>
+</body></html>
+HTMLEOF
+                fi
+                """
+                try {
+                    publishHTML(
+                        target: [
+                            reportName: 'Pre-training Report',
+                            reportDir: env.REPORT_DIR,
+                            reportFiles: env.REPORT_FILE,
+                            keepAll: true,
+                            alwaysLinkToLastBuild: true,
+                            allowMissing: false
+                        ]
+                    )
+                } catch (ignored) {
+                    echo "publishHTML plugin unavailable — 리포트는 Artifacts 로만 접근 가능."
+                }
+                archiveArtifacts artifacts: "pretraining-report/${env.REPORT_FILE}", allowEmptyArchive: true
+            }
+        }
         success {
             echo "[Success] 코드 지식화 작업이 성공적으로 완료되었습니다."
         }

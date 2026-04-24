@@ -64,15 +64,21 @@ def truncate_text(text, max_chars=1000):
     return text[:max_chars] + "... (Rule Truncated)"
 
 def build_kb_query(row):
-    """Step C — multi-query kb_query 구성.
+    """P1 — 구조화 multi-query kb_query 구성.
 
-    기존 `f"{rule} {msg}"` 1줄 → 4줄 조합:
-      1) 이슈 라인 근처 코드 창 (>>` 마커 앞뒤 3~4줄)
-      2) function: enclosing_function
-      3) path: relative_path
-      4) rule name / rule key
-    이렇게 하면 RAG 가 rule 이름뿐 아니라 "이 함수 근처에서 어떤 코드가 돌고 있는지"
-    까지 고려해 유사 청크를 꺼낸다.
+    이슈 발생 함수 (enclosing_function) 를 축으로 BM25 검색 면적을 다음과 같이 넓힌다.
+    doc_processor 가 각 청크 text footer 에 `callees: ...`, `callers: ...`,
+    `test_for: ...`, `path: ...` 같은 구조화 metadata 라인을 박아 두기 때문에
+    동일 prefix 쿼리가 metadata 측에 매칭된다.
+
+    쿼리 라인 구성:
+      1) 이슈 라인 근처 코드 창 (`>>` 마커 앞뒤 3~4줄) — 자연어/코드 dense 매칭
+      2) function: enclosing_function                — symbol 자체 매칭
+      3) callees: enclosing_function                 — 이 함수를 "부르는" caller 청크
+                                                       (callees 목록에 해당 이름 포함)
+      4) test_for: enclosing_function                — 이 함수를 테스트하는 청크
+      5) path: relative_path                         — 같은 파일 청크 보조 매칭
+      6) rule name                                   — 룰 관련 similar pattern
     """
     snippet = row.get("code_snippet", "") or ""
     lines = snippet.splitlines()
@@ -91,6 +97,8 @@ def build_kb_query(row):
     parts = [window]
     if enclosing:
         parts.append(f"function: {enclosing}")
+        parts.append(f"callees: {enclosing}")
+        parts.append(f"test_for: {enclosing}")
     if rel_path:
         parts.append(f"path: {rel_path}")
     if rule_name:
@@ -368,6 +376,9 @@ def main():
             "enclosing_function": enclosing_fn,
             "enclosing_lines": enclosing_ln,
             "commit_sha": commit_sha,
+            # P1: self-exclusion — workflow 의 context_filter Code 노드가 이 경로와
+            # 일치하는 RAG 청크를 제외해 "자기 파일을 다시 돌려받는" degenerate case 해소.
+            "issue_file_path": item.get("relative_path", "") or "",
             # retry_hint 는 아래 retry 루프에서 attempt 마다 갱신.
             # 워크플로우의 LLM user 프롬프트 끝에 {{#start.retry_hint#}} 로 삽입됨.
         }
