@@ -680,19 +680,114 @@ dify_issue_app_api_key() {
     fi
 }
 
-# ─ GitLab: 대기 + root PAT 발급 ────────────────────────────────────────────
+# ─ L3: GitLab HTTP 재시도 헬퍼 ─────────────────────────────────────────────
+# GitLab 부팅 직후 nginx → Puma → Rails race 로 API 가 5xx / 504 / 000 을
+# 일시적으로 돌려주는 구간이 있다. 단일 curl 호출이 그 구간을 맞으면
+# 응답만 보고 실패 처리되어 "프로젝트는 생성됐지만 push 가 누락된 빈
+# repo" 같은 고립 상태가 영속화된다. 본 헬퍼는 일시 오류 범주면
+# exponential backoff 로 재시도, 4xx 같은 terminal 오류는 즉시 반환.
+#
+# 사용법:
+#   body_file=$(mktemp)
+#   status=$(_gitlab_retry <max_tries> "$body_file" curl ... 인자들 ...)
+#   case "$status" in 200) ... ;; esac
+#   rm -f "$body_file"
+#
+# 인자:
+#   $1         max_tries (1 이면 재시도 없음 — 기존 단일 호출과 등가)
+#   $2         body_out_file (응답 바디 저장 경로)
+#   $3..       curl 명령 + 인자 (-o, -w 는 본 함수가 주입하므로 제외)
+#
+# stdout  = 최종 HTTP status 코드 (문자열)
+# return  = 5xx/000/429 로 끝난 경우 1, 그 외 0
+_gitlab_retry() {
+    local max="${1:-5}"; shift
+    local body_file="${1:-/dev/null}"; shift
+    local attempt status delay=2
+    for attempt in $(seq 1 "$max"); do
+        status=$(curl "$@" -o "$body_file" -w '%{http_code}' 2>/dev/null || echo "000")
+        case "$status" in
+            000|5*|429)
+                if [ "$attempt" -lt "$max" ]; then
+                    log "    _gitlab_retry attempt=$attempt/$max status=$status — ${delay}s 후 재시도"
+                    sleep "$delay"
+                    delay=$((delay * 2))
+                    [ "$delay" -gt 30 ] && delay=30
+                else
+                    echo "$status"; return 1
+                fi
+                ;;
+            *)
+                [ "$attempt" -gt 1 ] && log "    _gitlab_retry attempt=$attempt/$max status=$status — 성공 복구"
+                echo "$status"; return 0
+                ;;
+        esac
+    done
+    echo "$status"; return 1
+}
+
+# ─ L1: GitLab 3-Phase 대기 ─────────────────────────────────────────────────
+# Phase A (HTTP)     — nginx 가 /users/sign_in HTML 을 서빙. static 파일이라
+#                      Rails 앱이 아직 초기화 전이어도 200 이 날 수 있음.
+# Phase B (Rails)    — /api/v4/version 이 401 (비인증) 또는 200 을 반환할 때까지.
+#                      DB/migration/Puma 가 모두 올라온 시점.
+# Phase C (Git HTTP) — 임의 repo 의 info/refs 가 404/401 를 반환할 때까지.
+#                      Puma workers 중 git-http 경로 서비스도 살아있는지 확인.
+#                      nginx → gitaly 경로의 race 를 추가로 방어.
+#
+# Phase A 만 보고 다음 단계로 넘어가면 이후 _gitlab_retry 가 감당하지만,
+# 여기서 한번 더 거름으로써 불필요한 retry 로그·sleep 을 줄인다.
 gitlab_wait_ready() {
-    log "GitLab 헬스 대기 (최대 15분)..."
-    local w=0 limit=900
-    until curl -sf -o /dev/null "$GITLAB_URL/users/sign_in"; do
+    log "GitLab 헬스 대기 (최대 15분, 3-phase 확인)..."
+    local w=0 limit=900 status
+
+    # Phase A — HTTP layer
+    until curl -sf -o /dev/null --max-time 5 "$GITLAB_URL/users/sign_in"; do
         sleep 10; w=$((w + 10))
         if [ $w -ge $limit ]; then
-            err "GitLab 15분 내 준비되지 않음. 컨테이너 로그 확인: docker logs ttc-gitlab"
+            err "GitLab 15분 내 Phase A (HTTP) 미도달. 컨테이너 로그 확인: docker logs ttc-gitlab"
             return 1
         fi
-        [ $((w % 60)) -eq 0 ] && log "  GitLab 대기 중... (${w}s)"
+        [ $((w % 60)) -eq 0 ] && log "  Phase A (HTTP) 대기 중... (${w}s)"
     done
-    log "GitLab ready (${w}s)"
+    log "  Phase A ready (HTTP, ${w}s)"
+
+    # Phase B — Rails API layer (auth 없이 version 조회, 401 도 ready 로 간주)
+    while [ $w -lt $limit ]; do
+        status=$(curl -sS -o /dev/null --max-time 5 -w '%{http_code}' \
+            "$GITLAB_URL/api/v4/version" 2>/dev/null || echo "000")
+        case "$status" in
+            200|401) break ;;
+            *)
+                sleep 5; w=$((w + 5))
+                [ $((w % 30)) -eq 0 ] && log "  Phase B (Rails API) 대기... status=$status (${w}s)"
+                ;;
+        esac
+    done
+    if [ $w -ge $limit ]; then
+        err "GitLab 15분 내 Phase B (Rails API) 미도달 — last status=$status"
+        return 1
+    fi
+    log "  Phase B ready (Rails API, status=$status, ${w}s)"
+
+    # Phase C — Git HTTP layer. 존재하지 않는 repo 라도 404 를 돌려주면 git-http
+    # 서비스는 살아있음. 5xx/000 은 gitaly 미완성.
+    while [ $w -lt $limit ]; do
+        status=$(curl -sS -o /dev/null --max-time 5 -w '%{http_code}' \
+            "$GITLAB_URL/root/probe-nonexistent.git/info/refs?service=git-upload-pack" 2>/dev/null || echo "000")
+        case "$status" in
+            5*|000)
+                sleep 5; w=$((w + 5))
+                [ $((w % 30)) -eq 0 ] && log "  Phase C (Git HTTP) 대기... status=$status (${w}s)"
+                ;;
+            *) break ;;
+        esac
+    done
+    if [ $w -ge $limit ]; then
+        err "GitLab 15분 내 Phase C (Git HTTP) 미도달 — last status=$status"
+        return 1
+    fi
+    log "GitLab ready (3-phase 통과, ${w}s)"
 }
 
 gitlab_issue_root_pat() {
@@ -756,20 +851,26 @@ gitlab_ensure_sample_project() {
 
     log "GitLab 샘플 프로젝트 보장: $full_path"
 
+    # L2 — 각 curl 을 _gitlab_retry 경유로 호출. 일시 5xx/000 이 와도 backoff
+    # 재시도로 자가 복구. 4xx (예: 404 프로젝트 없음) 는 첫 시도에 바로 분기.
     local namespace_id=""
-    local namespace_json
+    local namespace_json ns_status
     namespace_json=$(mktemp)
-    curl -sS -o "$namespace_json" \
+    ns_status=$(_gitlab_retry 5 "$namespace_json" -sS \
         -H "PRIVATE-TOKEN: $pat" \
-        "$GITLAB_URL/api/v4/namespaces?search=$SAMPLE_PROJECT_NAMESPACE" 2>/dev/null || true
-    namespace_id=$(python3 -c "import json,sys; items=json.load(open(sys.argv[1], encoding='utf-8')); exact=[n for n in items if n.get('path')==sys.argv[2]]; print((exact[0] if exact else {}).get('id',''))" "$namespace_json" "$SAMPLE_PROJECT_NAMESPACE" 2>/dev/null || true)
+        "$GITLAB_URL/api/v4/namespaces?search=$SAMPLE_PROJECT_NAMESPACE" || true)
+    if [ "$ns_status" = "200" ]; then
+        namespace_id=$(python3 -c "import json,sys; items=json.load(open(sys.argv[1], encoding='utf-8')); exact=[n for n in items if n.get('path')==sys.argv[2]]; print((exact[0] if exact else {}).get('id',''))" "$namespace_json" "$SAMPLE_PROJECT_NAMESPACE" 2>/dev/null || true)
+    else
+        warn "  namespace 조회 실패 status=$ns_status — namespace_id 없이 진행"
+    fi
     rm -f "$namespace_json"
 
     local project_json project_id http_code
     project_json=$(mktemp)
-    http_code=$(curl -sS -o "$project_json" -w "%{http_code}" \
+    http_code=$(_gitlab_retry 5 "$project_json" -sS \
         -H "PRIVATE-TOKEN: $pat" \
-        "$GITLAB_URL/api/v4/projects/$encoded_full_path" 2>/dev/null || echo "000")
+        "$GITLAB_URL/api/v4/projects/$encoded_full_path" || true)
 
     if [ "$http_code" = "200" ]; then
         project_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('id',''))" "$project_json" 2>/dev/null || true)
@@ -779,7 +880,7 @@ gitlab_ensure_sample_project() {
         local -a create_args
         create_json=$(mktemp)
         create_args=(
-            -sS -o "$create_json" -w "%{http_code}" -X POST
+            -sS -X POST
             -H "PRIVATE-TOKEN: $pat"
             --data-urlencode "name=$SAMPLE_PROJECT_NAME"
             --data-urlencode "path=$SAMPLE_PROJECT_PATH"
@@ -788,20 +889,17 @@ gitlab_ensure_sample_project() {
         )
         [ -n "$namespace_id" ] && create_args+=(--data-urlencode "namespace_id=$namespace_id")
         create_args+=("$GITLAB_URL/api/v4/projects")
-        create_code=$(curl "${create_args[@]}" 2>/dev/null || echo "000")
+        create_code=$(_gitlab_retry 6 "$create_json" "${create_args[@]}" || true)
         if [ "$create_code" != "201" ]; then
-            # GitLab 부팅 직후 nginx → Puma race 로 create POST 가 502/504 를 돌려주는
-            # 경우가 있다. 이때 백엔드 DB 는 실제로 프로젝트를 만들어 두므로, 응답 코드만
-            # 믿고 즉시 return 하면 "빈 프로젝트 고립" 상태가 영속화된다 — 후속 push 단계
-            # 를 타지 못하기 때문. GET 으로 실제 존재 여부를 한 번 더 확인해 복구.
-            warn "  샘플 프로젝트 생성 응답 status=$create_code — GET 으로 실제 존재 확인 시도"
+            # 재시도 후에도 201 이 아니면: (a) 이미 존재 → GET 으로 확인, (b) 진짜 실패.
+            warn "  샘플 프로젝트 생성 응답 status=$create_code — GET 으로 실제 존재 재확인"
             local recheck_code
-            recheck_code=$(curl -sS -o "$project_json" -w "%{http_code}" \
+            recheck_code=$(_gitlab_retry 5 "$project_json" -sS \
                 -H "PRIVATE-TOKEN: $pat" \
-                "$GITLAB_URL/api/v4/projects/$encoded_full_path" 2>/dev/null || echo "000")
+                "$GITLAB_URL/api/v4/projects/$encoded_full_path" || true)
             if [ "$recheck_code" = "200" ]; then
                 project_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('id',''))" "$project_json" 2>/dev/null || true)
-                log "  재확인 결과 프로젝트 실제 존재: $full_path (id=${project_id:-unknown}) — push 단계 진행"
+                log "  재확인 결과 프로젝트 존재: $full_path (id=${project_id:-unknown}) — push 단계 진행"
                 rm -f "$create_json"
             else
                 warn "  샘플 프로젝트 생성 실패 확정 (create=$create_code, recheck=$recheck_code) — 응답: $(head -c 300 "$create_json" 2>/dev/null)"
@@ -817,9 +915,9 @@ gitlab_ensure_sample_project() {
     rm -f "$project_json"
 
     local branch_code
-    branch_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+    branch_code=$(_gitlab_retry 5 /dev/null -sS \
         -H "PRIVATE-TOKEN: $pat" \
-        "$GITLAB_URL/api/v4/projects/$encoded_full_path/repository/branches/$SAMPLE_PROJECT_BRANCH" 2>/dev/null || echo "000")
+        "$GITLAB_URL/api/v4/projects/$encoded_full_path/repository/branches/$SAMPLE_PROJECT_BRANCH" || true)
     if [ "$branch_code" = "200" ]; then
         touch "$state"
         log "  샘플 프로젝트 브랜치 이미 존재 — 콘텐츠 push skip"
@@ -882,12 +980,35 @@ CFG
         git add -A
         git -c user.email=test@ttc.local -c user.name=tester commit -q -m "initial"
         git remote add origin "http://oauth2:${pat}@${remote_url#http://}"
-        git push -u origin "$SAMPLE_PROJECT_BRANCH" >/dev/null
     ) || {
-        warn "  샘플 프로젝트 초기 push 실패"
+        warn "  샘플 프로젝트 로컬 커밋 준비 실패"
         rm -rf "$workdir"
         return 1
     }
+
+    # L2 push 재시도 — gitaly 가 gRPC 503 을 돌려주는 race 구간이 있으므로
+    # exponential backoff 로 최대 6회 재시도. 단순 git push 는 exit 128 로
+    # 실패하고 재시도 없이 종료되므로 별도 루프로 감싼다.
+    local push_try push_delay=2 push_ok=0
+    for push_try in 1 2 3 4 5 6; do
+        if ( cd "$workdir" && git push -u origin "$SAMPLE_PROJECT_BRANCH" >/dev/null 2>&1 ); then
+            push_ok=1
+            [ "$push_try" -gt 1 ] && log "  push 재시도 attempt=$push_try 성공"
+            break
+        fi
+        if [ "$push_try" -lt 6 ]; then
+            log "  push attempt=$push_try/6 실패 — ${push_delay}s 후 재시도"
+            sleep "$push_delay"
+            push_delay=$((push_delay * 2))
+            [ "$push_delay" -gt 30 ] && push_delay=30
+        fi
+    done
+
+    if [ "$push_ok" != "1" ]; then
+        warn "  샘플 프로젝트 초기 push 실패 (6회 재시도 소진)"
+        rm -rf "$workdir"
+        return 1
+    fi
 
     rm -rf "$workdir"
     touch "$state"
