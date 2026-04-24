@@ -1,0 +1,14 @@
+sonar_issue_key,expected_classification,expected_confidence_min,expected_keywords,expected_cited_paths
+# 컬럼 설명:
+#   sonar_issue_key            Sonar 이슈 key (예: AY1234567890ABCDE). sonar_issues.json 의 'key' 필드 값.
+#   expected_classification    true_positive / false_positive / wont_fix 중 하나.
+#   expected_confidence_min    high / medium / low — LLM 답변의 confidence 가 최소 이 이상이어야 통과.
+#   expected_keywords          LLM impact_analysis_markdown 에 등장해야 할 키워드들. 세미콜론(;) 구분.
+#                              대소문자 무시. 자연어 핵심 개념 권장 (함수명·도메인 용어 등).
+#   expected_cited_paths       LLM 이 인용해야 할 (citation 으로 등장해야 할) 파일 path 들. 세미콜론 구분.
+#                              빈 값이면 citation 검사 skip.
+#
+# 운영 예시 — 한 행 = 한 이슈. 하단 # 라인 4개를 지우고 실 데이터로 교체.
+# AY1abc...,true_positive,medium,SQL injection;sanitize input,app/data/users-dao.js
+# AY2def...,false_positive,low,test fixture,
+# AY3ghi...,true_positive,high,authentication;session,app/routes/session.js;app/data/users-dao.js
