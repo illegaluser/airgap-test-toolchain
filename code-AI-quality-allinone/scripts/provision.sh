@@ -154,7 +154,7 @@ jenkins_exec_groovy() {
 }
 
 # ─ Jenkins: SonarQube server + scanner tool 자동 등록 ──────────────────────
-# 02 코드 정적분석.jenkinsPipeline 의 `withSonarQubeEnv('dscore-sonar')` +
+# 03 코드 정적분석.jenkinsPipeline 의 `withSonarQubeEnv('dscore-sonar')` +
 # `tool 'SonarScanner-CLI'` 가 의존. sonar Jenkins plugin 설치 후 (download-plugins.sh)
 # global config 에 server/tool 을 명시 등록. credentialsId 는 'sonarqube-token'
 # (jenkins_upsert_string_credential 이 먼저 주입).
@@ -1035,13 +1035,14 @@ log "Jenkins Credentials 주입..."
 # J. Jenkinsfile credentials 참조 치환 (Credentials 주입 후)
 patch_jenkinsfile_gitlab_credentials
 
-# A (재실행). Jenkins 5개 Job 등록 — 00 은 Phase 1.5 체인 오케스트레이터
+# A (재실행). Jenkins 5개 Job 등록 — 01 은 체인 오케스트레이터.
+# 번호 01~05 로 통일 (구 00~04 체계에서 개편: 00 이 없어 UX 혼동을 주던 것 해소).
 log "Jenkins 5개 Pipeline Job 등록..."
-jenkins_create_pipeline_job "00-코드-분석-체인"                  "$JENKINSFILE_DIR/00 코드 분석 체인.jenkinsPipeline" || true
-jenkins_create_pipeline_job "01-코드-사전학습"                   "$JENKINSFILE_DIR/01 코드 사전학습.jenkinsPipeline" || true
-jenkins_create_pipeline_job "02-코드-정적분석"                   "$JENKINSFILE_DIR/02 코드 정적분석.jenkinsPipeline" || true
-jenkins_create_pipeline_job "03-정적분석-결과분석-이슈등록"      "$JENKINSFILE_DIR/03 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline" || true
-jenkins_create_pipeline_job "04-AI평가"                          "$JENKINSFILE_DIR/04 AI평가.jenkinsPipeline" || true
+jenkins_create_pipeline_job "01-코드-분석-체인"                  "$JENKINSFILE_DIR/01 코드 분석 체인.jenkinsPipeline" || true
+jenkins_create_pipeline_job "02-코드-사전학습"                   "$JENKINSFILE_DIR/02 코드 사전학습.jenkinsPipeline" || true
+jenkins_create_pipeline_job "03-코드-정적분석"                   "$JENKINSFILE_DIR/03 코드 정적분석.jenkinsPipeline" || true
+jenkins_create_pipeline_job "04-정적분석-결과분석-이슈등록"      "$JENKINSFILE_DIR/04 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline" || true
+jenkins_create_pipeline_job "05-AI평가"                          "$JENKINSFILE_DIR/05 AI평가.jenkinsPipeline" || true
 
 log "=========================================="
 log "자동 프로비저닝 완료."

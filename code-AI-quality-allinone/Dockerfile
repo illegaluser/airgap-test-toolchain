@@ -241,6 +241,7 @@ COPY pipeline-scripts/doc_processor.py                  /opt/pipeline-scripts/
 COPY pipeline-scripts/sonar_issue_exporter.py           /opt/pipeline-scripts/
 COPY pipeline-scripts/dify_sonar_issue_analyzer.py      /opt/pipeline-scripts/
 COPY pipeline-scripts/gitlab_issue_creator.py           /opt/pipeline-scripts/
+COPY pipeline-scripts/dify_kb_wait_indexed.py           /opt/pipeline-scripts/
 COPY eval_runner                       /opt/eval_runner
 
 # SCRIPTS_HOME 심볼릭 (eval_runner 전용)

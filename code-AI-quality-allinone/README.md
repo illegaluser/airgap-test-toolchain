@@ -1,6 +1,6 @@
 # TTC 5-Pipeline All-in-One — 에어갭 설치 & 구동 가이드
 
-> **본 가이드는 현재 `main` 브랜치 기준**입니다. 단일 통합 이미지에 Jenkins Job 5개(`00 코드 분석 체인` / `01 사전학습` / `02 정적분석` / `03 결과분석+이슈등록` / `04 AI평가`) 가 공존합니다. 과거 `04 AI평가` 가 없던 구 버전 가이드가 아니라, 현재 저장소 상태를 기준으로 작성했습니다. 레포를 받은 뒤 아래 경로로 진입해 작업:
+> **본 가이드는 현재 `main` 브랜치 기준**입니다. 단일 통합 이미지에 Jenkins Job 5개(`01 코드 분석 체인` / `02 사전학습` / `03 정적분석` / `04 결과분석+이슈등록` / `05 AI평가`) 가 공존합니다. 과거 `05 AI평가` 가 없던 구 버전 가이드가 아니라, 현재 저장소 상태를 기준으로 작성했습니다. 레포를 받은 뒤 아래 경로로 진입해 작업:
 >
 > ```bash
 > git clone <repo-url> airgap-test-toolchain
@@ -23,7 +23,7 @@
 |------|-----------|
 | 통합 이미지 베이스 | Jenkins `2.555.1-lts-jdk21`, SonarQube `26.4.0.121862-community`, Dify API/Web `1.13.3`, GitLab CE `18.11.0-ce.0` |
 | 기본 샘플 GitLab 프로젝트 | `root/nodegoat` 자동 생성 + 초기 push |
-| Jenkins 기본 대상 프로젝트 | `00`~`03` 파이프라인 기본값이 모두 `nodegoat` 기준 |
+| Jenkins 기본 대상 프로젝트 | `01`~`05` 파이프라인 기본값이 모두 `nodegoat` 기준 |
 | 프로비저닝 결과 | Dify 관리자/모델/provider/workflow/dataset, Sonar 토큰, GitLab PAT, Jenkins Job 5개 자동 생성 |
 | 최근 실측 검증 | Jenkins `28080`, Dify `28081`, SonarQube `29000`, GitLab `28090` 정상 응답 확인 |
 
@@ -48,7 +48,7 @@
 
 1. 온라인 머신에서 이미지, 플러그인, Ollama 모델을 모두 준비해 반출합니다.
 2. 오프라인 머신에서 Docker/Ollama 를 복원하고 `run-mac.sh` 또는 `run-wsl2.sh` 로 스택을 올립니다.
-3. 프로비저닝이 끝나면 Jenkins `00-코드-분석-체인` 을 `root/nodegoat` 기준으로 바로 실행할 수 있습니다.
+3. 프로비저닝이 끝나면 Jenkins `01-코드-분석-체인` 을 `root/nodegoat` 기준으로 바로 실행할 수 있습니다.
 
 ## 0.2 빠른 시작
 
@@ -129,15 +129,15 @@ bash scripts/run-wsl2.sh
 
 ### 1.2 이 스택의 접근 방식
 
-**5 개의 Jenkins Pipeline** 이 위 다섯 문제를 담당합니다. 문제 1~4 (코드 품질) 는 `00` 체인 1회 클릭으로 `01`→`02`→`03` 이 자동 연쇄 실행되어 해소되고, 문제 5 (AI 품질) 는 `04` 를 별도 주기로 실행해 해소합니다.
+**5 개의 Jenkins Pipeline** 이 위 다섯 문제를 담당합니다. 문제 1~4 (코드 품질) 는 `01` 체인 1회 클릭으로 `02`→`03`→`04` 이 자동 연쇄 실행되어 해소되고, 문제 5 (AI 품질) 는 `05` 를 별도 주기로 실행해 해소합니다.
 
 | 파이프라인 | 트리거 · 주기 | 수행 작업 | 최종 산출 효과 |
 |-----------|-------------|----------|---------------|
-| **00 코드 분석 체인** | 커밋 SHA 1개 지정 (수동 / webhook) | `01`→`02`→`03` 을 단일 커밋 SHA 기준으로 순차 실행하고 결과를 집계. | 개발자는 **한 번의 버튼 클릭**으로 끝. 중간 단계를 개별 실행할 필요가 없음. |
-| **01 코드 사전학습** | `00` 이 내부적으로 호출 | 대상 레포의 모든 소스를 함수·메서드 단위로 분해하고, 각 조각에 "이 함수가 하는 일" 요약을 붙여 검색용 지식 창고(Dify Knowledge Base)에 적재. | 이후 단계에서 "비슷한 코드 / 호출 관계" 를 자동으로 검색해 가져올 수 있는 **맥락 데이터베이스 확보**. |
-| **02 코드 정적분석** | `00` 이 내부적으로 호출 | 지정 커밋 스냅샷에 대해 SonarQube 스캐너를 실행. | 규칙 위반 사항 목록이 확정됨 (기존 Sonar 사용 방식과 동일). |
-| **03 정적분석 결과분석 이슈등록** | `00` 이 내부적으로 호출 | ① Sonar 이슈에 **사실 정보 보강**(파일/함수/호출관계/커밋이력), ② 01 의 지식 창고에서 **관련 코드 자동 검색**, ③ LLM 에게 "진짜 문제인가, 어떻게 고칠까" 판단 요청, ④ **오탐은 Sonar 에 자동 마킹**, ⑤ 진짜 문제는 **GitLab Issue 로 정리해 등록**. | 개발자에게 도달하는 것은 **조치 가능한 Issue 만**. 오탐 걸러내기·맥락 조사·수정안 초안 작성까지 자동화 완료. |
-| **04 AI 평가** | 평가 주기 (빌드마다 / 일 1회 / 배포 전) | 운영 중 AI 서비스(사내 챗봇·RAG·LLM 워크플로)에 Golden Dataset(시험지)의 질문을 자동 발송하고 답변을 받아, 11 개 지표(정책 준수·포맷·과제 완수·답변 관련성·환각·RAG 정확성·다중턴 일관성·응답속도·토큰 사용량 등)로 **다른 LLM 을 심판으로 삼아** 자동 채점. | 동일 시험지로 빌드마다 재평가해 **AI 품질 회귀 자동 감지**. 리포트(`summary.html`) 에 LLM 이 직접 실패 원인·권장 조치를 자연어로 작성해 비개발자도 결과 해석 가능. |
+| **01 코드 분석 체인** | 커밋 SHA 1개 지정 (수동 / webhook) | `02`→`03`→`04` 을 단일 커밋 SHA 기준으로 순차 실행하고 결과를 집계. | 개발자는 **한 번의 버튼 클릭**으로 끝. 중간 단계를 개별 실행할 필요가 없음. |
+| **02 코드 사전학습** | `01` 이 내부적으로 호출 | 대상 레포의 모든 소스를 함수·메서드 단위로 분해하고, 각 조각에 "이 함수가 하는 일" 요약을 붙여 검색용 지식 창고(Dify Knowledge Base)에 적재. | 이후 단계에서 "비슷한 코드 / 호출 관계" 를 자동으로 검색해 가져올 수 있는 **맥락 데이터베이스 확보**. |
+| **03 코드 정적분석** | `01` 이 내부적으로 호출 | 지정 커밋 스냅샷에 대해 SonarQube 스캐너를 실행. | 규칙 위반 사항 목록이 확정됨 (기존 Sonar 사용 방식과 동일). |
+| **04 정적분석 결과분석 이슈등록** | `01` 이 내부적으로 호출 | ① Sonar 이슈에 **사실 정보 보강**(파일/함수/호출관계/커밋이력), ② 01 의 지식 창고에서 **관련 코드 자동 검색**, ③ LLM 에게 "진짜 문제인가, 어떻게 고칠까" 판단 요청, ④ **오탐은 Sonar 에 자동 마킹**, ⑤ 진짜 문제는 **GitLab Issue 로 정리해 등록**. | 개발자에게 도달하는 것은 **조치 가능한 Issue 만**. 오탐 걸러내기·맥락 조사·수정안 초안 작성까지 자동화 완료. |
+| **05 AI 평가** | 평가 주기 (빌드마다 / 일 1회 / 배포 전) | 운영 중 AI 서비스(사내 챗봇·RAG·LLM 워크플로)에 Golden Dataset(시험지)의 질문을 자동 발송하고 답변을 받아, 11 개 지표(정책 준수·포맷·과제 완수·답변 관련성·환각·RAG 정확성·다중턴 일관성·응답속도·토큰 사용량 등)로 **다른 LLM 을 심판으로 삼아** 자동 채점. | 동일 시험지로 빌드마다 재평가해 **AI 품질 회귀 자동 감지**. 리포트(`summary.html`) 에 LLM 이 직접 실패 원인·권장 조치를 자연어로 작성해 비개발자도 결과 해석 가능. |
 
 00~03 은 "코드 품질 체인" (실행 주기: 커밋마다), 04 는 "AI 품질 게이트" (실행 주기: 평가 정책에 따라). 두 흐름은 동일 통합 이미지에서 공존하며 서로 간섭하지 않습니다.
 
@@ -164,7 +164,7 @@ bash scripts/run-wsl2.sh
 
 개발자는 이 Issue 하나만 열면 **문제 코드 확인 → 영향 범위 파악 → 수정 방향 결정 → Diff 적용** 까지 수행할 수 있습니다. IDE·Sonar 대시보드·팀 메신저를 오갈 필요가 없습니다.
 
-**② AI 응답 품질 (`04`) — `summary.html` / `summary.json` 리포트**
+**② AI 응답 품질 (`05`) — `summary.html` / `summary.json` 리포트**
 
 Jenkins 빌드 Artifact 로 빌드마다 `build-<N>/summary.html` (+ `summary.json`) 이 생성됩니다. 운영자/QA 가 다른 도구 없이 이 리포트 한 장으로 "이번 빌드 배포해도 되는가" 를 판단할 수 있도록 설계.
 
@@ -205,7 +205,7 @@ Jenkins 빌드 Artifact 로 빌드마다 `build-<N>/summary.html` (+ `summary.js
 
 두 흐름이 동일 통합 이미지에서 공존합니다.
 
-**흐름 A — `00 코드 분석 체인` (`01`→`02`→`03`)**: 커밋 SHA 1 개 기준 자동 연쇄.
+**흐름 A — `01 코드 분석 체인` (`02`→`03`→`04`)**: 커밋 SHA 1 개 기준 자동 연쇄.
 
 1. 커밋 SHA 해석 (`git ls-remote` 또는 파라미터)
 2. tree-sitter 로 함수 단위 AST 청킹 → Ollama bge-m3 임베딩 → Dify Knowledge Base 적재
@@ -214,7 +214,7 @@ Jenkins 빌드 Artifact 로 빌드마다 `build-<N>/summary.html` (+ `summary.js
 5. GitLab Issue 자동 등록 (위치·코드·수정제안·영향분석·링크 포함)
 6. 오탐 판정 건은 SonarQube 에 자동 전이 시도, 실패 시 라벨로 구분하여 Issue 생성 (Dual-path)
 
-**흐름 B — `04 AI 평가`**: 운영 중 AI 서비스에 대한 독립 회귀 평가.
+**흐름 B — `05 AI 평가`**: 운영 중 AI 서비스에 대한 독립 회귀 평가.
 
 1. Golden Dataset(시험지 CSV) 로드 → 심판 모델·대상 모델·데이터셋 sha256 메타데이터 고정
 2. 각 케이스(대화)에 대해 어댑터 선택 — `local_ollama_wrapper` / `http` / `ui_chat` 중 `TARGET_TYPE` 에 따라
@@ -903,11 +903,11 @@ curl -s -u admin:password 'http://127.0.0.1:28080/api/json?tree=jobs%5Bname%5D' 
 아래 5 개가 정확히 출력되어야 정상:
 
 ```text
-00-코드-분석-체인
-01-코드-사전학습
-02-코드-정적분석
-03-정적분석-결과분석-이슈등록
-04-AI평가
+01-코드-분석-체인
+02-코드-사전학습
+03-코드-정적분석
+04-정적분석-결과분석-이슈등록
+05-AI평가
 ```
 
 한 개라도 누락되면 `provision.sh` 가 도중에 실패한 것 — §12.10 로그 위치 참고.
@@ -962,9 +962,9 @@ done
 
 ## 7. 첫 실행 — 샘플 레포로 파이프라인 돌려보기
 
-> 📋 **이 섹션은 "따라 하기"** — §6 까지 완료된 환경에서는 프로비저닝이 이미 샘플 GitLab 프로젝트 `nodegoat` 를 자동 생성해 둡니다. 따라서 바로 `00-코드-분석-체인` Job 을 실행해 GitLab Issue 가 자동 생성되는 과정을 확인할 수 있습니다. 필요하면 §7.1~§7.2 로 샘플 레포를 수동 재생성할 수도 있습니다.
+> 📋 **이 섹션은 "따라 하기"** — §6 까지 완료된 환경에서는 프로비저닝이 이미 샘플 GitLab 프로젝트 `nodegoat` 를 자동 생성해 둡니다. 따라서 바로 `01-코드-분석-체인` Job 을 실행해 GitLab Issue 가 자동 생성되는 과정을 확인할 수 있습니다. 필요하면 §7.1~§7.2 로 샘플 레포를 수동 재생성할 수도 있습니다.
 >
-> §7.7 은 별개 파이프라인(04 AI 평가) 첫 실행 — `00` 체인과 독립이며 Ollama 모델·시험지만 있으면 언제든 시작 가능합니다.
+> §7.7 은 별개 파이프라인(05 AI 평가) 첫 실행 — `01` 체인과 독립이며 Ollama 모델·시험지만 있으면 언제든 시작 가능합니다.
 
 ### 7.1 Step 1: 샘플 레포 자동 생성 확인 (≈ 1 분)
 
@@ -1011,14 +1011,14 @@ git remote add origin "http://oauth2:${GITLAB_PAT}@localhost:28090/root/nodegoat
 git push -u origin main
 ```
 
-### 7.3 Step 3: `00-코드-분석-체인` Job 실행 (Jenkins UI)
+### 7.3 Step 3: `01-코드-분석-체인` Job 실행 (Jenkins UI)
 
-**이 단계에서 하는 일**: §7.2 에서 준비한 GitLab 레포를 분석 대상으로 지정해 **`00` 오케스트레이터 Job 을 클릭 한 번** 으로 실행합니다. `00` 이 내부적으로 `01-사전학습` → `02-정적분석` → `03-이슈등록` 을 순서대로 자동 연쇄 호출합니다.
+**이 단계에서 하는 일**: §7.2 에서 준비한 GitLab 레포를 분석 대상으로 지정해 **`01` 오케스트레이터 Job 을 클릭 한 번** 으로 실행합니다. `01` 이 내부적으로 `02-사전학습` → `03-정적분석` → `04-이슈등록` 을 순서대로 자동 연쇄 호출합니다.
 
 **Jenkins UI 에서 단계별로**:
 
 1. 브라우저로 [http://localhost:28080](http://localhost:28080) 접속 → `admin` / `password` 로 로그인.
-2. Job 목록에서 **`00-코드-분석-체인`** 클릭.
+2. Job 목록에서 **`01-코드-분석-체인`** 클릭.
 3. 좌측 메뉴 **"Build with Parameters"** 클릭.
    - 메뉴가 안 보이면 **"Build Now"** 를 한 번 눌러 실패시킴 (Jenkins Declarative Pipeline 의 parameter discovery 가 최초 1회 실행되어야 `Build with Parameters` 메뉴가 생김). 10초 뒤 Job 페이지 새로고침 → "Build with Parameters" 가 나타나면 다시 클릭.
 4. 파라미터 입력:
@@ -1032,7 +1032,7 @@ git push -u origin main
 
 ### 7.4 Step 4: 빌드 진행 모니터링
 
-**이 단계에서 하는 일**: `00` 체인 빌드가 어느 Stage 에서 어떻게 진행 중인지 실시간 확인합니다. Jenkins Stage View 가 가장 직관적이지만, CLI 를 쓰면 자동화 스크립트로도 활용 가능합니다.
+**이 단계에서 하는 일**: `01` 체인 빌드가 어느 Stage 에서 어떻게 진행 중인지 실시간 확인합니다. Jenkins Stage View 가 가장 직관적이지만, CLI 를 쓰면 자동화 스크립트로도 활용 가능합니다.
 
 **방법 ① 브라우저 — Jenkins Stage View**
 
@@ -1063,16 +1063,16 @@ status: SUCCESS
   5. Chain Summary               SUCCESS    1.2s
 ```
 
-어느 Stage 가 `FAILED` 면 해당 행 이름으로 대응: Trigger P1 실패 → `01-코드-사전학습/lastBuild/console` · P2 실패 → `02-코드-정적분석/lastBuild/console` · P3 실패 → `03-정적분석-결과분석-이슈등록/lastBuild/console` 로그를 확인.
+어느 Stage 가 `FAILED` 면 해당 행 이름으로 대응: Trigger P1 실패 → `02-코드-사전학습/lastBuild/console` · P2 실패 → `03-코드-정적분석/lastBuild/console` · P3 실패 → `04-정적분석-결과분석-이슈등록/lastBuild/console` 로그를 확인.
 
 ### 7.5 Step 5: 결과 확인 (4 곳)
 
-**이 단계에서 하는 일**: `00` 체인이 성공적으로 끝났다면 **4 개의 산출물 위치** 를 한 번씩 훑어 "정말로 원하는 결과가 나왔는지" 확인합니다. 첫 실행에서는 특히 ① GitLab Issue 생성 여부가 가장 중요합니다 — 이게 본 스택의 최종 가치.
+**이 단계에서 하는 일**: `01` 체인이 성공적으로 끝났다면 **4 개의 산출물 위치** 를 한 번씩 훑어 "정말로 원하는 결과가 나왔는지" 확인합니다. 첫 실행에서는 특히 ① GitLab Issue 생성 여부가 가장 중요합니다 — 이게 본 스택의 최종 가치.
 
 **① GitLab Issue** (가장 먼저 확인) — 개발자가 실제로 받게 되는 최종 산출물:
 
 - URL: [http://localhost:28090/root/nodegoat/-/issues](http://localhost:28090/root/nodegoat/-/issues)
-- 기대: `03-정적분석-결과분석-이슈등록` 실행 후 `root/nodegoat` 프로젝트에 새 Issue 가 생성되어야 정상. 제목은 실행 시점의 Sonar 탐지 결과와 LLM 분류에 따라 달라질 수 있지만, 본문은 §9 "GitLab Issue 결과물 읽는 법" 구조대로 렌더링되어 있어야 합니다.
+- 기대: `04-정적분석-결과분석-이슈등록` 실행 후 `root/nodegoat` 프로젝트에 새 Issue 가 생성되어야 정상. 제목은 실행 시점의 Sonar 탐지 결과와 LLM 분류에 따라 달라질 수 있지만, 본문은 §9 "GitLab Issue 결과물 읽는 법" 구조대로 렌더링되어 있어야 합니다.
 
 **② SonarQube 대시보드** — 원본 이슈 소스:
 
@@ -1091,7 +1091,7 @@ status: SUCCESS
 # P1 이 만든 KB 매니페스트 (어느 커밋·몇 개 청크로 적재됐는지)
 docker exec ttc-allinone cat /data/kb_manifest.json
 
-# 00 체인이 집계한 실행 요약 (P1/P2/P3 각 결과 + 카운트)
+# 01 체인이 집계한 실행 요약 (P1/P2/P3 각 결과 + 카운트)
 docker exec ttc-allinone cat /var/knowledges/state/chain_*.json
 ```
 
@@ -1115,11 +1115,11 @@ docker exec ttc-allinone cat /var/knowledges/state/chain_*.json
 
 - GitLab Issues 페이지에 **중복 Issue 가 생기지 않음** — 여전히 #1 한 개만 존재. 브라우저 새로고침으로 확인.
 
-dedup 은 Sonar 원본 이슈 key + GitLab Issue title 을 비교해 같은 것이면 작성을 건너뛰는 방식으로 동작합니다. 다음 단계 — 별개 파이프라인인 04 AI 평가를 돌려보려면 §7.7 로 이동.
+dedup 은 Sonar 원본 이슈 key + GitLab Issue title 을 비교해 같은 것이면 작성을 건너뛰는 방식으로 동작합니다. 다음 단계 — 별개 파이프라인인 05 AI 평가를 돌려보려면 §7.7 로 이동.
 
-### 7.7 `04-AI평가` 파이프라인 첫 실행
+### 7.7 `05-AI평가` 파이프라인 첫 실행
 
-> **TL;DR** — AI 에이전트/챗봇의 응답 품질을 Golden Dataset(시험지)로 자동 채점하는 파이프라인입니다. `00` 코드 분석 체인과는 **트리거 주기·대상이 다른** 동등한 일급 파이프라인 — 코드 품질 체인이 커밋 SHA 1회로 작동한다면 `04` 는 평가 정책(빌드마다 / 일 1회 / 배포 전)에 따라 별도 실행됩니다. 실행 전 **호스트 Ollama 에 평가 대상 모델 1개 + 심판 모델 1개** 가 내려와 있어야 합니다. 시험지·파라미터를 지정해 Jenkins Job `04-AI평가` 를 실행하면 `summary.html` 과 `summary.json` 이 생성되어 "이 AI 가 얼마나 잘 답했는가" 를 한눈에 볼 수 있습니다.
+> **TL;DR** — AI 에이전트/챗봇의 응답 품질을 Golden Dataset(시험지)로 자동 채점하는 파이프라인입니다. `01` 코드 분석 체인과는 **트리거 주기·대상이 다른** 동등한 일급 파이프라인 — 코드 품질 체인이 커밋 SHA 1회로 작동한다면 `05` 는 평가 정책(빌드마다 / 일 1회 / 배포 전)에 따라 별도 실행됩니다. 실행 전 **호스트 Ollama 에 평가 대상 모델 1개 + 심판 모델 1개** 가 내려와 있어야 합니다. 시험지·파라미터를 지정해 Jenkins Job `05-AI평가` 를 실행하면 `summary.html` 과 `summary.json` 이 생성되어 "이 AI 가 얼마나 잘 답했는가" 를 한눈에 볼 수 있습니다.
 >
 > Step 0 사전 점검 → Step 1 시험지 준비 → Step 2 첫 빌드(파라미터 등록) → Step 3 본 빌드 → Step 4 모니터링 → Step 5 리포트 읽기 → Step 6 의사결정 → Step 7 회귀 추적. 10-row 시험지 기준 총 **45~90 분** 소요.
 
@@ -1299,7 +1299,7 @@ docker exec ttc-allinone chown jenkins:jenkins /var/knowledges/eval/data/golden.
 **이 단계에서 무엇을 하는가**: Jenkins Pipeline Job 은 `properties([parameters([...])])` 블록을 **한 번 실행해야** 파라미터가 UI 에 등록됩니다. 그래서 첫 빌드는 파라미터 없이 "Build Now" 로 돌려 실패하는 것이 정상 — 두 번째 빌드부터 "Build with Parameters" 가 나타납니다.
 
 1. Jenkins UI ([http://localhost:28080](http://localhost:28080)) 에 `admin` / `password` 로 로그인.
-2. **`04-AI평가`** Job 클릭.
+2. **`05-AI평가`** Job 클릭.
 3. 좌측 **"Build Now"** 클릭 (파라미터 미제공). **빌드 #1 은 실패하거나 기본값(호스트에 없는 모델)으로 실패해도 정상**.
 4. 10초 뒤 좌측 메뉴에 **"Build with Parameters"** 가 나타나면 등록 완료.
 
@@ -1309,7 +1309,7 @@ docker exec ttc-allinone chown jenkins:jenkins /var/knowledges/eval/data/golden.
 
 **이 단계에서 무엇을 하는가**: 이제 시험지와 모델, 판정 기준을 지정해 진짜 평가를 돌립니다.
 
-Jenkins → `04-AI평가` → **"Build with Parameters"** → 아래 값 지정:
+Jenkins → `05-AI평가` → **"Build with Parameters"** → 아래 값 지정:
 
 | 파라미터 | 기본값 | 이 예시에서는 | 의미 |
 |---------|--------|-------------|------|
@@ -1382,7 +1382,7 @@ docker exec ttc-allinone ps -eo pid,etime,pcpu,pmem,cmd | grep -E "pytest|ollama
 curl -s http://host.docker.internal:11434/api/ps | python3 -m json.tool
 
 # 3. 최근 pytest 라이브 출력
-curl -s -u admin:password 'http://127.0.0.1:28080/job/04-AI%ED%8F%89%EA%B0%80/lastBuild/consoleText' | tail -60
+curl -s -u admin:password 'http://127.0.0.1:28080/job/05-AI%ED%8F%89%EA%B0%80/lastBuild/consoleText' | tail -60
 ```
 
 세 가지가 모두 "뭔가 움직이는 중" 이면 정상 — 계속 대기.
@@ -1396,7 +1396,7 @@ curl -s -u admin:password 'http://127.0.0.1:28080/job/04-AI%ED%8F%89%EA%B0%80/la
 ```bash
 # 방금 빌드 번호
 BUILD_N=$(curl -s -u admin:password \
-  'http://127.0.0.1:28080/job/04-AI%ED%8F%89%EA%B0%80/lastBuild/api/json' \
+  'http://127.0.0.1:28080/job/05-AI%ED%8F%89%EA%B0%80/lastBuild/api/json' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['number'])")
 
 # 리포트 디렉터리
@@ -1598,9 +1598,9 @@ PY
 
 ## 8. 각 파이프라인 상세
 
-### 8.1 `00-코드-분석-체인` (오케스트레이터)
+### 8.1 `01-코드-분석-체인` (오케스트레이터)
 
-**역할**: 커밋 SHA 하나를 기준으로 01·02·03 파이프라인을 올바른 순서와 파라미터로 연쇄 실행합니다. 개발자는 이 Job 만 실행하면 되며, 중간 단계를 개별로 호출하거나 매개변수를 맞출 필요가 없습니다.
+**역할**: 커밋 SHA 하나를 기준으로 02·03·04 파이프라인을 올바른 순서와 파라미터로 연쇄 실행합니다. 개발자는 이 Job 만 실행하면 되며, 중간 단계를 개별로 호출하거나 매개변수를 맞출 필요가 없습니다. 체인 구조상 **P1 은 Dify 의 KB 인덱싱이 실제로 끝날 때까지 내부적으로 대기** 후 SUCCESS 를 반환하므로, P3 의 RAG 검색이 빈 결과를 반환하는 race condition 이 발생하지 않습니다 (상세: §8.2.5).
 
 **성과**: 실행이 완료되면 해당 커밋에 대한 RAG KB, SonarQube 스캔 리포트, GitLab Issue 등록, 체인 요약 JSON 이 모두 준비되어 있습니다.
 
@@ -1614,14 +1614,14 @@ PY
 **Stage 구조** (총 5 단계, 각 Stage 는 wait+propagate 로 순차 실행):
 
 1. Resolve Commit SHA — `git ls-remote` 로 BRANCH HEAD 해석하거나 파라미터값 사용
-2. Trigger P1 — `01-코드-사전학습` 을 `build job:` 로 호출 (COMMIT_SHA 전달)
-3. Trigger P2 — `02-코드-정적분석` 호출
-4. Trigger P3 — `03-정적분석-결과분석-이슈등록` 호출 (MODE=`full` → `incremental` 매핑)
+2. Trigger P1 — `02-코드-사전학습` 을 `build job:` 로 호출 (COMMIT_SHA 전달)
+3. Trigger P2 — `03-코드-정적분석` 호출
+4. Trigger P3 — `04-정적분석-결과분석-이슈등록` 호출 (MODE=`full` → `incremental` 매핑)
 5. Chain Summary — P3 artifact 에서 `gitlab_issues_created.json` 을 읽어 `p3_summary` 집계 → `/var/knowledges/state/chain_<sha>.json` 에 저장 + `archiveArtifacts`
 
 ---
 
-### 8.2 `01-코드-사전학습` (P1) — RAG 지식 창고 구축
+### 8.2 `02-코드-사전학습` (P1) — RAG 지식 창고 구축
 
 **역할**: 분석 대상 레포의 모든 소스를 함수·메서드 단위로 분해하고, 각 조각에 자연어 요약을 붙여 Dify Knowledge Base 에 적재합니다.
 
@@ -1713,9 +1713,24 @@ JSONL 각 라인 (= 1 청크) 을 **Dify 의 1 document** 로 업로드:
 
 P2/P3 가 이 파일로 KB freshness 를 검증합니다.
 
+#### 8.2.5 Step 4 — Dify Indexing 완료 대기 (`dify_kb_wait_indexed.py`)
+
+`doc_processor.py` 업로드가 반환하는 시점에 Dify 는 문서를 **비동기 임베딩 큐**에 올려 둡니다. bge-m3 임베딩 + Qdrant 색인이 실제로 끝나기 전에 P3 의 `knowledge_retrieval` 노드를 호출하면 top_k 검색이 **빈 결과** 를 돌려주고, LLM 입력의 RAG 컨텍스트가 통째로 비어 분석 품질이 급격히 저하됩니다.
+
+Stage 4 는 이 race condition 을 제거합니다:
+
+- `/v1/datasets/{id}/documents` 를 10초 간격으로 polling
+- 모든 문서가 **terminal 상태** (`completed` 또는 `error` / `disabled` / `archived` / `paused`) 가 될 때까지 대기
+- 기본 timeout 30분 (`--timeout 1800`)
+- `completed` 이외 상태가 섞여 있어도 **WARN 로그만 남기고 파이프라인은 계속** — RAG 결과가 축소될 뿐, 전체 실패로 이어지지 않음
+
+이 스테이지가 완료되어야 P1 Job 이 SUCCESS 를 반환하고, 체인 오케스트레이터 `01-코드-분석-체인` 이 P2 로 넘어갑니다.
+
+> **왜 Stage 별도인가?** `doc_processor.py` 안에서 polling 하지 않는 이유는 (1) upload 실패와 indexing 실패를 **별도 Stage 실패** 로 관측하기 위함이고, (2) Jenkins Stage View 에서 "업로드 20초 · 색인 4분" 같은 단계별 소요 시간을 그대로 드러내 문제 진단이 쉽기 때문입니다.
+
 ---
 
-### 8.3 `02-코드-정적분석` (P2) — SonarQube 스캔
+### 8.3 `03-코드-정적분석` (P2) — SonarQube 스캔
 
 **역할**: 지정된 커밋 스냅샷에 대해 SonarQube 스캐너를 실행해 규칙 위반 사항을 SonarQube 서버에 등록합니다. 기존 SonarQube 사용 방식과 동일하나, 커밋 SHA 가 명시적으로 고정되고 P1 의 KB 와 일관성이 보장된다는 점이 다릅니다.
 
@@ -1744,7 +1759,7 @@ COMMIT_SHA 가 전달된 경우에만 작동:
 
 ---
 
-### 8.4 `03-정적분석-결과분석-이슈등록` (P3) — LLM 분석 + Issue 생성
+### 8.4 `04-정적분석-결과분석-이슈등록` (P3) — LLM 분석 + Issue 생성
 
 **역할**: SonarQube 에 쌓인 규칙 위반 이슈들을 하나씩 처리합니다. 각 이슈에 대해 (1) 파일·함수·호출 관계·커밋 이력 같은 사실 정보를 보강하고, (2) P1 에서 만든 RAG KB 에서 관련 코드를 검색해 LLM 에게 분석을 맡기고, (3) 오탐은 SonarQube 에 자동 마킹하며, (4) 진짜 문제는 GitLab Issue 로 등록합니다.
 
@@ -1923,11 +1938,11 @@ LLM 제안 라벨 + severity:<sev> + classification:<cls> + confidence:<conf>
 }
 ```
 
-00 체인의 Stage 5 가 이 파일을 읽어 `p3_summary` 로 집계합니다.
+01 체인의 Stage 5 가 이 파일을 읽어 `p3_summary` 로 집계합니다.
 
 ---
 
-### 8.5 `04-AI평가` — 11 지표 × 5 단계 AI 응답 자동 평가
+### 8.5 `05-AI평가` — 11 지표 × 5 단계 AI 응답 자동 평가
 
 > **TL;DR** — 운영 중인 AI 에이전트(챗봇·RAG 시스템·LLM 워크플로) 의 응답 품질을 **다른 LLM 에게 채점을 맡겨(LLM-as-Judge)** Golden Dataset 기반으로 자동 재검증합니다. `00~03` 코드 품질 체인과는 **대상(소스 코드 vs 운영 AI)과 트리거 주기(커밋 vs 평가 정책)가 다른** 동등한 일급 파이프라인 — 동일 통합 이미지에서 공존 실행됩니다. 같은 시험지로 반복 실행하므로 품질 회귀를 즉시 잡아냅니다. **모든 추론은 호스트 Ollama** 에서 수행 — 외부 API 의존·데이터 유출 0.
 >
@@ -2036,7 +2051,7 @@ eval_runner/
 
 #### 8.5.4 주요 파라미터 — 완전 레퍼런스
 
-`04-AI평가` Jenkins Job 의 "Build with Parameters" 에서 설정할 수 있는 모든 파라미터.
+`05-AI평가` Jenkins Job 의 "Build with Parameters" 에서 설정할 수 있는 모든 파라미터.
 
 | 파라미터 | 종류 | 기본값 | 의미 / 쓰임 |
 |---------|-----|--------|-----------|
@@ -2225,7 +2240,7 @@ docker exec ttc-allinone ps ax | grep jenkins.war | grep -oE "Dfile.encoding=[A-
 
 이 스택은 `scripts/supervisord.conf` 에 `-Dfile.encoding=UTF-8` 이 이미 반영되어 있습니다. 예전 이미지라면 재빌드 필요.
 
-### 12.3 `00` Job 이 "is not parameterized" HTTP 400
+### 12.3 `01` Job 이 "is not parameterized" HTTP 400
 
 Declarative pipeline 의 parameters 블록이 아직 Jenkins config.xml 에 등록되지 않음 (최초 1회).
 
@@ -2293,9 +2308,9 @@ docker exec ttc-allinone supervisorctl status
 
 **Jenkins Job 콘솔** (브라우저에서 바로 확인):
 
-- http://localhost:28080/job/00-코드-분석-체인/lastBuild/console
-- http://localhost:28080/job/03-정적분석-결과분석-이슈등록/lastBuild/console
-- http://localhost:28080/job/04-AI%ED%8F%89%EA%B0%80/lastBuild/console
+- http://localhost:28080/job/01-코드-분석-체인/lastBuild/console
+- http://localhost:28080/job/04-정적분석-결과분석-이슈등록/lastBuild/console
+- http://localhost:28080/job/05-AI%ED%8F%89%EA%B0%80/lastBuild/console
 
 **자주 쓰는 진단 명령** (한 곳에 모음 — Job 04 / 호스트 Ollama / 서비스 health):
 
@@ -2315,7 +2330,7 @@ done
 
 # Job 04 최근 빌드 결과 요약
 curl -s -u admin:password \
-  'http://localhost:28080/job/04-AI%ED%8F%89%EA%B0%80/lastBuild/api/json?tree=number,result,duration' \
+  'http://localhost:28080/job/05-AI%ED%8F%89%EA%B0%80/lastBuild/api/json?tree=number,result,duration' \
   | python3 -m json.tool
 
 # Job 04 최근 summary.json 핵심 지표 한 줄 요약
@@ -2332,14 +2347,14 @@ print('dataset sha256:', d.get('aggregate', {}).get('dataset', {}).get('sha256',
 
 # Job 04 pytest 실시간 로그 (진행 중 빌드 확인용)
 curl -s -u admin:password \
-  'http://localhost:28080/job/04-AI%ED%8F%89%EA%B0%80/lastBuild/consoleText' | tail -60
+  'http://localhost:28080/job/05-AI%ED%8F%89%EA%B0%80/lastBuild/consoleText' | tail -60
 
 # 컨테이너 안에서 돌아가는 pytest / wrapper 프로세스
 docker exec ttc-allinone ps -eo pid,etime,pcpu,pmem,cmd \
   | grep -E "pytest|ollama_wrapper" | grep -v grep
 ```
 
-### 12.11 `04-AI평가` 가 "model not found" 로 즉시 실패
+### 12.11 `05-AI평가` 가 "model not found" 로 즉시 실패
 
 Jenkinsfile 기본값이 호스트 Ollama 에 없는 모델을 가리킴. 증상: 빌드 콘솔 첫 수 초 이내에 `pull model manifest: model "xxx" not found` 또는 404.
 
@@ -2355,7 +2370,7 @@ ollama pull gemma4:e4b
 ollama pull qwen3-coder:30b
 ```
 
-### 12.12 `04-AI평가` 빌드가 비정상적으로 느림 / "다운된 건 아닌지" 의심
+### 12.12 `05-AI평가` 빌드가 비정상적으로 느림 / "다운된 건 아닌지" 의심
 
 증상: conversation 1 개에 4~10 분, 10-row dataset 이 1 시간 이상. **실제로는 정상 동작** — DeepEval 이 지표당 2~3 LLM call 을 체인으로 돌리며 Judge 모델이 크면(24~30 GB) call 당 20~40 초 소요.
 
@@ -2369,7 +2384,7 @@ docker exec ttc-allinone ps -eo pid,etime,pcpu,pmem,cmd | grep -E "pytest|ollama
 curl -s http://host.docker.internal:11434/api/ps | python3 -m json.tool
 
 # 최근 pytest 출력 라인
-curl -s -u admin:password 'http://127.0.0.1:28080/job/04-AI%ED%8F%89%EA%B0%80/lastBuild/consoleText' | tail -30
+curl -s -u admin:password 'http://127.0.0.1:28080/job/05-AI%ED%8F%89%EA%B0%80/lastBuild/consoleText' | tail -30
 ```
 
 **단축 옵션**:
@@ -2378,14 +2393,14 @@ curl -s -u admin:password 'http://127.0.0.1:28080/job/04-AI%ED%8F%89%EA%B0%80/la
 - **Dataset 축소**: fixture 의 `tiny_dataset.csv` 대신 2~3 row 만 가진 smoke CSV 로 회귀 감지만 수행.
 - **외부 API Judge**: `JUDGE_PROVIDER ∈ {gemini, openai, anthropic}` 지원은 현재 **미구현** (후속 과제). Gemini free tier 가 가장 빠르게 도입 가능한 경로.
 
-### 12.13 `04-AI평가` 에서 `rag-*` conversation 만 계속 FAILED
+### 12.13 `05-AI평가` 에서 `rag-*` conversation 만 계속 FAILED
 
 `golden.csv` 의 `context_ground_truth` 와 실제 RAG 응답이 동떨어져 있거나, Faithfulness / Contextual Recall 임계값이 엄격함. 리포트의 실패 케이스 심층 분석 섹션에서 Judge 의 사유를 확인 후:
 
 - fixture 가 임의 예시라면 `ANSWER_RELEVANCY_THRESHOLD=0.5` 등으로 낮춰 smoke 용도로만 사용.
 - 실제 평가라면 `golden.csv` 의 `expected_output` / `context_ground_truth` 정제.
 
-### 12.14 `04-AI평가` 실패 패턴 → 원인 매핑 (종합 진단표)
+### 12.14 `05-AI평가` 실패 패턴 → 원인 매핑 (종합 진단표)
 
 `summary.html` 의 "실패 케이스 드릴다운" 에서 증상을 찾고 해당 행의 조치 수행.
 
@@ -2402,7 +2417,7 @@ curl -s -u admin:password 'http://127.0.0.1:28080/job/04-AI%ED%8F%89%EA%B0%80/la
 | 드롭다운에 호스트 모델 안 보임 | CascadeChoice Script Approval 미승인 | §12.15 |
 | `JUnit plugin 없음` WARN | 정상 — JUnit plugin 미설치 | 무시 가능. `results.xml` 은 `archiveArtifacts` 로 보존됨 |
 
-### 12.15 `04-AI평가` CascadeChoice 드롭다운이 비거나 fallback 만 표시됨
+### 12.15 `05-AI평가` CascadeChoice 드롭다운이 비거나 fallback 만 표시됨
 
 **증상**: "Build with Parameters" 의 `JUDGE_MODEL` / `TARGET_OLLAMA_MODEL` 이 비어 있거나, `ollama list` 에 없는 고정 5개 (`qwen3.5:4b`, `gemma4:e2b`, `gemma4:e4b`, `llama3.2-vision:latest`, `qwen3-coder:30b`) 만 계속 보임.
 
@@ -2431,7 +2446,7 @@ println "approved total=" + inst.approvedSignatures.size()
 
 승인 후 Job 페이지를 새로고침하면 드롭다운이 호스트 실재 모델 목록으로 채워집니다.
 
-### 12.16 `04-AI평가` 가 GPU 가속 없이 CPU 로 돌아 매우 느림
+### 12.16 `05-AI평가` 가 GPU 가속 없이 CPU 로 돌아 매우 느림
 
 **증상**: conversation 당 10 분 이상, `ollama ps` 의 `PROCESSOR` 컬럼이 `CPU` 또는 `size_vram=0`.
 
@@ -2561,11 +2576,11 @@ code-AI-quality-allinone/
 ├── eval_runner/                            # 파이프라인 4 (DeepEval + Playwright)
 │
 ├── jenkinsfiles/                           # 5 개 Pipeline 정의
-│   ├── 00 코드 분석 체인.jenkinsPipeline
-│   ├── 01 코드 사전학습.jenkinsPipeline
-│   ├── 02 코드 정적분석.jenkinsPipeline
-│   ├── 03 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline
-│   └── 04 AI평가.jenkinsPipeline
+│   ├── 01 코드 분석 체인.jenkinsPipeline
+│   ├── 02 코드 사전학습.jenkinsPipeline
+│   ├── 03 코드 정적분석.jenkinsPipeline
+│   ├── 04 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline
+│   └── 05 AI평가.jenkinsPipeline
 │
 ├── jenkins-init/basic-security.groovy      # admin/password 초기화
 │

@@ -99,7 +99,7 @@ pipeline {
                     echo "[Guard] commit 모드 + manifest 불일치 — P1 단독 트리거"
                     def repoUrl = "http://gitlab:80/${params.GITLAB_PROJECT_PATH}.git"
                     build(
-                        job: '01-코드-사전학습',
+                        job: '02-코드-사전학습',
                         parameters: [
                             string(name: 'REPO_URL',      value: repoUrl),
                             string(name: 'COMMIT_SHA',    value: expectedSha),

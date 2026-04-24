@@ -1,6 +1,6 @@
 # eval_runner — AI 평가 파이프라인 구현
 
-`04 AI평가.jenkinsPipeline` (Phase 5: AI 에이전트 평가) 의 실제 평가 엔진.
+`05 AI평가.jenkinsPipeline` (Phase 5: AI 에이전트 평가) 의 실제 평가 엔진.
 
 ## 정본 스펙
 

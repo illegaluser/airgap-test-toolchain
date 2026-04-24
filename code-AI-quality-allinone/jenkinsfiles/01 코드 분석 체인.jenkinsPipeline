@@ -98,7 +98,7 @@ pipeline {
                 script {
                     env.CHAIN_STARTED_AT = "${System.currentTimeMillis() / 1000L}"
                     def b = build(
-                        job: '01-코드-사전학습',
+                        job: '02-코드-사전학습',
                         parameters: [
                             string(name: 'REPO_URL',      value: params.REPO_URL),
                             string(name: 'COMMIT_SHA',    value: env.RESOLVED_SHA),
@@ -120,7 +120,7 @@ pipeline {
             steps {
                 script {
                     def b = build(
-                        job: '02-코드-정적분석',
+                        job: '03-코드-정적분석',
                         parameters: [
                             string(name: 'SONAR_PROJECT_KEY',   value: params.SONAR_PROJECT_KEY),
                             string(name: 'GITLAB_PROJECT_PATH', value: params.GITLAB_PROJECT_PATH),
@@ -143,7 +143,7 @@ pipeline {
                 script {
                     def exporterMode = (params.ANALYSIS_MODE == 'full') ? 'full' : 'incremental'
                     def b = build(
-                        job: '03-정적분석-결과분석-이슈등록',
+                        job: '04-정적분석-결과분석-이슈등록',
                         parameters: [
                             string(name: 'SONAR_PROJECT_KEY', value: params.SONAR_PROJECT_KEY),
                             string(name: 'SEVERITIES',        value: params.SEVERITIES),
@@ -176,7 +176,7 @@ pipeline {
                     set -e
                     mkdir -p "${STATE_DIR}"
                     JH="${JENKINS_HOME:-/var/jenkins_home}"
-                    P3_ARTIFACT="${JH}/jobs/03-정적분석-결과분석-이슈등록/builds/${P3_BUILD}/archive/gitlab_issues_created.json"
+                    P3_ARTIFACT="${JH}/jobs/04-정적분석-결과분석-이슈등록/builds/${P3_BUILD}/archive/gitlab_issues_created.json"
 
                     if [ -f "${P3_ARTIFACT}" ]; then
                         echo "[Chain] P3 artifact: ${P3_ARTIFACT}"

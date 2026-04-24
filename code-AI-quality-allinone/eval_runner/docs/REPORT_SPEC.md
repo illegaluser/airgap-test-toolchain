@@ -383,7 +383,7 @@ publishHTML(target: [
   "schema_version": "1.0.0",
   "build": {
     "number": "42",
-    "url": "http://jenkins.local/job/04-AI평가/42/",
+    "url": "http://jenkins.local/job/05-AI평가/42/",
     "started_at": "2026-04-22T10:15:00+09:00",
     "ended_at":   "2026-04-22T10:18:30+09:00",
     "overall_status": "passed"
