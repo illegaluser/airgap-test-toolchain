@@ -614,14 +614,18 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     commit_sha = chunk.get("commit_sha", "")
     callers = chunk.get("callers") or []
     callees = chunk.get("callees") or []
+    test_paths = chunk.get("test_paths") or []
     test_for = chunk.get("test_for") or ""
+    is_test = bool(chunk.get("is_test"))
 
     name = f"{path}::{symbol}"
     # Dify document name 길이 제한 대비 (100자 내외)
     if len(name) > 120:
         name = name[:117] + "..."
 
-    # 본문 footer 에 metadata 추가 — retrieval 쿼리 매칭 면적 확대
+    # 본문 footer 에 metadata 추가 — retrieval 쿼리 매칭 면적 확대.
+    # is_test / callers / test_paths 는 Dify BM25 검색이 metadata 도 토큰화하므로
+    # build_kb_query 가 생성하는 구조화 쿼리 ("callers: loginUser" 등) 와 매칭된다.
     meta_lines = [
         "",
         "---",
@@ -633,12 +637,16 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     ]
     if commit_sha:
         meta_lines.append(f"commit_sha: {commit_sha[:12]}")
+    if is_test:
+        meta_lines.append("is_test: true")
     if test_for:
         meta_lines.append(f"test_for: {test_for}")
     if callees:
         meta_lines.append(f"callees: {', '.join(callees[:20])}")
     if callers:
         meta_lines.append(f"callers: {', '.join(callers[:20])}")
+    if test_paths:
+        meta_lines.append(f"test_paths: {', '.join(test_paths[:10])}")
 
     text = chunk.get("code", "") + "\n" + "\n".join(meta_lines)
     return name, text

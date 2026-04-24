@@ -66,14 +66,24 @@ workflow:
           sourceType: start
           targetType: knowledge-retrieval
 
-      - id: edge-retrieval-to-llm
+      - id: edge-retrieval-to-filter
         source: knowledge_retrieval
+        sourceHandle: source
+        target: context_filter
+        targetHandle: target
+        type: custom
+        data:
+          sourceType: knowledge-retrieval
+          targetType: code
+
+      - id: edge-filter-to-llm
+        source: context_filter
         sourceHandle: source
         target: llm_analyzer
         targetHandle: target
         type: custom
         data:
-          sourceType: knowledge-retrieval
+          sourceType: code
           targetType: llm
 
       - id: edge-llm-to-parser
@@ -160,6 +170,13 @@ workflow:
               type: text-input
               required: false
               max_length: 64
+            - variable: issue_file_path
+              label: Issue File Path
+              type: text-input
+              required: false
+              max_length: 512
+              # P1: context_filter Code 노드가 이 경로와 일치하는 RAG 청크를
+              # self-retrieval 로 간주해 제외. analyzer.py 가 item.relative_path 로 주입.
             - variable: retry_hint
               label: Retry Hint
               type: paragraph
@@ -167,9 +184,11 @@ workflow:
               max_length: 2000
 
       # ────────────────────────────────────────────────────────────────────
-      # Knowledge Retrieval — code-context-kb (bge-m3 hybrid) 에서 top_k=6 조회
-      # Phase 1 에서 신규 추가. 이전에는 RAG 노드 자체가 없어 kb_query 가 프롬프트
-      # 문자열로만 들어갔고 벡터 검색은 일어나지 않아 P1 기여도 0% 였음.
+      # Knowledge Retrieval — code-context-kb (bge-m3 hybrid) 에서 top_k=15 조회.
+      # P1 에서 6→15 로 증량 — 후단 context_filter Code 노드가 self-exclusion
+      # (이슈 파일 청크 제거) + 카테고리 분류 (callers / tests / others) 후
+      # 카테고리별 top-3 만 LLM 에 넘기므로, 상위 풀이 넉넉해야 각 카테고리가
+      # 비지 않을 확률이 높다. reranker 는 현재 환경에 미등록이라 off 유지.
       # ────────────────────────────────────────────────────────────────────
       - id: knowledge_retrieval
         type: custom
@@ -185,7 +204,7 @@ workflow:
           dataset_ids: []  # provision.sh 가 import 후 code-context-kb dataset id 를 주입
           retrieval_mode: multiple
           multiple_retrieval_config:
-            top_k: 6
+            top_k: 15
             score_threshold_enabled: false
             score_threshold: 0.0
             reranking_enable: false
@@ -197,8 +216,126 @@ workflow:
               model: ''
 
       # ────────────────────────────────────────────────────────────────────
+      # Context Filter (Code 노드) — P1 신규.
+      # retrieval 결과에 대해 다음 3가지를 수행:
+      #   1) self-exclusion: issue_file_path 와 동일 path 청크 제거
+      #      (동일 repo KB 구조상 top-1 은 거의 self-retrieval 이라 중복)
+      #   2) 카테고리 분류 — 각 청크의 metadata footer 파싱:
+      #        - is_test=true → tests 버킷
+      #        - callers footer 비어있지 않음 → callers 버킷 (누가 부르는 정의)
+      #        - 그 외 → others
+      #   3) 카테고리별 top-3 선정 후 markdown 섹션으로 직렬화
+      # LLM context 예산 보호 + 실제로 "새 정보" 인 청크만 LLM 에 전달.
+      # ────────────────────────────────────────────────────────────────────
+      - id: context_filter
+        type: custom
+        position:
+          x: 530
+          y: 200
+        data:
+          type: code
+          title: Context Filter (self-exclude + 분류)
+          variables:
+            - variable: retrieval_results
+              value_selector:
+                - knowledge_retrieval
+                - result
+            - variable: issue_file_path
+              value_selector:
+                - start
+                - issue_file_path
+          code_language: python3
+          code: |
+            def main(retrieval_results, issue_file_path: str) -> dict:
+                """RAG 결과 후처리 — self-exclusion + 카테고리 분류 + 섹션화.
+
+                retrieval_results: Dify knowledge_retrieval.result — list[dict].
+                  각 원소: {"content": "<code + '---' + metadata footer>",
+                           "title": "...", "metadata": {...}, "score": float, ...}
+                issue_file_path: Sonar 이슈 파일 경로 (self-exclusion 키).
+                """
+                results = retrieval_results or []
+                issue_file = (issue_file_path or "").strip()
+
+                def parse_footer(content: str):
+                    """청크 content 를 body + metadata dict 로 분리.
+
+                    doc_processor._chunk_to_document 가 code 뒤에 '\\n---\\n' 을 넣고
+                    그 뒤에 'key: value' 라인을 박는다. rsplit 으로 마지막 '---' 블록
+                    만 footer 로 간주.
+                    """
+                    meta = {}
+                    body = content
+                    if "---" in content:
+                        parts = content.rsplit("---", 1)
+                        body = parts[0].rstrip()
+                        for line in parts[1].splitlines():
+                            line = line.strip()
+                            if ":" not in line:
+                                continue
+                            k, v = line.split(":", 1)
+                            meta[k.strip()] = v.strip()
+                    return body, meta
+
+                buckets = {"callers": [], "tests": [], "others": []}
+                for r in results:
+                    content = (r or {}).get("content") or ""
+                    body, meta = parse_footer(content)
+                    chunk_path = meta.get("path", "")
+                    if issue_file and chunk_path == issue_file:
+                        continue  # self-exclusion
+                    if meta.get("is_test") == "true":
+                        bucket = "tests"
+                    elif meta.get("callers"):
+                        bucket = "callers"
+                    else:
+                        bucket = "others"
+                    buckets[bucket].append({
+                        "path": meta.get("path", "?"),
+                        "symbol": meta.get("symbol", "?"),
+                        "lang": meta.get("lang", ""),
+                        "callers": meta.get("callers", ""),
+                        "test_paths": meta.get("test_paths", ""),
+                        "body": body,
+                    })
+
+                def render(title: str, items, max_items: int = 3, max_body_lines: int = 20) -> str:
+                    if not items:
+                        return ""
+                    out = [f"### {title}"]
+                    for it in items[:max_items]:
+                        head = f"- `{it['path']}::{it['symbol']}`"
+                        hints = []
+                        if it.get("callers"):
+                            hints.append(f"callers={it['callers'][:80]}")
+                        if it.get("test_paths"):
+                            hints.append(f"tests={it['test_paths'][:80]}")
+                        if hints:
+                            head += "  (" + " | ".join(hints) + ")"
+                        out.append(head)
+                        body_lines = it["body"].splitlines()[:max_body_lines]
+                        out.append("```" + (it["lang"] or ""))
+                        out.extend(body_lines)
+                        out.append("```")
+                    return "\n".join(out)
+
+                sections = []
+                s = render("관련 caller / 호출 관계 (이 함수를 부르는 정의)", buckets["callers"])
+                if s: sections.append(s)
+                s = render("관련 테스트", buckets["tests"])
+                if s: sections.append(s)
+                s = render("기타 관련 청크", buckets["others"])
+                if s: sections.append(s)
+
+                text = "\n\n".join(sections) or "(관련 RAG 청크 없음 — self-exclusion 후 매칭 0)"
+                return {"filtered_context": text}
+          outputs:
+            filtered_context:
+              type: string
+
+      # ────────────────────────────────────────────────────────────────────
       # LLM — 이슈 분석 및 구조화 응답 생성
-      # (retrieval 결과를 {{#knowledge_retrieval.result#}} 로 주입)
+      # (context_filter 가 가공한 {{#context_filter.filtered_context#}} 주입)
       # ────────────────────────────────────────────────────────────────────
       - id: llm_analyzer
         type: custom
@@ -278,8 +415,8 @@ workflow:
                 {{#start.code_snippet#}}
                 ```
 
-                ## 프로젝트 컨텍스트 (같은 레포 RAG 검색 결과, top-6)
-                {{#knowledge_retrieval.result#}}
+                ## 프로젝트 컨텍스트 (self-exclusion + 카테고리별 top-3)
+                {{#context_filter.filtered_context#}}
 
                 위 정보를 바탕으로 JSON 응답만 생성하세요.
                 impact_analysis_markdown 과 suggested_fix_markdown 에 집중하고,
@@ -289,8 +426,8 @@ workflow:
           context:
             enabled: true
             variable_selector:
-              - knowledge_retrieval
-              - result
+              - context_filter
+              - filtered_context
           vision:
             enabled: false
 

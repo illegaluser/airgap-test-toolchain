@@ -17,19 +17,22 @@
 
 ## 0. 현재 구현 상태
 
-2026-04-24 `main` 기준 현재 구현은 아래와 같습니다.
+2026-04-25 `main` 기준 현재 구현은 아래와 같습니다.
 
 | 항목 | 현재 상태 |
 |------|-----------|
 | 통합 이미지 베이스 | Jenkins `2.555.1-lts-jdk21`, SonarQube `26.4.0.121862-community`, Dify API/Web `1.13.3`, GitLab CE `18.11.0-ce.0` |
 | 기본 샘플 GitLab 프로젝트 | `root/nodegoat` 자동 생성 + 초기 push |
 | Jenkins 기본 대상 프로젝트 | `01`~`05` 파이프라인 기본값이 모두 `nodegoat` 기준 |
-| 프로비저닝 결과 | Dify 관리자/모델/provider/workflow/dataset, Sonar 토큰, GitLab PAT, Jenkins Job 5개 자동 생성 |
+| 프로비저닝 결과 | Dify 관리자/모델/provider/workflow/dataset, Sonar 토큰, GitLab PAT, Jenkins Job 5개 자동 생성 (provision 재실행 시 동일명 App 삭제 후 재생성) |
+| P1 RAG 품질 개선 (2026-04-25) | §8.2 tree-sitter pass 2 (callers / test_paths 역인덱스), §8.4 `context_filter` Code 노드 (self-exclusion + 카테고리 섹션화), `build_kb_query` 가 `callees:` / `test_for:` 구조화 쿼리 라인 추가 |
+| 빌드 방식 | `DOCKER_BUILDKIT=1 docker build` (legacy builder, buildx 미사용). export/load tarball 단계 제거로 같은 캐시 상태에서 14.9GB 이미지 빌드 ≈ 1 분 |
 | 최근 실측 검증 | Jenkins `28080`, Dify `28081`, SonarQube `29000`, GitLab `28090` 정상 응답 확인 |
 
 운영 메모:
-- macOS 환경에서는 `scripts/build-mac.sh` 의 `docker buildx build --load` 가 `sending tarball` 단계에서 오래 멈출 수 있습니다.
-- 이 경우 Dockerfile 과 태그는 그대로 두고 plain `docker build` 로 우회 빌드한 뒤 `scripts/run-mac.sh` 로 기동하면 됩니다.
+
+- Mac/WSL2 각각 native arch 로만 빌드하므로 buildx 는 제거. `scripts/build-mac.sh` / `scripts/build-wsl2.sh` 모두 legacy `docker build` 사용.
+- Sonar 이슈 LLM 분석 품질 지표 (RAG self-retrieval 회피 후 LLM 이 실제로 caller/test 섹션을 인용하는 비율) 는 P1.5 에서 측정 로그 도입 예정 — 현재는 수동 관찰.
 
 ## 0.1 이 문서를 어떻게 읽으면 되나
 
@@ -1655,15 +1658,22 @@ PY
   "commit_sha": "e38bd123...",
   "code": "def login(username, password, user_store): ...",
   "callees": ["verify_password", "dict.__getitem__"],
-  "callers": [],
-  "test_for": ""
+  "callers": ["src/handlers/auth_handler.py#handle_login",
+              "src/cli/admin.py#reset_and_login"],
+  "test_paths": ["test/auth.test.py#test_login_success"],
+  "is_test": false,
+  "test_for": null
 }
 ```
 
-- **`callees`**: 이 함수 안에서 호출하는 다른 함수들 (tree-sitter 가 call site 를 재귀 순회해 수집). 파이썬은 `call` 노드, Java 는 `method_invocation`, JS/TS 는 `call_expression`.
-- **`callers`**: P1 단계에선 빈 배열. P3 의 exporter 가 JSONL 전체를 역인덱스로 처리해 `direct_callers` 필드를 별도 계산.
+- **`callees`** (pass 1, 로컬 AST): 이 함수 안에서 호출하는 다른 함수들 (tree-sitter 가 call site 를 재귀 순회해 수집). 파이썬 `call` 노드, Java `method_invocation`, JS/TS `call_expression`.
+- **`callers`** (pass 2, P1 신규): 이 함수를 **부르는** 쪽 목록. pass 1 이 끝난 뒤 전체 청크 풀에서 `symbol_name → [정의 청크]` 역인덱스를 구축하고, 각 caller 의 callees 를 순회해 target 청크에 `caller_path#caller_symbol` 을 push 한다. 동명 심볼 중의성에 대해 **recall 우선** — 모든 후보 정의에 링크 (import resolution 은 tree-sitter 만으론 불가하므로 precision 희생). 상한 20개.
+- **`test_paths`** (pass 2, P1 신규): 이 심볼을 대상으로 하는 테스트 청크 역링크. 테스트 청크의 `test_for` 가 가리키는 심볼의 모든 후보에 `test_path#test_symbol` push. 상한 5개. heuristic 특성상 Python `test_X` / `X_test.py` 컨벤션에 강한 반면 JS mocha/jest 의 anonymous `describe`/`it` 스타일은 매칭 약함.
+- **`is_test`** (P1 신규): 테스트 디렉토리/파일 내 청크면 `true`. build_kb_query 가 `test_for: X` 라인을 쿼리에 포함할 때 BM25 가 이 플래그와 함께 매칭한다.
 
 > **왜 함수 단위인가?** 파일 전체를 하나의 문서로 넣으면 임베딩 품질이 떨어지고, "이 이슈가 어떤 함수에서 발생하는지" 검색이 어려워집니다. 함수 단위가 "맥락 일관성 + 검색 정확성" 의 최적 균형점입니다.
+>
+> **pass 2 역인덱스의 효과**: callers / test_paths 필드는 `doc_processor.py` 가 청크 본문 뒤 `--- path: ... callers: ... test_paths: ...` 형태로 text footer 에 병합한다. Dify hybrid search 의 BM25 가 metadata 까지 토큰화하므로, P3 의 `build_kb_query` 가 `callers: loginUser` 같은 구조화 쿼리 라인을 보내면 **"loginUser 를 부르는 정의 청크"** 가 직접 매칭된다. 별도 metadata filter API 에 의존하지 않는다.
 
 #### 8.2.3 Step 2.5 — Contextual Enrichment (`contextual_enricher.py`, 선택)
 
@@ -1712,6 +1722,28 @@ JSONL 각 라인 (= 1 청크) 을 **Dify 의 1 document** 로 업로드:
 ```
 
 P2/P3 가 이 파일로 KB freshness 를 검증합니다.
+
+#### 8.2.4.1 Pre-training Report (P1.5 신규 — `publishHTML` 탭)
+
+Stage 2 의 `repo_context_builder.py` 가 `--report-html` 옵션으로 **self-contained HTML 리포트** 를 생성합니다 (`pretraining-report/pretraining-report.html`). Jenkinsfile 02 의 post 블록이 `publishHTML` 로 빌드 페이지에 "Pre-training Report" 탭을 만들어 주므로, 05 AI평가 의 Evaluation Summary 처럼 **해당 Jenkins Build 페이지에서 바로 클릭해 탐색** 할 수 있습니다.
+
+리포트에 들어가는 섹션:
+
+| 섹션 | 목적 |
+| --- | --- |
+| 헤더 | repo / commit / 실행 시각 |
+| 통계 카드 6종 | `files`, `chunks`, `callers_links`, `test_links`, `is_test chunks`, `orphan ratio` |
+| 언어 분포 표 | `.py / .java / .ts / .tsx / .js` 청크 비율 (bar 포함) |
+| Kind 분포 표 | function / method / class / interface / enum 비율 |
+| 상위 caller hub | callers 배열이 긴 심볼 top-10 — 레포 공용 유틸 식별용 |
+| 고아 심볼 비율 | callers 가 0인 청크 비율. 80% 초과 시 파싱/역인덱싱 결함 의심 |
+| 언어별 샘플 | 언어별 첫 3 청크 미리보기 (code + metadata + 링크 카운트) |
+
+pass 2 역인덱스의 실효성을 **숫자로 즉시 확인** 할 수 있게 하는 게 주목적입니다. `callers_links` 가 0 에 가깝거나 orphan_ratio 가 과도하게 높으면 (예: 90%+) 동명 심볼 매칭이 의도대로 작동하지 않는 신호 — 레포 전수 스캔이 제대로 안 됐거나 (언어 미지원), 심볼이 모두 import 해서 쓰는 모듈로만 되어 있어 로컬 callees 집합이 비는 구조일 가능성이 있습니다.
+
+placeholder 동작: Stage 2 실패로 리포트 파일이 생성 못 되면 post 블록이 "왜 빈지" 안내하는 HTML 을 대신 써서 탭이 비어 있는 이유를 바로 보여줍니다. artifact 로도 `pretraining-report/pretraining-report.html` 이 archive 되므로 URL 공유 / 다운로드 가능.
+
+> **왜 HTML 인가?** Stage View 의 텍스트 로그 한 줄 (`files=25 chunks=147 callers_links=141 test_links=0`) 은 빌드마다 묻혀 P1 개선이 실제로 효과 있는지 체감이 안 됩니다. 리포트 탭은 build URL 만 공유하면 팀이 즉시 RAG KB 품질 추세를 공유할 수 있습니다. 05 AI평가의 Evaluation Summary 와 동일한 UX 패턴.
 
 #### 8.2.5 Step 4 — Dify Indexing 완료 대기 (`dify_kb_wait_indexed.py`)
 
@@ -1814,11 +1846,13 @@ COMMIT_SHA 가 전달된 경우에만 작동:
 
 **역할**: 각 이슈를 Dify `Sonar Issue Analyzer` Workflow 에 전달해 LLM 판단 결과를 받음.
 
-**Multi-query `kb_query` 구성** — 4 줄 조합:
+**Multi-query `kb_query` 구성** (P1 구조화 확장) — 6 줄 조합:
 
 ```
 <이슈 라인 ±3~4 줄 코드창>
 function: <enclosing_function>
+callees: <enclosing_function>        ← P1 신규 — 이 함수를 "부르는" caller 정의 유도
+test_for: <enclosing_function>       ← P1 신규 — 이 함수를 "테스트하는" 청크 유도
 path: <relative_path>
 <rule_name>
 ```
@@ -1830,25 +1864,38 @@ path: <relative_path>
 >>    21 |     except:
       22 |         return False
 function: login
+callees: login
+test_for: login
 path: src/auth.py
 "SystemExit" should be re-raised
 ```
 
-이 쿼리가 Dify knowledge_retrieval 노드에서 hybrid_search 로 KB 청크를 끌어옵니다. **단일 rule 이름만 넣던 것보다 RAG 적중률이 크게 향상** — "login 함수 근처 / auth.py 파일 / SystemExit 처리" 의 다중 관점으로 매칭.
+`callees: login` 라인은 "누군가의 callees 목록에 login 이 들어있는 청크" 를 유도한다 — 즉 **login 을 호출하는 caller 정의**. Dify hybrid search 의 BM25 가 청크 text footer 의 `callees: verify_password, login` 라인과 매칭하기 때문에 가능 (pass 2 역인덱스와 별도로 작동). `test_for: login` 은 login 을 대상으로 한 테스트 청크의 footer `test_for: login` 또는 `is_test: true` 와 매칭.
 
-**Dify Workflow 노드 구성** (`sonar-analyzer-workflow.yaml`):
+**Dify Workflow 노드 구성** (`sonar-analyzer-workflow.yaml`, P1 개편 후):
 
 ```
 start
-  ↓ (10 inputs: sonar_issue_key, code_snippet, kb_query, enclosing_function, commit_sha, ...)
-knowledge_retrieval   [code-context-kb dataset, retrieval_mode=multiple, top_k=6, hybrid]
-  ↓ (result — 검색된 청크 top-6)
+  ↓ (12 inputs: sonar_issue_key, code_snippet, kb_query, enclosing_function,
+  ↓             commit_sha, issue_file_path (P1 신규), retry_hint, ...)
+knowledge_retrieval   [code-context-kb, retrieval_mode=multiple, top_k=15 (P1 확장)]
+  ↓ (result — 검색된 청크 top-15)
+context_filter        [P1 신규 — Code 노드]
+  │   · self-exclusion: issue_file_path 와 동일 path 청크 제거 (자기 자신 반환 회피)
+  │   · metadata footer 파싱 → 카테고리 분류
+  │       callers 버킷  : 다른 곳에서 호출되는 정의 청크 (callers footer 비어있지 않음)
+  │       tests 버킷    : 테스트 청크 (is_test=true)
+  │       others 버킷   : 위 둘에 안 걸리는 일반 청크
+  │   · 카테고리별 top-3 → markdown 섹션화 (총 최대 9 청크)
+  ↓ (filtered_context — 섹션화 markdown 문자열)
 llm_analyzer          [gemma4:e4b, temperature=0.1, max_tokens=2048]
   ↓ (JSON text)
-parameter_extractor   [8 필드 추출: title/labels/impact/fix/classification/fp_reason/confidence/diff]
+json_parser           [Code 노드 — json.loads deterministic 파싱 + 안전 기본값]
   ↓
 end                   [8 outputs 반환]
 ```
+
+> **Context 노드 도입 이유**: 이전에는 `knowledge_retrieval.result` 를 LLM 프롬프트에 그대로 주입했는데, 이 KB 가 **동일 repo** 로 구성되어 있어 top-1 이 거의 항상 이슈 파일 자기 자신이었다 ("self-retrieval degenerate case"). LLM 은 방금 본 code_snippet 을 RAG 결과에서 다시 받아 새 정보량 0. P1 에서 `context_filter` Code 노드가 `issue_file_path` 와 동일 path 청크를 제거하고 나머지를 카테고리별로 섹션화해 LLM 에 전달하도록 바꿨다.
 
 **LLM 출력 8 필드**:
 
