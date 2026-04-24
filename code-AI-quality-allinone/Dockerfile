@@ -235,13 +235,11 @@ COPY scripts/nginx.conf       /etc/nginx/nginx.conf
 # (ZeroTouch-QA 는 형제 스택 playwright-allinone 이 담당)
 # ─────────────────────────────────────────────────────────────────────────────
 RUN mkdir -p /opt/pipeline-scripts
-COPY pipeline-scripts/repo_context_builder.py           /opt/pipeline-scripts/
-COPY pipeline-scripts/contextual_enricher.py            /opt/pipeline-scripts/
-COPY pipeline-scripts/doc_processor.py                  /opt/pipeline-scripts/
-COPY pipeline-scripts/sonar_issue_exporter.py           /opt/pipeline-scripts/
-COPY pipeline-scripts/dify_sonar_issue_analyzer.py      /opt/pipeline-scripts/
-COPY pipeline-scripts/gitlab_issue_creator.py           /opt/pipeline-scripts/
-COPY pipeline-scripts/dify_kb_wait_indexed.py           /opt/pipeline-scripts/
+# P2 — wildcard 로 전환. 이전에는 파일 단위 화이트리스트라 새 스크립트
+# (diagnostic_report_builder.py, eval_rag_quality.py) 추가 시 Dockerfile
+# 수정 없이는 이미지에 포함되지 않아 Jenkinsfile 이 ModuleNotFound/파일 없음
+# 으로 실패하는 무음 regression 이 발생했다. *.py 로 통일.
+COPY pipeline-scripts/*.py                              /opt/pipeline-scripts/
 COPY eval_runner                       /opt/eval_runner
 
 # SCRIPTS_HOME 심볼릭 (eval_runner 전용)
