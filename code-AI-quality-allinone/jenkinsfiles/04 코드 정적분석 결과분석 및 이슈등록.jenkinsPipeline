@@ -182,7 +182,50 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'sonar_issues.json,llm_analysis.jsonl,gitlab_issues_created.json', fingerprint: true
+      // P1.5 M-1~M-4 — per-이슈 RAG 진단 리포트 (publishHTML 탭).
+      // llm_analysis.jsonl 의 rag_diagnostic 필드를 집계해 이슈 분석 품질 지표 렌더.
+      // 리포트 파일이 없으면 placeholder 로 탭에 "왜 비었는지" 안내.
+      script {
+        sh '''
+        mkdir -p diagnostic-report
+        if [ -f llm_analysis.jsonl ]; then
+          python3 "${SCRIPTS_DIR}/diagnostic_report_builder.py" \
+            --input llm_analysis.jsonl \
+            --output diagnostic-report/diagnostic-report.html \
+            || echo "[Diag] report builder 실패 — placeholder 생성"
+        fi
+        if [ ! -f diagnostic-report/diagnostic-report.html ]; then
+          cat > diagnostic-report/diagnostic-report.html <<HTMLEOF
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>RAG Diagnostic Report (empty)</title></head><body>
+<h1>RAG Diagnostic Report — 데이터 없음</h1>
+<p>이 빌드에서 <code>llm_analysis.jsonl</code> 이 생성되지 않았거나
+diagnostic_report_builder 가 실패했습니다. 아래를 확인하세요:</p>
+<ul>
+<li>Stage (1) Export 가 0 건이면 분석할 이슈 자체가 없습니다 (Sonar 이슈 0건)</li>
+<li>Stage (2) Analyze 의 Dify 호출 로그 — 네트워크/PAT 오류</li>
+<li>Stage (2) 의 rag_diagnostic 은 context_filter/json_parser Code 노드가
+필요합니다. workflow 이 구버전이면 dify 를 재provision 하세요.</li>
+</ul></body></html>
+HTMLEOF
+        fi
+        '''
+        try {
+          publishHTML(
+            target: [
+              reportName: 'RAG Diagnostic Report',
+              reportDir: 'diagnostic-report',
+              reportFiles: 'diagnostic-report.html',
+              keepAll: true,
+              alwaysLinkToLastBuild: true,
+              allowMissing: false
+            ]
+          )
+        } catch (ignored) {
+          echo 'publishHTML plugin unavailable — 리포트는 Artifacts 로만 접근 가능.'
+        }
+      }
+      archiveArtifacts artifacts: 'sonar_issues.json,llm_analysis.jsonl,gitlab_issues_created.json,diagnostic-report/diagnostic-report.html', fingerprint: true, allowEmptyArchive: true
     }
   }
 }

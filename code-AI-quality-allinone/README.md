@@ -26,6 +26,7 @@
 | Jenkins 기본 대상 프로젝트 | `01`~`05` 파이프라인 기본값이 모두 `nodegoat` 기준 |
 | 프로비저닝 결과 | Dify 관리자/모델/provider/workflow/dataset, Sonar 토큰, GitLab PAT, Jenkins Job 5개 자동 생성 (provision 재실행 시 동일명 App 삭제 후 재생성) |
 | P1 RAG 품질 개선 (2026-04-25) | §8.2 tree-sitter pass 2 (callers / test_paths 역인덱스), §8.4 `context_filter` Code 노드 (self-exclusion + 카테고리 섹션화), `build_kb_query` 가 `callees:` / `test_for:` 구조화 쿼리 라인 추가 |
+| **P1.5 효과 증폭 (2026-04-25 저녁)** | **KB 품질**: vendor/minified 제외, trivial/dup 청크 필터 (nodegoat 실측 147→27 청크, vendor 오염 제거). **test heuristic 확장**: mocha/jest 스타일 파일명 기반 test_for 후보 + is_test 쿼리 라인. **retrieval**: weighted_score 재정렬 (semantic 0.7 / keyword 0.3) + score_threshold=0.35. **context filter**: 청크 score 표기 + has_context boolean. **confidence 가드**: RAG 빈 경우 `confidence=low` + `context:empty` 라벨 강제. **진단 리포트**: 04 Jenkinsfile `RAG Diagnostic Report` 탭 신설 (per-이슈 버킷 상태 + LLM citation rate) |
 | 빌드 방식 | `DOCKER_BUILDKIT=1 docker build` (legacy builder, buildx 미사용). export/load tarball 단계 제거로 같은 캐시 상태에서 14.9GB 이미지 빌드 ≈ 1 분 |
 | 최근 실측 검증 | Jenkins `28080`, Dify `28081`, SonarQube `29000`, GitLab `28090` 정상 응답 확인 |
 
@@ -1088,7 +1089,16 @@ status: SUCCESS
 - 질의 예: `login function with error handling`
 - 기대: `src/auth.py::login` 청크가 상위 결과로 반환. §7.1 의 `session.check_session` 이 `login` 을 호출하는 관계도 함께 잡히면 RAG 건강.
 
-**④ 상태 파일 — 파이프라인 내부 메타**:
+**④ Jenkins Build 리포트 탭 (P1.5 신규)** — 빌드 페이지에서 바로 클릭:
+
+| 파이프라인 | 탭 이름 | 보는 목적 |
+| --- | --- | --- |
+| `02-코드-사전학습` 빌드 #N | **Pre-training Report** | KB **빌드** 품질: 청크 수, callers_links, vendor 노이즈 제거 효과, 언어/kind 분포, 샘플 청크 미리보기 |
+| `04-정적분석-결과분석-이슈등록` 빌드 #N | **RAG Diagnostic Report** | 이슈 분석 **품질**: 이슈당 context_filter 버킷 상태, **LLM citation rate** (LLM 이 실제로 RAG 결과 인용했는지), context:empty 발동률, retry exhausted 비율 |
+
+두 리포트는 **서로 다른 질문에 답합니다** — Pre-training 은 "KB 가 제대로 빌드됐는지", Diagnostic 은 "LLM 이 KB 를 실제로 활용했는지". §8.2.4.1 / §8.4.2.1 에서 각 카드 해석 가이드 참조.
+
+**⑤ 상태 파일 — 파이프라인 내부 메타**:
 
 ```bash
 # P1 이 만든 KB 매니페스트 (어느 커밋·몇 개 청크로 적재됐는지)
@@ -1636,7 +1646,16 @@ PY
 
 #### 8.2.2 Step 2 — tree-sitter AST 청킹 (`repo_context_builder.py`)
 
-레포를 순회하며 **언어별 구문 트리** 를 파싱해 함수/메서드/클래스 단위로 청크를 생성:
+레포를 순회하며 **언어별 구문 트리** 를 파싱해 함수/메서드/클래스 단위로 청크를 생성.
+
+**P1.5 KB 품질 필터** (2026-04-25):
+
+- **경로 기반 제외** — `EXCLUDE_DIRS` 에 `vendor`, `vendors`, `3rdparty`, `assets/vendor`, `bower_components` 등 번들 자산 디렉터리 추가. nodegoat 기준 bootstrap/raphael/morris 1자 심볼 (`e`, `m`, `a`) 오염 제거.
+- **파일명 기반 제외** — `*.min.js`, `*.bundle.js`, `chunk-<hash>.js`, `*.umd.js` 등 미니파이 산출물 정규식 필터.
+- **trivial chunk skip** — body 문자 수 `< 20` 또는 비-공백 라인 `< 2` 인 빈 껍데기 함수 제외. 환경변수 `REPO_CTX_MIN_BODY_CHARS`, `REPO_CTX_MIN_BODY_LINES` 로 튜닝.
+- **중복 청크 제거** — `(symbol, body_sha1)` 키로 레포 전역 dedup. vendor 복사본 / generated code 중복 방지.
+
+실측 nodegoat: 147 chunks → 27 chunks (80% 감소), callers_links 141 → 11 (거짓 동명 매칭 130건 제거).
 
 | 언어 | 확장자 | 추출 대상 노드 |
 |------|--------|-----------|
@@ -1723,9 +1742,13 @@ JSONL 각 라인 (= 1 청크) 을 **Dify 의 1 document** 로 업로드:
 
 P2/P3 가 이 파일로 KB freshness 를 검증합니다.
 
-#### 8.2.4.1 Pre-training Report (P1.5 신규 — `publishHTML` 탭)
+#### 8.2.4.1 Pre-training Report (KB **빌드** 지표 대시보드)
 
 Stage 2 의 `repo_context_builder.py` 가 `--report-html` 옵션으로 **self-contained HTML 리포트** 를 생성합니다 (`pretraining-report/pretraining-report.html`). Jenkinsfile 02 의 post 블록이 `publishHTML` 로 빌드 페이지에 "Pre-training Report" 탭을 만들어 주므로, 05 AI평가 의 Evaluation Summary 처럼 **해당 Jenkins Build 페이지에서 바로 클릭해 탐색** 할 수 있습니다.
+
+> **⚠ 용도 범위 명확화 (P1.5)**: 이 리포트는 **KB 빌드 품질** 지표입니다 — "tree-sitter pass 2 역인덱스가 채워졌는가, vendor 노이즈가 걸러졌는가, 지원 언어가 얼마나 커버됐는가" 를 숫자로 보여줍니다.
+>
+> **"Sonar 이슈 분석이 실제로 개선됐는가" 를 보려면 § 8.4.2.1 의 RAG Diagnostic Report 를 보세요.** Pre-training Report 는 "KB 가 빌드되긴 했다" 는 전제 조건 체크 — 이슈 분석 품질은 다른 리포트가 측정합니다.
 
 리포트에 들어가는 섹션:
 
@@ -1929,6 +1952,42 @@ outputs = {
 → 콘솔에 `[SKIP_LLM] {key}` 출력 + `out_row["llm_skipped"] = True`.
 
 결과물: `llm_analysis.jsonl` — 이슈당 1 줄 JSON (exporter 의 사실 정보 + LLM outputs 통합).
+
+#### 8.4.2.1 RAG Diagnostic Report (P1.5 — 이슈 분석 **품질** 지표)
+
+04 Jenkinsfile 의 `post { always }` 가 `diagnostic_report_builder.py` 로 `llm_analysis.jsonl` 을 집계해 **per-이슈 진단 리포트** 를 생성하고 `publishHTML` 로 "RAG Diagnostic Report" 탭을 띄웁니다.
+
+**상단 카드 지표** — 이슈 N 개에 대한 집계:
+
+| 카드 | 의미 |
+| --- | --- |
+| `total issues` | Sonar 이슈 총 수 (분석 대상) |
+| `LLM calls` | Dify 호출이 실제로 일어난 이슈 수 (skip_llm 제외) |
+| `callers bucket filled` | 이슈 중 **callers 청크를 최소 1개라도 받은 비율** — 낮으면 pass 2 역인덱스가 실 이슈와 매칭을 못 했다는 신호 |
+| `tests bucket filled` | 동일. test heuristic 한계 가시화 |
+| `others bucket filled` | fallback 매칭 비율 |
+| `avg citation rate` | **LLM 이 `impact_analysis_markdown` 에서 used_items 의 path/symbol 을 실제로 인용한 비율**. 이게 높을수록 RAG 정보가 답변에 녹아들었다는 뜻 — 낮으면 LLM 이 컨텍스트를 무시한 것 |
+| `context:empty` | C-3 가드가 발동한 이슈 비율 (RAG 가 비어서 confidence=low 강제) |
+| `retry exhausted` | 3회 재시도 후에도 빈 응답이 돌아온 이슈 비율 |
+
+**이슈별 상세** — 이슈마다 한 블록:
+
+- Severity / confidence / classification 뱃지
+- `retrieved / excluded_self / kept / used` 단계별 카운트
+- 버킷별 `used/total` (예: callers 3/4 = 4개 후보 중 3개 사용)
+- `used_items` 테이블: bucket · `path::symbol` · score · **cited?** (LLM 이 실제 인용했는지 ✓)
+- `impact_analysis_markdown` 접기 섹션
+
+**이 리포트가 Pre-training Report 와 다른 점**:
+
+| 측면 | Pre-training Report | RAG Diagnostic Report |
+| --- | --- | --- |
+| 대상 | KB 전체 (거시) | 이슈 하나하나 (미시) |
+| 측정 | 청크 수, callers_links, 언어 분포 | LLM 이 RAG 를 **얼마나 사용했는가** |
+| 언제 보나 | 파이프라인 01 직후 — "KB 빌드 OK?" | 파이프라인 04 직후 — "이슈 분석 품질 OK?" |
+| 실패 신호 | callers_links=0, orphan 90%+ | citation rate 5%↓, tests bucket 0%, retry exhausted 30%+ |
+
+> **해석 가이드**: 좋은 상태는 `callers bucket filled > 60%`, `avg citation rate > 30%`, `retry exhausted < 10%`. 이 값들이 악화되면 §8.2 의 KB 필터 / retrieval 가중치 / prompt 를 순서대로 의심하세요.
 
 #### 8.4.3 Stage (3) Create — `gitlab_issue_creator.py`
 

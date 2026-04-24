@@ -99,6 +99,10 @@ def build_kb_query(row):
         parts.append(f"function: {enclosing}")
         parts.append(f"callees: {enclosing}")
         parts.append(f"test_for: {enclosing}")
+    # P1.5 H-2 보완 — test_for 매칭이 실패해도 is_test=true 청크를 후보에 포함.
+    # nodegoat 같은 e2e/Cypress 테스트는 test_for 가 파일명 후보만 남아 애플리케이션
+    # 심볼과 직접 매칭이 어려우므로, 일반 플래그로 recall 확보.
+    parts.append("is_test: true")
     if rel_path:
         parts.append(f"path: {rel_path}")
     if rule_name:
@@ -154,14 +158,63 @@ def normalize_outputs(outputs: dict) -> dict:
     return out
 
 
+def _compute_citation(impact_md: str, used_items: list) -> dict:
+    """P1.5 M-2 — LLM 의 impact_analysis_markdown 이 used_items 중 어떤 청크를
+    실제로 인용했는지 계산.
+
+    heuristic: path 또는 symbol 문자열이 impact_md 에 substring 으로 등장하면
+    인용한 것으로 본다. code-like identifier 는 LLM 이 문법 그대로 복붙하는
+    경향이 강해 substring 이 충분한 신호.
+
+    반환: {"cited_count": int, "cited_items": [{...}, ...], "total_used": int}
+    """
+    impact = impact_md or ""
+    cited = []
+    for it in (used_items or []):
+        path = it.get("path") or ""
+        symbol = it.get("symbol") or ""
+        # path 또는 symbol 중 하나라도 impact_md 에 나타나면 인용
+        if (path and path in impact) or (symbol and symbol in impact):
+            cited.append({
+                "bucket": it.get("bucket"),
+                "path": path,
+                "symbol": symbol,
+                "score": it.get("score"),
+            })
+    return {
+        "cited_count": len(cited),
+        "cited_items": cited,
+        "total_used": len(used_items or []),
+    }
+
+
 def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln,
-                   commit_sha, rule, rule_detail, final_code, outputs, llm_skipped: bool):
+                   commit_sha, rule, rule_detail, final_code, outputs, llm_skipped: bool,
+                   context_stats: dict = None):
     """Step C — out_row 공통 빌더. Dify 성공 경로 / skip_llm 경로 모두 같은 포맷.
 
     creator 가 기대하는 사실 정보 passthrough + outputs (정규화된 8 필드) +
     Step B 에서 exporter 가 넣어둔 clustering/routing 필드도 보존.
+
+    P1.5 M-1/M-2: context_stats (context_filter 가 workflow 에서 집계해 올린
+    dict) 과 LLM 답변의 citation 분석 결과를 out_row 에 담는다. 후속 단계인
+    diagnostic_report_builder.py 가 이 필드를 읽어 per-이슈 진단 리포트를 생성.
     """
     normalized = normalize_outputs(outputs)
+    diagnostic = None
+    if context_stats is not None:
+        used = context_stats.get("used_items") or []
+        citation = _compute_citation(normalized.get("impact_analysis_markdown", ""), used)
+        diagnostic = {
+            "retrieved_total": context_stats.get("retrieved_total", 0),
+            "excluded_self": context_stats.get("excluded_self", 0),
+            "kept_total": context_stats.get("kept_total", 0),
+            "used_total": context_stats.get("used_total", 0),
+            "buckets": context_stats.get("buckets", {}),
+            "used_per_bucket": context_stats.get("used_per_bucket", {}),
+            "used_items": used,
+            "citation": citation,
+        }
     return {
         "sonar_issue_key": key,
         "severity": severity,
@@ -188,6 +241,9 @@ def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln
         "llm_skipped": llm_skipped,
         # LLM 생성 — 정규화된 8 필드 outputs
         "outputs": normalized,
+        # P1.5 M-1/M-2 — diagnostic_report_builder.py 가 읽어 HTML 렌더.
+        # skip_llm 경로에선 None (Dify 호출 없이 템플릿 응답).
+        "rag_diagnostic": diagnostic,
         "generated_at": int(time.time()),
     }
 
@@ -441,10 +497,16 @@ def main():
                     if res.get("data", {}).get("status") == "succeeded":
                         outputs = res["data"].get("outputs", {}) or {}
                         if (outputs.get("impact_analysis_markdown") or "").strip():
-                            # Step C — out_row 는 공통 헬퍼로 구성. outputs 는 8 필드
-                            # (title/labels/impact/fix + classification/fp_reason/confidence/diff)
-                            # 로 정규화되어 creator 가 기본값 안전 접근 가능.
                             rd = item.get("rule_detail", {}) or {}
+                            # P1.5 M-1 — context_filter 가 올린 stats JSON 파싱.
+                            # 실패 시 None → diagnostic 필드가 None 으로 기록.
+                            ctx_stats = None
+                            raw_stats = outputs.get("context_stats_json") or ""
+                            if raw_stats:
+                                try:
+                                    ctx_stats = json.loads(raw_stats)
+                                except Exception:
+                                    ctx_stats = None
                             out_row = _build_out_row(
                                 item=item, key=key, severity=severity, msg=msg,
                                 line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
@@ -452,6 +514,7 @@ def main():
                                 final_code=final_code,
                                 outputs=outputs,
                                 llm_skipped=False,
+                                context_stats=ctx_stats,
                             )
                             out_fp.write(json.dumps(out_row, ensure_ascii=False) + "\n")
                             success = True
@@ -474,12 +537,22 @@ def main():
                 # 마지막 빈 응답을 그대로 기록해 GitLab 이슈는 생성되도록 한다.
                 # creator 가 "LLM 이 영향 분석을 제공하지 않음" 폴백 텍스트로 렌더.
                 rd = item.get("rule_detail", {}) or {}
+                # P1.5 M-1/M-4 — retry 실패 경로에서도 context_filter 통계는 유효.
+                ctx_stats = None
+                raw_stats = last_outputs.get("context_stats_json") or ""
+                if raw_stats:
+                    try:
+                        ctx_stats = json.loads(raw_stats)
+                    except Exception:
+                        ctx_stats = None
                 out_row = _build_out_row(
                     item=item, key=key, severity=severity, msg=msg,
                     line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
                     commit_sha=commit_sha, rule=rule, rule_detail=rd,
                     final_code=final_code, outputs=last_outputs, llm_skipped=False,
+                    context_stats=ctx_stats,
                 )
+                out_row["retry_exhausted"] = True  # M-4 집계 키
                 out_fp.write(json.dumps(out_row, ensure_ascii=False) + "\n")
                 print(f"[FAIL-EMPTY] {key} — 3 retries exhausted with empty outputs; row written anyway", file=sys.stderr)
             else:
