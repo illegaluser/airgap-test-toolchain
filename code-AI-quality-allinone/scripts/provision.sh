@@ -536,89 +536,57 @@ print(items[0]['token'] if items else '')" 2>/dev/null || true)
 }
 
 # ─ Dify: Sonar Analyzer Workflow import → app_id ──────────────────────────
-# ─ Dify: 기존 workflow draft 의 knowledge-retrieval 노드에 dataset_id 주입 ─────
-# provision 재실행 race: workflow_app_id 캐시는 있는데 과거 실패로 dataset_ids 가
-# 비어 있는 상태 → GET draft → patch nodes → hash 포함 POST. import 함수와 분리해
-# 안전망으로 동작.
-dify_patch_workflow_dataset_id() {
-    local app_id="$1" dataset_id="$2"
-    [ -z "$app_id" ] || [ -z "$dataset_id" ] && return 0
-
-    mapfile -t _auth < <(_dify_auth_args)
-    local draft_file; draft_file=$(mktemp --suffix=.json)
-    curl -sS "$DIFY_URL/console/api/apps/$app_id/workflows/draft" "${_auth[@]}" -o "$draft_file" 2>/dev/null
-    [ ! -s "$draft_file" ] && { rm -f "$draft_file"; return 1; }
-
-    local needs_patch; needs_patch=$(DRAFT_FILE="$draft_file" python3 <<'PY' 2>/dev/null
-import json, os, sys
-d = json.load(open(os.environ["DRAFT_FILE"]))
-g = d.get("graph", {})
-for n in g.get("nodes", []):
-    dd = n.get("data", {})
-    if dd.get("type") == "knowledge-retrieval" and not dd.get("dataset_ids"):
-        print("yes"); sys.exit(0)
-print("no")
-PY
-)
-    if [ "$needs_patch" != "yes" ]; then
-        rm -f "$draft_file"
-        log "  Workflow dataset_ids 이미 주입됨 — skip"
-        return 0
-    fi
-
-    log "  Workflow draft 에 dataset_id fallback 주입 ($dataset_id)"
-    local payload_file; payload_file=$(mktemp --suffix=.json)
-    DRAFT_FILE="$draft_file" DATASET_ID="$dataset_id" python3 <<'PY' > "$payload_file"
-import json, os
-d = json.load(open(os.environ["DRAFT_FILE"]))
-g = d.get("graph", {})
-for n in g.get("nodes", []):
-    if n.get("data", {}).get("type") == "knowledge-retrieval":
-        n["data"]["dataset_ids"] = [os.environ["DATASET_ID"]]
-out = {
-    "graph": g,
-    "features": d.get("features", {}),
-    "environment_variables": d.get("environment_variables", []),
-    "conversation_variables": d.get("conversation_variables", []),
-    "hash": d.get("hash") or d.get("unique_hash"),
-}
-print(json.dumps(out))
-PY
-    rm -f "$draft_file"
-    local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/apps/$app_id/workflows/draft" \
-        "${_auth[@]}" -H "Content-Type: application/json" -d @"$payload_file" 2>/dev/null)
-    rm -f "$payload_file"
-    if echo "$resp" | grep -q '"result":"success"'; then
-        log "  Workflow dataset_id fallback 주입 완료"
-    else
-        warn "  Workflow fallback 주입 실패 — 응답: $(echo "$resp" | head -c 200)"
-        return 1
-    fi
-}
-
+# 정책: 매 provision 마다 동일명 App 을 전부 삭제 후 fresh import.
+# 이유:
+#   - Dify 는 동일 이름 App 중복 생성을 허용 (suffix 없이 같은 이름 다수 공존).
+#     state cache 유실/이미지 교체 후 재실행 시 workspace 에 구버전이 누적된다.
+#   - yaml 의 dataset_ids 를 import 시 주입하므로 draft patch fallback 은 불필요.
+#   - workspace 커스터마이즈는 provision 의 보호 대상이 아님 (초기 상태 보장 도구).
+# playwright-allinone/provision.sh 의 chatflow import 와 동일 패턴.
 dify_import_workflow() {
-    local dataset_id="${1:-}"  # Phase 1: knowledge-retrieval 노드의 dataset_ids 채우기
+    local dataset_id="${1:-}"
     local cached="$STATE_DIR/workflow_app_id"
-    if [ -f "$cached" ]; then
-        local existing_id; existing_id=$(cat "$cached")
-        # 캐시 히트 — 기존 draft 의 dataset_ids 비었으면 fallback 패치
-        [ -n "$dataset_id" ] && dify_patch_workflow_dataset_id "$existing_id" "$dataset_id" || true
-        echo "$existing_id"
-        return 0
-    fi
 
-    # Phase 1: YAML 의 `dataset_ids: []` 를 실제 dataset_id 로 치환하여 RAG 노드가
-    # 현재 워크스페이스의 code-context-kb 를 조회하도록 보장.
+    # 1. 임시 yaml 준비 + dataset_id 주입 (RAG 노드 활성화)
     local tmp_yaml; tmp_yaml=$(mktemp --suffix=.yaml)
     cp "$DIFY_ASSETS_DIR/sonar-analyzer-workflow.yaml" "$tmp_yaml"
     if [ -n "$dataset_id" ]; then
-        # sed 로 'dataset_ids: []' → 'dataset_ids: ["<id>"]' 치환.
-        # yaml 의 inline list 문법 사용 (Dify 가 array of string 파싱).
         sed -i.bak "s|dataset_ids: \[\]|dataset_ids: ['$dataset_id']|g" "$tmp_yaml"
         rm -f "${tmp_yaml}.bak"
         log "  Workflow yaml 에 dataset_id 주입: $dataset_id"
     fi
 
+    # 2. yaml 에서 app.name 추출 (동일명 검색 키)
+    local app_name; app_name=$(TMP_YAML="$tmp_yaml" python3 -c "
+import os, yaml
+with open(os.environ['TMP_YAML'], encoding='utf-8') as f:
+    d = yaml.safe_load(f)
+print((d.get('app') or {}).get('name', ''))
+" 2>/dev/null || true)
+
+    # 3. 동일명 기존 App 전부 삭제 (멱등 강제)
+    mapfile -t _auth < <(_dify_auth_args)
+    if [ -n "$app_name" ]; then
+        local existing; existing=$(curl -sS -G "$DIFY_URL/console/api/apps" \
+            --data-urlencode "page=1" --data-urlencode "limit=100" \
+            "${_auth[@]}" 2>/dev/null \
+            | APP_NAME="$app_name" python3 -c "
+import json, os, sys
+name = os.environ.get('APP_NAME', '')
+try:
+    d = json.load(sys.stdin)
+    print(' '.join(a['id'] for a in d.get('data', []) if a.get('name') == name))
+except Exception:
+    pass
+" 2>/dev/null || true)
+        for aid in $existing; do
+            log "  기존 동일명 App 삭제: $aid ($app_name)"
+            curl -sS -o /dev/null -X DELETE "$DIFY_URL/console/api/apps/$aid" \
+                "${_auth[@]}" 2>/dev/null || true
+        done
+    fi
+
+    # 4. fresh import
     local payload; payload=$(python3 <<PY
 import json
 with open("$tmp_yaml", encoding="utf-8") as f:
@@ -626,7 +594,6 @@ with open("$tmp_yaml", encoding="utf-8") as f:
 print(json.dumps({"mode": "yaml-content", "yaml_content": yc}))
 PY
 )
-    mapfile -t _auth < <(_dify_auth_args)
     local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/apps/imports" \
         "${_auth[@]}" \
         -H "Content-Type: application/json" \
@@ -634,6 +601,8 @@ PY
     rm -f "$tmp_yaml"
     local id; id=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('app_id') or d.get('id') or '')" 2>/dev/null || true)
     if [ -n "$id" ]; then
+        # 새 app 생성이므로 하위 state (publish, api key) 도 재생성 필요.
+        rm -f "$STATE_DIR/workflow_published.ok" "$STATE_DIR/workflow_api_key"
         echo "$id" > "$cached"
         log "  Workflow import: $id"
         echo "$id"
