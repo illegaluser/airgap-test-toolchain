@@ -88,6 +88,10 @@ done
 IMAGE_TAG="${IMAGE_TAG:-dscore.ttc.playwright:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-dscore.ttc.playwright}"
 DATA_VOLUME="${DATA_VOLUME:-dscore-data}"
+JENKINS_BASE_IMAGE="${JENKINS_BASE_IMAGE:-jenkins/jenkins:2.555.1-lts-jdk21}"
+DIFY_API_BASE_IMAGE="${DIFY_API_BASE_IMAGE:-langgenius/dify-api:1.13.3}"
+DIFY_WEB_BASE_IMAGE="${DIFY_WEB_BASE_IMAGE:-langgenius/dify-web:1.13.3}"
+DIFY_PLUGIN_BASE_IMAGE="${DIFY_PLUGIN_BASE_IMAGE:-langgenius/dify-plugin-daemon:0.5.3-local}"
 
 # TARGET_PLATFORM: 호스트 아키텍처를 자동 감지하되, env 로 override 가능.
 # "빌드 머신 OS/아키텍처 = 런타임 머신 OS/아키텍처" 가 기본 가정 (qemu 에뮬레이션 회피).
@@ -115,8 +119,8 @@ JENKINS_PLUGINS=(
   htmlpublisher
   plain-credentials
 )
-# JENKINS_VERSION 은 빌드 시점에 jenkins/jenkins:lts-jdk21 이미지에서 동적 추출.
-# (PoC 2026-04-19: 최신 플러그인들이 2.479.x 이상을 요구하므로 2.462.3 고정은 다운로드 실패를 유발)
+# Jenkins base 는 최신 LTS exact tag 로 고정한다.
+# 플러그인 매니저의 --jenkins-version 도 같은 이미지에서 직접 추출해 맞춘다.
 JENKINS_VERSION_OVERRIDE="${JENKINS_VERSION:-}"
 JENKINS_PLUGIN_MANAGER_URL="https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.13.2/jenkins-plugin-manager-2.13.2.jar"
 
@@ -143,6 +147,11 @@ docker buildx version >/dev/null 2>&1 || err "docker buildx 가 필요합니다 
 
 log "빌드 대상: $IMAGE_TAG (platform=$TARGET_PLATFORM)"
 log "출력 파일: $OUTPUT_TAR"
+log "최신 런타임 핀:"
+log "  Jenkins       = $JENKINS_BASE_IMAGE"
+log "  Dify API      = $DIFY_API_BASE_IMAGE"
+log "  Dify Web      = $DIFY_WEB_BASE_IMAGE"
+log "  Dify Plugin   = $DIFY_PLUGIN_BASE_IMAGE"
 
 # ── 1. Jenkins 플러그인 hpi 다운로드 (의존성 재귀 해결) ──────────────────
 # 기본 정책: jenkins-plugins/ 에 파일이 이미 있으면 **네트워크 접근 없이 재사용**.
@@ -176,12 +185,12 @@ else
 
   log "  플러그인 목록: ${JENKINS_PLUGINS[*]}"
 
-  # 빌드 머신에서 실제 사용할 Jenkins 버전 추출 (jenkins/jenkins:lts-jdk21 현재 태그)
+  # 빌드 머신에서 실제 사용할 Jenkins 버전 추출 (고정된 최신 LTS tag 기준)
   if [ -n "$JENKINS_VERSION_OVERRIDE" ]; then
     JENKINS_VERSION_DETECTED="$JENKINS_VERSION_OVERRIDE"
   else
-    log "  jenkins/jenkins:lts-jdk21 버전 동적 추출 중..."
-    JENKINS_VERSION_DETECTED=$(docker run --rm --entrypoint java jenkins/jenkins:lts-jdk21 \
+    log "  $JENKINS_BASE_IMAGE 버전 동적 추출 중..."
+    JENKINS_VERSION_DETECTED=$(docker run --rm --entrypoint java "$JENKINS_BASE_IMAGE" \
       -jar /usr/share/jenkins/jenkins.war --version 2>/dev/null | head -n1 | tr -d '\r')
   fi
   [ -z "$JENKINS_VERSION_DETECTED" ] && err "Jenkins 버전 추출 실패 — JENKINS_VERSION 환경변수로 명시"

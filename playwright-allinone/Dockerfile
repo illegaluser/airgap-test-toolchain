@@ -48,14 +48,14 @@ FROM langgenius/dify-plugin-daemon:0.5.3-local AS dify-plugin-src
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3: 최종 런타임 — Jenkins LTS (JDK 21) 기반에 모든 서비스 패키지를 추가
 # ─────────────────────────────────────────────────────────────────────────────
-FROM jenkins/jenkins:lts-jdk21
+FROM jenkins/jenkins:2.555.1-lts-jdk21
 
 USER root
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Seoul
 
 # -- PostgreSQL 15 공식 apt repo (pgdg) 등록 --
-# PoC 2026-04-19: jenkins/jenkins:lts-jdk21 base 는 Debian 13 (trixie) 이고
+# PoC 2026-04-24: jenkins/jenkins:2.555.1-lts-jdk21 base 는 Debian 13 (trixie) 이고
 # 기본 apt 에는 postgresql-17 만 있음 → Dify 1.13.3 공식 지원 버전 (15) 와
 # 불일치하므로 snapshot 휴대가 불가능. pgdg 공식 repo 를 추가해 15 사용.
 RUN apt-get update && apt-get install -y --no-install-recommends \
