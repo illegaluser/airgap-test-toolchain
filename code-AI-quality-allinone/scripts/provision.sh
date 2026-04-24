@@ -356,6 +356,16 @@ dify_register_ollama_provider() {
     local payload
     # Dify 1.13 custom model 등록은 /models/credentials 엔드포인트. /models 는 load-balancing
     # 전용이며 200 을 반환하지만 실제 모델은 등록되지 않음.
+    # context_size/max_tokens 상향 이유:
+    #   - gemma4:e4b (thinking 모델) 은 <think>...</think> reasoning 에 수천 토큰을
+    #     먼저 쓴 뒤 JSON 응답을 생성한다. max_tokens=4096 이하로는 </think> 가
+    #     나오기 전에 잘려 JSON 파싱이 불가능 (관찰: sonar-analyzer workflow 의
+    #     json_parser 가 parse_status=thinking_unterminated / json_decode_error).
+    #   - Ollama plugin 은 credential 의 max_tokens 를 num_predict 상한으로 강제
+    #     하므로 (provider 코드 llm.py 의 use_template max=credentials.max_tokens),
+    #     credential 자체를 올려야 workflow 의 completion_params.max_tokens 도
+    #     16384 로 설정 가능.
+    #   - gemma3n:e4b 계열 32K context → context_size=32768 가 안전 상한.
     payload=$(python3 <<PY
 import json
 print(json.dumps({
@@ -364,8 +374,8 @@ print(json.dumps({
     "credentials": {
         "base_url": "$OLLAMA_BASE_URL",
         "mode": "chat",
-        "context_size": "8192",
-        "max_tokens": "4096"
+        "context_size": "32768",
+        "max_tokens": "16384"
     },
     "name": "$OLLAMA_MODEL-default"
 }))

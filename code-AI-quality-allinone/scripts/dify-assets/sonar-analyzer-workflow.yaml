@@ -413,7 +413,13 @@ workflow:
             mode: chat
             completion_params:
               temperature: 0.1
-              max_tokens: 2048
+              # gemma4:e4b (thinking 모델) 은 <think>...</think> reasoning 에
+              # 2000~3000 토큰을 먼저 쓴다. 원래 2048 로는 </think> 가 나오기
+              # 전에 잘려 JSON 생성 자체가 불가능 → 100% json_decode_error.
+              # 16384 로 상향: gemma3n:e4b 의 32K context 중 input(프롬프트
+              # +RAG context) ≈ 2~3K 이므로 output 16K 까지 안정적으로 받음.
+              # 모델은 필요한 만큼만 생성 후 멈추므로 낭비 아님 — 상한만 확보.
+              max_tokens: 16384
           prompt_template:
             - role: system
               text: |
@@ -537,7 +543,19 @@ workflow:
                 에도 "context:empty" 태그로 반영해 downstream (GitLab Issue
                 creator) 이 시각적으로 구분 가능.
 
-                반환: 기존 8개 필드 + context_stats_json (M-1 진단 리포트용).
+                반환: 기존 8개 필드 + context_stats_json (M-1 진단 리포트용) +
+                      llm_text_preview + parse_status (빈 outputs 원인 분석용).
+
+                parse_status 값:
+                  ok                 — JSON 파싱 성공, 8개 필드 중 최소
+                                       impact_analysis_markdown 채워짐
+                  parsed_but_empty   — JSON 파싱 성공했으나 impact_analysis_markdown 비어있음
+                                       (모델이 스키마만 반환, 내용 생략)
+                  no_json_block      — 텍스트에 `{...}` 패턴 자체가 없음
+                                       (모델이 순수 markdown / 자유 서술로 응답)
+                  json_decode_error  — `{...}` 는 있으나 json.loads 실패
+                                       (쉼표/따옴표 깨짐, 또는 max_tokens 초과로 잘림)
+                  empty_llm_text     — LLM 이 빈 문자열 반환 (timeout / 모델 에러)
                 """
                 import json, re
                 defaults = {
@@ -550,18 +568,148 @@ workflow:
                     "confidence": "medium",
                     "suggested_diff": "",
                 }
-                s = (llm_text or "").strip()
-                s = re.sub(r'^```(?:json)?\s*', '', s, flags=re.MULTILINE)
-                s = re.sub(r'\s*```\s*$', '', s, flags=re.MULTILINE)
+                raw = llm_text or ""
+                s = raw.strip()
+
+                # 진단용 preview — 앞 600자 / 뒤 200자 (잘림 여부 판별).
+                # 너무 길면 Dify UI 렌더 부담 → 안전 상한 1000자.
+                if len(raw) <= 1000:
+                    preview = raw
+                else:
+                    preview = raw[:600] + f"\n...[truncated {len(raw) - 800} chars]...\n" + raw[-200:]
+
+                parse_status = "ok"
+                if not s:
+                    parse_status = "empty_llm_text"
+
+                # thinking_unterminated 사전 감지 — `<think>` 만 있고 `</think>`
+                # 가 없으면 max_tokens 부족 신호. 아래 strip 에서 버려지긴 하지만
+                # 근본 원인을 parse_status 로 구분해야 운영자가 max_tokens 상향
+                # 필요성을 바로 알 수 있다.
+                has_open_think = bool(re.search(r'<think>', raw, flags=re.IGNORECASE))
+                has_close_think = bool(re.search(r'</think>', raw, flags=re.IGNORECASE))
+                if parse_status == "ok" and has_open_think and not has_close_think:
+                    parse_status = "thinking_unterminated"
+
+                # Thinking 모델 (gemma3n:e4b / qwen / deepseek-r1 계열) 은
+                # `<think> ... </think>` reasoning block 을 JSON 앞뒤로 뱉는다.
+                # 이 안에 `{` 가 섞여 있으면 아래 greedy `\{[\s\S]*\}` 가
+                # thinking 블록부터 잡아 json.loads 가 100% 실패한다.
+                # (측정: gemma4:e4b 의 empty outputs 전체가 이 패턴 — preview 로
+                #  `<think>` prefix 확인됨.) 선제거가 근본 해법.
+                # 1) 정상적으로 종료된 블록 제거 (여러 개도 커버 non-greedy 반복).
+                s = re.sub(r'<think>[\s\S]*?</think>', '', s, flags=re.IGNORECASE)
+                # 2) max_tokens 소진으로 `</think>` 를 못 뱉은 케이스.
+                #    `<think>` 이후 끝까지를 통째로 버린다. JSON 은 thinking
+                #    *뒤에* 와야 하므로, `</think>` 가 안 보이는 순간 그 뒤에
+                #    유효 JSON 이 있을 가능성은 0 (모델이 reasoning 중단되어
+                #    답을 못 냈다). 버려도 손실 없음.
+                s = re.sub(r'<think>[\s\S]*$', '', s, flags=re.IGNORECASE)
+                s = s.strip()
+                # 코드펜스 제거 — 앞/뒤 모두. 기존 MULTILINE 은 라인-끝 앵커만
+                # 맞으므로 문자열 전체의 closing fence 를 못 잡는 사각지대가
+                # 있었다. 단순화: 첫 번째 ```json / ``` prefix 제거 + 뒤쪽 ```
+                # 제거 (DOTALL 없이도 정확).
+                s = re.sub(r'^\s*```(?:json)?\s*', '', s)
+                s = re.sub(r'\s*```\s*$', '', s)
                 m = re.search(r'\{[\s\S]*\}', s)
                 if m:
                     s = m.group(0)
+                elif parse_status == "ok":
+                    parse_status = "no_json_block"
+
+                # gemma4:e4b 이 긴 문자열 값 (suggested_diff / impact_*) 를 낼 때
+                # JSON 스펙을 자주 어긴다. 관찰된 2가지 패턴:
+                #
+                # (1) Raw control char inside string:
+                #     "suggested_diff": "abc
+                #          +  def"                  → Invalid control character
+                #
+                # (2) Invalid backslash escape (regex rule 에서 자주 발생):
+                #     "message": "Use '\d' instead" → Invalid \escape at '\d'
+                #     JSON 은 "\"\\/bfnrt\" 또는 \uXXXX 만 허용 — 그 외 \X 는 불법.
+                #     javascript:S6353 같은 regex 룰의 메시지·diff 에 `\d` `\s`
+                #     `\w` 가 자주 섞여 나와 파싱을 깨뜨린다.
+                #
+                # 아래 상태기계는 두 케이스 모두 수정:
+                #   in-string + raw \n\r\t  → \n \r \t 로 escape
+                #   in-string + `\` + INVALID → `\\` 로 doubling (리터럴 백슬래시화)
+                #   in-string + `\` + VALID  → 그대로 통과
+                def _fix_json_string_escapes(text):
+                    VALID_ESC = set('"\\/bfnrt')
+                    HEX = set('0123456789abcdefABCDEF')
+                    out = []
+                    in_str = False
+                    i = 0
+                    n = len(text)
+                    while i < n:
+                        ch = text[i]
+                        if not in_str:
+                            out.append(ch)
+                            if ch == '"':
+                                in_str = True
+                            i += 1
+                            continue
+                        # inside string
+                        if ch == '"':
+                            in_str = False
+                            out.append(ch)
+                            i += 1
+                            continue
+                        if ch == "\n":
+                            out.append("\\n"); i += 1; continue
+                        if ch == "\r":
+                            out.append("\\r"); i += 1; continue
+                        if ch == "\t":
+                            out.append("\\t"); i += 1; continue
+                        if ch == "\\":
+                            if i + 1 >= n:
+                                # 마지막 바이트가 \ — doubling
+                                out.append("\\\\"); i += 1; continue
+                            nxt = text[i + 1]
+                            if nxt in VALID_ESC:
+                                out.append(ch); out.append(nxt); i += 2; continue
+                            if nxt == "u":
+                                # \uXXXX — 4개 hex 확인
+                                if i + 5 < n and all(c in HEX for c in text[i + 2:i + 6]):
+                                    out.append(text[i:i + 6]); i += 6; continue
+                                # \u 인데 뒤 4자 hex 아님 → doubling
+                                out.append("\\\\"); out.append(nxt); i += 2; continue
+                            # invalid escape (\d \s \w \p \. \( 등) → doubling
+                            out.append("\\\\"); out.append(nxt); i += 2; continue
+                        out.append(ch); i += 1
+                    return "".join(out)
+
+                parse_error_msg = ""
                 try:
-                    o = json.loads(s)
+                    o = json.loads(s) if s else {}
                     if not isinstance(o, dict):
                         o = {}
-                except Exception:
-                    o = {}
+                        if parse_status == "ok":
+                            parse_status = "json_decode_error"
+                            parse_error_msg = "not a JSON object"
+                except Exception as first_err:
+                    # 1차 실패 — control char + invalid escape fixup 후 재시도
+                    try:
+                        fixed = _fix_json_string_escapes(s)
+                        o = json.loads(fixed)
+                        if not isinstance(o, dict):
+                            o = {}
+                            if parse_status == "ok":
+                                parse_status = "json_decode_error"
+                                parse_error_msg = "not a JSON object (after fixup)"
+                        else:
+                            # 2차 성공 — 라벨로 표시
+                            parse_error_msg = f"fixed: {type(first_err).__name__}: {first_err}"
+                    except Exception as second_err:
+                        o = {}
+                        if parse_status == "ok":
+                            parse_status = "json_decode_error"
+                            parse_error_msg = (
+                                f"first: {type(first_err).__name__}: {first_err} | "
+                                f"after_fixup: {type(second_err).__name__}: {second_err}"
+                            )
+
                 out = dict(defaults)
                 for k in defaults:
                     v = o.get(k)
@@ -575,6 +723,10 @@ workflow:
                 if not isinstance(out["labels"], list):
                     out["labels"] = []
 
+                # parsed_but_empty: JSON 파싱은 성공했지만 핵심 필드가 빈 경우
+                if parse_status == "ok" and not (out.get("impact_analysis_markdown") or "").strip():
+                    parse_status = "parsed_but_empty"
+
                 # C-3: has_context=false 면 confidence 자동 다운그레이드
                 if not has_context:
                     out["confidence"] = "low"
@@ -583,6 +735,13 @@ workflow:
 
                 # M-1 진단용 passthrough — End 노드가 그대로 반환, analyzer.py 가 수집
                 out["context_stats_json"] = context_stats_json or ""
+                # 빈 outputs 원인 분석용 — analyzer.py 가 empty 감지 시 stderr 덤프
+                out["llm_text_preview"] = preview
+                out["parse_status"] = parse_status
+                # parse_error_msg — json.loads 실패 시 구체 예외 문자열.
+                # "Invalid control character at ...", "Expecting ',' delimiter" 등
+                # 실패 지점을 즉시 식별 가능.
+                out["parse_error_msg"] = parse_error_msg
                 return out
           outputs:
             title:
@@ -602,6 +761,12 @@ workflow:
             suggested_diff:
               type: string
             context_stats_json:
+              type: string
+            llm_text_preview:
+              type: string
+            parse_status:
+              type: string
+            parse_error_msg:
               type: string
 
       # ────────────────────────────────────────────────────────────────────
@@ -663,4 +828,21 @@ workflow:
               value_selector:
                 - json_parser
                 - context_stats_json
+              value_type: string
+            # 빈 outputs 원인 분석용 — LLM 원문 preview + 파싱 상태 코드.
+            # impact_analysis_markdown 가 비어 돌아올 때 analyzer.py 가 stderr 에 덤프.
+            - variable: llm_text_preview
+              value_selector:
+                - json_parser
+                - llm_text_preview
+              value_type: string
+            - variable: parse_status
+              value_selector:
+                - json_parser
+                - parse_status
+              value_type: string
+            - variable: parse_error_msg
+              value_selector:
+                - json_parser
+                - parse_error_msg
               value_type: string
