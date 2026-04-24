@@ -22,6 +22,12 @@ ALLINONE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TAG="${TAG:-dev}"
 IMAGE="${IMAGE:-ttc-allinone:wsl2-${TAG}}"
 PLATFORM="linux/amd64"
+JENKINS_BASE_IMAGE="${JENKINS_BASE_IMAGE:-jenkins/jenkins:2.555.1-lts-jdk21}"
+SONARQUBE_BASE_IMAGE="${SONARQUBE_BASE_IMAGE:-sonarqube:26.4.0.121862-community}"
+DIFY_API_BASE_IMAGE="${DIFY_API_BASE_IMAGE:-langgenius/dify-api:1.13.3}"
+DIFY_WEB_BASE_IMAGE="${DIFY_WEB_BASE_IMAGE:-langgenius/dify-web:1.13.3}"
+DIFY_PLUGIN_BASE_IMAGE="${DIFY_PLUGIN_BASE_IMAGE:-langgenius/dify-plugin-daemon:0.5.3-local}"
+GITLAB_RUNTIME_IMAGE="${GITLAB_RUNTIME_IMAGE:-gitlab/gitlab-ce:18.11.0-ce.0}"
 
 cd "$ALLINONE_DIR"
 
@@ -55,6 +61,13 @@ echo "[build-wsl2] image:      $IMAGE"
 echo "[build-wsl2] platform:   $PLATFORM"
 echo "[build-wsl2] context:    $ALLINONE_DIR"
 echo "[build-wsl2] Dockerfile: $ALLINONE_DIR/Dockerfile"
+echo "[build-wsl2] pinned bases:"
+echo "  Jenkins   = $JENKINS_BASE_IMAGE"
+echo "  SonarQube = $SONARQUBE_BASE_IMAGE"
+echo "  Dify API  = $DIFY_API_BASE_IMAGE"
+echo "  Dify Web  = $DIFY_WEB_BASE_IMAGE"
+echo "  Dify Plug = $DIFY_PLUGIN_BASE_IMAGE"
+echo "  GitLab    = $GITLAB_RUNTIME_IMAGE"
 
 docker buildx inspect ttc-allinone-builder >/dev/null 2>&1 || \
     docker buildx create --name ttc-allinone-builder --use
