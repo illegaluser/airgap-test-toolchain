@@ -2486,6 +2486,36 @@ docker exec ttc-allinone pip show tree-sitter | grep Version
 `dify_publish_workflow` 실패. 수동 publish:
 - Dify Studio → Sonar Issue Analyzer → 우측 상단 **Publish** 버튼.
 
+### 12.6.1 02 Stage 3 Upload 가 첫 청크 외 모두 HTTP 500 — Dify 1.13.3 SQLAlchemy bug
+
+**증상**: 사전학습 파이프라인의 `3. Upload Context` 에서 첫 청크는 SUCCESS, 그 후 모든 청크가 같은 자리에서 `HTTP 500 - {"message":"Internal Server Error","code":"unknown","status":500}` 로 실패. 3회 retry 모두 동일 에러.
+
+**원인**: Dify 1.13.3 의 dataset 모델 `hit_count` property (`/opt/dify-api/api/models/dataset.py:586`) 가 SQLAlchemy `db.session.scalar(...)` cache_key 생성 도중 `'async for' requires an iterator with __anext__ method, got method` TypeError 를 일으킴. 첫 청크 indexing background task 가 dataset 객체 상태를 변경한 직후 후속 호출의 SQLAlchemy session 이 corrupt 됨. 우리 코드 무관 — Dify 자체 버그.
+
+**자동 회복**: Jenkinsfile 02 Stage 3 가 1차 시도에서 `[Upload:FAIL]` 라인을 감지하면 `supervisorctl restart dify-api` 후 자동 재시도. 별도 조치 불필요.
+
+**수동 회복** (자동 회복도 실패한 경우):
+
+```bash
+# dify-api 재시작 (SQLAlchemy session pool flush)
+docker exec ttc-allinone supervisorctl -c /etc/supervisor/supervisord.conf restart dify-api
+
+# 60s 대기 후 상태 확인
+sleep 30
+docker exec ttc-allinone curl -sf http://127.0.0.1:5001/console/api/setup && echo OK
+
+# Jenkins 02 파이프라인 재실행 — Stage 1 부터 다시 (clone+청크 재생성).
+```
+
+**진단 명령**:
+
+```bash
+# 최근 traceback 확인
+docker exec ttc-allinone bash -c 'awk "/Traceback/{flag=1} flag{print} /^$/&&flag{flag=0;print \"---\"}" /data/logs/dify-api.log | tail -50'
+```
+
+**근본 해결**: Dify 1.13.4+ 로 업그레이드 (오프라인 번들 재구성 필요) 또는 Dify 측 patch.
+
 ### 12.7 GitLab 계속 `(health: starting)`
 
 arm64 이미지의 reconfigure 는 5-10분. 정상.
