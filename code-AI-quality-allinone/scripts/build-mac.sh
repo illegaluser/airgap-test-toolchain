@@ -5,7 +5,11 @@
 # 빌드 컨텍스트: 이 폴더 자체 (자체 완결).
 # Dockerfile 위치: 이 폴더의 Dockerfile
 # 결과 이미지: ttc-allinone:mac-<tag>
-# arm64 가 기본이며, --amd64 플래그 로 Rosetta 경유 amd64 빌드 가능.
+#
+# Apple Silicon 의 native arch (linux/arm64) 로 legacy builder 가 빌드한다.
+# buildx 는 사용하지 않는다 — 멀티플랫폼 manifest 를 운영하지 않고, WSL2 는
+# build-wsl2.sh 에서 각자 native 로 빌드하므로 buildx 의 export→load 오버헤드
+# (14GB tarball 직렬화, 수십 분 소요) 가 순수 낭비였다.
 #
 # 빌드 전 선행: bash scripts/download-plugins.sh
 # ============================================================================
@@ -16,19 +20,12 @@ ALLINONE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TAG="${TAG:-dev}"
 IMAGE="${IMAGE:-ttc-allinone:mac-${TAG}}"
-PLATFORM="linux/arm64"
 JENKINS_BASE_IMAGE="${JENKINS_BASE_IMAGE:-jenkins/jenkins:2.555.1-lts-jdk21}"
 SONARQUBE_BASE_IMAGE="${SONARQUBE_BASE_IMAGE:-sonarqube:26.4.0.121862-community}"
 DIFY_API_BASE_IMAGE="${DIFY_API_BASE_IMAGE:-langgenius/dify-api:1.13.3}"
 DIFY_WEB_BASE_IMAGE="${DIFY_WEB_BASE_IMAGE:-langgenius/dify-web:1.13.3}"
 DIFY_PLUGIN_BASE_IMAGE="${DIFY_PLUGIN_BASE_IMAGE:-langgenius/dify-plugin-daemon:0.5.3-local}"
 GITLAB_RUNTIME_IMAGE="${GITLAB_RUNTIME_IMAGE:-gitlab/gitlab-ce:18.11.0-ce.0}"
-
-for arg in "$@"; do
-    case "$arg" in
-        --amd64) PLATFORM="linux/amd64"; shift ;;
-    esac
-done
 
 cd "$ALLINONE_DIR"
 
@@ -50,7 +47,6 @@ if [ ! -d "$ALLINONE_DIR/dify-plugins" ] || [ -z "$(ls -A "$ALLINONE_DIR/dify-pl
 fi
 
 echo "[build-mac] image:      $IMAGE"
-echo "[build-mac] platform:   $PLATFORM"
 echo "[build-mac] context:    $ALLINONE_DIR"
 echo "[build-mac] Dockerfile: $ALLINONE_DIR/Dockerfile"
 echo "[build-mac] pinned bases:"
@@ -61,15 +57,9 @@ echo "  Dify Web  = $DIFY_WEB_BASE_IMAGE"
 echo "  Dify Plug = $DIFY_PLUGIN_BASE_IMAGE"
 echo "  GitLab    = $GITLAB_RUNTIME_IMAGE"
 
-docker buildx inspect ttc-allinone-builder >/dev/null 2>&1 || \
-    docker buildx create --name ttc-allinone-builder --use
-
-docker buildx build \
-    --builder ttc-allinone-builder \
-    --platform "$PLATFORM" \
+DOCKER_BUILDKIT=1 docker build \
     -f "$ALLINONE_DIR/Dockerfile" \
     -t "$IMAGE" \
-    --load \
     "$@" \
     "$ALLINONE_DIR"
 
