@@ -4,14 +4,14 @@ pipeline {
     parameters {
         string(
             name: 'SONAR_PROJECT_KEY',
-            defaultValue: 'dscore-ttc-sample',
-            description: 'SonarQube Project Key (예: dscore-ttc-sample)'
+            defaultValue: 'nodegoat',
+            description: 'SonarQube Project Key (예: nodegoat)'
         )
 
         string(
             name: 'GITLAB_PROJECT_PATH',
-            defaultValue: 'root/dscore-ttc-sample',
-            description: 'GitLab Project Path (예: root/dscore-ttc-sample)'
+            defaultValue: 'root/nodegoat',
+            description: 'GitLab Project Path (예: root/nodegoat)'
         )
 
         string(

@@ -11,7 +11,7 @@
 #   E. Dify Sonar Analyzer Workflow import
 #   F. Dify API Key 발급 (Dataset, Workflow)
 #   G. GitLab root PAT 발급 via REST API
-#   H. GitLab 샘플 프로젝트(dscore-ttc-sample) 자동 생성 + 초기 push
+#   H. GitLab 샘플 프로젝트(nodegoat) 자동 생성 + 초기 push
 #   I. Jenkins Credentials 자동 주입
 #       - dify-dataset-id
 #       - dify-knowledge-key
@@ -55,10 +55,12 @@ GITLAB_URL="${GITLAB_URL_INTERNAL:-http://gitlab:80}"
 GITLAB_ROOT_PASSWORD="${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}"
 PROVISION_SAMPLE_PROJECT="${PROVISION_SAMPLE_PROJECT:-true}"
 SAMPLE_PROJECT_NAMESPACE="${SAMPLE_PROJECT_NAMESPACE:-root}"
-SAMPLE_PROJECT_NAME="${SAMPLE_PROJECT_NAME:-dscore-ttc-sample}"
-SAMPLE_PROJECT_PATH="${SAMPLE_PROJECT_PATH:-dscore-ttc-sample}"
+SAMPLE_PROJECT_NAME="${SAMPLE_PROJECT_NAME:-nodegoat}"
+SAMPLE_PROJECT_PATH="${SAMPLE_PROJECT_PATH:-nodegoat}"
 SAMPLE_PROJECT_VISIBILITY="${SAMPLE_PROJECT_VISIBILITY:-private}"
 SAMPLE_PROJECT_BRANCH="${SAMPLE_PROJECT_BRANCH:-main}"
+SAMPLE_PROJECT_TEMPLATE_DIR="${SAMPLE_PROJECT_TEMPLATE_DIR:-/opt/sample-projects/nodegoat}"
+SAMPLE_PROJECT_SOURCE_URL="${SAMPLE_PROJECT_SOURCE_URL:-https://github.com/OWASP/NodeGoat.git}"
 
 SONAR_URL="${SONAR_URL:-http://127.0.0.1:9000}"
 SONAR_ADMIN_NEW_PASSWORD="${SONAR_ADMIN_NEW_PASSWORD:-TtcAdmin!2026}"
@@ -90,7 +92,6 @@ jenkins_job_exists() {
 jenkins_create_pipeline_job() {
     local name="$1" jenkinsfile="$2"
     [ ! -f "$jenkinsfile" ] && { warn "Jenkinsfile 없음: $jenkinsfile — $name 건너뜀"; return 0; }
-    jenkins_job_exists "$name" && { log "  Job 이미 존재: $name"; return 0; }
 
     local encoded tmp_xml rc=0
     encoded=$(urlencode "$name")
@@ -115,6 +116,15 @@ PY
 
     local crumb; crumb=$(jenkins_crumb)
     [ -z "$crumb" ] && { warn "  crumb 획득 실패 — $name 등록 스킵"; rm -f "$tmp_xml"; return 1; }
+
+    if jenkins_job_exists "$name"; then
+        curl -sS -f -o /dev/null -X POST \
+            -u "$JENKINS_USER:$JENKINS_PASSWORD" \
+            -H "$crumb" \
+            "$JENKINS_URL/job/$encoded/doDelete" \
+            || { warn "  기존 Job 삭제 실패: $name"; rm -f "$tmp_xml"; return 1; }
+        log "  기존 Job 삭제 후 재생성: $name"
+    fi
 
     curl -sS -f -o /dev/null -X POST \
         -u "$JENKINS_USER:$JENKINS_PASSWORD" \
@@ -728,7 +738,7 @@ gitlab_issue_root_pat() {
 
 gitlab_ensure_sample_project() {
     local pat="$1"
-    local state="$STATE_DIR/sample_project.ok"
+    local state="$STATE_DIR/sample_project_${SAMPLE_PROJECT_PATH}.ok"
     local full_path="${SAMPLE_PROJECT_NAMESPACE}/${SAMPLE_PROJECT_PATH}"
     local encoded_full_path
     encoded_full_path=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$full_path")
@@ -808,44 +818,38 @@ gitlab_ensure_sample_project() {
 
     local workdir remote_url
     workdir=$(mktemp -d)
-    mkdir -p "$workdir/src"
+    if [ -d "$SAMPLE_PROJECT_TEMPLATE_DIR" ]; then
+        cp -R "$SAMPLE_PROJECT_TEMPLATE_DIR"/. "$workdir"/
+        rm -rf "$workdir/.git"
+        log "  샘플 프로젝트 템플릿 복사: $SAMPLE_PROJECT_TEMPLATE_DIR"
+    elif [ -n "$SAMPLE_PROJECT_SOURCE_URL" ]; then
+        log "  샘플 프로젝트 원격 clone: $SAMPLE_PROJECT_SOURCE_URL"
+        git clone --depth 1 --branch "$SAMPLE_PROJECT_BRANCH" \
+            "$SAMPLE_PROJECT_SOURCE_URL" "$workdir" >/dev/null 2>&1 || {
+            warn "  샘플 프로젝트 원격 clone 실패: $SAMPLE_PROJECT_SOURCE_URL"
+            rm -rf "$workdir"
+            return 1
+        }
+        rm -rf "$workdir/.git"
+    else
+        warn "  샘플 프로젝트 템플릿/원격 소스 모두 없음"
+        rm -rf "$workdir"
+        return 1
+    fi
 
-    cat > "$workdir/src/auth.py" <<'PY'
-"""Simple authentication helpers."""
-import hashlib, os
-
-def hash_password(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-def verify_password(raw: str, stored: str) -> bool:
-    return hash_password(raw) == stored
-
-def login(username: str, password: str, user_store: dict) -> bool:
-    try:
-        stored = user_store[username]
-        return verify_password(password, stored)
-    except:  # noqa: E722 — Sonar python:S5754 CRITICAL
-        return False
-PY
-
-    cat > "$workdir/src/session.py" <<'PY'
-"""Session helpers that call login() — RAG 가 호출 관계를 잡아내는지 확인용."""
-from src.auth import login
-
-def check_session(token: str, user_store: dict) -> bool:
-    if not token or ":" not in token:
-        return False
-    user, pw = token.split(":", 1)
-    return login(user, pw, user_store)
-PY
-
-    : > "$workdir/src/__init__.py"
+    if [ ! -f "$workdir/package.json" ]; then
+        warn "  샘플 프로젝트 템플릿 검증 실패 — package.json 없음"
+        rm -rf "$workdir"
+        return 1
+    fi
 
     cat > "$workdir/sonar-project.properties" <<CFG
 sonar.projectKey=$SAMPLE_PROJECT_PATH
 sonar.projectName=$SAMPLE_PROJECT_NAME
-sonar.sources=src
-sonar.python.version=3.11
+sonar.sources=app,config,server.js
+sonar.tests=test
+sonar.test.inclusions=test/**/*.js
+sonar.exclusions=**/node_modules/**,**/artifacts/**,**/.github/**,**/cypress/**
 sonar.sourceEncoding=UTF-8
 CFG
 
