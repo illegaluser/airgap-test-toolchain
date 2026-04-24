@@ -368,9 +368,8 @@ def main():
             "enclosing_function": enclosing_fn,
             "enclosing_lines": enclosing_ln,
             "commit_sha": commit_sha,
-            # 재시도 힌트 — attempt 0 은 빈 문자열, 재시도 단계마다 프롬프트 강화.
+            # retry_hint 는 아래 retry 루프에서 attempt 마다 갱신.
             # 워크플로우의 LLM user 프롬프트 끝에 {{#start.retry_hint#}} 로 삽입됨.
-            "retry_hint": "",
         }
 
         # 디버깅용: 실제로 전송되는 코드 내용을 확인합니다.
@@ -388,8 +387,9 @@ def main():
         # --- 3-e. API 호출 및 재시도 로직 ---
         # 최대 3회 시도하며, 실패 시 2초 대기 후 재시도합니다.
         # LLM 추론 과부하나 일시적 네트워크 문제에 대한 내결함성을 확보합니다.
-        # Dify 가 `succeeded` 를 반환해도 parameter-extractor 가 핵심 필드를 빈 채로
-        # 내보내는 플레이키 케이스가 있어 impact_analysis_markdown 비면 재시도로 간주.
+        # Dify 가 `succeeded` 를 반환해도 LLM 본체가 빈/비-JSON 응답을 내뱉어
+        # Code 노드의 default fallback 으로 떨어진 경우 핵심 필드가 비므로
+        # impact_analysis_markdown 비면 재시도로 간주.
         success = False
         last_outputs = None
         # 재시도 힌트 — attempt index 별로 escalating.
@@ -404,13 +404,13 @@ def main():
                 "반드시 비지 않게 채우세요."
             ),
             (
-                "**[재시도 2 — 최후]** 출력은 다음 뼈대를 그대로 복사하고 "
-                "값만 이슈 내용에 맞게 바꾸세요. 필드 삭제·추가 금지, "
-                "코드펜스 금지:\n"
+                "**[재시도 2 — 최후]** 출력은 다음 뼈대를 그대로 복사하되, "
+                "**값 안의 `...` 는 placeholder 이므로 반드시 실제 이슈 내용으로 교체**하세요. "
+                "`...` 를 그대로 두면 안 됩니다. 필드 삭제·추가 금지, 코드펜스 금지:\n"
                 "{\n"
-                '  "title": "...",\n'
-                '  "labels": ["..."],\n'
-                '  "impact_analysis_markdown": "...",\n'
+                '  "title": "<실제 한줄 요약>",\n'
+                '  "labels": ["<severity>", "<type>"],\n'
+                '  "impact_analysis_markdown": "<3~6줄 영향 분석>",\n'
                 '  "suggested_fix_markdown": "",\n'
                 '  "classification": "true_positive",\n'
                 '  "fp_reason": "",\n'
@@ -421,7 +421,6 @@ def main():
         ]
         for i in range(3):
             inputs["retry_hint"] = retry_hints[i]
-            payload["inputs"] = inputs
             status, body = send_dify_request(target_api_url, args.dify_api_key, payload)
 
             if status == 200:

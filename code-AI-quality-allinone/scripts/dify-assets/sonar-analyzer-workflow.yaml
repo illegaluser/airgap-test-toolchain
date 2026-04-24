@@ -336,7 +336,9 @@ workflow:
                 # 선행 prose 와 코드펜스 제거
                 s = re.sub(r'^```(?:json)?\s*', '', s, flags=re.MULTILINE)
                 s = re.sub(r'\s*```\s*$', '', s, flags=re.MULTILINE)
-                # 첫 번째 balanced {...} 블록 추출 (가장 바깥 중괄호부터 매칭)
+                # 첫 `{` 부터 마지막 `}` 까지 greedy 매칭 (balanced 매칭 아님).
+                # LLM 이 본문 뒤에 두 번째 객체를 출력하면 둘을 묶어 파싱 실패할 수
+                # 있으나, 그 경우 try/except → defaults 로 안전 fallback.
                 m = re.search(r'\{[\s\S]*\}', s)
                 if m:
                     s = m.group(0)
@@ -348,7 +350,7 @@ workflow:
                     o = {}
                 out = dict(defaults)
                 for k in defaults:
-                    v = o.get(k) if isinstance(o, dict) else None
+                    v = o.get(k)
                     if v is None:
                         continue
                     # classification 은 빈 문자열 무시 (기본값 유지)
