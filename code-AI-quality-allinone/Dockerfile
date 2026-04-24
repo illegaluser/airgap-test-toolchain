@@ -115,6 +115,12 @@ RUN sed -i 's|"plugin_unique_identifier": plugin_unique_identifier|"PluginUnique
     /opt/dify-api/api/core/plugin/impl/plugin.py && \
     grep -c 'PluginUniqueIdentifier' /opt/dify-api/api/core/plugin/impl/plugin.py
 
+# Dify 1.13.3 — dataset.hit_count SQLAlchemy cache_key bug workaround.
+# 상세 주석은 scripts/patches/dify_hit_count_bypass.py 헤더 참조. Dify 1.13.4+
+# 에서 공식 fix 배포되면 patch 파일 + 이 COPY/RUN 2 줄 제거.
+COPY scripts/patches/dify_hit_count_bypass.py /opt/ttc-patches/dify_hit_count_bypass.py
+RUN python3 /opt/ttc-patches/dify_hit_count_bypass.py
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dify 서비스 런타임 보강 (Python 3.12 + Node.js 22)
 # → pip install 보다 먼저 심볼릭을 걸어 /usr/local/bin/python3 = python3.12 로 고정.
