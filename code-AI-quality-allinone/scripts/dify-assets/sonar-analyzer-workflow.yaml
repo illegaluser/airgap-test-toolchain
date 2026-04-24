@@ -29,8 +29,8 @@
 # 이전 `description_markdown` (자유서술 5섹션) 은 제거 — 위치/코드/룰 설명은
 # creator 가 사실 정보로 렌더하고, LLM 은 해석 필요한 두 섹션에만 집중.
 #
-# 모델: 호스트 Ollama gemma4:e4b (기본). 다른 모델은 llm/extractor 노드의
-# model.name 을 일괄 치환.
+# 모델: 호스트 Ollama gemma4:e4b (기본). 변경 시 llm_analyzer 노드의
+# model.name 1곳만 수정 (json_parser 는 Code 노드라 LLM 아님).
 # =============================================================================
 
 kind: app
@@ -76,24 +76,24 @@ workflow:
           sourceType: knowledge-retrieval
           targetType: llm
 
-      - id: edge-llm-to-extractor
+      - id: edge-llm-to-parser
         source: llm_analyzer
         sourceHandle: source
-        target: extractor
+        target: json_parser
         targetHandle: target
         type: custom
         data:
           sourceType: llm
-          targetType: parameter-extractor
+          targetType: code
 
-      - id: edge-extractor-to-end
-        source: extractor
+      - id: edge-parser-to-end
+        source: json_parser
         sourceHandle: source
         target: end
         targetHandle: target
         type: custom
         data:
-          sourceType: parameter-extractor
+          sourceType: code
           targetType: end
 
     nodes:
@@ -160,6 +160,11 @@ workflow:
               type: text-input
               required: false
               max_length: 64
+            - variable: retry_hint
+              label: Retry Hint
+              type: paragraph
+              required: false
+              max_length: 2000
 
       # ────────────────────────────────────────────────────────────────────
       # Knowledge Retrieval — code-context-kb (bge-m3 hybrid) 에서 top_k=6 조회
@@ -279,6 +284,8 @@ workflow:
                 위 정보를 바탕으로 JSON 응답만 생성하세요.
                 impact_analysis_markdown 과 suggested_fix_markdown 에 집중하고,
                 위치·코드·룰 설명은 반복하지 마세요.
+
+                {{#start.retry_hint#}}
           context:
             enabled: true
             variable_selector:
@@ -288,66 +295,89 @@ workflow:
             enabled: false
 
       # ────────────────────────────────────────────────────────────────────
-      # Parameter Extractor — LLM 응답에서 3개 필드 추출
+      # Code 노드 — LLM 출력 문자열에서 JSON 을 deterministic 하게 파싱.
+      # 이전 parameter-extractor (LLM 재호출) 은 gemma4:e4b 가 스키마 붕괴를
+      # 일으켜 빈 outputs 로 status=succeeded 를 내뱉는 사각지대가 있었고
+      # (로그에서 58 건 중 ~30% 가 3 회 retry 소진 후 FAIL-EMPTY), 2단 LLM
+      # 파이프라인의 실패율이 누적되는 구조였다. 본 Code 노드는 LLM 응답을
+      # 재해석하지 않고 json.loads 로만 파싱하므로 LLM 변동성이 제거되고
+      # `status=succeeded` 가 실제 구조화 성공과 일치한다. 파싱 실패 시
+      # classification=true_positive / confidence=medium 등 안전 기본값을
+      # 채워 creator 가 KeyError 없이 작동하도록 보장.
       # ────────────────────────────────────────────────────────────────────
-      - id: extractor
+      - id: json_parser
         type: custom
         position:
           x: 880
           y: 200
         data:
-          type: parameter-extractor
-          title: GitLab Issue 필드 추출
-          model:
-            provider: ollama
-            name: gemma4:e4b
-            mode: chat
-            completion_params:
-              temperature: 0.0
-              max_tokens: 2048
-          query:
-            - llm_analyzer
-            - text
-          parameters:
-            - name: title
+          type: code
+          title: JSON 파싱 (deterministic)
+          variables:
+            - variable: llm_text
+              value_selector:
+                - llm_analyzer
+                - text
+          code_language: python3
+          code: |
+            def main(llm_text: str) -> dict:
+                import json, re
+                defaults = {
+                    "title": "",
+                    "labels": [],
+                    "impact_analysis_markdown": "",
+                    "suggested_fix_markdown": "",
+                    "classification": "true_positive",
+                    "fp_reason": "",
+                    "confidence": "medium",
+                    "suggested_diff": "",
+                }
+                s = (llm_text or "").strip()
+                # 선행 prose 와 코드펜스 제거
+                s = re.sub(r'^```(?:json)?\s*', '', s, flags=re.MULTILINE)
+                s = re.sub(r'\s*```\s*$', '', s, flags=re.MULTILINE)
+                # 첫 번째 balanced {...} 블록 추출 (가장 바깥 중괄호부터 매칭)
+                m = re.search(r'\{[\s\S]*\}', s)
+                if m:
+                    s = m.group(0)
+                try:
+                    o = json.loads(s)
+                    if not isinstance(o, dict):
+                        o = {}
+                except Exception:
+                    o = {}
+                out = dict(defaults)
+                for k in defaults:
+                    v = o.get(k) if isinstance(o, dict) else None
+                    if v is None:
+                        continue
+                    # classification 은 빈 문자열 무시 (기본값 유지)
+                    if k == "classification" and v == "":
+                        continue
+                    out[k] = v
+                # labels 정규화
+                if isinstance(out["labels"], str):
+                    out["labels"] = [out["labels"]] if out["labels"] else []
+                if not isinstance(out["labels"], list):
+                    out["labels"] = []
+                return out
+          outputs:
+            title:
               type: string
-              required: true
-              description: '한줄 요약 제목 (80자 이내)'
-            - name: labels
+            labels:
               type: array[string]
-              required: true
-              description: 'GitLab 라벨 배열 (최소 severity + type)'
-            - name: impact_analysis_markdown
+            impact_analysis_markdown:
               type: string
-              required: true
-              description: '영향 분석 markdown (3~6줄, 헤딩 없음). 호출 관계·테스트·관행.'
-            - name: suggested_fix_markdown
+            suggested_fix_markdown:
               type: string
-              required: false
-              description: '수정 제안 markdown (코드펜스 1개). 명확한 수정안이 없으면 빈 문자열.'
-            - name: classification
+            classification:
               type: string
-              required: false
-              description: 'true_positive | false_positive | wont_fix 중 하나. 빈 문자열 가능 — analyzer 가 기본값 true_positive 로 fallback.'
-            - name: fp_reason
+            fp_reason:
               type: string
-              required: false
-              description: 'classification=false_positive 일 때 1~2줄 이유. 아니면 빈 문자열.'
-            - name: confidence
+            confidence:
               type: string
-              required: false
-              description: 'high | medium | low. 본 판정에 대한 확신도.'
-            - name: suggested_diff
+            suggested_diff:
               type: string
-              required: false
-              description: 'unified diff 문자열. 없으면 빈 문자열.'
-          reasoning_mode: prompt
-          instruction: |
-            위 LLM 응답에서 아래 8개 필드를 추출하여 구조화된 파라미터로 반환하세요:
-              title, labels, impact_analysis_markdown, suggested_fix_markdown,
-              classification, fp_reason, confidence, suggested_diff
-            원본 값을 가공하지 말 것. 특히 suggested_fix_markdown / suggested_diff /
-            fp_reason 이 빈 문자열이면 그대로 빈 문자열로 반환 (억지로 채우지 말 것).
 
       # ────────────────────────────────────────────────────────────────────
       # End — 4개 출력 (title, labels, impact_analysis_markdown, suggested_fix_markdown)
@@ -364,41 +394,41 @@ workflow:
           outputs:
             - variable: title
               value_selector:
-                - extractor
+                - json_parser
                 - title
               value_type: string
             - variable: labels
               value_selector:
-                - extractor
+                - json_parser
                 - labels
               value_type: array[string]
             - variable: impact_analysis_markdown
               value_selector:
-                - extractor
+                - json_parser
                 - impact_analysis_markdown
               value_type: string
             - variable: suggested_fix_markdown
               value_selector:
-                - extractor
+                - json_parser
                 - suggested_fix_markdown
               value_type: string
             - variable: classification
               value_selector:
-                - extractor
+                - json_parser
                 - classification
               value_type: string
             - variable: fp_reason
               value_selector:
-                - extractor
+                - json_parser
                 - fp_reason
               value_type: string
             - variable: confidence
               value_selector:
-                - extractor
+                - json_parser
                 - confidence
               value_type: string
             - variable: suggested_diff
               value_selector:
-                - extractor
+                - json_parser
                 - suggested_diff
               value_type: string

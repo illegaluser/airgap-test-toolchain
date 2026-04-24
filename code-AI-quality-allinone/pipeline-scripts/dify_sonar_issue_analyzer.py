@@ -368,6 +368,9 @@ def main():
             "enclosing_function": enclosing_fn,
             "enclosing_lines": enclosing_ln,
             "commit_sha": commit_sha,
+            # 재시도 힌트 — attempt 0 은 빈 문자열, 재시도 단계마다 프롬프트 강화.
+            # 워크플로우의 LLM user 프롬프트 끝에 {{#start.retry_hint#}} 로 삽입됨.
+            "retry_hint": "",
         }
 
         # 디버깅용: 실제로 전송되는 코드 내용을 확인합니다.
@@ -389,7 +392,36 @@ def main():
         # 내보내는 플레이키 케이스가 있어 impact_analysis_markdown 비면 재시도로 간주.
         success = False
         last_outputs = None
+        # 재시도 힌트 — attempt index 별로 escalating.
+        # 1차: 기본 시스템 프롬프트만. 2차: JSON 엄격 재강조. 3차: 최소 뼈대 복사 지시.
+        # 4B 모델이 첫 시도에서 스키마 붕괴 시 동일 프롬프트 반복은 효과 낮음.
+        retry_hints = [
+            "",
+            (
+                "**[재시도 1]** 이전 응답이 JSON 스키마를 충족하지 못했습니다. "
+                "이번엔 **JSON 객체 하나만** 출력하세요. 코드펜스 / 설명 문장 금지. "
+                "최소 `title`, `labels`, `impact_analysis_markdown` 3 필드는 "
+                "반드시 비지 않게 채우세요."
+            ),
+            (
+                "**[재시도 2 — 최후]** 출력은 다음 뼈대를 그대로 복사하고 "
+                "값만 이슈 내용에 맞게 바꾸세요. 필드 삭제·추가 금지, "
+                "코드펜스 금지:\n"
+                "{\n"
+                '  "title": "...",\n'
+                '  "labels": ["..."],\n'
+                '  "impact_analysis_markdown": "...",\n'
+                '  "suggested_fix_markdown": "",\n'
+                '  "classification": "true_positive",\n'
+                '  "fp_reason": "",\n'
+                '  "confidence": "medium",\n'
+                '  "suggested_diff": ""\n'
+                "}"
+            ),
+        ]
         for i in range(3):
+            inputs["retry_hint"] = retry_hints[i]
+            payload["inputs"] = inputs
             status, body = send_dify_request(target_api_url, args.dify_api_key, payload)
 
             if status == 200:
