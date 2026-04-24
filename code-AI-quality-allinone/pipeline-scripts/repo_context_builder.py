@@ -101,6 +101,90 @@ LANG_CONFIG = {
         },
         "name_field": "name",
     },
+    # P2 H-3 — 추가 언어. tree_sitter_languages 패키지가 모두 포함.
+    # callees 추출은 collect_callees() 가 언어별 분기를 가지므로 새 언어는
+    # 기본적으로 callees=[] 로 작동 (호출 그래프는 추후 확장). symbol/청크
+    # 자체 매칭은 즉시 작동.
+    ".go": {
+        "lang": "go",
+        "node_types": {
+            "function_declaration": "function",
+            "method_declaration": "method",
+            "type_declaration": "type",
+        },
+        "name_field": "name",
+    },
+    ".rs": {
+        "lang": "rust",
+        "node_types": {
+            "function_item": "function",
+            "impl_item": "impl",
+            "struct_item": "struct",
+            "enum_item": "enum",
+            "trait_item": "trait",
+        },
+        "name_field": "name",
+    },
+    ".cs": {
+        "lang": "c_sharp",
+        "node_types": {
+            "method_declaration": "method",
+            "constructor_declaration": "method",
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "struct_declaration": "struct",
+            "enum_declaration": "enum",
+        },
+        "name_field": "name",
+    },
+    ".kt": {
+        "lang": "kotlin",
+        "node_types": {
+            "function_declaration": "function",
+            "class_declaration": "class",
+            "object_declaration": "object",
+        },
+        "name_field": "simple_identifier",
+    },
+    ".c": {
+        "lang": "c",
+        "node_types": {
+            "function_definition": "function",
+        },
+        "name_field": "declarator",  # function_definition.declarator → identifier
+    },
+    ".h": {
+        "lang": "c",
+        "node_types": {
+            "function_definition": "function",
+        },
+        "name_field": "declarator",
+    },
+    ".cpp": {
+        "lang": "cpp",
+        "node_types": {
+            "function_definition": "function",
+            "class_specifier": "class",
+            "struct_specifier": "struct",
+        },
+        "name_field": "declarator",
+    },
+    ".hpp": {
+        "lang": "cpp",
+        "node_types": {
+            "function_definition": "function",
+            "class_specifier": "class",
+        },
+        "name_field": "declarator",
+    },
+    ".cc": {
+        "lang": "cpp",
+        "node_types": {
+            "function_definition": "function",
+            "class_specifier": "class",
+        },
+        "name_field": "declarator",
+    },
 }
 
 
@@ -211,6 +295,80 @@ def get_symbol_name(node, name_field: str):
         if ch.type == "identifier":
             return ch.text.decode("utf-8", errors="replace")
     return None
+
+
+# P2 K-4 — leading docstring / comment 추출.
+# 정렬된 결과를 청크 metadata 에 `doc:` 라인으로 실어 BM25 가 자연어 의도까지
+# 토큰화하도록 한다. 코드 식별자만으로는 약했던 dense retrieval 의 의미 매칭 보완.
+_COMMENT_NODE_TYPES = {
+    "comment", "line_comment", "block_comment", "doc_comment",
+    "shebang_line",
+}
+
+
+def extract_leading_doc(node, lang: str, source: bytes) -> str:
+    """함수 정의 위쪽의 연속 comment 또는 Python docstring 을 한 줄로 요약.
+
+    - Python: 함수 body 첫 statement 가 string literal 이면 docstring.
+    - 기타 언어: 함수 정의 노드 직전 sibling 들 중 연속 comment 노드 텍스트
+      를 위→아래 순으로 수집.
+    """
+    if lang == "python":
+        body = node.child_by_field_name("body")
+        if body is not None and body.child_count > 0:
+            first = body.children[0]
+            if first.type == "expression_statement" and first.child_count > 0:
+                expr = first.children[0]
+                if expr.type == "string":
+                    raw = source[expr.start_byte:expr.end_byte].decode("utf-8", errors="replace")
+                    return _normalize_doc_text(raw)
+
+    collected = []
+    cur = node.prev_sibling
+    # 연속 comment + 빈 줄(파서가 sibling 으로 보지 않는 whitespace 는 자동) 만 인정.
+    while cur is not None and cur.type in _COMMENT_NODE_TYPES:
+        collected.append(source[cur.start_byte:cur.end_byte].decode("utf-8", errors="replace"))
+        cur = cur.prev_sibling
+    if not collected:
+        return ""
+    collected.reverse()
+    return _normalize_doc_text("\n".join(collected))
+
+
+def _normalize_doc_text(raw: str) -> str:
+    """주석 마커 / Javadoc leading * / Python triple-quote 제거 + 공백 정리.
+
+    상한 200자. 줄바꿈은 공백으로 (footer 한 줄로 들어감).
+    """
+    s = raw.strip()
+    # Python triple-quote 처리
+    for q in ('"""', "'''"):
+        if s.startswith(q):
+            s = s[len(q):]
+        if s.endswith(q):
+            s = s[: -len(q)]
+    cleaned = []
+    for line in s.splitlines():
+        ln = line.strip()
+        # 블록 주석 마커
+        if ln.startswith("/**"):
+            ln = ln[3:]
+        elif ln.startswith("/*"):
+            ln = ln[2:]
+        if ln.endswith("*/"):
+            ln = ln[:-2]
+        # Javadoc leading *
+        ln = ln.lstrip("* \t")
+        # 라인 주석
+        for prefix in ("///", "//!", "//", "###", "##", "#"):
+            if ln.startswith(prefix):
+                ln = ln[len(prefix):]
+                break
+        ln = ln.strip()
+        if ln:
+            cleaned.append(ln)
+    text = " ".join(cleaned).strip()
+    return text[:200]
 
 
 def walk_symbols(node, node_types: dict):
@@ -347,6 +505,11 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             code = code[:30000] + "\n# ... [truncated]\n"
 
         test_for = guess_test_for(rel_path, symbol)
+        # P2 K-4 — leading docstring/comment 추출 (실패해도 빈 문자열로 안전)
+        try:
+            doc = extract_leading_doc(node, cfg["lang"], source)
+        except Exception:
+            doc = ""
         chunks.append({
             "path": rel_path,
             "symbol": symbol,
@@ -358,12 +521,9 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             "callers": [],          # pass 2 에서 채움
             "callees": collect_callees(node, cfg["lang"]),
             "test_paths": [],       # pass 2 에서 채움 (대상 심볼 기준)
-            # P1.5 H-1 — is_test 는 위치 기반으로 결정. test_for (대상 심볼명)
-            # 가 None 이어도 테스트 파일 안의 청크는 is_test=true 가 되어야
-            # build_kb_query 의 "test_for: {fn}" 쿼리 외에도 전역 "is_test: true"
-            # 쿼리로 접근 가능하다.
             "is_test": is_test_location(rel_path),
             "test_for": test_for,
+            "doc": doc,             # P2 K-4 — leading docstring/comment (200자 cap)
         })
 
     return chunks

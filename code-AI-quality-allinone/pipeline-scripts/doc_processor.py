@@ -617,6 +617,7 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     test_paths = chunk.get("test_paths") or []
     test_for = chunk.get("test_for") or ""
     is_test = bool(chunk.get("is_test"))
+    doc = (chunk.get("doc") or "").strip()
 
     name = f"{path}::{symbol}"
     # Dify document name 길이 제한 대비 (100자 내외)
@@ -637,6 +638,10 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     ]
     if commit_sha:
         meta_lines.append(f"commit_sha: {commit_sha[:12]}")
+    if doc:
+        # P2 K-4 — leading docstring/comment. 자연어 의도가 BM25/dense 양쪽
+        # 임베딩에 노출되어 코드 식별자만으로는 약한 의미 매칭 보완.
+        meta_lines.append(f"doc: {doc}")
     if is_test:
         meta_lines.append("is_test: true")
     if test_for:

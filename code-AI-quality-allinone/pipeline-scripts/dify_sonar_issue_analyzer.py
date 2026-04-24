@@ -63,22 +63,78 @@ def truncate_text(text, max_chars=1000):
     if len(text) <= max_chars: return text
     return text[:max_chars] + "... (Rule Truncated)"
 
-def build_kb_query(row):
+def hyde_expand(row, ollama_base_url: str, ollama_model: str, timeout: int = 60) -> str:
+    """P2 R-3 — Hypothetical Document Embedding (간소화).
+
+    Sonar 이슈를 한 문장 자연어 검색 쿼리로 변환해 kb_query 의 보조 라인으로
+    추가. 임베딩 공간에서 dense 매칭이 약했던 케이스 (코드 식별자만으로는
+    의미 매칭 어려운 룰) 의 retrieval recall 을 보강.
+
+    호출 비용 (gemma4:e4b 약 30~60s) 때문에 일반 케이스에 매번 호출하지 않고
+    analyzer 의 최종 retry (attempt=2) 에서만 활용. 호출 실패 시 빈 문자열
+    반환 — kb_query 가 평소처럼 작동.
+    """
+    if not ollama_base_url:
+        return ""
+    rule_detail = row.get("rule_detail", {}) or {}
+    prompt = (
+        "Sonar 정적분석 이슈를 한 문장 자연어 검색 쿼리로 바꿔라. "
+        "코드 식별자 그대로 두고, 동작/의도 위주로 50자 내. 다른 설명 금지.\n\n"
+        f"Rule: {row.get('sonar_rule_key','')} - {rule_detail.get('name','')}\n"
+        f"Function: {row.get('enclosing_function','')}\n"
+        f"File: {row.get('relative_path','')}\n"
+        f"Message: {row.get('sonar_message','')}\n\n"
+        "답:"
+    )
+    try:
+        import urllib.request
+        body = json.dumps({
+            "model": ollama_model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 80},
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{ollama_base_url.rstrip('/')}/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            text = (data.get("response") or "").strip()
+            # 첫 줄 + 300자 cap
+            return text.splitlines()[0].strip()[:300] if text else ""
+    except Exception as e:
+        print(f"   [HyDE WARN] Ollama 호출 실패: {e}", file=sys.stderr)
+        return ""
+
+
+def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
     """P1 — 구조화 multi-query kb_query 구성.
 
-    이슈 발생 함수 (enclosing_function) 를 축으로 BM25 검색 면적을 다음과 같이 넓힌다.
-    doc_processor 가 각 청크 text footer 에 `callees: ...`, `callers: ...`,
-    `test_for: ...`, `path: ...` 같은 구조화 metadata 라인을 박아 두기 때문에
-    동일 prefix 쿼리가 metadata 측에 매칭된다.
+    P2 R-4: attempt 별 variation — 동일 쿼리를 3회 반복하던 기존 retry 로직의
+    효율을 끌어올리기 위해, 매번 다른 모양의 쿼리를 보낸다. 같은 KB 에 대해
+    검색 신호를 다양화하면 누적 recall 이 단일 쿼리보다 높다는 multi-query
+    retrieval 의 직관에 기반.
 
-    쿼리 라인 구성:
-      1) 이슈 라인 근처 코드 창 (`>>` 마커 앞뒤 3~4줄) — 자연어/코드 dense 매칭
-      2) function: enclosing_function                — symbol 자체 매칭
-      3) callees: enclosing_function                 — 이 함수를 "부르는" caller 청크
-                                                       (callees 목록에 해당 이름 포함)
-      4) test_for: enclosing_function                — 이 함수를 테스트하는 청크
-      5) path: relative_path                         — 같은 파일 청크 보조 매칭
-      6) rule name                                   — 룰 관련 similar pattern
+    attempt=0 (기본 — 풀 구조화):
+      1) 이슈 라인 근처 코드 창 (`>>` 마커 앞뒤 3~4줄)
+      2) function: enclosing_function
+      3) callees: enclosing_function   — caller 정의 청크 유도
+      4) test_for: enclosing_function  — test 청크 유도
+      5) is_test: true                 — test 청크 일반 매칭
+      6) path: relative_path
+      7) rule name
+
+    attempt=1 (자연어 중심):
+      1) rule name + 짧은 sonar_message — 의미 매칭 가중
+      2) function: enclosing_function
+      3) path: relative_path
+
+    attempt=2 (식별자 중심):
+      1) enclosing_function 만 — symbol 정확 일치 BM25
+      2) callees: enclosing_function
+      3) callers: enclosing_function
     """
     snippet = row.get("code_snippet", "") or ""
     lines = snippet.splitlines()
@@ -93,15 +149,39 @@ def build_kb_query(row):
     rel_path = row.get("relative_path", "") or ""
     rule_detail = row.get("rule_detail", {}) or {}
     rule_name = rule_detail.get("name") or row.get("sonar_rule_key", "") or ""
+    sonar_msg = row.get("sonar_message", "") or ""
 
+    if attempt == 1:
+        parts = []
+        if rule_name:
+            parts.append(rule_name)
+        if sonar_msg:
+            parts.append(sonar_msg[:300])
+        if enclosing:
+            parts.append(f"function: {enclosing}")
+        if rel_path:
+            parts.append(f"path: {rel_path}")
+        return "\n".join([p for p in parts if p])
+
+    if attempt == 2:
+        parts = []
+        if enclosing:
+            parts.append(enclosing)
+            parts.append(f"callees: {enclosing}")
+            parts.append(f"callers: {enclosing}")
+        elif rule_name:
+            parts.append(rule_name)
+        # P2 R-3 — HyDE 자연어 보강 (analyzer 가 호스트 Ollama 호출 결과 주입)
+        if hyde_text:
+            parts.append(hyde_text)
+        return "\n".join([p for p in parts if p])
+
+    # 기본 (attempt=0) — 풀 구조화
     parts = [window]
     if enclosing:
         parts.append(f"function: {enclosing}")
         parts.append(f"callees: {enclosing}")
         parts.append(f"test_for: {enclosing}")
-    # P1.5 H-2 보완 — test_for 매칭이 실패해도 is_test=true 청크를 후보에 포함.
-    # nodegoat 같은 e2e/Cypress 테스트는 test_for 가 파일명 후보만 남아 애플리케이션
-    # 심볼과 직접 매칭이 어려우므로, 일반 플래그로 recall 확보.
     parts.append("is_test: true")
     if rel_path:
         parts.append(f"path: {rel_path}")
@@ -301,6 +381,13 @@ def main():
     parser.add_argument("--response-mode", default="")       # 응답 모드 (미사용, 하위 호환)
     parser.add_argument("--timeout", type=int, default=0)    # 타임아웃 (미사용, 하위 호환)
     parser.add_argument("--print-first-errors", type=int, default=0)  # 에러 출력 수 제한
+    # P2 R-3 — HyDE (간소화). attempt=2 일 때만 호스트 Ollama 로 한 줄 자연어
+    # 변환 호출해 kb_query 에 추가. 빈 값이면 비활성. 일반 케이스 (1차 성공)
+    # 에는 영향 0, 마지막 retry 에서만 부담.
+    parser.add_argument("--hyde-ollama-base-url", default="",
+                        help="Ollama base URL (예: http://host.docker.internal:11434). 빈 값 = HyDE off")
+    parser.add_argument("--hyde-ollama-model", default="gemma4:e4b",
+                        help="HyDE 변환에 사용할 Ollama 모델")
     # Step R 신규 — creator 가 deterministic 본문 렌더에 쓸 commit 정보 전달용.
     # 비어있으면 out_row 의 commit_sha 도 빈 문자열 (creator 가 commit 섹션 생략).
     parser.add_argument("--commit-sha", default="")
@@ -419,13 +506,14 @@ def main():
         # Step R: exporter 가 추출한 enclosing_function / enclosing_lines /
         # commit_sha 를 LLM 에 추가 힌트로 전달 (프롬프트에 "위치 사실은 별도
         # 렌더되므로 본문에 반복하지 말 것" 명시).
-        kb_query = build_kb_query(item)
+        # 초기 kb_query 는 attempt=0 (풀 구조화). 재시도 시 build_kb_query(item, attempt=i)
+        # 로 다른 모양의 쿼리로 변경 — P2 R-4.
         inputs = {
             "sonar_issue_key": key,
             "sonar_project_key": project,
             "code_snippet": final_code,
             "sonar_issue_url": item.get("sonar_issue_url", ""),
-            "kb_query": kb_query,
+            "kb_query": build_kb_query(item, attempt=0),
             "sonar_issue_json": safe_issue_json,
             "sonar_rule_json": safe_rule_json,
             # Step R 신규 inputs
@@ -488,6 +576,15 @@ def main():
         ]
         for i in range(3):
             inputs["retry_hint"] = retry_hints[i]
+            # P2 R-3 — attempt=2 (마지막 retry) 에 한해 HyDE 자연어 변환 호출.
+            # 이전 attempt 에서 모두 빈 응답이었다는 신호 → recall 보강 필요.
+            hyde_text = ""
+            if i == 2 and args.hyde_ollama_base_url:
+                hyde_text = hyde_expand(item, args.hyde_ollama_base_url, args.hyde_ollama_model)
+                if hyde_text:
+                    print(f"   [HyDE] attempt=2 보강 쿼리: {hyde_text[:80]}...", file=sys.stderr)
+            # P2 R-4: 매 attempt 마다 다른 모양의 kb_query.
+            inputs["kb_query"] = build_kb_query(item, attempt=i, hyde_text=hyde_text)
             status, body = send_dify_request(target_api_url, args.dify_api_key, payload)
 
             if status == 200:

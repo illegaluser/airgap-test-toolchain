@@ -142,6 +142,8 @@ pipeline {
               --timeout 1000 \
               --max-issues ${params.MAX_ISSUES} \
               --commit-sha "${env.COMMIT_SHA}" \
+              --hyde-ollama-base-url "http://host.docker.internal:11434" \
+              --hyde-ollama-model "gemma4:e4b" \
               --print-first-errors 5
           """
         }

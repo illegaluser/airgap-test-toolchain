@@ -481,7 +481,22 @@ print(ds[0]['id'] if ds else '')" "$ds_name" 2>/dev/null || true)
         return 0
     fi
 
-    local payload; payload=$(cat "$DIFY_ASSETS_DIR/code-context-dataset.json" | python3 -c "import json,sys; d=json.load(sys.stdin); d.pop('_comment',None); print(json.dumps(d))")
+    # P2 K-5 — 임베딩 모델 환경변수 override.
+    # OLLAMA_EMBEDDING_MODEL / OLLAMA_EMBEDDING_PROVIDER 가 지정되면 dataset 의
+    # embedding_model / embedding_model_provider 를 그 값으로 치환. 운영자가
+    # 코드 특화 임베딩 (Xinference/LocalAI 위에 nomic-embed-code 등) 으로
+    # 교체 가능. 기본은 bge-m3 (Ollama).
+    local emb_model_override="${OLLAMA_EMBEDDING_MODEL:-bge-m3}"
+    local emb_provider_override="${OLLAMA_EMBEDDING_PROVIDER:-langgenius/ollama/ollama}"
+    local payload; payload=$(EMB_MODEL="$emb_model_override" EMB_PROVIDER="$emb_provider_override" python3 <<PY
+import json, os
+d = json.load(open("$DIFY_ASSETS_DIR/code-context-dataset.json"))
+d.pop("_comment", None)
+d["embedding_model"] = os.environ["EMB_MODEL"]
+d["embedding_model_provider"] = os.environ["EMB_PROVIDER"]
+print(json.dumps(d))
+PY
+)
     local resp; resp=$(curl -sS -X POST "$DIFY_URL/console/api/datasets" \
         "${_auth[@]}" \
         -H "Content-Type: application/json" \
