@@ -432,7 +432,7 @@ Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분
   - `langgenius/dify-api:1.13.3`
   - `langgenius/dify-web:1.13.3`
   - `langgenius/dify-plugin-daemon:0.5.3-local`
-- **Stage 2** (final) — `jenkins/jenkins:lts-jdk21` 베이스에 합치기
+- **Stage 2** (final) — `jenkins/jenkins:2.555.1-lts-jdk21` 베이스에 합치기
   - OS 패키지: postgresql-15, redis-server, nginx, python3+venv, supervisor, tini, Playwright 의존 라이브러리
   - Stage 1 산출물 COPY
   - Qdrant 바이너리 + Node.js (TARGETARCH 분기 — amd64 는 glibc / arm64 는 musl)
