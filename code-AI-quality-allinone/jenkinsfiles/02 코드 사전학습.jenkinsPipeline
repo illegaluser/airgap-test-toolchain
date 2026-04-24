@@ -107,22 +107,57 @@ pipeline {
                     string(credentialsId: 'dify-dataset-id', variable: 'DIFY_DATASET_ID')
                 ]) {
                     echo "[Upload] JSONL 청크 → Dify Dataset (high_quality 모드)"
+                    // Dify 1.13.3 의 알려진 SQLAlchemy bug — dataset 의 hit_count
+                    // property 가 cache_key 생성 중 'async for' mismatch 를 일으켜
+                    // 첫 청크 SUCCESS 후 후속 호출이 모두 HTTP 500 으로 깨질 수
+                    // 있다 (dify-api.log 에 'TypeError: async for requires...').
+                    // 회복: dify-api 재시작 → SQLAlchemy session pool 초기화.
+                    // 이 stage 는 1차 시도 실패 시 자동으로 재시작 + 1회 재시도.
                     sh """
                     set -e
-                    # doc_processor.py 는 RESULT_DIR 내 *.jsonl 각 line 을 1 document 로 업로드.
-                    # JSONL 이 없으면 레거시 *.md 로 자동 폴백.
-                    # upload 성공 후 /data/kb_manifest.json 기록 (env 로 repo/branch/commit 전달).
                     export KB_MANIFEST_REPO_URL='${params.REPO_URL}'
                     export KB_MANIFEST_BRANCH='${params.BRANCH}'
                     KB_MANIFEST_COMMIT_SHA='${env.COMMIT_SHA}'
                     KB_MANIFEST_ANALYSIS_MODE='${params.ANALYSIS_MODE}'
                     [ -n "\${KB_MANIFEST_ANALYSIS_MODE}" ] || KB_MANIFEST_ANALYSIS_MODE="full"
                     export KB_MANIFEST_COMMIT_SHA KB_MANIFEST_ANALYSIS_MODE
-                    python3 '${env.SCRIPTS_DIR}/doc_processor.py' upload \
-                        "\$DIFY_API_KEY" \
-                        "\$DIFY_DATASET_ID" \
-                        '${env.DOC_FORM}' \
-                        '${env.DOC_LANGUAGE}'
+
+                    UPLOAD_LOG=\$(mktemp)
+                    run_upload() {
+                        python3 '${env.SCRIPTS_DIR}/doc_processor.py' upload \
+                            "\$DIFY_API_KEY" \
+                            "\$DIFY_DATASET_ID" \
+                            '${env.DOC_FORM}' \
+                            '${env.DOC_LANGUAGE}' 2>&1 | tee "\$UPLOAD_LOG"
+                    }
+
+                    # 1차 시도
+                    run_upload || true
+
+                    # FAIL 라인이 있으면 dify-api 재시작 + 재시도 (Dify 1.13.3 bug 회복).
+                    # SUCCESS 라인 단 1개 + FAIL 다수 패턴 검출.
+                    FAIL_COUNT=\$(grep -c '\\[Upload:FAIL\\]' "\$UPLOAD_LOG" || true)
+                    SUCC_COUNT=\$(grep -c '\\[Upload:SUCCESS\\]' "\$UPLOAD_LOG" || true)
+                    if [ "\${FAIL_COUNT:-0}" -gt 0 ]; then
+                        echo "[Upload:RECOVER] FAIL=\${FAIL_COUNT} SUCCESS=\${SUCC_COUNT} — Dify 1.13.3 SQLAlchemy bug 가능성. dify-api 재시작 후 재시도."
+                        supervisorctl -c /etc/supervisor/supervisord.conf restart dify-api >/dev/null 2>&1 || true
+                        # dify-api 재기동 health 대기 (최대 60s)
+                        _w=0
+                        until curl -sf -o /dev/null --max-time 3 http://127.0.0.1:5001/console/api/setup; do
+                            sleep 2; _w=\$((_w+2))
+                            [ \$_w -ge 60 ] && { echo "[Upload:RECOVER] dify-api 60s 내 미준비"; break; }
+                        done
+                        echo "[Upload:RECOVER] dify-api ready (\${_w}s) — 재시도"
+                        run_upload
+                        # 2차도 FAIL 이면 stage 실패 처리
+                        FAIL2=\$(grep -c '\\[Upload:FAIL\\]' "\$UPLOAD_LOG" || true)
+                        if [ "\${FAIL2:-0}" -gt 0 ]; then
+                            echo "[Upload:FAIL] 재시도 후에도 FAIL=\${FAIL2} — 수동 점검 필요 (README §12 참조)"
+                            rm -f "\$UPLOAD_LOG"
+                            exit 1
+                        fi
+                    fi
+                    rm -f "\$UPLOAD_LOG"
                     echo "[Upload] 완료"
                     """
                 }
