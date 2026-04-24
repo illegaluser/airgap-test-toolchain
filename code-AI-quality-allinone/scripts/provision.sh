@@ -765,13 +765,29 @@ gitlab_ensure_sample_project() {
         create_args+=("$GITLAB_URL/api/v4/projects")
         create_code=$(curl "${create_args[@]}" 2>/dev/null || echo "000")
         if [ "$create_code" != "201" ]; then
-            warn "  샘플 프로젝트 생성 실패 (status=$create_code) — 응답: $(head -c 300 "$create_json" 2>/dev/null)"
-            rm -f "$project_json" "$create_json"
-            return 1
+            # GitLab 부팅 직후 nginx → Puma race 로 create POST 가 502/504 를 돌려주는
+            # 경우가 있다. 이때 백엔드 DB 는 실제로 프로젝트를 만들어 두므로, 응답 코드만
+            # 믿고 즉시 return 하면 "빈 프로젝트 고립" 상태가 영속화된다 — 후속 push 단계
+            # 를 타지 못하기 때문. GET 으로 실제 존재 여부를 한 번 더 확인해 복구.
+            warn "  샘플 프로젝트 생성 응답 status=$create_code — GET 으로 실제 존재 확인 시도"
+            local recheck_code
+            recheck_code=$(curl -sS -o "$project_json" -w "%{http_code}" \
+                -H "PRIVATE-TOKEN: $pat" \
+                "$GITLAB_URL/api/v4/projects/$encoded_full_path" 2>/dev/null || echo "000")
+            if [ "$recheck_code" = "200" ]; then
+                project_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('id',''))" "$project_json" 2>/dev/null || true)
+                log "  재확인 결과 프로젝트 실제 존재: $full_path (id=${project_id:-unknown}) — push 단계 진행"
+                rm -f "$create_json"
+            else
+                warn "  샘플 프로젝트 생성 실패 확정 (create=$create_code, recheck=$recheck_code) — 응답: $(head -c 300 "$create_json" 2>/dev/null)"
+                rm -f "$project_json" "$create_json"
+                return 1
+            fi
+        else
+            project_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('id',''))" "$create_json" 2>/dev/null || true)
+            log "  샘플 프로젝트 생성 완료: $full_path (id=${project_id:-unknown})"
+            rm -f "$create_json"
         fi
-        project_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('id',''))" "$create_json" 2>/dev/null || true)
-        log "  샘플 프로젝트 생성 완료: $full_path (id=${project_id:-unknown})"
-        rm -f "$create_json"
     fi
     rm -f "$project_json"
 
