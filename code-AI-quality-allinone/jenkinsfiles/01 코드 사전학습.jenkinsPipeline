@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     parameters {
-        string(name: 'REPO_URL', defaultValue: '', description: 'Git 레포지토리 URL (예: http://gitlab:80/root/repo.git)')
+        string(name: 'REPO_URL', defaultValue: 'http://gitlab:80/root/nodegoat.git', description: 'Git 레포지토리 URL (예: http://gitlab:80/root/nodegoat.git)')
         booleanParam(name: 'ENRICH_CONTEXT', defaultValue: true, description: 'Contextual Retrieval (gemma4 청크 요약 prepend) 적용 여부. false 시 skip.')
         // Phase 1.5: 체인 Job 이 전달. 빈 값이면 HEAD 자동 해석 (수동 실행 하위호환).
         string(name: 'COMMIT_SHA', defaultValue: '', description: '특정 커밋 SHA 지정 (체인 Job 용). 빈 값이면 레포 HEAD 사용.')

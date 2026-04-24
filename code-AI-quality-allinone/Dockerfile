@@ -266,6 +266,7 @@ RUN mkdir -p /opt/scripts-home && \
 #  PAT 을 Jenkins Credentials 'gitlab-pat' 으로 주입 + withCredentials 로 런타임 치환)
 # ─────────────────────────────────────────────────────────────────────────────
 COPY jenkinsfiles/ /opt/jenkinsfiles/
+COPY sample-projects/ /opt/sample-projects/
 COPY scripts/jenkins-seed/ /opt/seed/jenkins-home/
 
 RUN set -eux; \
