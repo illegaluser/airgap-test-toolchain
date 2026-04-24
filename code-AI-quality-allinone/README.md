@@ -22,6 +22,7 @@
 | 항목 | 현재 상태 |
 |------|-----------|
 | 통합 이미지 베이스 | Jenkins `2.555.1-lts-jdk21`, SonarQube `26.4.0.121862-community`, Dify API/Web `1.13.3`, GitLab CE `18.11.0-ce.0` |
+| **Dify Code 노드 sandbox (별도 컨테이너)** | `langgenius/dify-sandbox:0.2.10` — `ttc-sandbox` service 로 분리. Dify Workflow 의 `context_filter` / `json_parser` 같은 Code 노드가 의존. 통합 이미지에 sandbox binary 가 포함되지 않아 별도 service 로 띄우는 구조 (**오프라인 번들에 별도 tarball 로 포함**, §3 참조) |
 | 기본 샘플 GitLab 프로젝트 (dual-track) | `root/nodegoat` (JavaScript, OWASP 실 패턴) + **`root/ttc-sample-app`** (Python+JS, **축 1 의도 결함 + 축 2 요구사항 traceability 시연용**) — provision 이 둘 다 자동 생성 + 초기 push |
 | Jenkins 기본 대상 프로젝트 | `01`~`05` 파이프라인 기본값이 모두 `nodegoat` 기준 |
 | 프로비저닝 결과 | Dify 관리자/모델/provider/workflow/dataset, Sonar 토큰, GitLab PAT, Jenkins Job 5개 자동 생성 (provision 재실행 시 동일명 App 삭제 후 재생성) |
@@ -2485,6 +2486,50 @@ docker exec ttc-allinone pip show tree-sitter | grep Version
 
 `dify_publish_workflow` 실패. 수동 publish:
 - Dify Studio → Sonar Issue Analyzer → 우측 상단 **Publish** 버튼.
+
+### 12.6.0 04 Stage (2) Analyze 가 모두 "sandbox service is running?" 에러로 실패
+
+**증상**: 04 Jenkinsfile 의 `(2) Analyze by Dify Workflow` 단계에서 모든 이슈에 대해:
+
+```text
+Dify Internal Fail: ... 'status': 'failed',
+'error': 'Failed to execute code, which is likely a network issue,
+please check if the sandbox service is running. ( Error: [Errno -2] Name or service not known )',
+'total_steps': 3
+```
+
+**원인**: Dify Workflow 의 Code 노드 (`context_filter`, `json_parser`) 는 `langgenius/dify-sandbox` 라는 별도 컨테이너에서 격리 실행되어야 한다. 통합 이미지에는 sandbox binary 가 포함되어 있지 않아 별도 service `ttc-sandbox` 로 띄우는 구조. 이 service 가 누락된 환경에서 Code 노드가 실행 시점에 sandbox 호스트명을 resolve 못해 실패.
+
+**확인 방법**:
+
+```bash
+# ttc-sandbox 컨테이너 상태
+docker ps --filter name=ttc-sandbox --format 'table {{.Names}}\t{{.Status}}'
+# Up + healthy 가 정답. 안 보이면 compose 의 ttc-sandbox service 확인.
+
+# dify-api 의 환경변수
+docker exec ttc-allinone bash -c \
+  'cat /proc/$(supervisorctl -c /etc/supervisor/supervisord.conf pid dify-api)/environ \
+   | tr "\0" "\n" | grep CODE_EXECUTION'
+# CODE_EXECUTION_ENDPOINT=http://ttc-sandbox:8194 + CODE_EXECUTION_API_KEY 가
+# 보여야 정상. 비어 있으면 docker-compose env 미설정.
+
+# sandbox health
+docker exec ttc-allinone curl -sf http://ttc-sandbox:8194/health && echo OK
+```
+
+**해결**:
+
+```bash
+# 1) docker-compose.{mac,wsl2}.yaml 에 ttc-sandbox service 가 있는지 확인 (있어야 정상).
+# 2) ttc-allinone 의 environment 에 CODE_EXECUTION_ENDPOINT / CODE_EXECUTION_API_KEY 가
+#    선언되어 있는지 확인.
+# 3) compose 재기동 (이미지 재빌드 불필요):
+docker compose -f docker-compose.mac.yaml up -d
+# 4) 기다린 뒤 Jenkins 04 파이프라인 재실행.
+```
+
+**오프라인 머신**: `langgenius/dify-sandbox:0.2.10` 이미지가 반드시 반출 자산에 포함되어 있어야 한다. `bash scripts/offline-prefetch.sh` 가 자동으로 같이 받음. 누락 시 `bash scripts/offline-load.sh` 가 sandbox 이미지가 없다고 경고.
 
 ### 12.6.1 02 Stage 3 Upload 가 첫 청크 외 모두 HTTP 500 — Dify 1.13.3 SQLAlchemy bug
 

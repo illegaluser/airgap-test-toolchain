@@ -28,12 +28,14 @@ cd "$ALLINONE_DIR"
 ARCH="amd64"
 TAG="${TAG:-dev}"
 GITLAB_IMAGE="${GITLAB_IMAGE:-gitlab/gitlab-ce:18.11.0-ce.0}"
+SANDBOX_IMAGE="${SANDBOX_IMAGE:-langgenius/dify-sandbox:0.2.10}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --arch)         ARCH="$2"; shift 2 ;;
-        --tag)          TAG="$2";  shift 2 ;;
-        --gitlab-image) GITLAB_IMAGE="$2"; shift 2 ;;
+        --arch)          ARCH="$2"; shift 2 ;;
+        --tag)           TAG="$2";  shift 2 ;;
+        --gitlab-image)  GITLAB_IMAGE="$2"; shift 2 ;;
+        --sandbox-image) SANDBOX_IMAGE="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -59,6 +61,7 @@ echo "  Dify API  = langgenius/dify-api:1.13.3"
 echo "  Dify Web  = langgenius/dify-web:1.13.3"
 echo "  Dify Plug = langgenius/dify-plugin-daemon:0.5.3-local"
 echo "  GitLab    = $GITLAB_IMAGE"
+echo "  Sandbox   = $SANDBOX_IMAGE  (Dify Code 노드 격리 실행 — 별도 service)"
 
 if [ ! -d "$ALLINONE_DIR/jenkins-plugins" ] || [ -z "$(ls -A "$ALLINONE_DIR/jenkins-plugins" 2>/dev/null)" ]; then
     echo "[prefetch] 플러그인이 비어 있습니다. 먼저 bash scripts/download-plugins.sh 실행" >&2
@@ -116,8 +119,32 @@ META
 echo "[prefetch] 완료:"
 echo "  ttc-allinone : $OUT_FILE ($SIZE, sha256=$SHA)"
 echo "  gitlab       : $GITLAB_OUT_FILE ($GITLAB_SIZE, sha256=$GITLAB_SHA)"
+
+# Dify Sandbox 이미지도 반출 — Dify Workflow 의 Code 노드 (context_filter / json_parser
+# 등) 가 실 호출 시 의존. 통합 이미지에 sandbox binary 가 포함되지 않음.
+SANDBOX_TAG_SAFE=$(echo "$SANDBOX_IMAGE" | sed 's#[/:]#-#g')
+SANDBOX_OUT_FILE="${OUT_DIR}/${SANDBOX_TAG_SAFE}-${ARCH}.tar.gz"
+
+echo "[prefetch] Sandbox 이미지 pull + save: $SANDBOX_IMAGE"
+docker pull --platform "$PLATFORM" "$SANDBOX_IMAGE"
+docker save "$SANDBOX_IMAGE" | gzip > "$SANDBOX_OUT_FILE"
+
+SANDBOX_SIZE=$(du -h "$SANDBOX_OUT_FILE" | cut -f1)
+SANDBOX_SHA=$(sha256sum "$SANDBOX_OUT_FILE" | cut -d' ' -f1)
+cat > "${OUT_DIR}/${SANDBOX_TAG_SAFE}-${ARCH}.meta" <<META
+image: $SANDBOX_IMAGE
+arch: $ARCH
+platform: $PLATFORM
+tarball: $(basename "$SANDBOX_OUT_FILE")
+size: $SANDBOX_SIZE
+sha256: $SANDBOX_SHA
+built_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+META
+
+echo "  sandbox      : $SANDBOX_OUT_FILE ($SANDBOX_SIZE, sha256=$SANDBOX_SHA)"
 echo ""
-echo "[prefetch] 오프라인 머신 복원 (두 tarball 모두 load 필요):"
+echo "[prefetch] 오프라인 머신 복원 (세 tarball 모두 load 필요):"
 echo "    docker load -i $OUT_FILE"
 echo "    docker load -i $GITLAB_OUT_FILE"
+echo "    docker load -i $SANDBOX_OUT_FILE"
 echo "  또는 일괄: bash scripts/offline-load.sh --arch $ARCH"
