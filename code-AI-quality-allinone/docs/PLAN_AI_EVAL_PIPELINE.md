@@ -6,7 +6,7 @@
 
 1. **정본**: `readme.md` §5.1 (11지표/5단계). `외부 AI 에이전트 평가 시스템 구축 프로젝트 계획서.md` 폐기.
 2. **Langfuse**: 현 단계 미사용. 단 코드 내 조건부 import 는 유지(향후 재활성화 대비).
-3. **수정 범위**: 사전 영향도 검증 결과 `eval_runner/` 과 `jenkinsfiles/04 AI평가.jenkinsPipeline` 수정은 Jobs 01/02/03 에 영향 0 — 수정 허용.
+3. **수정 범위**: 사전 영향도 검증 결과 `eval_runner/` 과 `jenkinsfiles/05 AI평가.jenkinsPipeline` 수정은 Jobs 01/02/03 에 영향 0 — 수정 허용.
 4. **리포트**: 평가 결과의 **가독성·이해도를 핵심 산출물**로 취급. Jenkins `publishHTML` 로 직접 열람 가능해야 함.
 
 본 계획서는 위 전제 위에서 작업을 **Phase 0 → 5 의 6단계 로드맵**으로 조직화한다. 각 Phase 는 진입 조건·산출물·검증 게이트·종료 조건을 명시하며, 후속 Phase 는 이전 Phase 의 종료 조건 충족 없이 시작하지 않는다.
@@ -52,7 +52,7 @@
 | 경로 | 수정 | 블래스트 반경 | 반영 시점 |
 |---|---|---|---|
 | `eval_runner/**` | ✅ | Job 04 only | 이미지 재빌드 |
-| `jenkinsfiles/04 AI평가.jenkinsPipeline` | ✅ | Job 04 only | 이미지 재빌드 + Jenkins job 재로드 |
+| `jenkinsfiles/05 AI평가.jenkinsPipeline` | ✅ | Job 04 only | 이미지 재빌드 + Jenkins job 재로드 |
 | `외부 AI 에이전트 평가 시스템 구축 프로젝트 계획서.md` 삭제 | ✅ | 문서만 | 즉시 |
 | `pipeline-scripts/**`, `jenkinsfiles/01~03*` | ❌ | Jobs 01/03 | — |
 | `Dockerfile` | ⚠️ | 전체 이미지 | 합의 후 (기본 불필요) |
@@ -185,7 +185,7 @@
 - Jenkins 에서 `TARGET_MODE=local_ollama_wrapper` 1회 성공 실행
 - Jenkins UI 에서 모드 드롭다운에 **단일 옵션만** 노출 확인
 
-**종료 조건**: 11지표 커버리지가 Langfuse 유무와 무관하게 완전. `04 AI평가` Job 이 미구현 모드 선택으로 깨질 가능성 0.
+**종료 조건**: 11지표 커버리지가 Langfuse 유무와 무관하게 완전. `05 AI평가` Job 이 미구현 모드 선택으로 깨질 가능성 0.
 
 ---
 
@@ -380,7 +380,7 @@
 
 ### In
 - `eval_runner/` 전체 (수정 + 신규 파일 + `reporting/`, `docs/`, `tests/fixtures/` 하위 추가)
-- `jenkinsfiles/04 AI평가.jenkinsPipeline`
+- `jenkinsfiles/05 AI평가.jenkinsPipeline`
 - `configs/{schema.json, security.yaml, security_assert.py}`
 - `외부 AI 에이전트 평가 시스템 구축 프로젝트 계획서.md` **제거**
 
@@ -403,7 +403,7 @@
 - [code-AI-quality-allinone/eval_runner/ollama_wrapper_api.py](code-AI-quality-allinone/eval_runner/ollama_wrapper_api.py) — Phase 1 래퍼 템플릿
 - [code-AI-quality-allinone/eval_runner/configs/schema.json](code-AI-quality-allinone/eval_runner/configs/schema.json)
 - [code-AI-quality-allinone/eval_runner/configs/security_assert.py](code-AI-quality-allinone/eval_runner/configs/security_assert.py) — Phase 4 in-process 전환
-- [code-AI-quality-allinone/jenkinsfiles/04 AI평가.jenkinsPipeline](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline) — Phase 1 래퍼 연결, Phase 2 publishHTML, Phase 4 중복 제거
+- [code-AI-quality-allinone/jenkinsfiles/05 AI평가.jenkinsPipeline](code-AI-quality-allinone/jenkinsfiles/04%20AI%ED%8F%89%EA%B0%80.jenkinsPipeline) — Phase 1 래퍼 연결, Phase 2 publishHTML, Phase 4 중복 제거
 
 **신규 파일 (계획 상)**:
 - `eval_runner/reporting/{__init__,html,translate}.py` (Phase 2.0 완료 중)
@@ -451,7 +451,7 @@
 
 - [ ] 기획서 파일 제거 + 정본 선언 기록
 - [ ] Phase 0 골든 하네스가 Phase 1~5 모든 변경을 회귀 검출
-- [ ] Jenkins 에서 `04 AI평가` Job 의 `TARGET_MODE=local_ollama_wrapper` 가 성공 실행 (현 phase 단일 모드)
+- [ ] Jenkins 에서 `05 AI평가` Job 의 `TARGET_MODE=local_ollama_wrapper` 가 성공 실행 (현 phase 단일 모드)
 - [ ] Langfuse 크리덴셜 유무와 무관하게 11지표 전체 summary.json 기록
 - [ ] `AI Eval Summary` Jenkins 탭이 운영자 1차 판단 도구로 기능
 - [ ] **R1.1 LLM 임원 요약**이 모든 빌드에서 2~3 문장 생성, summary.json 의 `aggregate.exec_summary` 에 영구 기록
@@ -550,7 +550,7 @@ Phase 6 (README §5.1 TARGET_TYPE ∈ {http, ui_chat} 정본 복귀):
   standard 회귀, auth header 주입. 46/46 PASS.
 
 변경 파일: eval_runner/dataset.py, tests/test_runner.py, tests/test_golden.py,
-adapters/http_adapter.py, jenkinsfiles/04 AI평가.jenkinsPipeline.
+adapters/http_adapter.py, jenkinsfiles/05 AI평가.jenkinsPipeline.
 ```
 
 파일:
@@ -558,7 +558,7 @@ adapters/http_adapter.py, jenkinsfiles/04 AI평가.jenkinsPipeline.
 - `code-AI-quality-allinone/eval_runner/tests/test_runner.py`
 - `code-AI-quality-allinone/eval_runner/tests/test_golden.py`
 - `code-AI-quality-allinone/eval_runner/adapters/http_adapter.py`
-- `code-AI-quality-allinone/jenkinsfiles/04 AI평가.jenkinsPipeline`
+- `code-AI-quality-allinone/jenkinsfiles/05 AI평가.jenkinsPipeline`
 
 ### C3 — 문서 (PLAN + CONVERSATION_LOG + 신규 사용자 가이드)
 
