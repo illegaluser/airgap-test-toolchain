@@ -63,13 +63,12 @@ services:
         condition: service_started
 
   gitlab:
-    image: ${GITLAB_IMAGE:-yrzr/gitlab-ce-arm64v8:17.4.2-ce.0}
+    image: ${GITLAB_IMAGE:-gitlab/gitlab-ce:18.11.0-ce.0}
     container_name: ttc-gitlab
     restart: unless-stopped
     hostname: gitlab
-    # Apple Silicon arm64 네이티브 포트 (yrzr/gitlab-ce-arm64v8).
-    # 공식 gitlab-ce 와 동일한 17.4.2-ce.0 태그 유지. amd64 Rosetta 경유가
-    # 필요하면 GITLAB_IMAGE=gitlab/gitlab-ce:17.4.2-ce.0 로 env override.
+    # 공식 gitlab/gitlab-ce 가 arm64 manifest 를 제공하므로 별도 서드파티 arm64
+    # 포트 없이 동일 이미지를 사용한다.
     platform: linux/arm64
     environment:
       TZ: Asia/Seoul

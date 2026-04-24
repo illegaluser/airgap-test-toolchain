@@ -362,10 +362,10 @@ bash scripts/offline-prefetch.sh --arch amd64
 
 **이 명령이 실제로 하는 일** — 총 **50 build stages**, M1 Max / 12 GB Docker VM 기준 ≈ 9 분:
 
-1. `docker buildx build` 로 `Dockerfile` 기준 통합 이미지 빌드. 빌드 중 `FROM` 의 **베이스 이미지 5 종** (`langgenius/dify-api:1.13.3`, `langgenius/dify-web:1.13.3`, `langgenius/dify-plugin-daemon:0.5.3-local`, `sonarqube:10.7.0-community`, `jenkins/jenkins:lts-jdk21`) 이 자동 pull 되어 최종 이미지 layer 안에 모두 흡수됩니다.
+1. `docker buildx build` 로 `Dockerfile` 기준 통합 이미지 빌드. 빌드 중 `FROM` 의 **베이스 이미지 5 종** (`langgenius/dify-api:1.13.3`, `langgenius/dify-web:1.13.3`, `langgenius/dify-plugin-daemon:0.5.3-local`, `sonarqube:26.4.0.121862-community`, `jenkins/jenkins:2.555.1-lts-jdk21`) 이 자동 pull 되어 최종 이미지 layer 안에 모두 흡수됩니다.
 2. 주요 stage 이정표 (진행 추적용): `pip install deepeval/langchain/pytest` → Playwright Chromium 설치 (stage ≈ 19/50) → Node v22 설치 (21/50) → Sonar + Jenkins plugins + Postgres init (30/50) → OCI export → tarball 압축 (50/50).
 3. 완성 이미지를 `docker save` 로 tarball 압축.
-4. GitLab 런타임 이미지(`gitlab-ce:17.4.2-ce.0` / arm64 는 `yrzr/gitlab-ce-arm64v8`)를 별도로 pull 후 두 번째 tarball 로 저장.
+4. GitLab 런타임 이미지(`gitlab-ce:18.11.0-ce.0` / arm64 는 `gitlab/gitlab-ce`)를 별도로 pull 후 두 번째 tarball 로 저장.
 
 빌드 도중 `pip` resolver 의 `ERROR:` 경고가 몇 개 나올 수 있지만 비치명적 의존성 경고이며 빌드는 계속 진행됩니다. 무시해도 됩니다.
 
@@ -375,8 +375,8 @@ bash scripts/offline-prefetch.sh --arch amd64
 offline-assets/<arch>/
 ├── ttc-allinone-<arch>-dev.tar.gz          ~10 GB   ← 베이스 5 종 포함 통합 이미지
 ├── ttc-allinone-<arch>-dev.meta                      sha256 + built_at
-├── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.tar.gz  ~1.5 GB ← 별도 GitLab 런타임
-└── gitlab-gitlab-ce-17.4.2-ce.0-<arch>.meta
+├── gitlab-gitlab-ce-18.11.0-ce.0-<arch>.tar.gz  ~1.7 GB ← 별도 GitLab 런타임
+└── gitlab-gitlab-ce-18.11.0-ce.0-<arch>.meta
 ```
 
 **핵심 이해** — 베이스 이미지들은 **통합 tarball 안에 이미 포함**되므로 오프라인 머신에 별도로 반출할 필요가 없습니다. 위 **두 tarball 만으로 완전**합니다. 단, `ttc-allinone` 은 통합 런타임 · `gitlab-*` 은 별도 서비스이므로 **반드시 함께** 반출해야 합니다.
@@ -606,7 +606,7 @@ cd ~/code-AI-quality-allinone
 ```bash
 ls -lh offline-assets/<arch>/
 # → ttc-allinone-<arch>-dev.tar.gz   ≈ 10 GB
-#   gitlab-gitlab-ce-17.4.2-ce.0-<arch>.tar.gz  ≈ 1.5 GB
+#   gitlab-gitlab-ce-18.11.0-ce.0-<arch>.tar.gz  ≈ 1.7 GB
 ```
 
 둘 중 하나라도 없거나 크기가 비정상(수 MB 수준)이면 반출 매체에서 복사가 중간에 끊긴 것 — 다시 `cp -a` 수행.
@@ -642,7 +642,7 @@ bash scripts/offline-load.sh --arch amd64          # Windows WSL2 / Linux
 ```bash
 docker images | grep -E "ttc-allinone|gitlab"
 # → ttc-allinone              arm64-dev       10 GB
-#   yrzr/gitlab-ce-arm64v8    17.4.2-ce.0    1.5 GB
+#   gitlab/gitlab-ce    18.11.0-ce.0    1.7 GB
 ```
 
 **헬퍼 스크립트 대신 수동으로 하고 싶다면** (동일한 결과):

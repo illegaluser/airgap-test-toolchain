@@ -44,15 +44,15 @@ FROM langgenius/dify-plugin-daemon:0.5.3-local AS dify-plugin-src
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2: SonarQube Community 이미지에서 앱 디렉토리 추출
-# PoC: sonarqube:10.7.0-community 는 linux/amd64, linux/arm64 둘 다 공식 발매.
+# PoC: sonarqube:26.4.0.121862-community 는 linux/amd64, linux/arm64 둘 다 공식 발매.
 # /opt/sonarqube 만 떠다 옮기면 OpenJDK 는 베이스의 JDK21 을 재사용.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM sonarqube:10.7.0-community AS sonarqube-src
+FROM sonarqube:26.4.0.121862-community AS sonarqube-src
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3: 최종 런타임 — Jenkins LTS (JDK 21) 기반
 # ─────────────────────────────────────────────────────────────────────────────
-FROM jenkins/jenkins:lts-jdk21
+FROM jenkins/jenkins:2.555.1-lts-jdk21
 
 USER root
 ARG DEBIAN_FRONTEND=noninteractive
@@ -175,28 +175,18 @@ RUN mkdir -p /app && \
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SonarQube Community — 파이프라인 2 (정적분석 엔진)
-# PoC: sonarqube:10.7.0-community 는 /opt/sonarqube/ 에 모든 앱이 있고 Elasticsearch
-# 를 내장. sonar 사용자 (uid/gid 1000) 가 필요하지만, 기존 jenkins user(uid 1000)
-# 와 충돌하므로 별도 uid 1100 의 sonar 사용자로 소유권 재설정.
+# 최신 community build 는 /opt/sonarqube 앱 본체와 /opt/java/openjdk 전체 JDK 를
+# 함께 제공한다. 26.x 의 내장 Elasticsearch 는 JRE 가 아닌 전체 JDK 모듈
+# (예: jdk.attach, jdk.jlink) 을 요구하므로, 번들 JRE tarball 을 임의 추출하지 말고
+# 공식 이미지의 JDK 를 별도 경로로 그대로 보존해 Sonar 전용으로 사용한다.
+# sonar 사용자 (uid/gid 1000) 가 필요하지만, 기존 jenkins user(uid 1000) 와
+# 충돌하므로 별도 uid 1100 의 sonar 사용자로 소유권 재설정.
 # ─────────────────────────────────────────────────────────────────────────────
 COPY --from=sonarqube-src /opt/sonarqube /opt/sonarqube
-# SonarQube 10.7 은 Java 17 필수 (Java 21 은 SecurityManager 제거로 기동 시
-# UnsupportedOperationException). 공식 이미지가 번들한 jres/ tarball 에서 호스트
-# 아키텍처용 JRE 17 을 추출하고 /opt/sonarqube/jres/current 안정 경로로 심볼릭.
-RUN set -eux; \
-    case "${TARGETARCH}" in \
-      amd64) JRE_TAR="OpenJDK17U-jre_x64_linux_hotspot_17.0.11_9.tar.gz" ;; \
-      arm64) JRE_TAR="OpenJDK17U-jre_aarch64_linux_hotspot_17.0.11_9.tar.gz" ;; \
-      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    cd /opt/sonarqube/jres && \
-    tar -xzf "$JRE_TAR" && \
-    JRE_DIR=$(ls -d jdk-17*/ | head -n1 | sed 's#/$##'); \
-    ln -sfn "/opt/sonarqube/jres/$JRE_DIR" /opt/sonarqube/jres/current && \
-    /opt/sonarqube/jres/current/bin/java -version
+COPY --from=sonarqube-src /opt/java/openjdk /opt/sonar-java
 RUN groupadd -g 1100 sonar && \
     useradd -u 1100 -g sonar -M -d /opt/sonarqube -s /bin/bash sonar && \
-    chown -R sonar:sonar /opt/sonarqube && \
+    chown -R sonar:sonar /opt/sonarqube /opt/sonar-java && \
     sed -i 's|^#*sonar.web.port=.*|sonar.web.port=9000|' /opt/sonarqube/conf/sonar.properties || true && \
     echo "sonar.es.bootstrap.checks.disable=true" >> /opt/sonarqube/conf/sonar.properties
 
