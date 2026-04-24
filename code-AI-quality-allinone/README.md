@@ -15,6 +15,77 @@
 >
 > **본 문서의 독자 대상**: 이 스택을 처음 받아 운영하려는 분 (개발자가 아니어도 따라갈 수 있도록 작성). 설치·구동·각 파이프라인 사용·결과 해석·트러블슈팅이 **모두 본 문서 한 곳에 모여 있습니다** — 다른 문서를 열 필요 없습니다. 단일 운영 정보 원천.
 
+## 0. 현재 구현 상태
+
+2026-04-24 `main` 기준 현재 구현은 아래와 같습니다.
+
+| 항목 | 현재 상태 |
+|------|-----------|
+| 통합 이미지 베이스 | Jenkins `2.555.1-lts-jdk21`, SonarQube `26.4.0.121862-community`, Dify API/Web `1.13.3`, GitLab CE `18.11.0-ce.0` |
+| 기본 샘플 GitLab 프로젝트 | `root/nodegoat` 자동 생성 + 초기 push |
+| Jenkins 기본 대상 프로젝트 | `00`~`03` 파이프라인 기본값이 모두 `nodegoat` 기준 |
+| 프로비저닝 결과 | Dify 관리자/모델/provider/workflow/dataset, Sonar 토큰, GitLab PAT, Jenkins Job 5개 자동 생성 |
+| 최근 실측 검증 | Jenkins `28080`, Dify `28081`, SonarQube `29000`, GitLab `28090` 정상 응답 확인 |
+
+운영 메모:
+- macOS 환경에서는 `scripts/build-mac.sh` 의 `docker buildx build --load` 가 `sending tarball` 단계에서 오래 멈출 수 있습니다.
+- 이 경우 Dockerfile 과 태그는 그대로 두고 plain `docker build` 로 우회 빌드한 뒤 `scripts/run-mac.sh` 로 기동하면 됩니다.
+
+## 0.1 이 문서를 어떻게 읽으면 되나
+
+처음 보는 사용자는 아래 순서만 따라가면 됩니다.
+
+| 상황 | 먼저 읽을 섹션 |
+|------|----------------|
+| 오프라인/폐쇄망에 처음 설치 | §2 → §3 → §4 → §5 → §6 |
+| 이미 이미지와 모델이 준비되어 있고 바로 띄우기만 하면 됨 | §6 |
+| 스택이 올라온 뒤 샘플로 실제 파이프라인 검증 | §7 |
+| 각 Jenkins 파이프라인의 역할과 입력값을 알고 싶음 | §8 |
+| 실패 원인 조사 | §12 |
+| 데이터 초기화 후 완전 재프로비저닝 | §13 |
+
+핵심만 먼저 이해하면 아래 3줄입니다.
+
+1. 온라인 머신에서 이미지, 플러그인, Ollama 모델을 모두 준비해 반출합니다.
+2. 오프라인 머신에서 Docker/Ollama 를 복원하고 `run-mac.sh` 또는 `run-wsl2.sh` 로 스택을 올립니다.
+3. 프로비저닝이 끝나면 Jenkins `00-코드-분석-체인` 을 `root/nodegoat` 기준으로 바로 실행할 수 있습니다.
+
+## 0.2 빠른 시작
+
+이미 Docker 이미지와 Ollama 모델이 준비된 환경이라면, 가장 짧은 경로는 아래입니다.
+
+```bash
+cd code-AI-quality-allinone
+
+# macOS
+bash scripts/run-mac.sh
+
+# 또는 Windows WSL2
+bash scripts/run-wsl2.sh
+```
+
+기동 후 아래 3가지를 확인하면 됩니다.
+
+1. `docker ps` 에서 `ttc-allinone`, `ttc-gitlab` 이 `Up`
+2. `docker logs -f ttc-allinone | grep -E "provision|entrypoint"` 에서 `자동 프로비저닝 완료`
+3. 브라우저에서 Jenkins `http://localhost:28080`, GitLab `http://localhost:28090`, SonarQube `http://localhost:29000`, Dify `http://localhost:28081` 접속 가능
+
+## 0.3 지금 자동으로 되는 것
+
+이 스택은 "컨테이너가 올라오면 그다음은 사람이 일일이 누르지 않아도 되는 것"이 핵심입니다.
+
+자동으로 완료되는 작업:
+- Dify 관리자 계정 생성
+- Ollama 플러그인 설치 및 기본 모델/provider 등록
+- Dify Workflow / Dataset import
+- SonarQube admin 비밀번호 변경 및 토큰 발급
+- GitLab root PAT 발급
+- GitLab 샘플 프로젝트 `root/nodegoat` 생성 및 초기 push
+- Jenkins Credentials 등록
+- Jenkins Job 5개 등록
+
+즉, 사용자는 보통 `이미지 준비 → 컨테이너 기동 → 프로비저닝 완료 대기 → Jenkins Job 실행`까지만 신경 쓰면 됩니다.
+
 ---
 
 ## 목차
@@ -218,6 +289,75 @@ Jenkins 빌드 Artifact 로 빌드마다 `build-<N>/summary.html` (+ `summary.js
 ## 3. 온라인 준비 머신 — 자산 수집
 
 > 📋 **이 섹션은 "따라 하기"** — 처음부터 끝까지 순서대로 실행하세요. 각 Step 은 이전 Step 의 결과물을 전제로 합니다. 이 섹션을 완주하면 오프라인 머신으로 옮길 **반출 패키지 1 벌** 이 준비됩니다 (≈ 45 분).
+
+### 3.0 오프라인 빌드/구동 전 준비물 체크리스트
+
+오프라인 현장에 들어가기 전에 아래 준비물이 모두 있는지 먼저 확인하세요. 실제 운영 실패는 대부분 "이미지는 준비했는데 모델이 없음", "설치 파일은 있는데 GitLab tarball 이 없음", "아키텍처가 다름" 같은 누락에서 발생합니다.
+
+**사람이 준비해야 하는 것**
+
+| 분류 | 준비물 | 왜 필요한가 |
+|------|--------|-------------|
+| 하드웨어 | 온라인 준비 머신 1대 | 인터넷에서 이미지/모델/설치 파일을 받기 위해 필요 |
+| 하드웨어 | 오프라인 운영 머신 1대 | 실제 구동 대상 |
+| 저장매체 | USB / NAS / 외장 SSD (권장 64GB 이상) | 반출 패키지 전달용 |
+| 시간 | 온라인 준비 45분 내외, 오프라인 복원 25분 내외 | 모델 다운로드와 docker load 시간이 길다 |
+
+**파일/자산 준비물**
+
+| 분류 | 반드시 필요한 항목 | 예상 크기 |
+|------|-------------------|----------|
+| 레포 | `code-AI-quality-allinone/` 폴더 전체 | 수백 MB 이하 |
+| 통합 이미지 | `offline-assets/<arch>/ttc-allinone-*.tar.gz` | 약 10GB |
+| GitLab 이미지 | `offline-assets/<arch>/gitlab-*.tar.gz` | 약 1.5~1.7GB |
+| Jenkins 플러그인 | `jenkins-plugins/*.jpi` | 약 40MB |
+| Dify 플러그인 | `dify-plugins/*.difypkg` | 약 1MB |
+| Ollama 모델 | `gemma4:e4b`, `bge-m3`, `qwen3-coder:30b` 가 들어있는 `~/.ollama/models/` | 약 25GB |
+| 설치 파일 | Docker Desktop / Ollama installer | 약 1GB |
+
+**운영 전에 반드시 맞춰야 하는 조건**
+
+1. 온라인 준비 머신과 오프라인 운영 머신의 아키텍처가 같아야 합니다.
+2. 운영 머신에 Docker 와 Ollama 를 오프라인 설치할 수 있어야 합니다.
+3. 운영 머신의 Docker Desktop 메모리가 최소 12GB 이상이어야 합니다.
+4. 운영 머신에서 `host.docker.internal:11434` 로 호스트 Ollama 접근이 가능해야 합니다.
+5. 반출 매체에서 직접 실행하지 말고, 운영 머신 로컬 디스크로 먼저 복사해야 합니다.
+
+### 3.0.1 최종 반출 패키지 목록
+
+온라인 준비가 끝났을 때 최종적으로 챙겨야 하는 항목은 아래입니다.
+
+```text
+<반출매체 루트>/
+├── code-AI-quality-allinone/
+│   ├── offline-assets/<arch>/
+│   │   ├── ttc-allinone-<arch>-<tag>.tar.gz
+│   │   ├── ttc-allinone-<arch>-<tag>.meta
+│   │   ├── gitlab-gitlab-ce-18.11.0-ce.0-<arch>.tar.gz
+│   │   └── gitlab-gitlab-ce-18.11.0-ce.0-<arch>.meta
+│   ├── jenkins-plugins/
+│   ├── dify-plugins/
+│   ├── scripts/
+│   ├── docker-compose.mac.yaml
+│   ├── docker-compose.wsl2.yaml
+│   └── README.md
+├── ollama-models/
+│   └── models/...
+└── installers/
+    ├── Docker.dmg                      # macOS 인 경우
+    ├── Ollama-darwin.zip              # macOS 인 경우
+    ├── Docker-Desktop-Installer.exe   # Windows 인 경우
+    ├── OllamaSetup.exe                # Windows 인 경우
+    └── ollama-linux-amd64             # Linux 인 경우
+```
+
+현장 반입 직전에는 아래 5개만 빠르게 다시 확인하세요.
+
+1. `ttc-allinone-*.tar.gz` 가 있다.
+2. `gitlab-*.tar.gz` 가 있다.
+3. `~/.ollama/models/` 를 복사한 `ollama-models/` 가 있다.
+4. 운영 OS 에 맞는 installer 가 있다.
+5. `README.md` 와 `scripts/offline-load.sh`, `scripts/run-mac.sh` 또는 `scripts/run-wsl2.sh` 가 있다.
 
 ### 3.1 온라인 준비 머신 요구사항
 
@@ -717,7 +857,7 @@ docker ps --format 'table {{.Names}}\t{{.Status}}'
 
 ### 6.4 Step 4: 자동 프로비저닝 대기 (≈ 7 분)
 
-**이 단계에서 하는 일**: §6.3 에서 `ttc-allinone` 이 기동되는 순간 컨테이너 안의 `entrypoint.sh` 가 [`scripts/provision.sh`](scripts/provision.sh) 를 자동 실행합니다. 이 스크립트가 Dify 관리자 계정 setup · Ollama 플러그인 설치 · Workflow publish · GitLab root PAT 발급 · **샘플 GitLab 프로젝트(`dscore-ttc-sample`) 자동 생성 + 초기 push** · SonarQube admin 비번 변경 · Jenkins Credentials 5 종 주입 · Jenkins Job 5 개 등록 등 **총 15 개 작업을 자동 완수**합니다. 이 모든 게 끝나야 Jenkins UI 에서 실제로 파이프라인을 돌릴 수 있는 상태가 됩니다.
+**이 단계에서 하는 일**: §6.3 에서 `ttc-allinone` 이 기동되는 순간 컨테이너 안의 `entrypoint.sh` 가 [`scripts/provision.sh`](scripts/provision.sh) 를 자동 실행합니다. 이 스크립트가 Dify 관리자 계정 setup · Ollama 플러그인 설치 · Workflow publish · GitLab root PAT 발급 · **샘플 GitLab 프로젝트(`nodegoat`) 자동 생성 + 초기 push** · SonarQube admin 비번 변경 · Jenkins Credentials 5 종 주입 · Jenkins Job 5 개 등록 등 **총 15 개 작업을 자동 완수**합니다. 이 모든 게 끝나야 Jenkins UI 에서 실제로 파이프라인을 돌릴 수 있는 상태가 됩니다.
 
 > **왜 이 단계를 기다려야 하는가** — `docker compose up -d` 는 컨테이너 기동 직후 리턴하므로 "스택이 올라왔다" 는 잘못된 판단을 하기 쉽습니다. 실제로는 내부에서 프로비저닝이 7 분간 백그라운드로 계속 돌고 있으며, 완료 전에 Jenkins UI 에 접속해 Job 을 누르면 "Job 을 찾을 수 없음" / "credential 없음" 같은 오류가 납니다. §6.4 는 **이 내부 작업이 끝날 때까지 기다리는 게이트**.
 
@@ -745,7 +885,7 @@ echo "PROVISION_DONE"
 [provision]   Dify       : http://127.0.0.1:28081 (admin@ttc.local / TtcAdmin!2026)
 [provision]   SonarQube  : http://localhost:29000 (admin / TtcAdmin!2026)
 [provision]   GitLab     : http://localhost:28090 (root / ChangeMe!Pass)
-[provision]   Sample Repo: http://localhost:28090/root/dscore-ttc-sample
+[provision]   Sample Repo: http://localhost:28090/root/nodegoat
 [entrypoint] 앱 프로비저닝 완료.
 ```
 
@@ -783,7 +923,7 @@ docker exec ttc-allinone ls /data/.provision/
 ```text
 dataset_api_key    dataset_id    default_models.ok    gitlab_root_pat
 jenkins_sonar_integration.ok    ollama_embedding.ok    ollama_plugin.ok
-sample_project.ok    sonar_token    workflow_api_key    workflow_app_id    workflow_published.ok
+sample_project_nodegoat.ok    sonar_token    workflow_api_key    workflow_app_id    workflow_published.ok
 ```
 
 각 파일은 해당 자산(API key, Workflow publish 상태 등)이 생성됐음을 기록하는 flag 입니다.
@@ -822,30 +962,30 @@ done
 
 ## 7. 첫 실행 — 샘플 레포로 파이프라인 돌려보기
 
-> 📋 **이 섹션은 "따라 하기"** — §6 까지 완료된 환경에서는 프로비저닝이 이미 샘플 GitLab 프로젝트 `dscore-ttc-sample` 을 자동 생성해 둡니다. 따라서 바로 `00-코드-분석-체인` Job 을 실행해 GitLab Issue 가 자동 생성되는 과정을 확인할 수 있습니다. 필요하면 §7.1~§7.2 로 샘플 레포를 수동 재생성할 수도 있습니다.
+> 📋 **이 섹션은 "따라 하기"** — §6 까지 완료된 환경에서는 프로비저닝이 이미 샘플 GitLab 프로젝트 `nodegoat` 를 자동 생성해 둡니다. 따라서 바로 `00-코드-분석-체인` Job 을 실행해 GitLab Issue 가 자동 생성되는 과정을 확인할 수 있습니다. 필요하면 §7.1~§7.2 로 샘플 레포를 수동 재생성할 수도 있습니다.
 >
 > §7.7 은 별개 파이프라인(04 AI 평가) 첫 실행 — `00` 체인과 독립이며 Ollama 모델·시험지만 있으면 언제든 시작 가능합니다.
 
 ### 7.1 Step 1: 샘플 레포 자동 생성 확인 (≈ 1 분)
 
-**이 단계에서 하는 일**: 프로비저닝이 만든 **의도적으로 버그가 있는 Python 미니 프로젝트** 가 GitLab 에 실제로 올라가 있는지 확인합니다. 이 프로젝트에는 SonarQube 가 반드시 잡아내는 `bare except` 위반(rule `python:S5754`, severity CRITICAL) 이 심어져 있어, 뒤이어 돌릴 `03-정적분석-결과분석-이슈등록` 파이프라인이 이걸 어떻게 찾아내고 해석하는지 검증할 수 있습니다.
+**이 단계에서 하는 일**: 프로비저닝이 만든 **의도적으로 취약점이 남아 있는 Node.js 샘플 프로젝트 `nodegoat`** 가 GitLab 에 실제로 올라가 있는지 확인합니다. 이 프로젝트는 정적분석과 LLM 해석 체인을 검증하기 위한 기본 대상이며, 실제 구조도 Python 미니 샘플이 아니라 OWASP NodeGoat 계열 트리(`app/`, `config/`, `server.js`)를 사용합니다.
 
-**브라우저 확인** — [http://localhost:28090/root/dscore-ttc-sample](http://localhost:28090/root/dscore-ttc-sample) 에 `root` / `ChangeMe!Pass` 로 로그인해서 `src/auth.py`, `src/session.py`, `sonar-project.properties` 가 보이면 정상.
+**브라우저 확인** — [http://localhost:28090/root/nodegoat](http://localhost:28090/root/nodegoat) 에 `root` / `ChangeMe!Pass` 로 로그인해서 `app/`, `config/`, `server.js`, `sonar-project.properties` 가 보이면 정상.
 
 **CLI 확인**:
 
 ```bash
 GITLAB_PAT=$(docker exec ttc-allinone cat /data/.provision/gitlab_root_pat)
 curl -sS -H "PRIVATE-TOKEN: $GITLAB_PAT" \
-  "http://localhost:28090/api/v4/projects/root%2Fdscore-ttc-sample/repository/tree?path=src&ref=main" \
+  "http://localhost:28090/api/v4/projects/root%2Fnodegoat/repository/tree?ref=main" \
   | python3 -m json.tool
 ```
 
-**기대 결과** — `src` 아래에 `__init__.py`, `auth.py`, `session.py` 가 보여야 정상.
+**기대 결과** — JSON 목록에 `app`, `config`, `server.js`, `sonar-project.properties` 가 보여야 정상.
 
 ### 7.2 Step 2: 샘플 레포를 수동 재생성하고 싶다면 (선택)
 
-**기본 흐름에서는 이 단계가 필요 없습니다.** 프로비저닝이 이미 `dscore-ttc-sample` 프로젝트를 자동 생성하고 첫 커밋까지 push 해 두기 때문입니다.
+**기본 흐름에서는 이 단계가 필요 없습니다.** 프로비저닝이 이미 `nodegoat` 프로젝트를 자동 생성하고 첫 커밋까지 push 해 두기 때문입니다.
 
 다만 아래 경우에는 수동 재생성이 유용합니다.
 - `PROVISION_SAMPLE_PROJECT=false` 로 자동 생성을 꺼둔 경우
@@ -855,46 +995,8 @@ curl -sS -H "PRIVATE-TOKEN: $GITLAB_PAT" \
 이 경우 아래 블록 전체를 셸에 붙여넣으면 됩니다 (`cat > ... <<'PY'` heredoc 으로 파일 3 개 + Sonar 설정 + git 초기화를 한 번에 수행):
 
 ```bash
-mkdir -p /tmp/dscore-ttc-sample/src && cd /tmp/dscore-ttc-sample
-
-cat > src/auth.py <<'PY'
-"""Simple authentication helpers."""
-import hashlib, os
-
-def hash_password(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-def verify_password(raw: str, stored: str) -> bool:
-    return hash_password(raw) == stored
-
-def login(username: str, password: str, user_store: dict) -> bool:
-    try:
-        stored = user_store[username]
-        return verify_password(password, stored)
-    except:  # noqa: E722 — Sonar python:S5754 CRITICAL
-        return False
-PY
-
-cat > src/session.py <<'PY'
-"""Session helpers that call login() — RAG 가 호출 관계를 잡아내는지 확인용."""
-from src.auth import login
-
-def check_session(token: str, user_store: dict) -> bool:
-    if not token or ":" not in token:
-        return False
-    user, pw = token.split(":", 1)
-    return login(user, pw, user_store)
-PY
-
-touch src/__init__.py
-
-cat > sonar-project.properties <<'CFG'
-sonar.projectKey=dscore-ttc-sample
-sonar.projectName=dscore-ttc-sample
-sonar.sources=src
-sonar.python.version=3.11
-sonar.sourceEncoding=UTF-8
-CFG
+cp -R sample-projects/nodegoat /tmp/nodegoat
+cd /tmp/nodegoat
 
 git init -q -b main
 git add -A
@@ -903,9 +1005,9 @@ git -c user.email=test@ttc.local -c user.name=tester commit -q -m "initial"
 GITLAB_PAT=$(docker exec ttc-allinone cat /data/.provision/gitlab_root_pat)
 curl -sS -X POST "http://localhost:28090/api/v4/projects" \
   -H "PRIVATE-TOKEN: $GITLAB_PAT" \
-  -d "name=dscore-ttc-sample&visibility=private&initialize_with_readme=false"
+  -d "name=nodegoat&visibility=private&initialize_with_readme=false"
 
-git remote add origin "http://oauth2:${GITLAB_PAT}@localhost:28090/root/dscore-ttc-sample.git"
+git remote add origin "http://oauth2:${GITLAB_PAT}@localhost:28090/root/nodegoat.git"
 git push -u origin main
 ```
 
@@ -920,7 +1022,7 @@ git push -u origin main
 3. 좌측 메뉴 **"Build with Parameters"** 클릭.
    - 메뉴가 안 보이면 **"Build Now"** 를 한 번 눌러 실패시킴 (Jenkins Declarative Pipeline 의 parameter discovery 가 최초 1회 실행되어야 `Build with Parameters` 메뉴가 생김). 10초 뒤 Job 페이지 새로고침 → "Build with Parameters" 가 나타나면 다시 클릭.
 4. 파라미터 입력:
-   - `REPO_URL` = `http://gitlab:80/root/dscore-ttc-sample.git` (컨테이너 내부 이름 `gitlab` 사용, `localhost` 가 아님)
+   - `REPO_URL` = `http://gitlab:80/root/nodegoat.git` (컨테이너 내부 이름 `gitlab` 사용, `localhost` 가 아님)
    - `BRANCH` = `main`
    - `ANALYSIS_MODE` = `full` (최초 실행이므로 KB 를 새로 짓는 full 모드)
    - 나머지는 기본값 유지
@@ -969,13 +1071,13 @@ status: SUCCESS
 
 **① GitLab Issue** (가장 먼저 확인) — 개발자가 실제로 받게 되는 최종 산출물:
 
-- URL: [http://localhost:28090/root/dscore-ttc-sample/-/issues](http://localhost:28090/root/dscore-ttc-sample/-/issues)
-- 기대: **Issue #1 제목이 `[CRITICAL] Specify an exception class to catch or reraise the exception`** — §7.1 의 bare except 가 잡혀 GitLab Issue 로 등록됐어야 정상. Issue 본문은 §9 "GitLab Issue 결과물 읽는 법" 구조대로 렌더링되어 있어야 합니다.
+- URL: [http://localhost:28090/root/nodegoat/-/issues](http://localhost:28090/root/nodegoat/-/issues)
+- 기대: `03-정적분석-결과분석-이슈등록` 실행 후 `root/nodegoat` 프로젝트에 새 Issue 가 생성되어야 정상. 제목은 실행 시점의 Sonar 탐지 결과와 LLM 분류에 따라 달라질 수 있지만, 본문은 §9 "GitLab Issue 결과물 읽는 법" 구조대로 렌더링되어 있어야 합니다.
 
 **② SonarQube 대시보드** — 원본 이슈 소스:
 
-- URL: [http://localhost:29000/dashboard?id=dscore-ttc-sample](http://localhost:29000/dashboard?id=dscore-ttc-sample)
-- 기대: "Issues" 탭에 python:S5754 CRITICAL 1 건. 이게 Sonar 원본이고 ①의 GitLab Issue 가 이걸 소스로 LLM 해석까지 붙인 결과.
+- URL: [http://localhost:29000/dashboard?id=nodegoat](http://localhost:29000/dashboard?id=nodegoat)
+- 기대: `nodegoat` 프로젝트가 생성되고 "Issues" 탭에 JavaScript/Node.js 관련 탐지 결과가 표시되어야 정상. ①의 GitLab Issue 는 이 Sonar 원본 이슈를 바탕으로 LLM 해석과 보강 정보를 추가한 결과입니다.
 
 **③ Dify Studio — Knowledge Base 확인** (RAG 실제 데이터가 적재됐는지):
 
@@ -1504,7 +1606,7 @@ PY
 
 | 파라미터 | 기본값 | 설명 |
 |---------|--------|------|
-| `REPO_URL` | `http://gitlab:80/root/dscore-ttc-sample.git` | 컨테이너 내부 이름 `gitlab` |
+| `REPO_URL` | `http://gitlab:80/root/nodegoat.git` | 컨테이너 내부 이름 `gitlab` |
 | `BRANCH` | `main` | 분석 브랜치 |
 | `ANALYSIS_MODE` | `full` | `full` = KB 강제 재빌드 · `commit` = manifest 일치 시 재사용 |
 | `COMMIT_SHA` | `(빈 값)` | 지정 시 그 커밋 고정, 빈 값이면 BRANCH HEAD |
@@ -1599,7 +1701,7 @@ JSONL 각 라인 (= 1 청크) 을 **Dify 의 1 document** 로 업로드:
 
 ```json
 {
-  "repo_url": "http://gitlab:80/root/dscore-ttc-sample.git",
+  "repo_url": "http://gitlab:80/root/nodegoat.git",
   "branch": "main",
   "commit_sha": "e38bd123e0630db4cb5cff78272c4710707eeab3",
   "analysis_mode": "full",
@@ -1638,7 +1740,7 @@ COMMIT_SHA 가 전달된 경우에만 작동:
 1. Git clone → `git checkout ${COMMIT_SHA}` 로 고정 (분석 스냅샷 확정)
 2. Node.js v22 준비 (SonarJS 용, 최초 1 회 캐시)
 3. `withSonarQubeEnv('dscore-sonar')` + `tool 'SonarScanner-CLI'` 로 SonarScanner 실행
-4. Sonar 서버에 분석 리포트 전송 → [http://localhost:29000/dashboard?id=dscore-ttc-sample](http://localhost:29000/dashboard?id=dscore-ttc-sample)
+4. Sonar 서버에 분석 리포트 전송 → [http://localhost:29000/dashboard?id=nodegoat](http://localhost:29000/dashboard?id=nodegoat)
 
 ---
 
@@ -2560,6 +2662,6 @@ bash scripts/run-mac.sh        # 또는 run-wsl2.sh
 - 새 언어 추가 → `pipeline-scripts/repo_context_builder.py` 의 `LANG_CONFIG` 에 tree-sitter grammar 추가.
 
 **이슈·PR 환영**. 개선 아이디어:
-- GitLab 프로젝트 자동 생성 provisioning (현재 수동)
+- GitLab 샘플 프로젝트 `nodegoat` 자동 생성 provisioning
 - Ollama 모델 자동 sync 스크립트 (오프라인 업데이트 파이프라인)
 - Dify 1.14+ 업그레이드 시 workflow YAML 스키마 검증 자동화
