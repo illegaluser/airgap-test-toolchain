@@ -15,12 +15,10 @@ __pycache__/
 # Claude Code 로컬 세션 상태
 .claude/
 
-# code-AI-quality-allinone 빌드 산출물 (README §9 에 gitignored 로 명시)
-# 형제 폴더 playwright-allinone/ 은 별도 정책으로 플러그인을 리포에 포함한다.
+# code-AI-quality-allinone: playwright-allinone 와 동일 정책으로
+# 플러그인 번들은 레포에 포함한다 (airgap 편의성 > 레포 크기).
+# 단, 임시 파일과 반출 패키지는 제외.
 code-AI-quality-allinone/.plugins.txt
-code-AI-quality-allinone/jenkins-plugin-manager.jar
-code-AI-quality-allinone/jenkins-plugins/
-code-AI-quality-allinone/dify-plugins/
 code-AI-quality-allinone/offline-assets/
 
 # static-analysis-samples: 외부 upstream 샘플 레포 (각각 자체 .git). README 참조해 clone.
