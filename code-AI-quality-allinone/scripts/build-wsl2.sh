@@ -8,6 +8,10 @@
 # Dockerfile 위치: 이 폴더의 Dockerfile
 # 결과 이미지: ttc-allinone:wsl2-<tag>
 #
+# WSL2 의 native arch (linux/amd64) 로 legacy builder 가 빌드한다.
+# buildx 는 사용하지 않는다 — 멀티플랫폼 manifest 운영이 없고 Mac/WSL2 각각
+# native 빌드만 하면 되므로 buildx export→load 오버헤드가 낭비였다.
+#
 # 빌드 전 선행 조건:
 #   1) 온라인 연결로 플러그인 다운로드: bash scripts/download-plugins.sh
 #      → jenkins-plugins/, dify-plugins/, jenkins-plugin-manager.jar 생성
@@ -21,7 +25,6 @@ ALLINONE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TAG="${TAG:-dev}"
 IMAGE="${IMAGE:-ttc-allinone:wsl2-${TAG}}"
-PLATFORM="linux/amd64"
 JENKINS_BASE_IMAGE="${JENKINS_BASE_IMAGE:-jenkins/jenkins:2.555.1-lts-jdk21}"
 SONARQUBE_BASE_IMAGE="${SONARQUBE_BASE_IMAGE:-sonarqube:26.4.0.121862-community}"
 DIFY_API_BASE_IMAGE="${DIFY_API_BASE_IMAGE:-langgenius/dify-api:1.13.3}"
@@ -58,7 +61,6 @@ if [ ! -d "$ALLINONE_DIR/dify-plugins" ] || [ -z "$(ls -A "$ALLINONE_DIR/dify-pl
 fi
 
 echo "[build-wsl2] image:      $IMAGE"
-echo "[build-wsl2] platform:   $PLATFORM"
 echo "[build-wsl2] context:    $ALLINONE_DIR"
 echo "[build-wsl2] Dockerfile: $ALLINONE_DIR/Dockerfile"
 echo "[build-wsl2] pinned bases:"
@@ -69,15 +71,9 @@ echo "  Dify Web  = $DIFY_WEB_BASE_IMAGE"
 echo "  Dify Plug = $DIFY_PLUGIN_BASE_IMAGE"
 echo "  GitLab    = $GITLAB_RUNTIME_IMAGE"
 
-docker buildx inspect ttc-allinone-builder >/dev/null 2>&1 || \
-    docker buildx create --name ttc-allinone-builder --use
-
-docker buildx build \
-    --builder ttc-allinone-builder \
-    --platform "$PLATFORM" \
+DOCKER_BUILDKIT=1 docker build \
     -f "$ALLINONE_DIR/Dockerfile" \
     -t "$IMAGE" \
-    --load \
     "$@" \
     "$ALLINONE_DIR"
 
