@@ -108,7 +108,30 @@ EXCLUDE_DIRS = {
     ".git", ".scannerwork", "node_modules", "build", "dist", "out", "target",
     ".idea", ".vscode", ".gradle", ".next", ".nuxt", ".cache", ".venv", "venv",
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    # P1.5 K-1 — 번들/미니파이 자산 경로. caller hub 가 1자 심볼 (`e`,`m`,`a`)
+    # 로 오염되는 주된 원인. nodegoat 실측 기준 caller hub top-10 중 9개가
+    # 이 경로에서 나왔음.
+    "vendor", "vendors", "3rdparty", "third_party", "bower_components",
+    "public/vendor", "assets/vendor",
+    "min", "minified",
 }
+
+
+# P1.5 K-1 — 미니파이 파일명 패턴 (경로엔 vendor 없어도 파일명으로 걸러낸다).
+# `.min.js / .min.css / -min.js / bundle.js / chunk-<hash>.js` 등.
+# 정규식 한 번에 평가. 프로젝트 루트에 `bundle.prod.js` 같은 산출물이 들어있는
+# 경우도 커버.
+import re as _re
+MINIFIED_FILE_PATTERNS = _re.compile(
+    r"(?:"
+    r"\.min\.(?:js|css|mjs)$"
+    r"|-min\.(?:js|css)$"
+    r"|\.bundle\.(?:js|mjs)$"
+    r"|chunk-[0-9a-f]{6,}\.(?:js|mjs)$"
+    r"|\.umd\.(?:js|mjs)$"
+    r")",
+    _re.IGNORECASE,
+)
 
 
 KEY_FILES = [
@@ -117,6 +140,29 @@ KEY_FILES = [
     "pom.xml", "build.gradle", "build.gradle.kts",
     "go.mod", "Cargo.toml", ".env.example",
 ]
+
+
+# P1.5 K-2 — trivial chunk 감지 임계값.
+# body 가 너무 짧거나 content 가 거의 식별자뿐인 경우 "1자 vendor 심볼" 같은
+# 노이즈. BM25 에 문서로 들어가면 흔한 토큰으로 잘못 매칭된다.
+MIN_MEANINGFUL_CODE_CHARS = int(os.environ.get("REPO_CTX_MIN_BODY_CHARS", "20"))
+MIN_MEANINGFUL_NON_WS_LINES = int(os.environ.get("REPO_CTX_MIN_BODY_LINES", "2"))
+
+
+def is_trivial_chunk(code: str) -> bool:
+    """매우 짧거나 문법적 껍데기만 있는 청크를 True 로 판정.
+
+    heuristic:
+      - 전체 body 문자 (공백 제거) < MIN_MEANINGFUL_CODE_CHARS
+      - 비-공백 라인 수 < MIN_MEANINGFUL_NON_WS_LINES
+    """
+    stripped = code.strip()
+    if len(stripped) < MIN_MEANINGFUL_CODE_CHARS:
+        return True
+    non_ws_lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if len(non_ws_lines) < MIN_MEANINGFUL_NON_WS_LINES:
+        return True
+    return False
 
 
 # ─ 언어별 "call site" 추출 — callees 필드용 ──────────────────────────────────
@@ -175,32 +221,87 @@ def walk_symbols(node, node_types: dict):
         yield from walk_symbols(ch, node_types)
 
 
-def guess_test_for(rel_path: str, symbol: str):
-    """테스트 심볼이면 타깃 심볼명 추정 (test_foo → foo).
-
-    경로 기준으로 tests/ test/ __tests__/ 하위이거나, 파일명이 test_X / X_test.py 이거나,
-    심볼명이 test_X 로 시작하면 X 를 반환. 일반 코드면 None.
-    """
+def is_test_location(rel_path: str) -> bool:
+    """P1.5 H-1 — 이 파일이 테스트 디렉토리/파일 규약에 해당하는지."""
     p = Path(rel_path)
     parts_lower = {x.lower() for x in p.parts}
-    in_test_dir = bool(parts_lower & {"tests", "test", "__tests__", "spec"})
+    if parts_lower & {"tests", "test", "__tests__", "spec", "specs", "e2e", "cypress"}:
+        return True
     fname = p.name.lower()
-    is_test_file = (
+    return (
         fname.startswith("test_")
         or fname.endswith("_test.py")
         or fname.endswith(".test.ts")
         or fname.endswith(".spec.ts")
+        or fname.endswith(".test.tsx")
+        or fname.endswith(".spec.tsx")
         or fname.endswith(".test.js")
+        or fname.endswith(".spec.js")
+        or fname.endswith("test.java")  # SomethingTest.java
+        or fname.endswith("tests.java")
     )
-    if not (in_test_dir or is_test_file):
+
+
+def filename_test_candidates(rel_path: str) -> list:
+    """P1.5 H-2 — 테스트 파일명에서 대상 심볼명 후보 추출.
+
+    예: `test/users.js` → ["users", "Users"]
+        `user_test.py` → ["user", "User"]
+        `LoginHandlerTest.java` → ["LoginHandler", "loginHandler"]
+        `auth.spec.ts` → ["auth", "Auth"]
+    heuristic 한계: 파일명 하나에 여러 함수가 있을 수 있어 모든 심볼이 이 후보
+    들과 매칭되는 것은 아님. 역인덱스 단계에서 심볼 이름과 일치하는 것만 실제
+    test_paths 로 연결되므로 false-positive 는 자연히 걸러진다.
+    """
+    p = Path(rel_path)
+    base = p.stem  # extension 제거
+    # test/spec 접미/접두 제거
+    for suffix in (".test", ".spec", "_test", "-test", "_spec", "-spec",
+                   "Test", "Tests"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    for prefix in ("test_", "test-", "Test"):
+        if base.startswith(prefix):
+            base = base[len(prefix):]
+            break
+    base = base.strip("._-")
+    if not base or not base.replace("_", "").replace("-", "").isalnum():
+        return []
+    candidates = {base}
+    # camelCase / PascalCase 변환
+    if base[0].islower():
+        candidates.add(base[0].upper() + base[1:])
+    else:
+        candidates.add(base[0].lower() + base[1:])
+    return sorted(candidates)
+
+
+def guess_test_for(rel_path: str, symbol: str):
+    """테스트 심볼이면 타깃 심볼명 추정.
+
+    P1.5 확장: 테스트 위치라고 판단되면 symbol 이름이 test_X/testX 컨벤션이
+    아니어도 파일명에서 대상을 추정해 돌려준다. 이로써 mocha/jest 의
+    익명 `describe("Foo", fn)` 스타일에서 tree-sitter 가 symbol 을 function /
+    anonymous 로 뽑아도 test_for 가 채워진다. 여러 후보 중 첫 번째.
+
+    일반 코드면 None (fast path).
+    """
+    if not is_test_location(rel_path):
         return None
 
+    # 1) symbol 자체가 test_X / testX 컨벤션인 경우 정확 매칭
     if symbol.startswith("test_"):
         return symbol[5:]
     if symbol.startswith("test"):
         rest = symbol[4:]
         if rest and rest[0].isupper():
             return rest[0].lower() + rest[1:]
+
+    # 2) 파일명 기반 후보 — symbol 이 컨벤션을 따르지 않는 JS/TS 테스트에 유효
+    candidates = filename_test_candidates(rel_path)
+    if candidates:
+        return candidates[0]
     return None
 
 
@@ -257,7 +358,11 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             "callers": [],          # pass 2 에서 채움
             "callees": collect_callees(node, cfg["lang"]),
             "test_paths": [],       # pass 2 에서 채움 (대상 심볼 기준)
-            "is_test": test_for is not None,
+            # P1.5 H-1 — is_test 는 위치 기반으로 결정. test_for (대상 심볼명)
+            # 가 None 이어도 테스트 파일 안의 청크는 is_test=true 가 되어야
+            # build_kb_query 의 "test_for: {fn}" 쿼리 외에도 전역 "is_test: true"
+            # 쿼리로 접근 가능하다.
+            "is_test": is_test_location(rel_path),
             "test_for": test_for,
         })
 
@@ -409,6 +514,11 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
     # pass 1 — 파일별 청크 수집 (메모리 보유, pass 2 역인덱스 구축을 위함).
     # 중대형 레포도 청크 수는 수천~수만 수준, JSON 한 줄 1~5KB → 10~50MB 로 메모리 안전.
     chunks_by_path: dict = {}
+    skipped_trivial = 0  # K-2 통계
+    skipped_dup = 0      # K-3 통계
+    skipped_minified = 0  # K-1 통계 (파일 수준)
+    seen_body_hashes: set = set()  # K-3 전역 중복 감지 — (symbol, body_hash) 키
+    import hashlib
     for file_path in sorted(repo_root.rglob("*")):
         if not file_path.is_file():
             continue
@@ -416,17 +526,37 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             continue
         if file_path.suffix.lower() not in LANG_CONFIG:
             continue
+        # K-1 파일명 기반 minified 제외
+        if MINIFIED_FILE_PATTERNS.search(file_path.name):
+            skipped_minified += 1
+            continue
 
         try:
-            chunks = extract_chunks_from_file(file_path, repo_root, commit_sha)
+            raw_chunks = extract_chunks_from_file(file_path, repo_root, commit_sha)
         except Exception as e:
             print(f"[skip:{file_path.relative_to(repo_root)}] {e}")
             continue
-        if not chunks:
+        if not raw_chunks:
+            continue
+
+        # K-2 trivial skip + K-3 dedup
+        kept = []
+        for ch in raw_chunks:
+            if is_trivial_chunk(ch["code"]):
+                skipped_trivial += 1
+                continue
+            body_hash = hashlib.sha1(ch["code"].encode("utf-8", errors="replace")).hexdigest()
+            key = (ch["symbol"], body_hash)
+            if key in seen_body_hashes:
+                skipped_dup += 1
+                continue
+            seen_body_hashes.add(key)
+            kept.append(ch)
+        if not kept:
             continue
 
         rel_path = str(file_path.relative_to(repo_root))
-        chunks_by_path[rel_path] = chunks
+        chunks_by_path[rel_path] = kept
 
     # pass 2 — callers / test_paths 역인덱스 채움
     build_reverse_indexes(chunks_by_path)
@@ -456,12 +586,17 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
         "total_chunks": total_chunks,
         "total_callers_links": total_callers_links,
         "total_test_links": total_test_links,
+        # K-1/K-2/K-3 통계 — 리포트에서 품질 필터 효과 가시화
+        "skipped_minified_files": skipped_minified,
+        "skipped_trivial_chunks": skipped_trivial,
+        "skipped_duplicate_chunks": skipped_dup,
     }
 
     print(
         f"[repo_context_builder] files={total_files} chunks={total_chunks} "
         f"callers_links={total_callers_links} test_links={total_test_links} "
-        f"commit={commit_sha[:8] or 'n/a'} → {out_dir}"
+        f"skipped(minified_files={skipped_minified}, trivial={skipped_trivial}, "
+        f"dup={skipped_dup}) commit={commit_sha[:8] or 'n/a'} → {out_dir}"
     )
     return total_chunks, stats, chunks_by_path
 

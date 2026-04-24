@@ -185,10 +185,19 @@ workflow:
 
       # ────────────────────────────────────────────────────────────────────
       # Knowledge Retrieval — code-context-kb (bge-m3 hybrid) 에서 top_k=15 조회.
-      # P1 에서 6→15 로 증량 — 후단 context_filter Code 노드가 self-exclusion
-      # (이슈 파일 청크 제거) + 카테고리 분류 (callers / tests / others) 후
-      # 카테고리별 top-3 만 LLM 에 넘기므로, 상위 풀이 넉넉해야 각 카테고리가
-      # 비지 않을 확률이 높다. reranker 는 현재 환경에 미등록이라 off 유지.
+      #
+      # P1.5 R-1 / R-2 개선:
+      #   - reranking_mode='weighted_score' — cross-encoder reranker 모델 없이
+      #     keyword(BM25) vs semantic(벡터) 점수를 가중합해 재정렬. 오프라인
+      #     환경에서 Ollama 가 reranker 모델을 직접 제공하지 않아 `reranking_model`
+      #     모드는 포기. weighted_score 는 reranker 서버 의존이 없다.
+      #   - semantic 0.7 / keyword 0.3 — 코드 맥락 검색은 의미 매칭이 정확
+      #     키워드 매칭보다 약간 유리. BM25 를 완전히 버리지 않는 이유는
+      #     build_kb_query 가 쏘는 구조화 라인 (`callers: foo`, `is_test: true`)
+      #     이 BM25 에 강하게 매칭되기 때문.
+      #   - score_threshold=0.35 — 무관한 상위 청크 배제. 경험상 0.3~0.4 에서
+      #     "전혀 다른 파일" 이 컷오프된다. 너무 높이면 tests/callers 버킷이
+      #     비어 context_filter 가 빈 상태로 빠지므로 보수적으로 0.35.
       # ────────────────────────────────────────────────────────────────────
       - id: knowledge_retrieval
         type: custom
@@ -197,7 +206,7 @@ workflow:
           y: 200
         data:
           type: knowledge-retrieval
-          title: Code KB 검색
+          title: Code KB 검색 (weighted reranking)
           query_variable_selector:
             - start
             - kb_query
@@ -205,12 +214,19 @@ workflow:
           retrieval_mode: multiple
           multiple_retrieval_config:
             top_k: 15
-            score_threshold_enabled: false
-            score_threshold: 0.0
-            reranking_enable: false
-            # Dify 1.13 pydantic: reranking_mode 는 string 필수 (null 금지).
-            # reranking_enable=false 일 때도 빈 문자열로 명시.
-            reranking_mode: ''
+            score_threshold_enabled: true
+            score_threshold: 0.35
+            reranking_enable: true
+            reranking_mode: weighted_score
+            weights:
+              weight_type: customized
+              keyword_setting:
+                keyword_weight: 0.3
+              vector_setting:
+                vector_weight: 0.7
+                embedding_provider_name: langgenius/ollama/ollama
+                embedding_model_name: bge-m3
+            # reranker 모델 경로 — weighted_score 모드에선 미사용. 스키마 충족용 빈 값.
             reranking_model:
               provider: ''
               model: ''
@@ -249,6 +265,13 @@ workflow:
             def main(retrieval_results, issue_file_path: str) -> dict:
                 """RAG 결과 후처리 — self-exclusion + 카테고리 분류 + 섹션화.
 
+                P1.5 확장:
+                  - C-1: 각 청크의 retrieval score 를 섹션 라벨에 포함해 LLM 이
+                         상위 매치부터 신뢰하도록 힌트.
+                  - C-3: context_size (버킷 합계) 와 has_context boolean 을
+                         output 에 노출 → json_parser 가 confidence 자동 다운그레이드.
+                  - 버킷별 stats 를 별도 output 으로 내보내 M-1 진단 리포트에 사용.
+
                 retrieval_results: Dify knowledge_retrieval.result — list[dict].
                   각 원소: {"content": "<code + '---' + metadata footer>",
                            "title": "...", "metadata": {...}, "score": float, ...}
@@ -258,12 +281,6 @@ workflow:
                 issue_file = (issue_file_path or "").strip()
 
                 def parse_footer(content: str):
-                    """청크 content 를 body + metadata dict 로 분리.
-
-                    doc_processor._chunk_to_document 가 code 뒤에 '\\n---\\n' 을 넣고
-                    그 뒤에 'key: value' 라인을 박는다. rsplit 으로 마지막 '---' 블록
-                    만 footer 로 간주.
-                    """
                     meta = {}
                     body = content
                     if "---" in content:
@@ -278,12 +295,20 @@ workflow:
                     return body, meta
 
                 buckets = {"callers": [], "tests": [], "others": []}
+                excluded_self = 0
                 for r in results:
-                    content = (r or {}).get("content") or ""
+                    r = r or {}
+                    content = r.get("content") or ""
+                    score = r.get("score")
+                    try:
+                        score_val = float(score) if score is not None else None
+                    except (TypeError, ValueError):
+                        score_val = None
                     body, meta = parse_footer(content)
                     chunk_path = meta.get("path", "")
                     if issue_file and chunk_path == issue_file:
-                        continue  # self-exclusion
+                        excluded_self += 1
+                        continue
                     if meta.get("is_test") == "true":
                         bucket = "tests"
                     elif meta.get("callers"):
@@ -297,6 +322,7 @@ workflow:
                         "callers": meta.get("callers", ""),
                         "test_paths": meta.get("test_paths", ""),
                         "body": body,
+                        "score": score_val,
                     })
 
                 def render(title: str, items, max_items: int = 3, max_body_lines: int = 20) -> str:
@@ -304,7 +330,8 @@ workflow:
                         return ""
                     out = [f"### {title}"]
                     for it in items[:max_items]:
-                        head = f"- `{it['path']}::{it['symbol']}`"
+                        score_tag = f" [score={it['score']:.2f}]" if it.get("score") is not None else ""
+                        head = f"- `{it['path']}::{it['symbol']}`{score_tag}"
                         hints = []
                         if it.get("callers"):
                             hints.append(f"callers={it['callers'][:80]}")
@@ -328,9 +355,44 @@ workflow:
                 if s: sections.append(s)
 
                 text = "\n\n".join(sections) or "(관련 RAG 청크 없음 — self-exclusion 후 매칭 0)"
-                return {"filtered_context": text}
+
+                total_kept = sum(len(v) for v in buckets.values())
+                used_count = sum(min(len(v), 3) for v in buckets.values())
+                has_context = used_count > 0
+                # M-1 + M-2 — analyzer.py 가 이 stats 로 diagnostic.jsonl 을 기록하고
+                # used_items 를 citation 측정 (LLM 답변이 이 path/symbol 을 실제로
+                # 인용했는지) 의 ground truth 로 사용한다.
+                import json as _json
+                used_items = []
+                for bucket_name, items in buckets.items():
+                    for it in items[:3]:
+                        used_items.append({
+                            "bucket": bucket_name,
+                            "path": it["path"],
+                            "symbol": it["symbol"],
+                            "score": it["score"],
+                        })
+                stats_json = _json.dumps({
+                    "retrieved_total": len(results),
+                    "excluded_self": excluded_self,
+                    "kept_total": total_kept,
+                    "used_total": used_count,
+                    "buckets": {k: len(v) for k, v in buckets.items()},
+                    "used_per_bucket": {k: min(len(v), 3) for k, v in buckets.items()},
+                    "used_items": used_items,
+                }, ensure_ascii=False)
+
+                return {
+                    "filtered_context": text,
+                    "has_context": has_context,
+                    "context_stats_json": stats_json,
+                }
           outputs:
             filtered_context:
+              type: string
+            has_context:
+              type: boolean
+            context_stats_json:
               type: string
 
       # ────────────────────────────────────────────────────────────────────
@@ -449,15 +511,34 @@ workflow:
           y: 200
         data:
           type: code
-          title: JSON 파싱 (deterministic)
+          title: JSON 파싱 (deterministic) + C-3 confidence 가드
           variables:
             - variable: llm_text
               value_selector:
                 - llm_analyzer
                 - text
+            - variable: has_context
+              value_selector:
+                - context_filter
+                - has_context
+            - variable: context_stats_json
+              value_selector:
+                - context_filter
+                - context_stats_json
           code_language: python3
           code: |
-            def main(llm_text: str) -> dict:
+            def main(llm_text: str, has_context: bool, context_stats_json: str) -> dict:
+                """
+                LLM 의 JSON 응답을 파싱하고, context_filter 가 "관련 청크 없음"
+                (has_context=false) 을 보고했다면 confidence 를 "low" 로 강제.
+
+                P1.5 C-3: LLM 이 RAG 정보 없이도 자신 있게 "confidence=high" 를
+                반환하는 경향을 결정적 로직으로 차단. 이 다운그레이드는 labels
+                에도 "context:empty" 태그로 반영해 downstream (GitLab Issue
+                creator) 이 시각적으로 구분 가능.
+
+                반환: 기존 8개 필드 + context_stats_json (M-1 진단 리포트용).
+                """
                 import json, re
                 defaults = {
                     "title": "",
@@ -470,12 +551,8 @@ workflow:
                     "suggested_diff": "",
                 }
                 s = (llm_text or "").strip()
-                # 선행 prose 와 코드펜스 제거
                 s = re.sub(r'^```(?:json)?\s*', '', s, flags=re.MULTILINE)
                 s = re.sub(r'\s*```\s*$', '', s, flags=re.MULTILINE)
-                # 첫 `{` 부터 마지막 `}` 까지 greedy 매칭 (balanced 매칭 아님).
-                # LLM 이 본문 뒤에 두 번째 객체를 출력하면 둘을 묶어 파싱 실패할 수
-                # 있으나, 그 경우 try/except → defaults 로 안전 fallback.
                 m = re.search(r'\{[\s\S]*\}', s)
                 if m:
                     s = m.group(0)
@@ -490,15 +567,22 @@ workflow:
                     v = o.get(k)
                     if v is None:
                         continue
-                    # classification 은 빈 문자열 무시 (기본값 유지)
                     if k == "classification" and v == "":
                         continue
                     out[k] = v
-                # labels 정규화
                 if isinstance(out["labels"], str):
                     out["labels"] = [out["labels"]] if out["labels"] else []
                 if not isinstance(out["labels"], list):
                     out["labels"] = []
+
+                # C-3: has_context=false 면 confidence 자동 다운그레이드
+                if not has_context:
+                    out["confidence"] = "low"
+                    if "context:empty" not in out["labels"]:
+                        out["labels"].append("context:empty")
+
+                # M-1 진단용 passthrough — End 노드가 그대로 반환, analyzer.py 가 수집
+                out["context_stats_json"] = context_stats_json or ""
                 return out
           outputs:
             title:
@@ -516,6 +600,8 @@ workflow:
             confidence:
               type: string
             suggested_diff:
+              type: string
+            context_stats_json:
               type: string
 
       # ────────────────────────────────────────────────────────────────────
@@ -570,4 +656,11 @@ workflow:
               value_selector:
                 - json_parser
                 - suggested_diff
+              value_type: string
+            # P1.5 M-1 — per-이슈 진단 리포트가 수집하는 context_filter 통계.
+            # analyzer.py 가 이 JSON 문자열을 파싱해 diagnostic.jsonl 에 기록.
+            - variable: context_stats_json
+              value_selector:
+                - json_parser
+                - context_stats_json
               value_type: string
