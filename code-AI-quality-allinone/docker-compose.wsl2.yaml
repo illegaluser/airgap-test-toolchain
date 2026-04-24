@@ -4,6 +4,8 @@
 # 구성:
 #   ttc-allinone : 통합 이미지 (Jenkins + Dify + SonarQube + PG/Redis/Qdrant)
 #   gitlab       : GitLab CE 공식 이미지 (분리 서비스, 파이프라인 2/3 대상)
+#   ttc-sandbox  : Dify Code 노드 격리 실행 sandbox (Dify Workflow 의 Code
+#                  노드들이 의존). 통합 이미지에는 sandbox binary 가 없어 별도.
 #
 # 전제:
 #   - Docker Desktop + WSL2 백엔드
@@ -41,6 +43,9 @@ services:
       # provision.sh 가 GitLab root 비밀번호 설정 + PAT 발급에 사용
       GITLAB_URL_INTERNAL: "http://gitlab:80"
       GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}
+      # Dify Code 노드 sandbox endpoint. ttc-sandbox 컨테이너로 라우팅.
+      CODE_EXECUTION_ENDPOINT: "http://ttc-sandbox:8194"
+      CODE_EXECUTION_API_KEY: "${SANDBOX_API_KEY:-dify-sandbox}"
     ports:
       - "28080:28080"
       - "28081:28081"
@@ -64,6 +69,34 @@ services:
     depends_on:
       gitlab:
         condition: service_started
+      ttc-sandbox:
+        condition: service_started
+
+  ttc-sandbox:
+    # Dify 1.13.x 호환 sandbox (langgenius/dify-sandbox:0.2.10).
+    # ttc-allinone 의 dify-api 가 CODE_EXECUTION_ENDPOINT 로 호출.
+    image: ${SANDBOX_IMAGE:-langgenius/dify-sandbox:0.2.10}
+    container_name: ttc-sandbox
+    restart: unless-stopped
+    platform: linux/amd64
+    environment:
+      API_KEY: "${SANDBOX_API_KEY:-dify-sandbox}"
+      GIN_MODE: "release"
+      WORKER_TIMEOUT: "15"
+      ENABLE_NETWORK: "true"
+      SANDBOX_PORT: "8194"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8194/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks:
+      - ttc-net
 
   gitlab:
     image: ${GITLAB_IMAGE:-gitlab/gitlab-ce:18.11.0-ce.0}

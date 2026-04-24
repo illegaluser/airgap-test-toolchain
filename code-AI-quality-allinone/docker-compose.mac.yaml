@@ -4,6 +4,9 @@
 # 구성:
 #   ttc-allinone : 통합 이미지 (Jenkins + Dify + SonarQube + PG/Redis/Qdrant)
 #   gitlab       : GitLab CE 공식 이미지 (분리 서비스)
+#   ttc-sandbox  : Dify Code 노드 격리 실행 sandbox (Dify Workflow 의 context_filter
+#                  / json_parser 같은 Code 노드가 의존). 통합 이미지에는 sandbox
+#                  binary 가 없어 별도 컨테이너로 분리.
 #
 # 전제:
 #   - Docker Desktop for Mac (Apple Silicon 기본)
@@ -38,6 +41,10 @@ services:
       # 호스트 디스크 영향에서 분리. PG 에 있는 Sonar metadata 는 영속.
       # overlay 이므로 `docker compose down` 후 인덱스는 재생성.
       SONAR_DATA_HOST: "${SONAR_DATA_HOST:-/var/lib/sonarqube_data}"
+      # Dify Code 노드 sandbox endpoint. ttc-sandbox 컨테이너로 라우팅.
+      # entrypoint.sh 가 supervisord 환경으로 상속 → dify-api 가 자동 사용.
+      CODE_EXECUTION_ENDPOINT: "http://ttc-sandbox:8194"
+      CODE_EXECUTION_API_KEY: "${SANDBOX_API_KEY:-dify-sandbox}"
     ports:
       - "28080:28080"
       - "28081:28081"
@@ -61,6 +68,35 @@ services:
     depends_on:
       gitlab:
         condition: service_started
+      ttc-sandbox:
+        condition: service_started
+
+  ttc-sandbox:
+    # Dify 1.13.x 호환 sandbox. langgenius/dify-sandbox:0.2.10 기준.
+    # ttc-allinone 의 dify-api 가 CODE_EXECUTION_ENDPOINT 로 호출.
+    # API_KEY 는 dify-api 와 일치해야 한다 (compose env 의 CODE_EXECUTION_API_KEY).
+    image: ${SANDBOX_IMAGE:-langgenius/dify-sandbox:0.2.10}
+    container_name: ttc-sandbox
+    restart: unless-stopped
+    platform: linux/arm64
+    environment:
+      API_KEY: "${SANDBOX_API_KEY:-dify-sandbox}"
+      GIN_MODE: "release"
+      WORKER_TIMEOUT: "15"
+      ENABLE_NETWORK: "true"
+      SANDBOX_PORT: "8194"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8194/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks:
+      - ttc-net
 
   gitlab:
     image: ${GITLAB_IMAGE:-gitlab/gitlab-ce:18.11.0-ce.0}

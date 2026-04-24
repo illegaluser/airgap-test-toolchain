@@ -2,8 +2,8 @@
 # ============================================================================
 # TTC 4-Pipeline All-in-One — 오프라인 머신 이미지 로드 헬퍼
 #
-# offline-prefetch.sh 가 산출한 두 tarball (ttc-allinone + gitlab) 을 일괄
-# docker load 한다. 폐쇄망 머신에서 실행한다.
+# offline-prefetch.sh 가 산출한 세 tarball (ttc-allinone + gitlab + dify-sandbox)
+# 을 일괄 docker load 한다. 폐쇄망 머신에서 실행한다.
 #
 # Usage:
 #   bash scripts/offline-load.sh --arch amd64
@@ -44,7 +44,7 @@ done
 echo ""
 echo "[offline-load] 완료. 설치된 이미지:"
 docker images --format '  {{.Repository}}:{{.Tag}}\t{{.Size}}' \
-    | grep -E 'ttc-allinone|gitlab/gitlab-ce|yrzr/gitlab-ce-arm64v8' || true
+    | grep -E 'ttc-allinone|gitlab/gitlab-ce|yrzr/gitlab-ce-arm64v8|dify-sandbox' || true
 
 echo ""
 echo "[offline-load] 다음: 폐쇄망에서 compose up"
