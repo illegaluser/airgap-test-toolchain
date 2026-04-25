@@ -311,9 +311,61 @@ def _git_context(repo_root: str, rel_path: str, line: int) -> str:
             parts.append(f"committed_at(epoch)={committed}")
         if log_line:
             parts.append(f"last_commit: {log_line}")
+
+        # Phase E E3 — 함수 라인 범위의 변경 이력 (최대 5개) + 같은 file 의 최근 5개 commit.
+        # git log -L 은 함수 변경 이력을 추적해 "이 코드가 왜 이렇게 작성됐나" 의 단서 제공.
+        try:
+            log_l = subprocess.run(
+                ["git", "-C", repo_root, "log", "-L",
+                 f"{line},+1:{rel_path}",
+                 "--no-patch", "--pretty=%h|%ar|%an|%s", "-5"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if log_l.returncode == 0 and log_l.stdout.strip():
+                history_lines = [
+                    ln.strip() for ln in log_l.stdout.splitlines()
+                    if ln.strip() and "|" in ln
+                ][:5]
+                if history_lines:
+                    parts.append("function_history:")
+                    for h in history_lines:
+                        parts.append(f"  - {h}")
+        except Exception:
+            pass
         return "\n".join(parts)
     except Exception:
         return ""
+
+
+def _similar_rule_history(repo_root: str, rule_key: str, limit: int = 3) -> list:
+    """Phase E E3 — 같은 rule_key 가 과거 commit 메시지에서 fix 된 이력 탐색.
+
+    GitLab Issue 본문 / commit 메시지에 sonar 룰 키가 들어 있으면 매칭.
+    예: "fix: javascript:S6606 ..." 같은 패턴.
+
+    반환: ["abc1234 2 weeks ago alice fix Sonar S6606 in profile-dao", ...]
+    """
+    if not repo_root or not rule_key or not Path(repo_root).is_dir():
+        return []
+    try:
+        # rule_key 의 short form (`S1234`) 만 검색 — `javascript:S1234` 의 콜론은
+        # git log --grep 정규식에서 escape 필요. short form 이 더 매칭 잘 됨.
+        short = rule_key.split(":")[-1] if ":" in rule_key else rule_key
+        if not short or len(short) < 3:
+            return []
+        run = subprocess.run(
+            ["git", "-C", repo_root, "log",
+             f"--grep={short}", "--pretty=%h|%ar|%an|%s", f"-{limit}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if run.returncode == 0 and run.stdout.strip():
+            return [
+                ln.strip() for ln in run.stdout.splitlines()
+                if ln.strip() and "|" in ln
+            ][:limit]
+    except Exception:
+        pass
+    return []
 
 
 def _load_callgraph_index(callgraph_dir: str) -> dict:
@@ -365,6 +417,116 @@ def _direct_callers(cg_index: dict, symbol: str, limit: int = 10) -> list:
         if len(out) >= limit:
             break
     return out
+
+
+def _depth2_callers(cg_index: dict, symbol: str, max_d1: int = 5, max_d2: int = 5) -> dict:
+    """Phase E E1 — 영향 범위 추적용 depth-2 caller 그래프.
+
+    enclosing 함수 → 직접 caller (depth 1) → caller 의 caller (depth 2). 답변이
+    "이 함수 변경 시 어디까지 영향" 을 더 정확히 추적할 수 있도록 LLM 프롬프트에
+    구조화 텍스트로 주입할 데이터.
+
+    반환: {
+      "depth_1": [...],  # 직접 caller (path::symbol)
+      "depth_2": [...],  # 그 caller 들의 caller (depth 2)
+    }
+    """
+    if not symbol or not cg_index:
+        return {"depth_1": [], "depth_2": []}
+    d1 = _direct_callers(cg_index, symbol, limit=max_d1)
+    seen_d2 = set(d1) | {symbol}  # self / d1 중복 차단
+    d2 = []
+    for ref in d1:
+        # ref = "path::caller_symbol" — caller symbol 만 추출
+        caller_sym = ref.rsplit("::", 1)[-1] if "::" in ref else ref
+        if not caller_sym or caller_sym == symbol:
+            continue
+        for r in cg_index.get(caller_sym, []):
+            if r in seen_d2:
+                continue
+            seen_d2.add(r)
+            d2.append(r)
+            if len(d2) >= max_d2:
+                break
+        if len(d2) >= max_d2:
+            break
+    return {"depth_1": d1, "depth_2": d2}
+
+
+def _build_project_overview(repo_root: str, max_chars: int = 2400) -> str:
+    """Phase E E2-lite — 프로젝트 메타 정보를 한 텍스트 블록으로 묶어 LLM 프롬프트에
+    상시 첨부. 별도 KB 분리 없이 README / CONTRIBUTING / package.json 의 핵심만.
+
+    수집 우선순위:
+      1. package.json 의 name + description + 주요 dependencies (10개)
+      2. README.md 의 첫 1500자 (제목 + 개요 부분)
+      3. CONTRIBUTING.md 의 첫 500자
+
+    cap: 2400자. LLM 프롬프트 토큰 부담 < 1KB.
+    """
+    if not repo_root or not Path(repo_root).is_dir():
+        return ""
+    parts = []
+    root = Path(repo_root)
+
+    # 1) package.json — 의존성 + 설명
+    pkg_path = root / "package.json"
+    if pkg_path.is_file():
+        try:
+            pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+            line = []
+            if pkg.get("name"):
+                line.append(f"name: {pkg['name']}")
+            if pkg.get("description"):
+                line.append(f"desc: {pkg['description'][:200]}")
+            deps = list((pkg.get("dependencies") or {}).keys())[:10]
+            if deps:
+                line.append(f"deps: {', '.join(deps)}")
+            if line:
+                parts.append("[package.json] " + " · ".join(line))
+        except Exception:
+            pass
+
+    # Python pyproject.toml fallback
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file() and not any("package.json" in p for p in parts):
+        try:
+            txt = pyproject.read_text(encoding="utf-8")[:600]
+            parts.append(f"[pyproject.toml]\n{txt}")
+        except Exception:
+            pass
+
+    # 2) README.md
+    for name in ("README.md", "README.rst", "README.txt", "Readme.md"):
+        p = root / name
+        if p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore").strip()
+                # 첫 비-빈 1500자
+                if len(txt) > 1500:
+                    txt = txt[:1500] + "\n... (생략)"
+                parts.append(f"[README]\n{txt}")
+            except Exception:
+                pass
+            break
+
+    # 3) CONTRIBUTING.md
+    for name in ("CONTRIBUTING.md", "CONTRIBUTING.rst", "CONTRIBUTING.txt"):
+        p = root / name
+        if p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore").strip()
+                if len(txt) > 500:
+                    txt = txt[:500] + "..."
+                parts.append(f"[CONTRIBUTING]\n{txt}")
+            except Exception:
+                pass
+            break
+
+    overview = "\n\n".join(parts)
+    if len(overview) > max_chars:
+        overview = overview[:max_chars] + "\n... (생략)"
+    return overview
 
 
 def _classify_severity(severity: str) -> tuple:
@@ -590,6 +752,28 @@ def main():
     if cg_index:
         print(f"[INFO] callgraph index loaded: {len(cg_index)} callees", file=sys.stderr)
 
+    # Phase E E2-lite — 프로젝트 개요 1회 로드 (모든 이슈 분석에 동일 첨부).
+    # exporter 출력 JSON 의 metadata 섹션에 들어가 analyzer 가 모든 호출에 재사용.
+    project_overview = _build_project_overview(args.repo_root)
+    if project_overview:
+        print(f"[INFO] project_overview 로드: {len(project_overview)}자", file=sys.stderr)
+
+    # Phase E E5 — 같은 rule_key 의 다른 위치 사전 집계 (현재 스캔 범위 내).
+    # 같은 룰이 N곳에서 발생하면 LLM 이 "프로젝트 전반의 패턴" 으로 인식 가능.
+    rule_to_locations: dict = {}
+    for issue in issues:
+        rk = issue.get("rule", "")
+        if not rk:
+            continue
+        comp = issue.get("component", "")
+        ln = issue.get("line") or (issue.get("textRange") or {}).get("startLine") or 0
+        rule_to_locations.setdefault(rk, []).append({
+            "key": issue.get("key"),
+            "component": comp,
+            "relative_path": _relative_path_from_component(comp, args.project_key),
+            "line": int(ln) if ln else 0,
+        })
+
     # ---------------------------------------------------------------
     # [3단계] 각 이슈에 대해 룰 정보 + 소스 코드 보강(Enrichment)
     # ---------------------------------------------------------------
@@ -597,6 +781,8 @@ def main():
     # 동일한 규칙 키에 대한 중복 API 호출을 방지하는 캐시입니다.
     # 프로젝트에서 같은 규칙 위반이 수십~수백 건 발생할 수 있기 때문입니다.
     rule_cache = {}
+    # Phase E E3 — 같은 rule_key 의 commit 이력 캐시 (rule 별 1회만 git log 호출).
+    similar_fix_cache: dict = {}
 
     for issue in issues:
         key = issue.get("key")              # SonarQube 이슈 고유 키
@@ -625,9 +811,20 @@ def main():
         enclosing_symbol = enc_meta["symbol"]
         enclosing_lines = enc_meta["lines"]
 
-        # --- 3-d. Step B: git context + direct_callers + severity routing + cluster_key ---
+        # --- 3-d. Step B + Phase E: git context + callers + severity + cluster ---
         git_ctx = _git_context(args.repo_root, rel_path, line)
         callers = _direct_callers(cg_index, enclosing_symbol)
+        # Phase E E1 — depth-2 caller graph (영향 범위 확장)
+        graph = _depth2_callers(cg_index, enclosing_symbol)
+        # Phase E E3 — 같은 rule 의 과거 fix commit (rule 별 캐시)
+        if rule_key not in similar_fix_cache:
+            similar_fix_cache[rule_key] = _similar_rule_history(args.repo_root, rule_key)
+        similar_fixes = similar_fix_cache[rule_key]
+        # Phase E E5 — 같은 rule 의 다른 위치 (자기 자신 제외, 현재 스캔 범위 내)
+        similar_locations = [
+            loc for loc in rule_to_locations.get(rule_key, [])
+            if loc.get("key") != key
+        ][:5]
         severity = (issue.get("severity") or rule_cache[rule_key].get("severity", "") or "").upper()
         judge_model, skip_llm = _classify_severity(severity)
         cluster_k = _cluster_key(rule_key, enclosing_symbol, component)
@@ -670,6 +867,10 @@ def main():
             "severity": severity,                     # clustering/creator 용 top-level 복사
             # affected_locations 은 _apply_clustering 에서 채움 (대표 1건만 비지 않음)
             "affected_locations": [],
+            # Phase E 신규 필드
+            "depth2_callers": graph["depth_2"],        # E1 — 그 caller 들의 caller (영향 범위 depth 2)
+            "git_history_similar": similar_fixes,      # E3 — 같은 rule 의 과거 commit fix 이력
+            "similar_rule_locations": similar_locations,  # E5 — 같은 rule 의 다른 위치 (현재 스캔)
         })
 
     # ---------------------------------------------------------------
@@ -696,8 +897,18 @@ def main():
     # 전체 enriched 이슈를 하나의 JSON 파일로 저장합니다.
     # 다음 단계(dify_sonar_issue_analyzer.py)가 이 파일을 입력으로 사용합니다.
     # ---------------------------------------------------------------
+    # Phase E E2-lite — metadata 섹션에 project_overview 등 모든 이슈에 공통인 정보를
+    # 한 번만 기록. analyzer 가 metadata 를 읽어 모든 LLM 호출에 동일 첨부.
+    output_payload = {
+        "metadata": {
+            "project_overview": project_overview,
+            "commit_sha": args.commit_sha or "",
+            "project_key": args.project_key,
+        },
+        "issues": filtered,
+    }
     with open(args.output, "w", encoding="utf-8") as f:
-        json.dump({"issues": filtered}, f, ensure_ascii=False, indent=2)
+        json.dump(output_payload, f, ensure_ascii=False, indent=2)
 
     print(f"[OK] Exported {len(filtered)} issues (from {len(enriched)} pre-cluster, {skipped} skipped by diff-mode).", file=sys.stdout)
 
