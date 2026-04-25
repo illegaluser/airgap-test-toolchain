@@ -151,6 +151,73 @@ def _short_sha(sha: str, n: int = 8) -> str:
     return sha[:n] if sha else ""
 
 
+# ─ Rule 설명 한글 번역 (Ollama gemma4) ────────────────────────────────────
+# rule_key 기준 module-level dict 캐시. 같은 룰이 여러 이슈에서 반복돼도 1회만 번역.
+# 번역 실패 / Ollama 부재 / 빈 입력 시 graceful fallback (원문 영어 그대로 반환).
+# 번역 결과는 한국어로만 GitLab Issue 본문에 노출 — 원문은 SonarQube 링크에서 확인.
+_rule_translation_cache: dict = {}
+
+
+def _translate_rule_to_korean(rule_key: str, rule_desc: str,
+                              ollama_base_url: str, ollama_model: str,
+                              timeout: int = 60) -> str:
+    """Sonar 룰 설명 (보통 영어) 을 한국어로 번역. 실패 시 원문 반환.
+
+    캐시 키: rule_key — 같은 룰은 다수 이슈에서 동일 설명이라 1회 번역 후 재사용.
+    Ollama API: POST {base}/api/chat (Ollama 표준).
+    """
+    if not rule_desc or not rule_desc.strip():
+        return rule_desc
+    if not ollama_base_url or not ollama_model:
+        return rule_desc
+    if rule_key in _rule_translation_cache:
+        return _rule_translation_cache[rule_key]
+
+    # 너무 긴 설명은 cap (Ollama 추론 시간 보호).
+    src = rule_desc.strip()[:4000]
+    system_msg = (
+        "당신은 SonarQube 정적분석 룰 설명을 한국어로 번역하는 번역기입니다.\n"
+        "규칙:\n"
+        "- 코드 블록 (```...```) 과 인라인 코드 (`...`) 는 절대 변경하지 않고 그대로 유지.\n"
+        "- HTML 태그가 있으면 그대로 유지하되 안의 텍스트만 번역.\n"
+        "- 자연스러운 한국어 — 직역 X, 의역 OK.\n"
+        "- 머리말 (예: '번역:', '한국어:'), 꼬리말, 메타 설명 모두 금지. 번역 본문만 출력.\n"
+        "- '비준수 코드 예제' / '준수 솔루션' 같은 SonarQube 표준 용어는 그대로 사용."
+    )
+    body = {
+        "model": ollama_model,
+        "messages": [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": src},
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 2048,
+        },
+    }
+    url = ollama_base_url.rstrip("/") + "/api/chat"
+    try:
+        req = Request(
+            url, method="POST",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        translated = (data.get("message", {}) or {}).get("content", "").strip()
+        if not translated or len(translated) < 20:
+            # 번역이 너무 짧거나 빈 응답 — 실패로 간주
+            _rule_translation_cache[rule_key] = rule_desc
+            return rule_desc
+        _rule_translation_cache[rule_key] = translated
+        return translated
+    except Exception as e:
+        print(f"[rule-translate:WARN] {rule_key} — {e} — 원문 유지", file=sys.stderr)
+        _rule_translation_cache[rule_key] = rule_desc
+        return rule_desc
+
+
 def _sonar_add_comment(sonar_host: str, sonar_token: str, issue_key: str,
                        text: str, timeout: int = 30) -> tuple:
     """SonarQube `POST /api/issues/add_comment` 으로 LLM fp_reason 을 코멘트로 부착.
@@ -656,7 +723,14 @@ def render_issue_body(row: dict, args) -> str:
 
     rule_full = ""
     if rule_desc:
-        rule_full = f"**Rule 전체 설명:**\n\n{rule_desc.strip()}"
+        # 한글 번역 (Ollama gemma4) — rule_key 캐시 + 실패 시 원문 fallback.
+        # 사용자 결정: 영문 원문은 GitLab Issue 에 노출 X (SonarQube 링크에서 확인 가능).
+        translated = _translate_rule_to_korean(
+            rule_key, rule_desc,
+            ollama_base_url=getattr(args, "ollama_base_url", "") or "",
+            ollama_model=getattr(args, "ollama_model", "") or "",
+        )
+        rule_full = f"**Rule 전체 설명 (한글):**\n\n{translated.strip()}"
 
     link_lines = []
     if sonar_public_url:
@@ -766,6 +840,13 @@ def main() -> int:
     ap.add_argument("--sonar-token", default="")
     # Step D — footer 의 `(<mode> scan)` 표기. 체인 Job 이 전달.
     ap.add_argument("--analysis-mode", default="")
+    # Rule 설명 한글 번역 (Ollama gemma4). 빈 값이면 번역 skip → 원문(영어) 유지.
+    # rule_key 기준 dict 캐시로 같은 룰은 1회만 호출.
+    ap.add_argument("--ollama-base-url", default="",
+                    help="Ollama API base URL (예: http://host.docker.internal:11434). "
+                         "비어있으면 rule 번역 skip.")
+    ap.add_argument("--ollama-model", default="gemma4:e4b",
+                    help="Ollama 모델 이름 (rule 번역용)")
     args = ap.parse_args()
 
     # GitLab API 인증 헤더

@@ -576,7 +576,7 @@ workflow:
                 {
                   "title": "<한줄 요약 제목, 80자 이내>",
                   "labels": ["<Severity>", "<Type>", "<추가 도메인 태그>"],
-                  "impact_analysis_markdown": "<markdown 3~6줄. 이 이슈가 실제 동작에 어떤 영향을 미치는지.>",
+                  "impact_analysis_markdown": "<markdown 최소 10 문장. RAG 컨텍스트에 근거한 4-구조: ① 문제의 본질 ② 발생 맥락 ③ 영향 범위 ④ 권장 방향. 자세한 규칙은 아래.>",
                   "suggested_fix_markdown": "<markdown. 케이스에 따라 코드펜스 또는 자연어 설명. 아래 상호배타 규칙 참조.>",
                   "classification": "<true_positive | false_positive | wont_fix>",
                   "fp_reason": "<classification=false_positive 일 때만 비지 않음. 왜 오탐인지 1-2줄. 아니면 빈 문자열 \"\">",
@@ -591,19 +591,35 @@ workflow:
                 - Rule 전체 설명도 다시 쓰지 말 것. 하단에 별도 접기 섹션으로 렌더링됨.
 
                 - impact_analysis_markdown:
-                    * 호출 관계 · 테스트 연결 · 프로젝트 관행 등 해석이 필요한 내용만.
-                    * 3~6줄 (6줄 초과 금지). 헤딩(##) 사용 금지.
+                    * **목적**: PM·개발자가 이 한 섹션만 읽고도 "왜 문제이고, 어디서 발생하며,
+                      어떤 영향이 있고, 어떤 방향으로 고쳐야 하는지" 종합 이해 가능해야 함.
+                    * **분량 — 최소 10 문장 이상 (필수 내용 모두 포함이 우선)**.
+                      너무 짧으면 가치 부족. 너무 길게 사족 늘리지는 말 것.
+                    * **모든 내용은 RAG 컨텍스트 (프로젝트 컨텍스트 + 정적 메타 + dependency graph
+                      + git history + similar locations + project overview) 에 근거**.
+                      추측이나 일반론 금지 — 근거 청크에서 끌어온 사실로만 구성.
+                    * **4-구조 의무 (모두 포함)**:
+                        1. **문제의 본질** — Sonar 룰이 정확히 무엇을 지적하는가. 룰 설명 그대로
+                           복붙 X, 이 코드의 맥락에 맞춰 풀어쓰기.
+                        2. **발생 맥락** — 이 함수/파일이 프로젝트에서 어떤 역할인가, 어떤 흐름의
+                           일부인가, 호출 관계와 테스트 연결은 어떤 모양인가 (RAG 청크의 path/symbol
+                           을 backtick 으로 인용).
+                        3. **영향 범위** — 이 코드가 잘못 작동하면 어떤 사용자/기능/데이터 흐름이
+                           영향받는가. dependency graph 의 caller, similar locations 의 패턴,
+                           HTTP route 의 외부 노출 여부 등 구체적으로.
+                        4. **권장 방향** — 어떤 원칙으로 수정해야 하는가 (구체 코드는
+                           suggested_fix_markdown 에 별도 — 여기서는 방향성만).
+                    * 헤딩(##) 사용 금지 — 대신 **bold** 강조와 자연 단락 (빈 줄) 으로 흐름 구분.
                     * **인용 의무**: '프로젝트 컨텍스트' 섹션에 등장한 파일 경로 또는 함수 심볼
-                      **최소 1 개를 backtick(`) 으로 감싸 그대로 인용**하세요.
-                      예: `` `src/auth/login.py` ``, `` `handle_login` ``, `` `ProfileDAO::updateUser` ``.
-                      '프로젝트 컨텍스트' 가 "(관련 RAG 청크 없음)" 으로 비어있으면 인용 없이 작성 가능.
-                    * **정적 메타 활용**: '이슈 함수 정적 메타' 섹션에 HTTP route / decorator /
-                      parameters / raises 가 있으면 그 의미를 본문에 1번 언급.
-                      예: "이 함수는 `POST /login` 라우트로 외부 노출되어 입력 검증이 중요"
-                      혹은 "`@require_role('admin')` 데코레이터가 권한 검사를 담당".
-                      섹션이 비어있으면 적용 안 해도 됨.
+                      **최소 2 개 이상을 backtick(`) 으로 감싸 그대로 인용**하세요 (분량 ↑ 했으므로
+                      인용 빈도도 ↑). 예: `` `src/auth/login.py` ``, `` `handle_login` ``.
+                      '프로젝트 컨텍스트' 가 "(관련 RAG 청크 없음)" 으로 비어있으면 인용 없이 작성 가능
+                      하나, 그 경우엔 정적 메타 / dependency graph 정보로 대체 인용.
+                    * **정적 메타 활용**: HTTP route / decorator / parameters / raises 가
+                      있으면 본문에 **2번 이상** 언급. 예: "이 함수는 `POST /login` 라우트로 외부
+                      노출 — 입력 검증이 핵심" + "`@require_role('admin')` 데코레이터가 권한 검사".
                     * **실질적 원인분석**: dependency graph / git history / similar locations /
-                      project overview 중 비어있지 않은 정보가 있으면 본문 1~2 곳에 구체 언급
+                      project overview 중 비어있지 않은 정보가 있으면 본문에 **2 곳 이상 구체 언급**
                       (영향 범위 / 작성 의도 / 패턴 / 도메인 어휘 등).
                     * `🔍 검토: ...` 한 줄은 analyzer 가 자동 부착하므로 LLM 은 작성 안 함.
 
