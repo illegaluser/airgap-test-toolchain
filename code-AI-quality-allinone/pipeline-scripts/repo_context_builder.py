@@ -391,24 +391,36 @@ def walk_symbols(node, node_types: dict):
 
 
 def is_test_location(rel_path: str) -> bool:
-    """P1.5 H-1 — 이 파일이 테스트 디렉토리/파일 규약에 해당하는지."""
+    """P1.5 H-1 / P4 확장 — 이 파일이 테스트 디렉토리/파일 규약에 해당하는지.
+
+    P4 추가 패턴:
+      - `*-test.js` / `*-spec.js` 처럼 **하이픈 형식** (nodegoat
+         `test/security/profile-test.js` 등 e2e/cypress 관행)
+      - `_spec.py` (RSpec 풍 Python BDD)
+      - `.feature` (Cucumber/Gherkin)
+      - `it/`, `integration/`, `unit/`, `functional/` 디렉토리
+    """
     p = Path(rel_path)
     parts_lower = {x.lower() for x in p.parts}
-    if parts_lower & {"tests", "test", "__tests__", "spec", "specs", "e2e", "cypress"}:
+    test_dirs = {
+        "tests", "test", "__tests__", "spec", "specs",
+        "e2e", "cypress", "integration", "unit", "functional", "it",
+    }
+    if parts_lower & test_dirs:
         return True
     fname = p.name.lower()
-    return (
-        fname.startswith("test_")
-        or fname.endswith("_test.py")
-        or fname.endswith(".test.ts")
-        or fname.endswith(".spec.ts")
-        or fname.endswith(".test.tsx")
-        or fname.endswith(".spec.tsx")
-        or fname.endswith(".test.js")
-        or fname.endswith(".spec.js")
-        or fname.endswith("test.java")  # SomethingTest.java
-        or fname.endswith("tests.java")
+    test_suffixes = (
+        "_test.py", "_spec.py",
+        ".test.ts", ".spec.ts", ".test.tsx", ".spec.tsx",
+        ".test.js", ".spec.js", ".test.jsx", ".spec.jsx",
+        "-test.js", "-spec.js", "-test.ts", "-spec.ts",
+        "_test.go", "_spec.go",
+        "test.java", "tests.java",
+        ".feature",
     )
+    if fname.startswith("test_") or fname.startswith("test-"):
+        return True
+    return fname.endswith(test_suffixes)
 
 
 def filename_test_candidates(rel_path: str) -> list:
@@ -624,6 +636,48 @@ def resolve_commit_sha(repo_root: Path, explicit: str) -> str:
 MAX_CALLERS_PER_CHUNK = int(os.environ.get("REPO_CTX_MAX_CALLERS", "20"))
 MAX_TEST_PATHS_PER_CHUNK = int(os.environ.get("REPO_CTX_MAX_TEST_PATHS", "5"))
 
+# P3 — callers 역인덱스 노이즈 필터.
+# Sonar 이슈 분석에서 callers 버킷이 10% 만 채워지는 원인 분석:
+# `log`, `get`, `init` 같은 짧은 / 일반적 심볼이 다수 caller 청크의
+# callees 에 출현 → 역인덱스가 부풀려져 진짜 의미있는 caller 청크의
+# retrieval ranking 이 묻힌다. 짧은 심볼 + builtin/generic 화이트리스트
+# 제외 후 인덱싱하면 caller 시그널이 정직하게 surfacing 된다.
+_GENERIC_CALLEE_NAMES = {
+    # Python builtins / common
+    "len", "range", "list", "dict", "set", "tuple", "str", "int", "float",
+    "bool", "type", "isinstance", "iter", "next", "callable", "open", "close",
+    "read", "write", "send", "min", "max", "sum", "abs", "round", "all", "any",
+    "print", "input", "format", "repr", "vars", "dir", "id", "hash", "hex",
+    "bin", "oct", "ord", "chr", "bytes", "bytearray", "memoryview", "object",
+    "getattr", "setattr", "hasattr", "delattr", "issubclass", "super",
+    "enumerate", "zip", "map", "filter", "reduce", "sorted", "reversed",
+    "log", "logger", "logging",
+    # JS/TS common methods
+    "console", "push", "pop", "shift", "unshift", "splice", "slice", "concat",
+    "join", "split", "trim", "replace", "match", "search", "test", "exec",
+    "indexOf", "lastIndexOf", "includes", "find", "findIndex", "every", "some",
+    "forEach", "keys", "values", "entries", "assign", "create", "freeze",
+    "stringify", "parse", "now", "Date", "Math", "JSON",
+    "addEventListener", "removeEventListener", "dispatchEvent",
+    # Common method names
+    "init", "main", "run", "start", "stop", "reset", "update", "load", "save",
+    "check", "validate", "parse", "format", "render", "build", "create",
+    "get", "set", "has", "put", "add", "remove", "delete", "clear",
+    # Sonar/regex 룰 메시지에 자주 나오는 식별자 (false-positive 매칭 차단)
+    "parseInt", "parseFloat", "isNaN", "isFinite", "Number", "String", "Boolean",
+}
+_MIN_CALLEE_LEN = 4  # 4자 미만은 정보량 낮음 — 인덱스에서 제외
+
+
+def _is_useful_callee_name(name: str) -> bool:
+    if not name:
+        return False
+    if len(name) < _MIN_CALLEE_LEN:
+        return False
+    if name in _GENERIC_CALLEE_NAMES:
+        return False
+    return True
+
 
 def build_reverse_indexes(chunks_by_path: dict) -> None:
     """in-place 로 각 청크의 `callers`, `test_paths` 를 채운다.
@@ -642,10 +696,14 @@ def build_reverse_indexes(chunks_by_path: dict) -> None:
             symbol_index.setdefault(ch["symbol"], []).append((path, idx))
 
     # callees → callers 역링크
+    # P3 — generic / 짧은 callee 이름은 false-positive 가 다수라 인덱스에서
+    # 제외. 진짜 의미있는 caller 시그널만 살아남도록.
     for caller_path, caller_chunks in chunks_by_path.items():
         for caller in caller_chunks:
             caller_ref = f"{caller_path}#{caller['symbol']}"
             for callee_name in caller["callees"]:
+                if not _is_useful_callee_name(callee_name):
+                    continue
                 for target_path, target_idx in symbol_index.get(callee_name, []):
                     tgt = chunks_by_path[target_path][target_idx]
                     tgt["callers"].append(caller_ref)
