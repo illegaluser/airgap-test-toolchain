@@ -1,5 +1,7 @@
 .gradle
 /build/
+!/build/empty-classes/
+!/build/empty-classes/.gitkeep
 !gradle/wrapper/gradle-wrapper.jar
 *.db
 
