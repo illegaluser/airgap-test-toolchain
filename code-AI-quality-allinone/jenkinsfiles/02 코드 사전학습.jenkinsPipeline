@@ -123,12 +123,20 @@ pipeline {
                     export KB_MANIFEST_COMMIT_SHA KB_MANIFEST_ANALYSIS_MODE
 
                     UPLOAD_LOG=\$(mktemp)
+                    # Fix A — full 모드에서는 Dataset 기존 문서 전수 삭제 후 upload.
+                    # 이전 프로젝트/이전 실행의 잔재 청크가 retrieve 결과에 섞여
+                    # citation rate 가 급락하는 문제 방지 (관측 2.1%).
+                    PURGE_FLAG=""
+                    if [ "\${KB_MANIFEST_ANALYSIS_MODE}" = "full" ]; then
+                        PURGE_FLAG="--purge"
+                    fi
                     run_upload() {
                         python3 '${env.SCRIPTS_DIR}/doc_processor.py' upload \
                             "\$DIFY_API_KEY" \
                             "\$DIFY_DATASET_ID" \
                             '${env.DOC_FORM}' \
-                            '${env.DOC_LANGUAGE}' 2>&1 | tee "\$UPLOAD_LOG"
+                            '${env.DOC_LANGUAGE}' \
+                            \$PURGE_FLAG 2>&1 | tee "\$UPLOAD_LOG"
                     }
 
                     # 1차 시도
