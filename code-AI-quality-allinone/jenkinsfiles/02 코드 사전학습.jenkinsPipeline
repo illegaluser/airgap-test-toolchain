@@ -187,11 +187,17 @@ pipeline {
                 ]) {
                     sh '''
                     set -e
+                    # --timeout 0 = 무한 대기. 사용 이유:
+                    #   realworld 같은 ~400 청크 레포는 bge-m3 임베딩 + Dify indexing 이
+                    #   30분 초과 가능 (관측: 387 청크 → 14~25분). 30분 hard cap 으로
+                    #   끊으면 KB 가 partial 상태로 남고 03/04 가 빈 RAG 로 실행되어
+                    #   재실행 비용이 더 큼. 03/04 의 RAG 빈 답변 비용 > 무한 대기 위험.
+                    #   Dify 가 진짜 hang 되면 호출 측에서 Jenkins UI 로 abort 가능.
                     python3 "${SCRIPTS_DIR}/dify_kb_wait_indexed.py" \
                         --dify-api-base "${DIFY_API_BASE}" \
                         --dataset-id "${DIFY_DATASET_ID}" \
                         --api-key "${DIFY_API_KEY}" \
-                        --timeout 1800 \
+                        --timeout 0 \
                         --interval 10
                     '''
                 }

@@ -1417,5 +1417,22 @@ def main() -> int:
     return 0
 
 
+# ─ B1 — 02 사전학습 리포트 (repo_context_builder.write_html_report v3) 에서 ─
+# 04 의 4-stage 학습진단 narrative 를 재사용할 수 있도록 노출하는 thin wrapper.
+# 호출 흐름: 02 단계는 sonar 분석 전이라 agg (RAG 측정 통계) 를 갖고 있지 않음.
+# _verdict_learn_impact 가 agg.diag_count==0 시 "측정 불충분" 으로 graceful 반환하므로
+# 빈 dict 전달해도 안전. KB 자체 통계 (scope/depth/quality) 만으로 의미있는 narrative 생성.
+
+def render_kb_intelligence_section(kb_dir, agg: dict | None = None) -> str:
+    """02 사전학습 리포트에서 호출 — KB 디렉토리만 받아 4-stage 진단 HTML 반환.
+
+    agg=None 이면 _verdict_learn_impact 의 "측정 불충분" 분기로 자동 fallback.
+    """
+    kb_intel = _collect_kb_intelligence_stats(kb_dir)
+    if not kb_intel:
+        return ""
+    return _render_kb_intelligence(kb_intel, agg or {})
+
+
 if __name__ == "__main__":
     sys.exit(main())

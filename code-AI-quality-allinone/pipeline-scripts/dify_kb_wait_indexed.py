@@ -50,7 +50,10 @@ def main() -> int:
     p.add_argument("--dify-api-base", required=True, help="예: http://127.0.0.1:5001/v1")
     p.add_argument("--dataset-id", required=True)
     p.add_argument("--api-key", required=True)
-    p.add_argument("--timeout", type=int, default=1800, help="최대 대기 초 (기본 30분)")
+    p.add_argument("--timeout", type=int, default=1800,
+                   help="최대 대기 초. 기본 30분. **0 또는 음수 = 무한 대기** "
+                        "(KB indexing 이 큰 레포에서 30분 초과하는 경우 사용 — caller "
+                        "가 명시적으로 0 지정해야 함. 기본은 안전 차원에서 30분 한도).")
     p.add_argument("--interval", type=int, default=10, help="polling 간격 초 (기본 10s)")
     args = p.parse_args()
 
@@ -58,7 +61,9 @@ def main() -> int:
     if not base.endswith("/v1") and not base.endswith("/v1/"):
         base = base.rstrip("/") + "/v1"
 
-    deadline = time.time() + args.timeout
+    # timeout <= 0 → 무한 대기 (deadline 검사 항상 False).
+    # 큰 레포 (수백 청크) indexing 이 timeout 으로 잘리는 사고 방지용.
+    deadline = time.time() + args.timeout if args.timeout > 0 else float("inf")
     last_summary = ""
     last_total = -1
 
