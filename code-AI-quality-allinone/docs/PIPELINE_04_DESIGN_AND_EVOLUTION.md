@@ -38,6 +38,7 @@
 | **PM 친화 리포트 v3 + 인프라 정비** (사이클 4) | 02 사전학습 리포트 8 신규 섹션 (TL;DR / 프로젝트 / 구조 / 연관관계 / 테스트 / 학습 진단 / 결론·액션 / 디버깅 접힘) + 무한 indexing wait + sonar.java.binaries fix + --report-only 모드 + nodegoat→realworld 단일화 | end-to-end 검증 완료 (build #6 SUCCESS) — PM 5분 의사결정 가능 / KB 358 docs / 03+04 정상 |
 | **Rule 한글 + impact 충실화** (사이클 5) | Rule 설명 Ollama gemma4 한글 번역 (rule_key 캐시) + impact 분량 3~6줄 → **최소 10 문장 4-구조** (본질·맥락·영향·방향) | build #6 검증 — Rule 한글 518자 / impact 14문장 1197자 / RAG 인용 6+ |
 | **가독성 강화** (사이클 5+α) | 모든 문장 끝 두 공백 + 줄바꿈 (soft break) / 4-구조 사이 빈 줄 / 추상어 → 구체어 / 전문용어 풀이 / 비유 OK | build #8 검증 — 33줄/11 soft-break/16 빈 줄, 주니어 친화 표현 정착 |
+| **04 빌드 결과 리포트 v2** (사이클 6) | "RAG Diagnostic Report" → **"정적분석 결과리포트"** PM 친화 6 섹션 (TL;DR funnel / 즉시 조치 위험 카드 / 모듈별 표 / 분포 / 신뢰 신호 / 개발자 진단 접힘) + iid 직접 링크 | build #3 검증 — 6 섹션 + iid 매핑 + 위험 카드 자동 추출 |
 
 ### 현재 위치
 
@@ -50,6 +51,7 @@
 - 📊 **사이클 4 (PM 친화 리포트 v3 + 인프라 정비)**: 02 사전학습 리포트 청중 재정의 (개발자 → PM), 8 섹션 + sticky nav + verdict color-coding. 무한 indexing wait, sonar.java.binaries 빈 디렉토리 trick, nodegoat → realworld 단일화. end-to-end 흐름 (offline 빌드~04 실행) 자동화 검증 완료.
 - 🇰🇷 **사이클 5 (Rule 한글 번역 + impact 충실화)**: SonarQube 룰 설명을 Ollama gemma4 로 한국어 번역 (rule_key 캐시). impact_analysis 분량 3~6줄 → **최소 10 문장 4-구조** (본질·맥락·영향·방향), RAG 컨텍스트 근거 의무 강화.
 - ✏️ **사이클 5+α (가독성 강화)**: 한 단락 안에 여러 문장 뭉치는 문제 해소 — 모든 문장 끝 soft line break, 추상어 → 구체어, 전문용어 풀이 동반. PM/주니어 개발자가 GitLab Issue 본문을 자력으로 읽고 이해 가능한 상태.
+- 📊 **사이클 6 (04 빌드 결과 리포트 v2 — "정적분석 결과리포트")**: 04 의 publishHTML 탭 리포트가 PM 비친화였음. 6 섹션 PM 대시보드로 재설계 — TL;DR funnel (Sonar→AI→GitLab) / 즉시 조치 위험 카드 (룰 기반 자동 추출) / 모듈별 GitLab Issue 표 (iid 직접 링크) / 결함 분포 / AI 신뢰 신호 / 개발자 진단 접힘. PM 한 화면에서 트리아지·할당·신뢰도 의사결정 가능.
 
 ### 이 문서의 내부 용어 표 (모르고 본문 읽으면 헷갈리므로 미리)
 
@@ -608,6 +610,107 @@
 
 ---
 
+### 3.12 사이클 6 (04 빌드 결과 리포트 v2 — "정적분석 결과리포트") — 2026-04-26 새벽
+
+> 사용자 요구의 두 번째 큰 전환 — 04 의 publishHTML 리포트 ("RAG Diagnostic Report") 가 PM 비친화 (개발자/AI엔지니어 용어 위주). PM 이 04 build 결과 한 화면에서 (a) 트리아지 (b) 할당 (c) 신뢰도 의사결정 가능한 대시보드로 재설계.
+
+#### 사용자 입력 트리거
+
+- "04 빌드화면에서의 결과 리포트 — 냉정하게 현재의 4번째 빌드 파이프라인에 대한 결과리포트가 요구사항을 명확히 반영한다고 판단하나?"
+- "PM관점에서 이것 외에 추가되어야할 내용이 뭐가 있을지 보다 진지하게 탐구해보자"
+- "현학적으로 작성했다. 이해가 힘들다." → 평이한 말로 재설계
+- "지금 보이고자 하는 지표는 모두 기존 데이터에서 가져올 수 있는건가?"
+- "구현하자"
+
+#### 진단 — 기존 RAG Diagnostic Report 의 6 가지 구조적 문제
+
+1. 이름 자체가 PM 비친화 ("RAG Diagnostic" — 클릭조차 안 함)
+2. 빌드 결과 funnel (Sonar→AI→GitLab 카운트) 부재
+3. GitLab Issue 직접 링크 부재
+4. 02 와 4-stage 진단 100% 중복
+5. 첫 카드 우선순위 잘못됨 ("실무 권장 액션" 이 결과 funnel 보다 위)
+6. 개발자 진단 메트릭 (citation rate / bucket fill) 이 PM 흐름 위에 군림
+
+#### 처방 — 6 섹션 PM 대시보드
+
+```text
+[이름] "RAG Diagnostic Report" → "정적분석 결과리포트"
+
+§1 🎯 한눈에 (TL;DR)        — 빌드 메타 + funnel + GitLab 큰 버튼 + verdict
+§2 🚨 즉시 조치 권장          — 위험도 룰 자동 추출 (severity ≥ MAJOR + 호출자 ≥ 5
+                                + classification=true_positive + confidence ≥ medium)
+§3 📋 모듈별 GitLab Issue 표  — path 그룹화 + iid 직접 링크 (`/-/issues/{iid}`)
+§4 📊 결함 종류 분포           — severity / type / 처리결과 막대그래프
+§5 🔬 AI 답변 신뢰 신호        — confidence 분포 + partial / fp 카운트
+§6 (접힘) 🔧 개발자 진단      — 기존 RAG diagnostic 모든 콘텐츠 재사용
+```
+
+#### 데이터 출처 (모두 기존 artifact + 한 곳 patch)
+
+| 지표 | 출처 |
+|------|------|
+| 빌드 메타 (build / commit / branch) | Jenkins env + `git log -1` |
+| Sonar 발견 카운트 | `sonar_issues.json["issues"]` |
+| AI 분석 카운트 | `llm_analysis.jsonl` line 수 |
+| GitLab 등록 카운트 / iid | `gitlab_issues_created.json` (iid 추가 필요 — patch 적용) |
+| 위험도 (callers ≥ 5) | llm_analysis row 의 `direct_callers` field (이미 존재) |
+| classification + confidence | `outputs` |
+| severity / type / tags | `issue_search_item.type` + `tags` |
+| partial_citation / fp 카운트 | `outputs.labels` + `gitlab_issues_created.fp_transitioned` |
+
+#### 코드 변경
+
+- `pipeline-scripts/diagnostic_report_builder.py`:
+  - 신규 helper 8개 (load / fetch / compute)
+  - 신규 render 6개 (§1~§6)
+  - 신규 `_CSS_PM` (sticky nav + funnel + cards + verdict color-coding)
+  - `render_pm_report()` — 새 6 섹션 통합 렌더
+  - `main()` 재작성 — 신규 CLI 인자 8개 (`--gitlab-output` / `--sonar-issues` /
+    `--build-number` / `--commit-sha` / `--repo-root` / `--branch` /
+    `--gitlab-public-url` / `--gitlab-project` / `--legacy`)
+  - 기존 `render()` 유지 (`--legacy` 플래그로 호출 가능)
+
+- `pipeline-scripts/gitlab_issue_creator.py`:
+  - created entry 에 `iid` 추가 (3줄 patch) — POST 응답 body 의 json 에서 추출
+
+- `jenkinsfiles/04`:
+  - publishHTML 호출에 신규 인자 8개 전달
+  - reportName 변경: "RAG Diagnostic Report" → "정적분석 결과리포트"
+  - `sh '''` → `sh """` + shell 변수 escape (`\${BUILD_NUMBER}`, `\${REPO_NAME}`, `\${SCRIPTS_DIR}`)
+
+#### 운영 발견 — 함정 2개
+
+- **`sh '''` (single quote) + `${env.X}` 함정**: Job config XML 의 sh 블록이
+  `'''` (single quote) 면 groovy interpolation 안 일어남. dash sh 가 `${env.COMMIT_SHA}`
+  같은 변수명을 invalid (`.` 포함) 로 봐 "Bad substitution" 에러 발생 → build #1
+  실패. fix: `sh """` 로 변경 + groovy interpolate 대상 제외하고 shell 변수만 `\${...}` escape.
+
+- **정규식 patch 의 greedy 매칭 위험**: Job config XML 의 `sh '''...'''` 블록을
+  정규식으로 patch 시 greedy 매칭으로 04 Job config 손상 → Job 자체가 사라짐.
+  복구: jenkinsfile 에서 직접 새 Job 등록 (provision.sh 의 `jenkins_create_pipeline_job`
+  로직 단독 실행). 교훈: config XML patch 전 백업 또는 dry-run 필수.
+
+#### 검증 (build #2 → #3, MAX_ISSUES=1, 2~7분)
+
+- 6 섹션 anchor 모두 생성 (sec-1 ~ sec-6)
+- §1 funnel: Sonar 43 → AI 1 → GitLab 1 정확 표시
+- §2 위험 카드 1건 자동 추출 (Util.java MAJOR + 호출자 ≥5 + AI 신뢰 high)
+- §3 iid 직접 링크 작동 (`/-/issues/34`)
+- §5 신뢰 신호 5 카운트 카드 (high=1, 나머지=0)
+- Rule 한글 번역 fallback 작동 (S1118 timeout → 원문 유지)
+
+#### 현 상태
+
+- 04 의 publishHTML 탭 리포트가 PM 자력 활용 가능한 대시보드로 전환
+- "PM 5분 의사결정 (트리아지·할당·신뢰도)" 모두 한 화면에서 가능
+- 사이클 1~6 누적 누적 효과:
+  - 02 사전학습 리포트 (사이클 4) — "AI 가 우리 프로젝트를 어떻게 이해했는가"
+  - GitLab Issue 본문 (사이클 5+α) — 한글 + 4-구조 + 가독성
+  - 04 publishHTML 리포트 (사이클 6) — "이번 빌드가 무엇을 만들었나" 한 화면
+  → 3 청중 (PM/개발자/임원) 모두 자력 활용 가능
+
+---
+
 ## 4. 미해결 이슈 / 향후 검토
 
 ### 4.1 RAG retrieval 단계의 누수 (사이클 3+E' 측정으로 새로 명확해진 핵심 갭)
@@ -880,6 +983,42 @@
     코드 동작 인라인 / 비유 OK / 추상명사 나열 금지
 
 검증 (build #8 — MAX_ISSUES=1): 33줄 / 11 soft-break / 16 빈 줄. 4-구조 사이 paragraph break 정확. "정적(static) 헬퍼", "`new Util()` 같이 인스턴스 생성" 등 구체적 표현. RAG 인용 6+ 개.
+
+### 사이클 6 (04 빌드 결과 리포트 v2 — "정적분석 결과리포트")
+
+`pipeline-scripts/diagnostic_report_builder.py`
+
+- 신규 helper 8개:
+  - `_load_sonar_count` / `_load_gitlab_created` / `_fetch_build_meta`
+  - `_compute_severity_distribution` / `_extract_high_risk` (위험도 룰 적용)
+  - `_group_issues_by_module` / `_compute_trust_signals` / `_compute_overall_verdict_v2`
+- 신규 render 6개: `_render_section_1_tldr` ~ `_render_section_6_dev_diag_collapsed`
+- 신규 `_CSS_PM` (sticky nav + funnel + cards + verdict color-coding + 막대그래프)
+- `render_pm_report()` — 새 6 섹션 통합 렌더
+- `main()` 재작성 — 신규 CLI 인자 8개 (`--gitlab-output`, `--sonar-issues`,
+  `--build-number`, `--commit-sha`, `--repo-root`, `--branch`,
+  `--gitlab-public-url`, `--gitlab-project`, `--legacy`)
+- 기존 `render()` 유지 (`--legacy` 플래그로 호출 가능)
+
+`pipeline-scripts/gitlab_issue_creator.py`
+
+- `created` entry 에 `iid` 추가 (3줄 patch) — POST 응답 body 에서 추출.
+  §3 모듈별 표의 GitLab 직접 링크 (`/-/issues/{iid}`) 생성용.
+
+`jenkinsfiles/04 정적분석 결과분석 및 이슈등록.jenkinsPipeline`
+
+- post-action publishHTML 호출에 신규 인자 8개 전달
+- `reportName: 'RAG Diagnostic Report'` → `reportName: '정적분석 결과리포트'`
+- `sh '''` → `sh """` + shell 변수 escape (`\${BUILD_NUMBER}`, `\${REPO_NAME}`, `\${SCRIPTS_DIR}`)
+
+검증 (build #2 → #3, MAX_ISSUES=1, 2~7분):
+
+- 6 섹션 anchor 모두 생성 (sec-1 ~ sec-6) ✓
+- §1 funnel: Sonar 43 → AI 1 → GitLab 1 ✓
+- §2 위험 카드 1건 자동 추출 (Util.java MAJOR + 호출자 ≥5 + AI 신뢰 high) ✓
+- §3 iid 직접 링크 작동 (`/-/issues/34`) ✓
+- §5 신뢰 신호 5 카운트 카드 ✓
+- Rule 한글 번역 fallback 작동 (S1118 timeout → 원문 유지) ✓
 
 ---
 
