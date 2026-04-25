@@ -35,6 +35,9 @@
 | **실질적 원인분석 강화 시도** (사이클 3+E) | "전체 저장소 + 프로젝트 정보 기반 분석" 을 지향해 5종 입력 (의존성 그래프 / git 이력 / 유사 패턴 / 프로젝트 개요 / 답변 검토범위 의무) 추가 | **회귀 발생** — 4B 모델이 입력 분산을 처리 못 함. 인용률 80%→70%, 메타 인용 30%→20% |
 | **회귀 회복 시도** (사이클 3+E') | 빈 섹션 헤더 제거 + 답변 검토범위 자동 후처리 + system prompt 압축 | **부분 회복** — 인용률 80% 회복 + 검토범위 자동표기 0/10 → 10/10. 그러나 정적 메타 인용은 20% 그대로 (3+D 의 30% 회복 못 함) |
 | **프롬프트-creator 정합성 정렬** (사이클 3+F) | system 프롬프트 정리 (코드네임 제거 / classification·confidence 신호 명시 / suggested_fix·diff 케이스 분리) + `fp_reason` dead field 를 Sonar 코멘트로 부활 + 본문 중복 하드 차단 | 측정 전 (다음 빌드 대기) — 8개 LLM 필드 정합성 7/8 → 8/8, 본문 중복 deterministic 차단 |
+| **PM 친화 리포트 v3 + 인프라 정비** (사이클 4) | 02 사전학습 리포트 8 신규 섹션 (TL;DR / 프로젝트 / 구조 / 연관관계 / 테스트 / 학습 진단 / 결론·액션 / 디버깅 접힘) + 무한 indexing wait + sonar.java.binaries fix + --report-only 모드 + nodegoat→realworld 단일화 | end-to-end 검증 완료 (build #6 SUCCESS) — PM 5분 의사결정 가능 / KB 358 docs / 03+04 정상 |
+| **Rule 한글 + impact 충실화** (사이클 5) | Rule 설명 Ollama gemma4 한글 번역 (rule_key 캐시) + impact 분량 3~6줄 → **최소 10 문장 4-구조** (본질·맥락·영향·방향) | build #6 검증 — Rule 한글 518자 / impact 14문장 1197자 / RAG 인용 6+ |
+| **가독성 강화** (사이클 5+α) | 모든 문장 끝 두 공백 + 줄바꿈 (soft break) / 4-구조 사이 빈 줄 / 추상어 → 구체어 / 전문용어 풀이 / 비유 OK | build #8 검증 — 33줄/11 soft-break/16 빈 줄, 주니어 친화 표현 정착 |
 
 ### 현재 위치
 
@@ -44,6 +47,9 @@
 - 🔍 **새 핵심 발견**: KB 학습 (Stage 2) 와 답변 활용 (Stage 4) 사이의 비대칭 — 함수 호출 매핑 95% 인데 RAG retrieval 로 caller 청크 회수율은 20%. 학습 → 검색 단계에서 누수.
 - 🔍 본질적 한계 — 현 LLM (gemma4:e4b 4B) 의 attention bandwidth 가 입력 토큰 증가 시 무너지고, 정적 메타 (endpoint/decorator/매개변수명) 를 본문에 인용하지 못함.
 - 🧹 **사이클 3+F (design alignment)**: 프롬프트와 `gitlab_issue_creator` 사이의 dead field (`fp_reason`) 를 Sonar 코멘트로 활용 + 본문 중복 하드 차단 + system 프롬프트 -8% 토큰 정리. 측정은 다음 빌드 대기 — citation/ts_any_hit 회귀 부재 확인 필요.
+- 📊 **사이클 4 (PM 친화 리포트 v3 + 인프라 정비)**: 02 사전학습 리포트 청중 재정의 (개발자 → PM), 8 섹션 + sticky nav + verdict color-coding. 무한 indexing wait, sonar.java.binaries 빈 디렉토리 trick, nodegoat → realworld 단일화. end-to-end 흐름 (offline 빌드~04 실행) 자동화 검증 완료.
+- 🇰🇷 **사이클 5 (Rule 한글 번역 + impact 충실화)**: SonarQube 룰 설명을 Ollama gemma4 로 한국어 번역 (rule_key 캐시). impact_analysis 분량 3~6줄 → **최소 10 문장 4-구조** (본질·맥락·영향·방향), RAG 컨텍스트 근거 의무 강화.
+- ✏️ **사이클 5+α (가독성 강화)**: 한 단락 안에 여러 문장 뭉치는 문제 해소 — 모든 문장 끝 soft line break, 추상어 → 구체어, 전문용어 풀이 동반. PM/주니어 개발자가 GitLab Issue 본문을 자력으로 읽고 이해 가능한 상태.
 
 ### 이 문서의 내부 용어 표 (모르고 본문 읽으면 헷갈리므로 미리)
 
@@ -445,6 +451,163 @@
 
 ---
 
+### 3.9 사이클 4 (PM 친화 리포트 v3 + 인프라 정비) — 2026-04-25 ~ 26 새벽
+
+> 사용자 요구의 큰 전환 — "리포트가 무엇을 의미하는지 모르겠다 / 분석대상 프로젝트 구조·구현목표·코드간 연관관계·기타 코드정보가 보고 싶다". 02 사전학습 리포트의 청중을 개발자 → **PM** 으로 명시 재정의.
+
+#### 사용자 입력 트리거 (한 줄 요약)
+
+- "사전학습 리포트가 의미를 알기 어렵다 — 분석대상 프로젝트 구조 / 구현목표 / 코드간 연관관계 / 기타 코드정보가 보고 싶다"
+- "PM 대상 리포트로서 효과를 발휘할 수 있는 정보가 담기길 바란다"
+- "지식화가 끝날때까지 임의로 타이머를 빌드가 멈춰지는 일이 없도록 젠킨스 파이프라인을 수정해"
+
+#### 처방 4가지 (병행)
+
+| Fix | 변경 위치 | 의도 |
+|-----|----------|------|
+| **(a) PM 친화 리포트 v3** | `repo_context_builder.write_html_report` 전면 재설계 + A1~A6 신규 추출 함수 + B1 wrapper | 청킹 디버깅 통계 → "AI 가 우리 프로젝트를 어떻게 이해했는가" 종합 narrative |
+| **(b) 무한 indexing wait** | `dify_kb_wait_indexed.py` `--timeout 0` 지원 + 02 jenkinsfile 적용 | realworld 387 청크 indexing 이 30분 hard cap 초과 시 자동 abort 되어 KB partial 상태 잔존하는 사고 차단 |
+| **(c) sonar.java.binaries fix** | `sample-projects/realworld/sonar-project.properties` + GitLab repo 의 `build/empty-classes/.gitkeep` | SonarQube 26.x Java 룰이 binary 디렉토리 필수 요구 — source-only 분석을 위해 빈 디렉토리 trick 사용 (build step 추가 회피) |
+| **(d) `--report-only` 모드** | `repo_context_builder.py main()` + `load_chunks_from_jsonl_dir()` 신규 | KB 재학습 (40분) 없이 기존 JSONL 에서 리포트만 다시 그리기 — v3 디자인 검증 시간 절약 |
+
+#### 신규 함수 (모두 LLM/네트워크 호출 0, build 시간 영향 ≈ 0)
+
+| 함수 | 데이터 출처 | 목적 |
+|------|-----------|------|
+| `extract_project_overview()` | README + LICENSE + build.gradle/pom.xml/package.json | TL;DR 카드의 "프로젝트가 뭐 하는지" 한 줄 요약 |
+| `extract_dependencies()` | build.gradle / pom.xml / package.json | 5 카테고리 (framework / db / auth / test / util) 자동 분류 |
+| `extract_domain_entities()` | 청크 메타 (kind ∈ {class, type, ...} + 이름 패턴 + path 힌트) | 도메인 객체 top 10 자동 식별 |
+| `extract_class_inheritance()` | tree-sitter Java AST (extends / implements) | 클래스 상속/구현 표 |
+| `compute_test_coverage_map()` | `test_for` 역인덱스 + is_public 휴리스틱 | "테스트 없는 public 함수 top 10" — PM 액션 직결 위험 신호 |
+| `compute_overall_verdict()` | A1~A5 + 기존 stats | rule-based 0~100 scoring → 🟢/🟡/🔴 verdict + reason_lines |
+| `suggest_pm_actions()` | verdict + coverage + endpoints 조합 | rule-based 액션 추천 3개 |
+| `load_chunks_from_jsonl_dir()` | 기존 JSONL 디렉토리 | --report-only 모드용 재구성 |
+| `render_kb_intelligence_section()` (B1) | `_kb_intelligence.json` 사이드카 | 04 의 4-stage 학습진단 narrative 를 02 리포트에서 재사용 |
+
+#### 리포트 v3 — 8 섹션 (sticky nav + verdict color-coding)
+
+```text
+§1 🎯 한눈에     — TL;DR 카드 (파일·함수·API·테스트커버·AI신뢰도) + 종합 verdict
+§2 📖 프로젝트   — README description + 의존성 5카테고리
+§3 🏗 코드 구조  — 디렉토리 트리 + 패키지 분포 + 도메인 엔티티
+§4 🔗 연관관계   — HTTP 진입점 + caller hub + callees hub + 클래스 상속
+§5 🧪 테스트     — coverage % + 테스트 없는 public 함수 top 10
+§6 📚 학습 진단  — 4-stage (scope/depth/quality/impact) — B1 wrapper
+§7 🤖 결론·액션  — 종합 verdict + 점수 산출 근거 + PM 추천 액션 3개
+§9 🔧 디버깅     — 기존 v1 통계 (접힘 — 개발자용)
+```
+
+#### 다른 정비 사항
+
+- **샘플 프로젝트 단일화**: nodegoat + ttc-sample-app 제거 → `realworld` (Spring Boot RealWorld) vendoring. airgap 보장 (인터넷 fallback 비활성).
+- **End-to-end 검증 흐름**: 컨테이너·이미지·데이터 모두 삭제 → offline 빌드 → run-mac.sh → provision (~7분) → 01 chain trigger 까지 완전 자동화 검증.
+- **Dockerfile 재빌드 없는 코드 변경 적용 절차 확립**: `docker cp script.py ttc-allinone:/var/jenkins_home/scripts/` hot-reload 패턴.
+- **Jenkins Job config patch 절차 확립**: jenkinsfile 변경이 살아있는 Job config 에 자동 반영 안 됨을 확인 → Job config XML 의 inline pipeline script 를 직접 patch + `/manage/reload` 호출.
+
+#### 검증 (build #2 ~ #6)
+
+| build | 목적 | 결과 |
+|-------|------|------|
+| 02 #2 | KB 학습 (387 청크 indexing) | ✅ SUCCESS 40분 (--timeout 0 의 가치 입증 — 1800s hard cap 이었으면 fail) |
+| 03 #2 | 첫 sonar 분석 (sonar.java.binaries=src/main/java) | ❌ FAIL 5초 — Sonar 가 source dir 을 binary 로 받지 X |
+| 03 #3 | 빈 디렉토리 trick 적용 후 | ✅ SUCCESS 16.6초 — analysis report uploaded |
+| 04 #2 | 첫 end-to-end (10 GitLab Issues 생성) | ✅ created=10 / failed=0 |
+| (사이클 5 로 이어짐) | | |
+
+#### 현 상태
+
+- 02 publishHTML 에 v3 리포트 자동 노출 (다음 build 부터)
+- KB 358 docs 정상 잔존 (재학습 불필요)
+- 03/04 모두 정상 SUCCESS — Java 분석 + LLM 답변 + GitLab Issue 등록 흐름 완전
+- 다음 사이클 처방: rule 본문 한글화 + impact 분량 강화 (사이클 5)
+
+---
+
+### 3.10 사이클 5 (Rule 한글 번역 + impact 본문 분량 강화) — 2026-04-26 새벽
+
+> 사용자 검토 후 두 가지 명확한 요청: "Rule 설명을 한글로 번역", "전체적인 이슈 설명을 보다 충실하게". 영문 원문은 SonarQube 링크에서 확인 가능하므로 GitLab Issue 본문엔 한글만.
+
+#### 사용자 입력 트리거
+
+- "룰에 대한 설명을 한글로 번역하는게 좋겠다"
+- "전체적인 이슈에 대한 설명을 현재 작성분량보다 충실하게 작성되길 바란다"
+- "영문은 숨겨도 된다. 이미 소나큐브 링크가 있으니까"
+- "분량은 필수내용을 모두 포함해야 한다는 전제하에 RAG에 기반한 10개 이상의 문장"
+
+#### 처방 2가지
+
+| Fix | 변경 위치 | 의도 |
+|-----|----------|------|
+| **(a) Rule 한글 번역** | `gitlab_issue_creator.py` `_translate_rule_to_korean()` 신규 + Ollama gemma4 + rule_key dict 캐시 | 영문 rule 설명을 한국어로 번역해 GitLab 본문에 노출. 같은 룰 N회 → 1회만 호출 (캐시) |
+| **(b) impact 본문 분량 강화** | `sonar-analyzer-workflow.yaml` system prompt | 3~6줄 → **최소 10 문장 4-구조 의무** (① 문제 본질 ② 발생 맥락 ③ 영향 범위 ④ 권장 방향), 모든 내용 RAG 컨텍스트 근거, 인용/메타/원인분석 의무 모두 강화 |
+
+#### 운영 적용 절차 (Job config + Dify workflow 모두 갱신)
+
+1. `gitlab_issue_creator.py` hot-reload (`docker cp`)
+2. 04 jenkinsfile 의 `--ollama-base-url` / `--ollama-model` 인자 추가 → Job config XML 직접 patch (살아있는 Job 에 반영) + `/manage/reload`
+3. Dify workflow YAML 재 import (기존 App DELETE → fresh import → publish + Content-Type/body 필수 → API key 재발급)
+4. Jenkins credential `dify-workflow-key` 갱신 (새 API key)
+
+#### 운영 발견 — 2가지 함정
+
+- **Dify workflow publish 호출은 `Content-Type: application/json` + 빈 body `{}` 필수**. 빠뜨리면 silent fail → 04 build 가 "Workflow not published" 400 에러로 모든 이슈 retry 3회 후 실패.
+- **Jenkins Job config 의 inline pipeline script 는 jenkinsfile 변경과 독립**. provision 시점에 jenkinsfile 내용을 박아두므로 코드 수정 후 Job config XML 도 patch 해야 함. (다음 provision 부터는 자동 반영)
+
+#### 검증 (build #4 ~ #6)
+
+- build #4: dedup (이전 #2 의 결과와 sonar_key 동일) → created=0, skipped=10. **`llm_analysis.jsonl` artifact 에서 새 prompt 효과 직접 확인** — title 한글 ("유틸리티 클래스에 기본 생성자 노출 문제"), impact 14문장 / 1197자 / 4-구조 명시 / RAG 인용 6+ 개.
+- build #5: GitLab issue 10건 삭제 후 재 trigger → 새 issue 본문에서 impact 4-구조 + 14문장 모두 확인. 단 Rule 영문 그대로 (Job config 미patch — 다음 step 에서 fix).
+- build #6: Job config patch + Jenkins reload 후 → **Rule 한글 번역 본문 등장**: "[근본 원인] Double Brace Initialization (DBI)은 소유 객체에 대한 참조를 가진 익명 클래스를 생성하기 때문에..." (518자, 코드블록 보존, "비준수 코드 예제"/"준수 솔루션" SonarQube 표준 용어 유지).
+
+#### 현 상태
+
+- Rule 설명 한글 번역 ✓ (rule_key 캐시로 효율적)
+- impact 본문 4-구조 + 10+ 문장 + RAG 인용 6+ 모두 ✓
+- 다음 사이클 처방: 가독성 — 한 단락에 여러 문장이 줄바꿈 없이 뭉치는 문제
+
+---
+
+### 3.11 사이클 5+α (가독성 강화 — soft line break + 쉬운 표현) — 2026-04-26 새벽
+
+> 사용자 검토 후 두 가지 추가 요청. 짧은 사이클 — system prompt 만 수정.
+
+#### 사용자 입력 트리거
+
+- "문장 하나를 작성하면 줄바꿈처리를 하자. 화면상에서 분석내용을 읽기가 힘들다."
+- "내용또한 보다 쉽게 작업자가 이해할 수 있도록 보다 쉽고 구체적으로 지시하도록 프롬프트를 작성할 필요가 있겠어."
+
+#### 처방
+
+`sonar-analyzer-workflow.yaml` system prompt 의 `impact_analysis_markdown` 가이드에 두 블록 추가:
+
+**(1) 줄바꿈 규칙**
+- 모든 문장 끝 두 공백 + 줄바꿈 (`...다.  \n`) — GitHub/GitLab markdown soft line break
+- 4-구조 bold heading 사이엔 빈 줄 1개 (paragraph break)
+- 한 문장 = 한 주장 = 한 줄. 합쳐쓰지 말 것
+- 구체 예시 포함 (✓ good / ✗ bad 대조)
+
+**(2) 쉽게 쓰기 가이드 (작업자 친화)**
+- 추상어 ("잠재적", "구조적") 보다 구체어 우선. 예: "잠재적 메모리 누수" (bad) → "100번 호출되면 약 1MB 누적" (good)
+- 전문 용어 사용 시 한 줄 한국어 풀이 동반. 예: "idempotent (= 두 번 호출하면 두 번 실행되어 중복)"
+- 코드 동작 예시 인라인. "이렇게 호출되면 이렇게 됨" 패턴
+- 어려운 개념 비유 OK
+- 추상명사 나열 금지. 주어-동사 분명한 짧은 평서문
+
+#### 검증 (build #8 — MAX_ISSUES=1 빠른 1건 검증)
+
+- impact_analysis_markdown 33줄 / 11 soft-break / 16 빈 줄 — 각 문장 독립 줄 분리 ✓
+- 4-구조 사이 빈 줄로 paragraph break (`**문제의 본질**` ↔ 빈 줄 ↔ 본문 ↔ 빈 줄 ↔ `**발생 맥락**` 순서 정확) ✓
+- 구체적 표현: "정적(static) 헬퍼", "`new Util()` 같이 인스턴스 생성", "메모리에 불필요하게 남아" ✓
+- RAG 인용 6+ 개: `Util`, `isEmpty(String value)`, `Article.java`, `User.java`, `AuthorizationService.java`, `SecurityUtil.java` ✓
+
+#### 현 상태
+
+- GitLab Issue 화면에서 본문 가독성 정상화 — 한 줄에 여러 문장 뭉치는 문제 해소
+- 표현 수준 PM/주니어 개발자 친화로 전환
+- 사이클 4~5+α 의 누적 효과: PM 이 02 리포트 (5분 종합 의사결정) + 04 GitLab Issue (각 이슈 5분 이해) 모두 자력으로 활용 가능한 상태 도달
+
+---
+
 ## 4. 미해결 이슈 / 향후 검토
 
 ### 4.1 RAG retrieval 단계의 누수 (사이클 3+E' 측정으로 새로 명확해진 핵심 갭)
@@ -652,6 +815,71 @@
 - (c) `render_issue_body()` fix_blocks 직전 정규화 — `suggested_diff` 가 채워지면 `suggested_fix_markdown` 의 코드펜스 regex strip (본문 중복 deterministic 차단)
 
 검증 (단위 테스트): YAML 파싱 OK / 15개 placeholder 보존 / 코드네임 3종 제거 / 정규화 4 케이스 (A 위반·B·C·null sentinel) 모두 통과 / `py_compile` OK. **빌드 측정 대기** — H8~H11 가설 (§3.8) 확인 필요.
+
+### 사이클 4 (PM 친화 리포트 v3 + 인프라 정비)
+
+`pipeline-scripts/repo_context_builder.py`
+
+- `extract_project_overview()` / `extract_dependencies()` / `extract_domain_entities()` /
+  `extract_class_inheritance()` / `compute_test_coverage_map()` /
+  `compute_overall_verdict()` / `suggest_pm_actions()` / `load_chunks_from_jsonl_dir()` 신규 (8개 함수)
+- `write_html_report()` 전면 재설계 — 8 섹션 + sticky nav + verdict color-coding
+- `main()` 에 `--report-only` 플래그 추가 (KB 재학습 없이 리포트만 갱신)
+
+`pipeline-scripts/diagnostic_report_builder.py`
+
+- `render_kb_intelligence_section()` thin wrapper 신규 — 04 의 4-stage 진단 narrative 를 02 사전학습 리포트에서 재사용 가능
+
+`pipeline-scripts/dify_kb_wait_indexed.py`
+
+- `--timeout 0` 무한 대기 지원 (큰 KB 의 indexing 시간 초과 보호)
+
+`jenkinsfiles/02 코드 사전학습.jenkinsPipeline`
+
+- KB-Wait 호출에 `--timeout 0` 적용
+
+`sample-projects/realworld/sonar-project.properties`
+
+- `sonar.java.binaries=build/empty-classes` (빈 디렉토리 trick — SonarQube 26.x source-only Java 분석)
+
+`sample-projects/realworld/build/empty-classes/.gitkeep`
+
+- 빈 디렉토리 vendoring (git 추적 강제)
+
+검증 (build #2~6): 02 #2 SUCCESS 40분 (--timeout 0 입증) / 03 #3 SUCCESS 16.6초 (sonar fix) / 04 #2 created=10 정상 등록.
+
+### 사이클 5 (Rule 한글 번역 + impact 본문 분량 강화)
+
+`pipeline-scripts/gitlab_issue_creator.py`
+
+- `_translate_rule_to_korean()` 신규 — Ollama gemma4 호출 + `_rule_translation_cache` dict (rule_key 캐시)
+- 호출부 — `rule_full = "**Rule 전체 설명 (한글):**\n\n{translated}"` (영문 원문 노출 X)
+- CLI 인자 신규 — `--ollama-base-url`, `--ollama-model`
+
+`scripts/dify-assets/sonar-analyzer-workflow.yaml`
+
+- system prompt 의 `impact_analysis_markdown` 가이드 전면 재작성:
+  분량 3~6줄 → **최소 10 문장**, 4-구조 의무 (① 본질 ② 맥락 ③ 영향 ④ 방향),
+  RAG 컨텍스트 근거 의무, 인용 2+ 개, 정적 메타 2번 이상, 원인분석 2곳 이상
+- schema 라인 동기화 (`impact_analysis_markdown` 필드 description)
+
+`jenkinsfiles/04 정적분석 결과분석 및 이슈등록.jenkinsPipeline`
+
+- `gitlab_issue_creator.py` 호출에 `--ollama-base-url http://host.docker.internal:11434 --ollama-model gemma4:e4b` 인자 전달
+
+검증 (build #4~6): impact 14문장 / 1197자 / RAG 인용 6+ / 4-구조 모두 명시. Rule 한글 518자 (코드블록 보존, "비준수 코드 예제"/"준수 솔루션" 표준 용어 유지).
+
+### 사이클 5+α (가독성 강화 — soft line break + 쉬운 표현)
+
+`scripts/dify-assets/sonar-analyzer-workflow.yaml`
+
+- system prompt 의 `impact_analysis_markdown` 가이드에 두 블록 추가:
+  - **줄바꿈 규칙**: 모든 문장 끝 두 공백 + 줄바꿈 (soft break) / 4-구조 사이 빈 줄
+    (paragraph break) / 한 문장 = 한 주장 = 한 줄 / ✓ good ✗ bad 대조 예시
+  - **쉽게 쓰기 가이드**: 추상어 → 구체어 / 전문 용어 한 줄 풀이 동반 /
+    코드 동작 인라인 / 비유 OK / 추상명사 나열 금지
+
+검증 (build #8 — MAX_ISSUES=1): 33줄 / 11 soft-break / 16 빈 줄. 4-구조 사이 paragraph break 정확. "정적(static) 헬퍼", "`new Util()` 같이 인스턴스 생성" 등 구체적 표현. RAG 인용 6+ 개.
 
 ---
 
