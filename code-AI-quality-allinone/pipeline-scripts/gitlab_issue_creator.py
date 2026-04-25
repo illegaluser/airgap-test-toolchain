@@ -951,7 +951,18 @@ def main() -> int:
         try:
             status, body = _http_post_form(url, headers, form, args.timeout)
             if status in (200, 201):
-                created.append({"key": sonar_key, "title": final_title})
+                # 04 빌드 결과 리포트의 §3 모듈별 표가 GitLab 직접 링크 (`/-/issues/{iid}`) 를
+                # 만들 수 있도록 응답 body 에서 iid 추출해 entry 에 포함.
+                # 추출 실패해도 entry 는 등록 성공으로 기록 (iid 만 빠진 채 진행).
+                iid = None
+                try:
+                    iid = json.loads(body).get("iid")
+                except Exception:
+                    pass
+                entry = {"key": sonar_key, "title": final_title}
+                if iid is not None:
+                    entry["iid"] = iid
+                created.append(entry)
             else:
                 failed.append({"key": sonar_key, "status": status, "body": body})
         except Exception as e:
