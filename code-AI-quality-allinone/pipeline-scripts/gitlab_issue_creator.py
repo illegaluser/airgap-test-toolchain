@@ -151,6 +151,41 @@ def _short_sha(sha: str, n: int = 8) -> str:
     return sha[:n] if sha else ""
 
 
+def _sonar_add_comment(sonar_host: str, sonar_token: str, issue_key: str,
+                       text: str, timeout: int = 30) -> tuple:
+    """SonarQube `POST /api/issues/add_comment` 으로 LLM fp_reason 을 코멘트로 부착.
+
+    false_positive 전이 직전에 호출해 분석가가 Sonar UI 에서 "왜 오탐인지"
+    근거를 즉시 확인할 수 있도록 한다. 전이는 별도 호출 (do_transition).
+    실패해도 전이는 시도 — 코멘트는 부가 가치이지 차단 조건이 아니다.
+
+    빈 text / 빈 token 은 silent skip (운영 환경에서 sonar-token 미주입 가능성).
+    """
+    if not sonar_host or not sonar_token or not issue_key or not (text or "").strip():
+        return (False, "missing sonar_host / token / issue_key / text")
+    url = f"{sonar_host.rstrip('/')}/api/issues/add_comment"
+    form = urlencode({"issue": issue_key, "text": text.strip()}).encode("utf-8")
+    auth = "Basic " + base64.b64encode(f"{sonar_token}:".encode("utf-8")).decode("ascii")
+    headers = {
+        "Authorization": auth,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    req = Request(url, method="POST", headers=headers, data=form)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            if 200 <= resp.status < 300:
+                return (True, "")
+            body = resp.read().decode("utf-8", errors="replace")
+            return (False, f"HTTP {resp.status} · {body[:200]}")
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        return (False, f"HTTP {e.code} · {body[:200]}")
+    except URLError as e:
+        return (False, f"URLError: {e}")
+    except Exception as e:
+        return (False, f"Exception: {e}")
+
+
 def _sonar_mark_fp(sonar_host: str, sonar_token: str, issue_key: str, timeout: int = 30) -> tuple:
     """Step D — SonarQube `POST /api/issues/do_transition` 으로 이슈를 false positive 로 마킹.
 
@@ -539,6 +574,15 @@ def render_issue_body(row: dict, args) -> str:
         impact_section = "### ⚠️ 영향과 이유\n\n_(LLM 이 영향 분석을 제공하지 않음)_"
 
     # ─ 4. 어떻게 고치나 ───────────────────────────────────────────────────
+    # 본문 중복 방지 하드 가드 — 프롬프트 "케이스 A" 의 deterministic enforcement.
+    # suggested_diff 가 채워지면 suggested_fix_markdown 의 코드펜스 블록을
+    # strip 해서 자연어 설명만 남긴다. LLM 이 프롬프트 규칙을 위반해도
+    # 본문에 같은 코드가 두 번 렌더되지 않도록 차단. fence strip 후 자연어가
+    # 비면 fix_blocks 에 포함 안 됨 (아래 truthy 체크가 자동 거름).
+    diff_present = bool(suggested_diff) and suggested_diff.lower() not in ("null", "none")
+    if diff_present and suggested_fix:
+        suggested_fix = re.sub(r"```[\s\S]*?```", "", suggested_fix).strip()
+
     fix_blocks = []
     if suggested_fix:
         if "```" not in suggested_fix:
@@ -547,7 +591,7 @@ def render_issue_body(row: dict, args) -> str:
             lang = "diff" if diff_count >= 2 else "python"
             suggested_fix = f"```{lang}\n{suggested_fix}\n```"
         fix_blocks.append(suggested_fix)
-    if suggested_diff and suggested_diff.lower() not in ("", "null", "none"):
+    if diff_present:
         if "```" not in suggested_diff:
             suggested_diff = f"```diff\n{suggested_diff}\n```"
         fix_blocks.append("**기계 적용 가능한 diff:**\n\n" + suggested_diff)
@@ -773,6 +817,19 @@ def main() -> int:
         # 실패(또는 --sonar-token 비어있음): GitLab Issue 는 생성하되 `fp_transition_failed` 라벨 추가.
         extra_labels = []
         if classification == "false_positive":
+            # fp_reason 을 Sonar UI 코멘트로 부착 (전이 직전 — 실패해도 전이는 진행).
+            # LLM 의 오탐 판정 근거를 분석가가 Sonar UI 에서 바로 확인 가능.
+            fp_reason = (outputs.get("fp_reason") or "").strip()
+            if fp_reason:
+                comment = (
+                    f"[Auto-FP by LLM · confidence={confidence or 'n/a'}]\n"
+                    f"{fp_reason}"
+                )
+                ok_c, err_c = _sonar_add_comment(
+                    args.sonar_host_url, args.sonar_token, sonar_key, comment
+                )
+                if not ok_c:
+                    print(f"[FP-COMMENT:WARN] {sonar_key} — {err_c}")
             ok, err = _sonar_mark_fp(args.sonar_host_url, args.sonar_token, sonar_key)
             if ok:
                 print(f"[FP-TRANSITION] {sonar_key} → Sonar marked as false positive")

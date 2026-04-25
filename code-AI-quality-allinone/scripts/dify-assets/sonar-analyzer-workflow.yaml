@@ -577,11 +577,11 @@ workflow:
                   "title": "<한줄 요약 제목, 80자 이내>",
                   "labels": ["<Severity>", "<Type>", "<추가 도메인 태그>"],
                   "impact_analysis_markdown": "<markdown 3~6줄. 이 이슈가 실제 동작에 어떤 영향을 미치는지.>",
-                  "suggested_fix_markdown": "<markdown. 코드펜스 diff 또는 python 블록 1개. 명확한 수정안이 없으면 빈 문자열 \"\">",
+                  "suggested_fix_markdown": "<markdown. 케이스에 따라 코드펜스 또는 자연어 설명. 아래 상호배타 규칙 참조.>",
                   "classification": "<true_positive | false_positive | wont_fix>",
                   "fp_reason": "<classification=false_positive 일 때만 비지 않음. 왜 오탐인지 1-2줄. 아니면 빈 문자열 \"\">",
                   "confidence": "<high | medium | low — 본 판정에 대한 확신도>",
-                  "suggested_diff": "<unified diff 문자열. 없으면 빈 문자열 \"\". suggested_fix_markdown 과 별개로 기계 적용 가능한 형식일 때만 채움.>"
+                  "suggested_diff": "<unified diff 문자열. 없으면 빈 문자열 \"\". 기계 적용 가능한 형식일 때만 채움.>"
                 }
 
                 중요 규칙 (위반 시 본문이 중복되어 가독성 떨어짐):
@@ -589,37 +589,58 @@ workflow:
                   이 정보들은 이슈 상단에 별도 테이블로 렌더링됨. 반복 금지.
                 - 문제 코드 블록(`>>` 마커 포함)도 다시 쓰지 말 것. 상단에 별도 섹션으로 렌더링됨.
                 - Rule 전체 설명도 다시 쓰지 말 것. 하단에 별도 접기 섹션으로 렌더링됨.
+
                 - impact_analysis_markdown:
                     * 호출 관계 · 테스트 연결 · 프로젝트 관행 등 해석이 필요한 내용만.
-                    * 아래 '프로젝트 컨텍스트' RAG 결과의 실제 파일/함수를 구체적으로 언급.
-                    * 예: "`src/session.py::check_session` 가 이 함수를 호출하므로 세션 검증 흐름 전체가 영향을 받음."
-                    * 3~6줄 권장. 헤딩(##) 사용 금지 — 창 밖 상단 헤딩이 이미 있음.
-                    * **인용 의무 (Fix D)**: impact_analysis_markdown 안에 '프로젝트 컨텍스트' 섹션에 등장한
-                      파일 경로 혹은 함수 심볼 **최소 1 개를 backtick(`) 으로 감싸 그대로 인용**하세요.
+                    * 3~6줄 (6줄 초과 금지). 헤딩(##) 사용 금지.
+                    * **인용 의무**: '프로젝트 컨텍스트' 섹션에 등장한 파일 경로 또는 함수 심볼
+                      **최소 1 개를 backtick(`) 으로 감싸 그대로 인용**하세요.
                       예: `` `src/auth/login.py` ``, `` `handle_login` ``, `` `ProfileDAO::updateUser` ``.
-                      프로젝트 컨텍스트 섹션이 "(관련 RAG 청크 없음)" 으로 비어있는 경우에는 인용 없이 작성해도 됩니다.
-                      인용이 있으면 downstream 품질 리포트에서 "프로젝트 맥락 반영" 으로 집계됩니다.
-                    * **정적 메타 활용 (Phase B F2c)**: '이슈 함수 정적 메타' 섹션에 HTTP route /
-                      decorator / parameters / raises 정보가 있으면 그 의미를 본문에 1번 언급하세요.
-                      예: "이 함수는 `POST /login` 라우트로 외부에 노출되어 있어 입력 검증이 중요"
-                      혹은 "`@require_role('admin')` 데코레이터가 권한 검사를 담당하므로 우회 시 위험".
-                      정적 메타 섹션이 비어있으면 이 규칙은 적용하지 않아도 됩니다.
-                    * **실질적 원인분석 (Phase E')**: dependency graph / git history /
-                      similar locations / project overview 섹션 중 비어있지 않은 정보가
-                      있으면 본문 1~2 곳에 구체 언급 (영향 범위 / 작성 의도 / 패턴 / 도메인 어휘 등).
-                      검토 범위 한 줄 (`🔍 검토: ...`) 은 analyzer 가 자동 부착하므로
-                      LLM 은 작성 안 함.
-                - suggested_fix_markdown:
-                    * 바로 적용 가능한 diff 가 가장 좋음. 없으면 before/after python 블록도 허용.
-                    * 코드펜스 1개만. 주석 설명은 코드펜스 바깥 1~2줄만.
-                    * 확실한 수정안이 없으면 반드시 빈 문자열 "". 추측성 제안 금지.
-                - classification: Sonar 가 실제 문제를 맞췄는지 판정.
-                    * true_positive: 실제로 수정 필요.
-                    * false_positive: Sonar 가 오판. 프로젝트 관행/테스트 픽스처/의도된 예외 등.
-                    * wont_fix: 실제 문제지만 비용/우선순위상 고치지 않는 것이 합리적.
-                - fp_reason: classification=false_positive 일 때만 1~2줄로 이유. 아니면 빈 문자열.
-                - confidence: 본 판정 (classification) 에 대한 확신도. 근거가 RAG/코드에 명확하면 high, 룰 설명만으로 판단했으면 medium/low.
-                - suggested_diff: 기계 적용 가능한 unified diff 가 확실할 때만. 애매하면 빈 문자열.
+                      '프로젝트 컨텍스트' 가 "(관련 RAG 청크 없음)" 으로 비어있으면 인용 없이 작성 가능.
+                    * **정적 메타 활용**: '이슈 함수 정적 메타' 섹션에 HTTP route / decorator /
+                      parameters / raises 가 있으면 그 의미를 본문에 1번 언급.
+                      예: "이 함수는 `POST /login` 라우트로 외부 노출되어 입력 검증이 중요"
+                      혹은 "`@require_role('admin')` 데코레이터가 권한 검사를 담당".
+                      섹션이 비어있으면 적용 안 해도 됨.
+                    * **실질적 원인분석**: dependency graph / git history / similar locations /
+                      project overview 중 비어있지 않은 정보가 있으면 본문 1~2 곳에 구체 언급
+                      (영향 범위 / 작성 의도 / 패턴 / 도메인 어휘 등).
+                    * `🔍 검토: ...` 한 줄은 analyzer 가 자동 부착하므로 LLM 은 작성 안 함.
+
+                - suggested_fix_markdown / suggested_diff (상호배타 — 본문 중복 방지):
+                    * 케이스 A — 기계 적용 가능한 unified diff 가 명확:
+                        - `suggested_diff` 에 unified diff 채움.
+                        - `suggested_fix_markdown` 은 **코드펜스 없이 1~2줄 자연어 설명만**
+                          (왜 이 fix 가 필요한지). 같은 코드를 markdown 에 다시 넣지 말 것.
+                    * 케이스 B — 수정안은 있지만 unified diff 형식이 애매 (라인 번호 불확실 등):
+                        - `suggested_diff` = "" (빈 문자열).
+                        - `suggested_fix_markdown` 에 코드펜스 1개 (before/after 또는 의사코드).
+                          코드펜스 본문은 30 줄 이내. 설명은 코드펜스 바깥 1~2줄.
+                    * 케이스 C — 확실한 수정안이 없음:
+                        - 둘 다 빈 문자열 "". 추측성 제안 금지.
+
+                - classification: Sonar 가 실제 문제를 맞췄는지 판정. 아래 신호 기반:
+                    * true_positive — 다음 중 하나 이상:
+                        - 실행 경로상 실제로 도달 가능 (production code, public/exported symbol)
+                        - 입력 검증 / 권한 / 자원 해제 / 동시성 같이 영향이 명백한 카테고리
+                        - 같은 rule 의 fix commit 이력이 git_history 에 존재
+                    * false_positive — 다음 중 하나 이상이 명확:
+                        - 테스트 코드 / 픽스처 / 모의 데이터 (path 가 test/spec/fixtures 포함)
+                        - 의도된 예외를 주석 / 데코레이터 / lint suppress 로 명시
+                        - 자동 생성 코드 (generated, vendored, .pb.go, *_pb2.py 등)
+                        - 프로젝트 관행상 허용 (project_overview / 동일 패턴 다수 발견)
+                    * wont_fix — 실제 문제이지만 수정 비용 > 이익:
+                        - deprecated 모듈 / 마이그레이션 예정
+                        - 외부 호환성 제약 (public API signature 변경 불가)
+                        - similar_locations 다수로 일괄 fix 가 별도 과제로 분리되어야 함
+
+                - fp_reason: classification=false_positive 일 때만 1~2줄로 위 신호 중 어느 것에 해당하는지 명시. 아니면 빈 문자열.
+
+                - confidence: 본 판정에 대한 확신도.
+                    * high   — 분류 신호가 코드/RAG 에 직접 보임 (테스트 경로 매칭, fix 이력 존재 등)
+                    * medium — 신호가 부분적이거나 RAG 가 비어 룰 설명 + 정적 메타로 추론
+                    * low    — 룰 설명만으로 판단, 컨텍스트 부재
+
                 - labels: 최소 2개 (severity, type), 도메인 태그 자유.
             - role: user
               text: |
