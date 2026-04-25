@@ -11,7 +11,7 @@
 #   E. Dify Sonar Analyzer Workflow import
 #   F. Dify API Key 발급 (Dataset, Workflow)
 #   G. GitLab root PAT 발급 via REST API
-#   H. GitLab 샘플 프로젝트(nodegoat) 자동 생성 + 초기 push
+#   H. GitLab 샘플 프로젝트(realworld) 자동 생성 + 초기 push
 #   I. Jenkins Credentials 자동 주입
 #       - dify-dataset-id
 #       - dify-knowledge-key
@@ -55,12 +55,13 @@ GITLAB_URL="${GITLAB_URL_INTERNAL:-http://gitlab:80}"
 GITLAB_ROOT_PASSWORD="${GITLAB_ROOT_PASSWORD:-ChangeMe!Pass}"
 PROVISION_SAMPLE_PROJECT="${PROVISION_SAMPLE_PROJECT:-true}"
 SAMPLE_PROJECT_NAMESPACE="${SAMPLE_PROJECT_NAMESPACE:-root}"
-SAMPLE_PROJECT_NAME="${SAMPLE_PROJECT_NAME:-nodegoat}"
-SAMPLE_PROJECT_PATH="${SAMPLE_PROJECT_PATH:-nodegoat}"
+SAMPLE_PROJECT_NAME="${SAMPLE_PROJECT_NAME:-realworld}"
+SAMPLE_PROJECT_PATH="${SAMPLE_PROJECT_PATH:-realworld}"
 SAMPLE_PROJECT_VISIBILITY="${SAMPLE_PROJECT_VISIBILITY:-private}"
 SAMPLE_PROJECT_BRANCH="${SAMPLE_PROJECT_BRANCH:-main}"
-SAMPLE_PROJECT_TEMPLATE_DIR="${SAMPLE_PROJECT_TEMPLATE_DIR:-/opt/sample-projects/nodegoat}"
-SAMPLE_PROJECT_SOURCE_URL="${SAMPLE_PROJECT_SOURCE_URL:-https://github.com/OWASP/NodeGoat.git}"
+SAMPLE_PROJECT_TEMPLATE_DIR="${SAMPLE_PROJECT_TEMPLATE_DIR:-/opt/sample-projects/realworld}"
+# 빈값 = 인터넷 fallback 비활성. airgap 환경에서 vendoring 된 로컬 템플릿만 사용.
+SAMPLE_PROJECT_SOURCE_URL="${SAMPLE_PROJECT_SOURCE_URL:-}"
 
 SONAR_URL="${SONAR_URL:-http://127.0.0.1:9000}"
 SONAR_ADMIN_NEW_PASSWORD="${SONAR_ADMIN_NEW_PASSWORD:-TtcAdmin!2026}"
@@ -945,20 +946,20 @@ gitlab_ensure_sample_project() {
         return 1
     fi
 
-    # 템플릿 검증 — Python / Node 이든 최소 하나의 소스 파일이 있어야 함.
-    # 과거 'package.json 필수' 는 nodegoat 전용 가정이었고, ttc-sample-app 같은
-    # Python 템플릿을 지원하기 위해 일반화. package.json / pyproject.toml /
-    # requirements.txt / sonar-project.properties / src 디렉토리 중 하나.
-    if ! ( [ -f "$workdir/package.json" ] || [ -f "$workdir/pyproject.toml" ] \
+    # 템플릿 검증 — 다언어 지원 (Java/Gradle / Node / Python). 최소 하나의 마커.
+    # build.gradle / pom.xml / package.json / pyproject.toml / requirements.txt /
+    # sonar-project.properties / src 디렉토리 중 하나.
+    if ! ( [ -f "$workdir/build.gradle" ] || [ -f "$workdir/pom.xml" ] \
+        || [ -f "$workdir/package.json" ] || [ -f "$workdir/pyproject.toml" ] \
         || [ -f "$workdir/requirements.txt" ] || [ -f "$workdir/sonar-project.properties" ] \
         || [ -d "$workdir/src" ] ); then
-        warn "  샘플 프로젝트 템플릿 검증 실패 — 알려진 프로젝트 마커 없음 (package.json / pyproject.toml / requirements.txt / src/)"
+        warn "  샘플 프로젝트 템플릿 검증 실패 — 알려진 프로젝트 마커 없음 (build.gradle / pom.xml / package.json / pyproject.toml / requirements.txt / src/)"
         rm -rf "$workdir"
         return 1
     fi
 
-    # 템플릿에 sonar-project.properties 가 이미 있으면 보존 (ttc-sample-app
-    # 같은 경우 자체 Sonar 설정을 들고 옴). 없으면 nodegoat 스타일 기본값 생성.
+    # 템플릿에 sonar-project.properties 가 이미 있으면 보존 (각 sample 이 언어별
+    # 자체 Sonar 설정을 들고 옴). 없으면 안전한 디폴트 생성.
     if [ ! -f "$workdir/sonar-project.properties" ]; then
         cat > "$workdir/sonar-project.properties" <<CFG
 sonar.projectKey=$SAMPLE_PROJECT_PATH
@@ -1148,14 +1149,13 @@ else
     warn "Dify setup 실패 — 후속 단계 건너뜀"
 fi
 
-# G+H. GitLab + 샘플 프로젝트 (dual-track: nodegoat + ttc-sample-app)
-# 각 sample 은 gitlab_ensure_sample_project 를 env override subshell 로 호출.
-# SAMPLE_PROJECTS 환경변수로 기본 조합 override 가능:
-#   SAMPLE_PROJECTS="nodegoat"              → nodegoat 만
-#   SAMPLE_PROJECTS="ttc-sample-app"        → ttc-sample-app 만
-#   SAMPLE_PROJECTS="nodegoat,ttc-sample-app" → 기본 (둘 다)
+# G+H. GitLab + 샘플 프로젝트 (현재: realworld 단일).
+# vendoring 된 sample-projects/realworld/ 를 GitLab `root/realworld` 로 import.
+# airgap 환경 — SAMPLE_PROJECT_SOURCE_URL 빈값 = 인터넷 fallback 비활성.
+# SAMPLE_PROJECTS 환경변수로 명시 override 가능 (콤마 구분):
+#   SAMPLE_PROJECTS="realworld"  → 기본
+SAMPLE_PROJECTS_LIST="${SAMPLE_PROJECTS:-realworld}"
 GITLAB_PAT=""
-SAMPLE_PROJECTS_LIST="${SAMPLE_PROJECTS:-nodegoat,ttc-sample-app}"
 if gitlab_wait_ready; then
     GITLAB_PAT=$(gitlab_issue_root_pat || echo "")
     if [ -n "$GITLAB_PAT" ]; then
@@ -1164,25 +1164,17 @@ if gitlab_wait_ready; then
             _name=$(printf '%s' "$_name" | tr -d ' ')
             [ -z "$_name" ] && continue
             case "$_name" in
-                nodegoat)
-                    SAMPLE_PROJECT_NAME=nodegoat \
-                    SAMPLE_PROJECT_PATH=nodegoat \
-                    SAMPLE_PROJECT_TEMPLATE_DIR=/opt/sample-projects/nodegoat \
-                    SAMPLE_PROJECT_SOURCE_URL="${SAMPLE_PROJECT_SOURCE_URL:-https://github.com/OWASP/NodeGoat.git}" \
-                    SAMPLE_PROJECT_BRANCH=main \
-                        gitlab_ensure_sample_project "$GITLAB_PAT" || true
-                    ;;
-                ttc-sample-app)
-                    # 로컬 템플릿만 — 원격 clone fallback 비활성화 (빈 SOURCE_URL).
-                    SAMPLE_PROJECT_NAME=ttc-sample-app \
-                    SAMPLE_PROJECT_PATH=ttc-sample-app \
-                    SAMPLE_PROJECT_TEMPLATE_DIR=/opt/sample-projects/ttc-sample-app \
+                realworld)
+                    # 로컬 템플릿 only — Spring Boot RealWorld vendoring 됨.
+                    SAMPLE_PROJECT_NAME=realworld \
+                    SAMPLE_PROJECT_PATH=realworld \
+                    SAMPLE_PROJECT_TEMPLATE_DIR=/opt/sample-projects/realworld \
                     SAMPLE_PROJECT_SOURCE_URL="" \
                     SAMPLE_PROJECT_BRANCH=main \
                         gitlab_ensure_sample_project "$GITLAB_PAT" || true
                     ;;
                 *)
-                    warn "알 수 없는 sample 이름: $_name (nodegoat | ttc-sample-app 중 선택)"
+                    warn "알 수 없는 sample 이름: $_name (현재 지원: realworld)"
                     ;;
             esac
         done

@@ -4,14 +4,14 @@ pipeline {
     parameters {
         string(
             name: 'SONAR_PROJECT_KEY',
-            defaultValue: 'nodegoat',
-            description: 'SonarQube Project Key (예: nodegoat)'
+            defaultValue: 'realworld',
+            description: 'SonarQube Project Key (예: realworld)'
         )
 
         string(
             name: 'GITLAB_PROJECT_PATH',
-            defaultValue: 'root/nodegoat',
-            description: 'GitLab Project Path (예: root/nodegoat)'
+            defaultValue: 'root/realworld',
+            description: 'GitLab Project Path (예: root/realworld)'
         )
 
         string(
