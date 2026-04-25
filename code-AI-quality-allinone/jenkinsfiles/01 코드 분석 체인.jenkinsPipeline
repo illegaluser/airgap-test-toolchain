@@ -4,7 +4,7 @@ pipeline {
     parameters {
         string(
             name: 'REPO_URL',
-            defaultValue: 'http://gitlab:80/root/nodegoat.git',
+            defaultValue: 'http://gitlab:80/root/realworld.git',
             description: '분석 대상 Git 레포지토리 URL (컨테이너 내부 경로)'
         )
         string(
@@ -24,17 +24,17 @@ pipeline {
         )
         string(
             name: 'SONAR_PROJECT_KEY',
-            defaultValue: 'nodegoat',
+            defaultValue: 'realworld',
             description: 'SonarQube Project Key'
         )
         string(
             name: 'GITLAB_PROJECT_PATH',
-            defaultValue: 'root/nodegoat',
+            defaultValue: 'root/realworld',
             description: 'GitLab Project Path (02 checkout 용)'
         )
         string(
             name: 'GITLAB_PROJECT',
-            defaultValue: 'root/nodegoat',
+            defaultValue: 'root/realworld',
             description: 'GitLab Project Path (03 이슈 등록 용)'
         )
         string(
