@@ -305,6 +305,28 @@ workflow:
                     except (TypeError, ValueError):
                         score_val = None
                     body, meta = parse_footer(content)
+                    # Fix B' — Dify automatic_mode segmentation 이 한 document 를
+                    # 여러 segment 로 자르면서 footer 가 일부 segment 에만 남는다.
+                    # footer 가 없는 segment 가 retrieve 되면 path/symbol 이 모두
+                    # 빈값이 되어 context_filter 가 ?::? 로 표기 → citation 측정에
+                    # 매칭 대상이 사라진다. document name (`path::symbol` 으로
+                    # upload 됨) 을 fallback 으로 활용해 path/symbol 을 복원.
+                    # 우선순위:
+                    #   1) parse_footer 결과 (가장 풍부 — callers/tests 까지 보유)
+                    #   2) record 의 title / document name (path::symbol 만 복원)
+                    if not meta.get("path"):
+                        title_or_name = (
+                            r.get("title")
+                            or (r.get("metadata") or {}).get("document_name")
+                            or (r.get("metadata") or {}).get("title")
+                            or ""
+                        )
+                        if "::" in title_or_name:
+                            p_, s_ = title_or_name.split("::", 1)
+                            meta["path"] = p_
+                            meta["symbol"] = s_
+                        elif title_or_name:
+                            meta["path"] = title_or_name
                     chunk_path = meta.get("path", "")
                     if issue_file and chunk_path == issue_file:
                         excluded_self += 1
