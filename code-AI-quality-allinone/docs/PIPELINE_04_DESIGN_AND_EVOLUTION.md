@@ -34,6 +34,7 @@
 | **누수 봉쇄** (사이클 3+D) | 7개 누수 중 가장 영향 큰 3개 (tree-sitter 의 함수 인식 버그 등) 수정 | KB 청크 27 → 60, HTTP 라우트 검출 0 → 17, "AI 가 정적 메타를 답변에 인용한 비율" 0% → 30% |
 | **실질적 원인분석 강화 시도** (사이클 3+E) | "전체 저장소 + 프로젝트 정보 기반 분석" 을 지향해 5종 입력 (의존성 그래프 / git 이력 / 유사 패턴 / 프로젝트 개요 / 답변 검토범위 의무) 추가 | **회귀 발생** — 4B 모델이 입력 분산을 처리 못 함. 인용률 80%→70%, 메타 인용 30%→20% |
 | **회귀 회복 시도** (사이클 3+E') | 빈 섹션 헤더 제거 + 답변 검토범위 자동 후처리 + system prompt 압축 | **부분 회복** — 인용률 80% 회복 + 검토범위 자동표기 0/10 → 10/10. 그러나 정적 메타 인용은 20% 그대로 (3+D 의 30% 회복 못 함) |
+| **프롬프트-creator 정합성 정렬** (사이클 3+F) | system 프롬프트 정리 (코드네임 제거 / classification·confidence 신호 명시 / suggested_fix·diff 케이스 분리) + `fp_reason` dead field 를 Sonar 코멘트로 부활 + 본문 중복 하드 차단 | 측정 전 (다음 빌드 대기) — 8개 LLM 필드 정합성 7/8 → 8/8, 본문 중복 deterministic 차단 |
 
 ### 현재 위치
 
@@ -42,6 +43,7 @@
 - 🟡 Phase E' (회복 처방) 적용 후 인용률·검토범위 표기는 회복했으나 정적 메타 인용은 미회복.
 - 🔍 **새 핵심 발견**: KB 학습 (Stage 2) 와 답변 활용 (Stage 4) 사이의 비대칭 — 함수 호출 매핑 95% 인데 RAG retrieval 로 caller 청크 회수율은 20%. 학습 → 검색 단계에서 누수.
 - 🔍 본질적 한계 — 현 LLM (gemma4:e4b 4B) 의 attention bandwidth 가 입력 토큰 증가 시 무너지고, 정적 메타 (endpoint/decorator/매개변수명) 를 본문에 인용하지 못함.
+- 🧹 **사이클 3+F (design alignment)**: 프롬프트와 `gitlab_issue_creator` 사이의 dead field (`fp_reason`) 를 Sonar 코멘트로 활용 + 본문 중복 하드 차단 + system 프롬프트 -8% 토큰 정리. 측정은 다음 빌드 대기 — citation/ts_any_hit 회귀 부재 확인 필요.
 
 ### 이 문서의 내부 용어 표 (모르고 본문 읽으면 헷갈리므로 미리)
 
@@ -365,6 +367,84 @@
 
 ---
 
+### 3.8 사이클 3+F (프롬프트-creator 정합성 정렬) — 2026-04-25 심야
+
+> 측정-주도 사이클이 아닌 **design alignment cleanup**. 시스템 프롬프트와 다운스트림 (`gitlab_issue_creator.py`) 사이의 결합도/dead field 정합성을 손봄. 다음 빌드 측정으로 회귀 부재 확인 필요.
+
+#### 진단 — 8개 LLM 출력 필드 vs creator 소비 매트릭스
+
+프롬프트 객관 평가 후 발견:
+
+| LLM 필드 | creator 소비 | 부합 |
+|---------|--------------|------|
+| `title` / `labels` / `impact_analysis_markdown` | 본문 / `_merge_labels` / "⚠️" 섹션 | ✓ |
+| `classification` | **Sonar `do_transition` 호출** + label | ✓ (강한 액션) |
+| `confidence` | label + `_action_verdict` | ✓ |
+| `suggested_fix_markdown` | "🛠️" 섹션 (코드펜스 자동 wrap) | ✓ |
+| `suggested_diff` | **별도** "기계 적용 가능한 diff:" 블록 | △ 중복 위험 |
+| `fp_reason` | **소비 0건 (dead field)** | ✗ |
+
+추가로 system 프롬프트 자체의 노이즈:
+
+- 내부 코드네임 (`Fix D`, `Phase B F2c`, `Phase E'`) 이 LLM 입력에 그대로 노출 — 모델 입장에선 의미 없는 토큰
+- classification 분류 정의가 한 줄씩만 — 4B 모델이 신호 부족으로 medium 에 몰릴 가능성
+- `suggested_fix_markdown` vs `suggested_diff` 는 둘 다 "수정안" 인데 분리 기준이 LLM 자가판단
+- 길이 가드레일 약함 (`impact ≤ 6줄` 권장만, 코드펜스 길이 무한)
+
+#### 처방 3개
+
+| Fix | 변경 위치 | 의도 |
+|-----|----------|------|
+| **(a) 프롬프트 정리** | `sonar-analyzer-workflow.yaml` LLM 노드 system text | 코드네임 제거 / classification 신호 명시 (test 경로·생성 코드·deprecated 등) / `suggested_fix`·`suggested_diff` 케이스 A/B/C 상호배타 / 길이 가드레일 (`impact ≤ 6줄`, `fence ≤ 30줄`) / confidence 기준 구체화 |
+| **(b) `fp_reason` dead field 부활** | `gitlab_issue_creator.py` `_sonar_add_comment()` 신규 + false_positive 분기 | LLM 의 오탐 판정 근거를 Sonar UI 코멘트로 부착 (전이 직전 호출, 실패해도 전이는 진행 — dual-path 원칙 유지) |
+| **(c) 본문 중복 하드 차단** | `gitlab_issue_creator.py` `render_issue_body()` fix_blocks 직전 정규화 | `suggested_diff` 가 채워지면 `suggested_fix_markdown` 의 코드펜스 블록을 regex strip → LLM 위반 여부와 무관하게 본문 중복 0% (deterministic enforcement) |
+
+#### 코드 변경
+
+- `scripts/dify-assets/sonar-analyzer-workflow.yaml`:
+  - LLM 노드 system 프롬프트 정리. 행위 지시 보존, 운영 메모 (Fix D / Phase B F2c / Phase E') 제거. 시스템 길이 약 -8%
+- `pipeline-scripts/gitlab_issue_creator.py`:
+  - `_sonar_add_comment()` 신규 — `POST /api/issues/add_comment` (Basic auth, token:empty)
+  - false_positive 분기에서 `fp_reason` 비지 않으면 `[Auto-FP by LLM · confidence=X]\n<reason>` 코멘트 등록 후 `_sonar_mark_fp()` 호출. 코멘트 실패는 silent warn
+  - `render_issue_body()` fix_blocks 직전: `diff_present and suggested_fix` 일 때 `re.sub(r"\`\`\`[\s\S]*?\`\`\`", "", suggested_fix).strip()` — 코드펜스만 제거, 자연어 보존
+  - `null` / `none` 문자열 sentinel 처리를 변수 `diff_present` 로 추출해 일관화
+
+#### 검증 (단위 테스트 — 빌드 측정 전)
+
+- YAML 파싱 OK / 15개 placeholder (`{{#start.*#}}`, `{{#context_filter.filtered_context#}}`) 보존
+- 프롬프트 내부 코드네임 3종 모두 제거 확인 (`Fix D` / `Phase B F2c` / `Phase E'` → 0건)
+- `_sonar_add_comment()` silent skip on empty inputs 확인 (token / text 빈값)
+- 정규화 단위 테스트 4 케이스 모두 통과:
+  - Case A 위반 (fix 에 코드펜스 + diff 채움) → 코드펜스 strip / 자연어 보존
+  - Case B (diff 빈값) → fix 무변경
+  - Case C (둘 다 빈값) → 정상
+  - `diff="null"` sentinel → false-trigger 없음
+- `python3 -m py_compile gitlab_issue_creator.py` OK
+
+#### 가설 (다음 빌드 측정 대상)
+
+| H | 가설 | 측정 방법 |
+|---|------|----------|
+| H8 | classification 신호 명시 → false_positive 정밀도 향상 (medium 쏠림 감소) | `confidence` 분포 + Sonar `do_transition` 성공률 |
+| H9 | `fp_reason` 코멘트 부착 → 분석가 검토 시간 단축 (질적) | Sonar UI 샘플 1건 확인, 분석가 피드백 |
+| H10 | 본문 중복 차단 → "🛠️" 섹션과 diff 블록의 코드 중복 0% | GitLab Issue 5건 샘플로 grep 비교 |
+| H11 | 시스템 프롬프트 -8% 토큰 → LLM attention 회복으로 citation 안정성 유지 | citation rate / depth — 3+E' 의 80% / 4.30 유지 가능성 |
+
+#### 운영 적용 체크리스트
+
+1. `gitlab_issue_creator.py` 변경 — `${SCRIPTS_DIR}` 가 컨테이너 내부 경로이므로 provision 재실행 또는 마운트 갱신 필요
+2. workflow YAML — `provision.sh` 재실행 또는 Dify console 에서 워크플로우 재 import
+3. 다음 빌드 후 Sonar UI 에서 false_positive 마킹된 이슈 1건 샘플로 LLM 코멘트 가시 확인
+4. GitLab Issue 본문에서 "🛠️" + "**기계 적용 가능한 diff:**" 의 코드 중복 사라짐 확인
+
+#### 현 상태
+
+- 프롬프트와 creator 의 8개 필드 정합성 7/8 → **8/8** (`fp_reason` dead → live)
+- 본문 중복 가능성 (LLM 위반 시) → **deterministic 차단**
+- 측정은 다음 빌드 대기. citation / ts_any_hit 회귀 부재가 핵심 검증 포인트.
+
+---
+
 ## 4. 미해결 이슈 / 향후 검토
 
 ### 4.1 RAG retrieval 단계의 누수 (사이클 3+E' 측정으로 새로 명확해진 핵심 갭)
@@ -555,6 +635,23 @@
 | `scripts/dify-assets/sonar-analyzer-workflow.yaml` | (a) user 프롬프트 헤더 제거 / (c) system 프롬프트 압축 + E4 의무 제거 |
 
 측정 결과 (검증 완료): citation 70%→80% 회복, citation_depth 4.3 (사상 최고), E4 자동 표기 0/10→10/10. 단 ts_any_hit 20% 미회복.
+
+### 사이클 3+F (프롬프트-creator 정합성)
+
+`scripts/dify-assets/sonar-analyzer-workflow.yaml` — LLM 노드 system 프롬프트 정리 (-8%)
+
+- 내부 코드네임 제거 (Fix D / Phase B F2c / Phase E')
+- classification 분류 신호 명시 (test 경로·생성 코드·deprecated 등)
+- `suggested_fix_markdown`·`suggested_diff` 케이스 A/B/C 상호배타
+- 길이 가드레일 (`impact ≤ 6줄`, `fence ≤ 30줄`)
+- confidence 기준 구체화
+
+`pipeline-scripts/gitlab_issue_creator.py`
+
+- (b) `_sonar_add_comment()` 신규 + false_positive 분기에서 `fp_reason` 을 Sonar UI 코멘트로 부착 (전이 직전 호출, 실패해도 전이는 진행)
+- (c) `render_issue_body()` fix_blocks 직전 정규화 — `suggested_diff` 가 채워지면 `suggested_fix_markdown` 의 코드펜스 regex strip (본문 중복 deterministic 차단)
+
+검증 (단위 테스트): YAML 파싱 OK / 15개 placeholder 보존 / 코드네임 3종 제거 / 정규화 4 케이스 (A 위반·B·C·null sentinel) 모두 통과 / `py_compile` OK. **빌드 측정 대기** — H8~H11 가설 (§3.8) 확인 필요.
 
 ---
 
