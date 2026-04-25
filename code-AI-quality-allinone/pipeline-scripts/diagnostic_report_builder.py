@@ -576,11 +576,241 @@ def _render_issue(row: dict) -> str:
     )
 
 
-def render(rows: list, title: str = "RAG Diagnostic Report") -> str:
+def _collect_kb_intelligence_stats(kb_dir) -> dict:
+    """사전학습 KB JSONL 들을 읽어 코드 인텔리전스 통계 집계.
+
+    PM 시각: "AI 가 우리 프로젝트에서 무엇을 배웠는가" 정량화.
+    개발자 시각: tree-sitter 추출 메타 (decorators / endpoints / callers /
+    test_paths / type-kind 청크) 의 총량 + 평균.
+
+    반환:
+      total_files, total_chunks, lang_breakdown,
+      callers_links, test_links, decorators_count, endpoints_count,
+      type_chunks_count (interface/type/enum), test_chunks_count,
+      docstring_count, top_endpoints (예시 5개)
+    """
+    from collections import Counter
+    stats = {
+        "total_files": 0,
+        "total_chunks": 0,
+        "lang_breakdown": {},
+        "callers_links": 0,
+        "test_links": 0,
+        "decorators_count": 0,
+        "endpoints_count": 0,
+        "endpoints_examples": [],
+        "type_chunks_count": 0,
+        "test_chunks_count": 0,
+        "docstring_count": 0,
+    }
+    if not kb_dir or not Path(kb_dir).exists():
+        return stats
+
+    lang_counter = Counter()
+    endpoints_seen = []
+    for jsonl_path in sorted(Path(kb_dir).glob("*.jsonl")):
+        stats["total_files"] += 1
+        try:
+            with jsonl_path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ch = json.loads(line)
+                    except Exception:
+                        continue
+                    stats["total_chunks"] += 1
+                    lang_counter[ch.get("lang") or "?"] += 1
+                    stats["callers_links"] += len(ch.get("callers") or [])
+                    stats["test_links"] += len(ch.get("test_paths") or [])
+                    if ch.get("decorators"):
+                        stats["decorators_count"] += 1
+                    ep = (ch.get("endpoint") or "").strip()
+                    if ep:
+                        stats["endpoints_count"] += 1
+                        if len(endpoints_seen) < 5:
+                            endpoints_seen.append((ep, ch.get("path", "?"), ch.get("symbol", "?")))
+                    if (ch.get("kind") or "") in ("type", "enum", "interface"):
+                        stats["type_chunks_count"] += 1
+                    if ch.get("is_test"):
+                        stats["test_chunks_count"] += 1
+                    if (ch.get("doc") or "").strip():
+                        stats["docstring_count"] += 1
+        except Exception:
+            continue
+    stats["lang_breakdown"] = dict(lang_counter)
+    stats["endpoints_examples"] = endpoints_seen
+    return stats
+
+
+def _render_kb_intelligence(kb_stats: dict) -> str:
+    """PM 친화 — 사전학습 결과 카드 섹션. tree-sitter 가 추출한 정적 인텔리전스를
+    "AI가 우리 프로젝트에서 배운 것" 시각으로 노출.
+    """
+    if not kb_stats or not kb_stats.get("total_chunks"):
+        return ""
+    s = kb_stats
+    lang_summary = ", ".join(
+        f"{k} {v}"
+        for k, v in sorted((s.get("lang_breakdown") or {}).items(), key=lambda x: -x[1])[:5]
+    ) or "—"
+
+    # PM 친화 카드 정의: (이모지+제목, 큰 숫자, 한 줄 설명)
+    intel_cards = [
+        ("📂 분석한 파일",
+         f"{s['total_files']}",
+         "프로젝트의 코드·테스트 파일 수"),
+        ("🧩 코드 자료(청크)",
+         f"{s['total_chunks']}",
+         f"함수·클래스·타입 단위로 분할 ({lang_summary})"),
+        ("🔗 호출 관계 링크",
+         f"{s['callers_links']}",
+         "\"이 함수가 어디서 호출되는가\" 자동 매핑"),
+        ("🌐 HTTP endpoint 매핑",
+         f"{s['endpoints_count']}",
+         "@app.route / @app.get 등 라우트 정의 검출"),
+        ("🛡️ 데코레이터 보유 청크",
+         f"{s['decorators_count']}",
+         "@require_role · @app.route 등 정적 의도 정보"),
+        ("🧪 테스트 ↔ 본문 연결",
+         f"{s['test_links']}",
+         "\"이 함수는 어느 테스트가 검증하는가\" 자동 연결"),
+        ("📐 도메인 모델·타입",
+         f"{s['type_chunks_count']}",
+         "TS interface · type · enum (도메인 어휘)"),
+        ("📝 문서화된 함수",
+         f"{s['docstring_count']}",
+         "docstring/JSDoc 보유 — 의도 자연어 활용"),
+    ]
+    cards_html = "<div class='cards'>" + "".join(
+        f"<div class='card'><div class='label'>{_esc(k)}</div>"
+        f"<div class='value'>{_esc(v)}</div>"
+        f"<div class='sub'>{_esc(sub)}</div></div>"
+        for k, v, sub in intel_cards
+    ) + "</div>"
+
+    # endpoint 예시 — 있으면 PM 가 "AI 가 진짜 우리 라우트를 알았는가" 즉시 검증
+    endpoint_examples_html = ""
+    if s.get("endpoints_examples"):
+        rows = "".join(
+            f"<tr><td><code>{_esc(ep)}</code></td>"
+            f"<td><code>{_esc(p)}</code></td>"
+            f"<td><code>{_esc(sym)}</code></td></tr>"
+            for ep, p, sym in s["endpoints_examples"]
+        )
+        endpoint_examples_html = (
+            "<h4 style='margin-top:14px;'>검출된 HTTP endpoint 예시</h4>"
+            "<table><tr><th>endpoint</th><th>파일</th><th>함수</th></tr>"
+            f"{rows}</table>"
+        )
+
+    return (
+        "<h2>📚 사전학습 결과 — AI 가 우리 프로젝트에서 배운 코드 지식</h2>"
+        "<p class='note'>이 단계에서 AI 가 코드를 함수·클래스·테스트 단위로 분해하고, "
+        "정적 분석으로 호출 관계·HTTP 라우트·도메인 모델·테스트 연결 같은 "
+        "<strong>'코드 인텔리전스'</strong>를 자동 추출했습니다. 이 지식이 풍부할수록 "
+        "이슈 분석 단계의 답변이 우리 프로젝트 맥락에 더 가까워집니다.</p>"
+        + cards_html
+        + endpoint_examples_html
+    )
+
+
+def _render_failure_diagnostic(rows: list) -> str:
+    """F2 — RAG 검색 실패 패턴 자동 진단. callers/tests bucket=0 또는
+    context:empty 이슈를 분류하고 retrieve 단계의 어떤 신호가 막혔는지
+    카테고리별 카운트.
+
+    카테고리:
+      A. context:empty — RAG 가 빈 결과 (자기 파일 청크만 있어 모두 self
+         exclusion 됨 OR 모든 청크가 score threshold 미달)
+      B. callers=0 — caller 청크가 retrieve 되지 않음 (KB 메타 부족 OR
+         BM25 매칭 약함)
+      C. tests=0 — test 청크가 retrieve 되지 않음 (보통 임베딩 의미 거리)
+      D. partial_citation — 받은 청크의 절반 미만만 인용
+    """
+    diag_rows = [r for r in rows if r.get("rag_diagnostic") and not r.get("llm_skipped")]
+    if not diag_rows:
+        return ""
+
+    n = len(diag_rows)
+    a_ctx_empty = []   # 카테고리 A
+    b_callers_zero = []  # B
+    c_tests_zero = []    # C
+    d_partial = []       # D
+
+    for r in diag_rows:
+        diag = r.get("rag_diagnostic") or {}
+        used_per = diag.get("used_per_bucket") or {}
+        out = r.get("outputs") or {}
+        labels = out.get("labels") or []
+        kept = diag.get("kept_total", 0)
+        if kept == 0:
+            a_ctx_empty.append(r)
+        else:
+            if (used_per.get("callers") or 0) == 0:
+                b_callers_zero.append(r)
+            if (used_per.get("tests") or 0) == 0:
+                c_tests_zero.append(r)
+        if "partial_citation" in labels:
+            d_partial.append(r)
+
+    def _cat_section(title: str, items: list, hint: str) -> str:
+        if not items:
+            return f"<li><strong>{_esc(title)}</strong>: 0 / {n} ✓</li>"
+        examples = ", ".join(
+            f"<code>{_esc((r.get('relative_path') or '?'))[-50:]}:{r.get('line','?')}</code>"
+            for r in items[:3]
+        )
+        more = f" +{len(items)-3} more" if len(items) > 3 else ""
+        return (
+            f"<li><strong>{_esc(title)}</strong>: <strong>{len(items)} / {n}</strong> "
+            f"({len(items)*100/n:.0f}%) — {hint}<br>"
+            f"<span style='color:#586069;font-size:11px'>예시: {examples}{more}</span></li>"
+        )
+
+    return (
+        "<h3>🔬 RAG 검색 실패 패턴 자동 진단</h3>"
+        "<p class='note'>callers/tests bucket=0 또는 context:empty 이슈를 분류해 "
+        "retrieve 단계의 어떤 신호가 막혔는지 카테고리별로 보여줍니다. "
+        "후속 fix 우선순위 결정에 활용.</p>"
+        "<ul style='line-height:1.8'>"
+        + _cat_section(
+            "A · context:empty (RAG 빈 결과)",
+            a_ctx_empty,
+            "kept=0 — 모두 self-exclusion 또는 score threshold 미달. "
+            "self-exclusion 세분화(P5)·threshold 완화(B) 검토."
+        )
+        + _cat_section(
+            "B · callers bucket=0",
+            b_callers_zero,
+            "호출 관계 청크가 retrieve 안 됨. KB callers 메타 부족 OR BM25 매칭 약함. "
+            "P3 (callers blacklist), B threshold 완화, D1 (summary footer) 검토."
+        )
+        + _cat_section(
+            "C · tests bucket=0",
+            c_tests_zero,
+            "테스트 청크가 retrieve 안 됨. cypress/e2e vs 본문 코드의 임베딩 거리 큰 "
+            "전형적 패턴. D3 (test footer 동의어), A1 (e2e description) 검토."
+        )
+        + _cat_section(
+            "D · partial_citation (인용 < 50%)",
+            d_partial,
+            "AI 가 받은 청크 절반 미만만 답변에 반영. confidence 자동 medium 강등됨 (P7)."
+        )
+        + "</ul>"
+    )
+
+
+def render(rows: list, title: str = "RAG Diagnostic Report", kb_stats: dict = None) -> str:
     agg = _aggregate(rows)
 
     # v2 — 비개발자 친화 상단 블록
     exec_summary_html = _render_executive_summary(agg)
+
+    # 사전학습 결과 — tree-sitter 가 추출한 코드 인텔리전스 정량화
+    # PM/스폰서가 "AI 가 우리 프로젝트에서 무엇을 배웠는가" 한눈에 파악 가능.
+    kb_intel_html = _render_kb_intelligence(kb_stats) if kb_stats else ""
 
     # 기존 상세 카드 — 기술 관점 수치. 이제는 technical details 안으로.
     cards = [
@@ -626,13 +856,17 @@ def render(rows: list, title: str = "RAG Diagnostic Report") -> str:
         agg["classification_dist"], "classification 분포"
     )
 
+    # F2 — failed bucket 자동 진단 섹션. callers/tests bucket=0 또는
+    # context:empty 이슈를 모아 retrieve 단계에서 무엇이 막혔는지 분석.
+    diag_html = _render_failure_diagnostic(rows)
+
     # 기술 지표 + 분포 블록은 접기 섹션으로 — 비개발자는 안 열어도 됨.
     technical_block = (
         "<details class='technical'>"
         "<summary>🔧 기술 상세 지표 (개발자용)</summary>"
         "<div style='margin-top:12px;'>"
         "<p class='note'>상세 수치와 분포. 비개발자는 위 신호등 요약만 읽어도 충분합니다.</p>"
-        + cards_html + dist_html
+        + cards_html + dist_html + diag_html
         + "</div></details>"
     )
 
@@ -644,6 +878,7 @@ def render(rows: list, title: str = "RAG Diagnostic Report") -> str:
         "<strong>'이 프로젝트 고유의 코드 맥락'</strong>을 얼마나 반영했는지 측정합니다. "
         "맨 위 신호등 3 개가 종합 판정입니다.</div>"
         + exec_summary_html
+        + kb_intel_html
         + technical_block
         + "<h2>📄 이슈별 상세</h2>"
         + "<p class='note'>각 이슈 상단에 한 줄 평가가 표시됩니다. "
@@ -661,10 +896,13 @@ def main() -> int:
     ap.add_argument("--input", required=True, help="llm_analysis.jsonl 경로")
     ap.add_argument("--output", required=True, help="HTML 출력 경로")
     ap.add_argument("--title", default="RAG Diagnostic Report", help="리포트 제목")
+    ap.add_argument("--kb-dir", default="",
+                    help="사전학습 KB 디렉터리 (JSONL 모음). 지정 시 코드 인텔리전스 카드 추가.")
     args = ap.parse_args()
 
     rows = _load_rows(Path(args.input))
-    html_doc = render(rows, title=args.title)
+    kb_stats = _collect_kb_intelligence_stats(Path(args.kb_dir)) if args.kb_dir else None
+    html_doc = render(rows, title=args.title, kb_stats=kb_stats)
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html_doc, encoding="utf-8")

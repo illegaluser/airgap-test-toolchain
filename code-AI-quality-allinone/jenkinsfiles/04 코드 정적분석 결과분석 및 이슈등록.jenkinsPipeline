@@ -191,9 +191,13 @@ pipeline {
         sh '''
         mkdir -p diagnostic-report
         if [ -f llm_analysis.jsonl ]; then
+          # --kb-dir 인자로 02 사전학습이 만든 KB JSONL 디렉터리 전달.
+          # 리포트가 사전학습 단계의 코드 인텔리전스 통계를 PM 친화 카드로
+          # 같이 노출 (decorators, HTTP endpoints, callers, test links 등).
           python3 "${SCRIPTS_DIR}/diagnostic_report_builder.py" \
             --input llm_analysis.jsonl \
             --output diagnostic-report/diagnostic-report.html \
+            --kb-dir /var/knowledges/docs/result \
             || echo "[Diag] report builder 실패 — placeholder 생성"
         fi
         if [ ! -f diagnostic-report/diagnostic-report.html ]; then

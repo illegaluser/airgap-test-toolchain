@@ -34,6 +34,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -691,6 +692,26 @@ def main():
                                     ctx_stats = json.loads(raw_stats)
                                 except Exception:
                                     ctx_stats = None
+                            # F1 — retrieve trace stderr 한 줄 로깅. 어떤 청크가
+                            # 어느 bucket 으로 분류됐는지 한눈에 보여 callers/tests
+                            # bucket=0 의 진짜 원인 (점수 컷 vs 메타 부재 vs query
+                            # 매칭 약함) 을 사후 분석 가능. 환경변수 RAG_TRACE=1
+                            # 일 때만 활성 — 기본 OFF (로그 비대 방지).
+                            if os.environ.get("RAG_TRACE") and ctx_stats:
+                                used_items = ctx_stats.get("used_items") or []
+                                ret_total = ctx_stats.get("retrieved_total", 0)
+                                excl = ctx_stats.get("excluded_self", 0)
+                                kept = ctx_stats.get("kept_total", 0)
+                                used_brief = ", ".join(
+                                    f"[{u.get('bucket','?')[:3]}]{u.get('symbol','?')}"
+                                    for u in used_items[:6]
+                                )
+                                print(
+                                    f"   [RAG-TRACE] {key[:8]} retr={ret_total} "
+                                    f"excl={excl} kept={kept} used={len(used_items)} "
+                                    f"items=[{used_brief}]",
+                                    file=sys.stderr,
+                                )
                             out_row = _build_out_row(
                                 item=item, key=key, severity=severity, msg=msg,
                                 line=line, enclosing_fn=enclosing_fn, enclosing_ln=enclosing_ln,
