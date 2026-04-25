@@ -54,6 +54,8 @@ def _aggregate(rows: list) -> dict:
 
     bucket_filled_counts = Counter()
     citation_ratios = []
+    citation_depths = []        # +T2
+    partial_citation_count = 0  # P7 신호 — confidence 강등된 이슈 수
     confidence_counts = Counter()
     context_empty = 0
     classification_counts = Counter()
@@ -68,6 +70,8 @@ def _aggregate(rows: list) -> dict:
         classification_counts[cls or "(empty)"] += 1
         if "context:empty" in labels:
             context_empty += 1
+        if "partial_citation" in labels:
+            partial_citation_count += 1
         d = r.get("rag_diagnostic")
         if not d:
             continue
@@ -77,10 +81,13 @@ def _aggregate(rows: list) -> dict:
         citation = d.get("citation") or {}
         total_used = citation.get("total_used") or 0
         cited = citation.get("cited_count") or 0
+        depth = citation.get("citation_depth") or 0
         if total_used > 0:
             citation_ratios.append(cited / total_used)
+            citation_depths.append(depth)
 
     avg_citation = (sum(citation_ratios) / len(citation_ratios)) if citation_ratios else 0.0
+    avg_depth = (sum(citation_depths) / len(citation_depths)) if citation_depths else 0.0
 
     def pct(n: int, denom: int) -> float:
         return (n * 100.0 / denom) if denom else 0.0
@@ -95,6 +102,9 @@ def _aggregate(rows: list) -> dict:
             for b in ("callers", "tests", "others")
         },
         "avg_citation_rate": avg_citation * 100.0,
+        "avg_citation_depth": avg_depth,  # +T2
+        "partial_citation_count": partial_citation_count,
+        "partial_citation_pct": pct(partial_citation_count, len(llm_rows)),
         "confidence_dist": dict(confidence_counts),
         "classification_dist": dict(classification_counts),
         "context_empty_count": context_empty,
@@ -290,16 +300,50 @@ def _render_executive_summary(agg: dict) -> str:
     overall = min([v_cite, v_buckets, v_qual], key=lambda v: order.get(v[0], 99))
     overall_color, overall_dot, overall_label, _ = overall
 
-    # TL;DR 본문 — overall verdict 색상별로 분기. 라벨과 본문 sentiment 일치.
+    # TL;DR 본문 — overall verdict 색상 + 어느 축이 worst 인지 명시.
+    # 이전 결함: red 메시지가 "RAG 검색 또는 인용 품질에 심각 문제" 로 두 축을
+    # 섞어 표현 → 인용 65% 인데 "인용 품질 문제" 라는 모순. 이번엔 worst 가
+    # 어떤 축인지 (citation / buckets / quality) 구체 명시.
+    axis_names = {
+        v_cite: "AI 분석 근거 충분도 (인용)",
+        v_buckets: "참고자료 다양성 (RAG 검색)",
+        v_qual: "AI 응답 기술적 품질",
+    }
+    worst_axis = axis_names[overall]
+
     base = (
         f"분석한 이슈 <strong>{llm_count} 건</strong> 중 RAG 가 의미있는 컨텍스트를 제공해 "
         f"인용률을 측정할 수 있었던 이슈는 <strong>{effective_n} 건</strong> 입니다 "
         f"(평균 인용률 {citation_rate:.1f}%, 빈 컨텍스트 {ctx_empty_pct:.1f}%). "
     )
     if overall_color == "red":
+        # worst 축이 무엇이냐에 따라 메시지 구체화
+        if overall is v_cite:
+            axis_msg = (
+                "AI 가 받은 RAG 자료를 답변에 거의 인용하지 않아 분석이 "
+                "프로젝트 맥락보다 일반 원칙에 의존했습니다."
+            )
+        elif overall is v_buckets:
+            # 참고자료 다양성이 worst — 인용/품질은 정상일 수 있음을 명시
+            cite_note = (
+                f"인용 자체는 평균 {citation_rate:.1f}% 로 정상이지만, "
+                if v_cite[0] in ("green", "yellow") else ""
+            )
+            axis_msg = (
+                f"{cite_note}RAG 검색 단계에서 '이 함수를 호출하는 코드'·'관련 테스트' "
+                f"청크를 충분히 회수하지 못했습니다 (callers {callers_pct:.0f}%, "
+                f"tests {tests_pct:.0f}%). 답변이 같은 파일·유사 코드 위주로 좁아질 위험이 "
+                "있어 호출 관계·요건 traceability 가 중요한 이슈는 개발자 재검토를 권장합니다."
+            )
+        else:  # v_qual
+            axis_msg = (
+                f"AI 응답이 기술적으로 불안정합니다 (재시도 {retry_pct:.0f}%, "
+                f"빈 컨텍스트 {ctx_empty_pct:.0f}%). RAG retrieval 또는 LLM 응답 파이프라인 "
+                "점검이 필요합니다 (README §12.18)."
+            )
         tldr_msg = base + (
-            "RAG 검색 또는 인용 품질에 심각한 문제가 있어 이번 분석 결과를 "
-            "그대로 신뢰하기 어렵습니다. CRITICAL/MAJOR 이슈는 반드시 개발자가 직접 리뷰하세요."
+            f"<strong>가장 심각한 축: {worst_axis}.</strong> {axis_msg} "
+            f"CRITICAL/MAJOR 이슈는 개발자 직접 리뷰를 권장합니다."
         )
     elif overall_color == "gray":
         tldr_msg = base + (
@@ -309,8 +353,8 @@ def _render_executive_summary(agg: dict) -> str:
         )
     elif overall_color == "yellow":
         tldr_msg = base + (
-            "전반적으로 작동은 하지만 일부 축에서 품질 저하가 있습니다. "
-            "아래 신호등 중 빨강·회색이 있는 항목을 우선 점검하세요."
+            f"전반적으로 작동하지만 <strong>{worst_axis}</strong> 축에 품질 저하가 있습니다. "
+            "아래 해당 신호등의 상세 권장 액션을 참고하세요."
         )
     else:  # green
         tldr_msg = base + (
@@ -394,7 +438,12 @@ def _render_executive_summary(agg: dict) -> str:
 
 
 def _issue_verdict_text(row: dict) -> tuple:
-    """개별 이슈 한 줄 평가 — (css_class, message) 혹은 (None, None)."""
+    """개별 이슈 한 줄 평가 — (css_class, message) 혹은 (None, None).
+
+    +T2 보강: citation_depth (impact_md 의 distinct backtick 수) 도 함께 표시해
+    "구체적 인용" 정도를 한눈에 보이게 한다. 단순 1회 인용 vs 깊은 다중 인용을
+    구분할 수 있어야 RAG 효용을 정직히 측정.
+    """
     if row.get("llm_skipped"):
         return ("warn", "ⓘ MINOR/INFO severity 자동 템플릿 — LLM 분석 skip. 수동 리뷰 권장.")
     if row.get("retry_exhausted"):
@@ -403,9 +452,12 @@ def _issue_verdict_text(row: dict) -> tuple:
     citation = diag.get("citation") or {}
     total_used = citation.get("total_used") or 0
     cited = citation.get("cited_count") or 0
+    depth = citation.get("citation_depth") or 0
     out = row.get("outputs") or {}
     conf = (out.get("confidence") or "").lower()
     cls = (out.get("classification") or "").lower()
+    labels = out.get("labels") or []
+    is_partial = "partial_citation" in labels
 
     if total_used == 0:
         return ("warn",
@@ -419,8 +471,14 @@ def _issue_verdict_text(row: dict) -> tuple:
             msg += "개발자 재검토 권장."
         return ("warn", msg)
     if cited > 0:
+        depth_note = f" · 구체 인용 {depth} 개" if depth else ""
+        if is_partial:
+            return ("warn",
+                    f"⚠️ 부분 인용 — AI 가 RAG 청크 {cited}/{total_used} 개만 답변에 반영"
+                    f"{depth_note}. confidence 는 medium 으로 자동 강등됨 (P7).")
         return ("ok",
-                f"✓ AI 가 프로젝트 코드 맥락 {cited}/{total_used} 개를 실제로 답변에 인용했습니다.")
+                f"✓ AI 가 프로젝트 코드 맥락 {cited}/{total_used} 개를 실제로 답변에 인용했습니다"
+                f"{depth_note}.")
     return (None, None)
 
 
@@ -536,6 +594,12 @@ def render(rows: list, title: str = "RAG Diagnostic Report") -> str:
          "이슈 중 others 청크 1개 이상 받은 비율"),
         ("avg citation rate", f"{agg['avg_citation_rate']:.1f}%",
          "used_items 중 LLM 이 실제 인용한 비율 평균"),
+        # +T2 — 인용의 깊이 (구체성). 평균 backtick 식별자 수.
+        ("avg citation depth", f"{agg['avg_citation_depth']:.1f}",
+         "impact_md 의 distinct backtick 식별자 평균 (구체성 신호)"),
+        # P7 — 부분 인용으로 confidence 강등된 이슈 비율
+        ("partial_citation", f"{agg['partial_citation_pct']:.1f}%",
+         f"{agg['partial_citation_count']} 이슈에서 cited/total<0.5 → confidence medium 강등"),
         ("context:empty", f"{agg['context_empty_pct']:.1f}%",
          f"{agg['context_empty_count']} 이슈에서 C-3 가드 발동"),
         ("retry exhausted", f"{agg['retry_exhausted_pct']:.1f}%",

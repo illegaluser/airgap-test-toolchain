@@ -459,31 +459,67 @@ def filename_test_candidates(rel_path: str) -> list:
 
 
 def guess_test_for(rel_path: str, symbol: str):
-    """테스트 심볼이면 타깃 심볼명 추정.
+    """기존 호환 — single string 반환. 신규 코드는 guess_test_for_candidates 사용."""
+    cands = guess_test_for_candidates(rel_path, symbol)
+    return cands[0] if cands else None
 
-    P1.5 확장: 테스트 위치라고 판단되면 symbol 이름이 test_X/testX 컨벤션이
-    아니어도 파일명에서 대상을 추정해 돌려준다. 이로써 mocha/jest 의
-    익명 `describe("Foo", fn)` 스타일에서 tree-sitter 가 symbol 을 function /
-    anonymous 로 뽑아도 test_for 가 채워진다. 여러 후보 중 첫 번째.
 
-    일반 코드면 None (fast path).
+def guess_test_for_candidates(rel_path: str, symbol: str) -> list:
+    """테스트 심볼이 가리키는 대상 심볼 후보 리스트.
+
+    +T1: 단일 후보 ("Login") 만 반환하던 기존 로직이 nodegoat 의 OOP-style
+    controller (`LoginHandler`) 와 매칭 못 해 test_paths 인덱스가 비어버리는
+    문제 (관측: tests bucket fill 0%). 다중 후보를 반환하고 pass 2 가 prefix
+    매칭까지 시도하면 `Login` → `LoginHandler` 같은 자연스러운 매칭이 살아남음.
+
+    반환 후보 우선순위:
+      1) symbol 자체가 test_X / testX 컨벤션이면 그 X 를 1순위
+      2) 파일명 기반 후보 (`signup_spec.js` → `signup`, `Signup`)
+      3) symbol body 에서 자주 호출되는 식별자 — 본 함수에선 미구현 (pass 2
+         가 prefix 매칭으로 대신 커버)
+
+    일반 코드면 [] (fast path).
     """
     if not is_test_location(rel_path):
-        return None
+        return []
+    cands: list = []
 
-    # 1) symbol 자체가 test_X / testX 컨벤션인 경우 정확 매칭
+    # 1) symbol 컨벤션 매칭
     if symbol.startswith("test_"):
-        return symbol[5:]
-    if symbol.startswith("test"):
+        cand = symbol[5:]
+        if cand:
+            cands.append(cand)
+            # camelCase 변형 — `test_login_handler` → `loginHandler` / `LoginHandler`
+            if "_" in cand:
+                parts = cand.split("_")
+                camel = parts[0] + "".join(p.capitalize() for p in parts[1:])
+                pascal = "".join(p.capitalize() for p in parts)
+                cands.append(camel)
+                cands.append(pascal)
+    elif symbol.startswith("test"):
         rest = symbol[4:]
         if rest and rest[0].isupper():
-            return rest[0].lower() + rest[1:]
+            cands.append(rest[0].lower() + rest[1:])
+            cands.append(rest)  # PascalCase 그대로
 
-    # 2) 파일명 기반 후보 — symbol 이 컨벤션을 따르지 않는 JS/TS 테스트에 유효
-    candidates = filename_test_candidates(rel_path)
-    if candidates:
-        return candidates[0]
-    return None
+    # 2) 파일명 기반 후보 — JS/TS e2e 의 익명 / cypress command 패턴 커버
+    cands.extend(filename_test_candidates(rel_path))
+
+    # dedup, 빈 문자열 제거, 안정 정렬 (입력 순)
+    seen = set()
+    out = []
+    for c in cands:
+        c = (c or "").strip()
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+# +T1 — pass 2 test_paths 인덱싱 시 사용할 prefix 매칭 임계.
+# 4자 미만이면 false-positive 가 너무 많음 (`get` 이 `getUser`, `getById` 등
+# 모두 매칭). 4자 이상에서만 prefix 매칭 허용 — 정확 매칭은 길이 제한 없음.
+_TEST_FOR_PREFIX_MIN_LEN = 4
 
 
 def path_to_safe_filename(rel_path: str) -> str:
@@ -527,7 +563,8 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
         if len(code) > 30000:
             code = code[:30000] + "\n# ... [truncated]\n"
 
-        test_for = guess_test_for(rel_path, symbol)
+        test_for_cands = guess_test_for_candidates(rel_path, symbol)
+        test_for = test_for_cands[0] if test_for_cands else None
         # P2 K-4 — leading docstring/comment 추출 (실패해도 빈 문자열로 안전)
         try:
             doc = extract_leading_doc(node, cfg["lang"], source)
@@ -546,6 +583,8 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             "test_paths": [],       # pass 2 에서 채움 (대상 심볼 기준)
             "is_test": is_test_location(rel_path),
             "test_for": test_for,
+            # +T1: pass 2 가 prefix 매칭에 사용. 직렬화는 안 함 (run-time only).
+            "test_for_candidates": test_for_cands,
             "doc": doc,             # P2 K-4 — leading docstring/comment (200자 cap)
         })
 
@@ -709,15 +748,51 @@ def build_reverse_indexes(chunks_by_path: dict) -> None:
                     tgt["callers"].append(caller_ref)
 
     # test_for → test_paths 역링크
+    # +T1: test_for_candidates 다중 후보 + prefix 매칭으로 nodegoat 같은 OOP
+    # 컨벤션 (LoginHandler, ProfileHandler 등) 도 e2e 테스트와 연결. 단순
+    # exact match 만으로는 `Login` 후보가 `LoginHandler` 청크와 안 매칭됨.
     for test_path, test_chunks in chunks_by_path.items():
         for test_ch in test_chunks:
-            target_sym = test_ch.get("test_for")
-            if not target_sym:
+            cands = test_ch.get("test_for_candidates") or []
+            if not cands:
+                # 하위 호환 — 기존 단일 test_for 도 후보로 흡수
+                tf = test_ch.get("test_for")
+                if tf:
+                    cands = [tf]
+            if not cands:
                 continue
             test_ref = f"{test_path}#{test_ch['symbol']}"
-            for target_path, target_idx in symbol_index.get(target_sym, []):
-                tgt = chunks_by_path[target_path][target_idx]
-                tgt["test_paths"].append(test_ref)
+            seen_targets = set()
+            for cand in cands:
+                # exact 매칭 (모든 길이)
+                for target_path, target_idx in symbol_index.get(cand, []):
+                    key = (target_path, target_idx)
+                    if key in seen_targets:
+                        continue
+                    seen_targets.add(key)
+                    chunks_by_path[target_path][target_idx]["test_paths"].append(test_ref)
+                # prefix 매칭 — 후보가 4자 이상이고 indexed symbol 의 prefix 일 때만
+                if len(cand) >= _TEST_FOR_PREFIX_MIN_LEN:
+                    for indexed_sym, hits in symbol_index.items():
+                        if indexed_sym == cand:
+                            continue  # 위에서 이미 처리
+                        # PascalCase prefix: cand="Login" → "LoginHandler" 매칭
+                        # 단 cand 가 indexed_sym 의 정확한 prefix 여야 함 ("Log"
+                        # 가 "LogEvent" 와 false-positive 매칭되는 것은 cand
+                        # 길이 ≥ 4 로 어느 정도 차단)
+                        if not indexed_sym.startswith(cand):
+                            continue
+                        # 추가 가드: prefix 다음 문자가 [A-Z_] 여야 단어 경계
+                        # 의미. (login → loginHandler 의 `H` 가 대문자 OK)
+                        next_ch = indexed_sym[len(cand):len(cand)+1]
+                        if next_ch and not (next_ch.isupper() or next_ch == "_"):
+                            continue
+                        for target_path, target_idx in hits:
+                            key = (target_path, target_idx)
+                            if key in seen_targets:
+                                continue
+                            seen_targets.add(key)
+                            chunks_by_path[target_path][target_idx]["test_paths"].append(test_ref)
 
     # dedup + 정렬 + 상한 적용
     for chunks in chunks_by_path.values():

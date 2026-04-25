@@ -312,10 +312,27 @@ def _compute_citation(impact_md: str, used_items: list) -> dict:
                 "symbol": symbol,
                 "score": it.get("score"),
             })
+    # +T2 — citation_depth: impact_md 의 distinct backtick 식별자 수.
+    # backtick 으로 감싼 코드-like 토큰을 LLM 의 "구체성 신호" 로 본다. 단순
+    # 한두 번 인용보다 여러 식별자를 backtick 으로 감싸 referencing 한 답변이
+    # RAG 컨텍스트를 더 깊게 활용한 것으로 판단 (heuristic).
+    backtick_idents = set(re.findall(r"`([^`\s]+)`", impact))
+    # 단일 단어 코드-like 만 — `[MAJOR]` 같은 라벨, 한국어 한 단어 등 제외.
+    backtick_idents = {
+        b for b in backtick_idents
+        if 2 <= len(b) <= 80 and any(c.isalpha() for c in b) and "[" not in b and "]" not in b
+    }
+
     return {
         "cited_count": len(cited),
         "cited_items": cited,
         "total_used": len(deduped),
+        # +T2 — measurement only (gate 안 함). 리포트에 색인용.
+        "citation_depth": len(backtick_idents),
+        # P7 — partial citation 신호. analyzer 가 이를 보고 confidence 강등.
+        "is_partial_citation": (
+            len(deduped) >= 2 and (len(cited) / len(deduped)) < 0.5
+        ),
     }
 
 
@@ -336,6 +353,14 @@ def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln
     if context_stats is not None:
         used = context_stats.get("used_items") or []
         citation = _compute_citation(normalized.get("impact_analysis_markdown", ""), used)
+        # P7 — confidence calibration: 부분 인용이면 high → medium 강등 + 라벨.
+        # is_partial_citation 은 _compute_citation 이 (cited/total < 0.5) 일 때 true.
+        if citation.get("is_partial_citation") and (normalized.get("confidence") or "").lower() == "high":
+            normalized["confidence"] = "medium"
+            labels = list(normalized.get("labels") or [])
+            if "partial_citation" not in labels:
+                labels.append("partial_citation")
+            normalized["labels"] = labels
         diagnostic = {
             "retrieved_total": context_stats.get("retrieved_total", 0),
             "excluded_self": context_stats.get("excluded_self", 0),
@@ -581,6 +606,10 @@ def main():
             # P1: self-exclusion — workflow 의 context_filter Code 노드가 이 경로와
             # 일치하는 RAG 청크를 제외해 "자기 파일을 다시 돌려받는" degenerate case 해소.
             "issue_file_path": item.get("relative_path", "") or "",
+            # P5 — 정확한 self-exclusion 을 위해 이슈가 발생한 line 번호 전달.
+            # context_filter 가 "청크 lines 가 issue_line 을 포함하는가" 로
+            # self 판정 → ProfileDAO 같은 동명 method 다중 케이스에서 sibling 활용 가능.
+            "issue_line": str(line) if line else "",
             # retry_hint 는 아래 retry 루프에서 attempt 마다 갱신.
             # 워크플로우의 LLM user 프롬프트 끝에 {{#start.retry_hint#}} 로 삽입됨.
         }

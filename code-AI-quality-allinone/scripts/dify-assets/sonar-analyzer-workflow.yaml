@@ -264,9 +264,14 @@ workflow:
               value_selector:
                 - start
                 - enclosing_function
+            - variable: issue_line
+              value_selector:
+                - start
+                - issue_line
           code_language: python3
           code: |
-            def main(retrieval_results, issue_file_path: str, issue_symbol: str = "") -> dict:
+            def main(retrieval_results, issue_file_path: str, issue_symbol: str = "",
+                     issue_line: str = "") -> dict:
                 """RAG 결과 후처리 — self-exclusion + 카테고리 분류 + 섹션화.
 
                 P1.5 확장:
@@ -283,12 +288,37 @@ workflow:
                 """
                 results = retrieval_results or []
                 issue_file = (issue_file_path or "").strip()
-                # Fix R — self-exclusion 을 (path, symbol) 단위로 정밀화.
-                # 이전엔 path 단위라 같은 파일의 sibling 함수까지 모두 제외돼
-                # 작은 stub 프로젝트 (ttc-sample-app 등) 에서 kept=0 이 빈발했다
-                # (관측: dc8bdce4 request_reset 이 retrieved=4/excl_self=4/kept=0).
-                # symbol 까지 일치할 때만 self 로 간주 → sibling 함수 청크 keep.
+                # Fix R + P5 — self-exclusion 을 (path, line-range) 단위로 정밀화.
+                # 변천:
+                #   v1 path 단위         → 같은 파일 sibling 함수까지 모두 제외 (kept=0 빈발)
+                #   v2 (path, symbol)    → ProfileDAO 같이 한 class 안에 여러
+                #                          method 가 모두 같은 enclosing symbol
+                #                          으로 잡힐 때 sibling 도 self 로 분류
+                #   v3 (path, line range) → 청크의 lines (예: "42-65") 가 issue_line
+                #                          (Sonar 이슈가 발생한 정확한 행) 을
+                #                          포함할 때만 self. 정확한 의미 — 이슈가
+                #                          위치한 청크만 제외, sibling method 는 keep.
                 issue_sym = (issue_symbol or "").strip()
+                try:
+                    issue_line_int = int((issue_line or "").strip()) if issue_line else 0
+                except Exception:
+                    issue_line_int = 0
+
+                def _chunk_contains_issue_line(meta_lines: str) -> bool:
+                    """청크의 'lines' 필드 (예: '42-65') 가 issue_line 을 포함하는지."""
+                    if not meta_lines or issue_line_int <= 0:
+                        return False
+                    s = meta_lines.strip()
+                    if "-" in s:
+                        a, _, b = s.partition("-")
+                        try:
+                            return int(a.strip()) <= issue_line_int <= int(b.strip())
+                        except Exception:
+                            return False
+                    try:
+                        return int(s) == issue_line_int
+                    except Exception:
+                        return False
 
                 def parse_footer(content: str):
                     meta = {}
@@ -339,11 +369,22 @@ workflow:
                             meta["path"] = title_or_name
                     chunk_path = meta.get("path", "")
                     chunk_symbol = meta.get("symbol", "")
-                    # Fix R — symbol 까지 같을 때만 self exclusion. sibling
-                    # 함수 (같은 파일의 다른 함수) 는 keep — stub 패턴에서
-                    # 가장 의미있는 컨텍스트가 sibling 이기 때문.
-                    if (issue_file and chunk_path == issue_file
-                            and (not issue_sym or chunk_symbol == issue_sym)):
+                    chunk_lines = meta.get("lines", "")
+                    # P5 — line-range based self-exclusion (가장 정밀).
+                    # issue_line 이 청크의 lines 안에 포함되면 그 청크는 이슈
+                    # 본문에 이미 노출된 코드 → exclude. sibling method 는 keep.
+                    is_self = False
+                    if issue_file and chunk_path == issue_file:
+                        if issue_line_int > 0 and chunk_lines:
+                            # 정확 모드: line range 비교
+                            is_self = _chunk_contains_issue_line(chunk_lines)
+                        elif issue_sym and chunk_symbol:
+                            # fallback (line 정보 없을 때): symbol 비교
+                            is_self = (chunk_symbol == issue_sym)
+                        else:
+                            # 둘 다 없으면 path 단위 (보수적, v1 동작)
+                            is_self = True
+                    if is_self:
                         excluded_self += 1
                         continue
                     if meta.get("is_test") == "true":
