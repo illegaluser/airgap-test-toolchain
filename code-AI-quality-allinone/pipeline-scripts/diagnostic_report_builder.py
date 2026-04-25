@@ -165,7 +165,7 @@ pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 4px;
 .signal-red    { border-color: #f6b6b6; background: #fff5f5; }
 .signal-yellow { border-color: #ead29a; background: #fffdf5; }
 .signal-green  { border-color: #a8dbb0; background: #f5fdf7; }
-.signal-gray   { border-color: #d1d5da; background: #fafbfc; }
+.signal-gray   { border-color: #c7cdd5; background: #f5f6f8; }
 
 .action-box { background: #fff8dc; border: 1px solid #f0d78a;
               border-left: 6px solid #fbca04; padding: 14px 18px;
@@ -204,16 +204,32 @@ details.technical > summary:hover { color: #0a4a96; }
 # 임계치: 30% / 60% — 도메인 특성상 "30% 인용이면 의미 있음", "60% 면 충분".
 
 
-def _verdict_citation(rate: float) -> tuple:
+_INSUFFICIENT_SAMPLE_THRESHOLD = 3  # citation 측정에 필요한 최소 effective sample
+
+
+def _verdict_citation(rate: float, effective_n: int) -> tuple:
+    """citation 신뢰도 — effective_n (used_items 가 있는 이슈 수) < 3 이면 회색 처리.
+
+    rate 자체는 100% 여도 분모가 1 이면 통계적으로 무의미. 실제로 ttc-sample-app
+    4 이슈 중 3 이슈가 context:empty 인 상황에서 citation 100% 가 🟢 으로 표시되어
+    "신뢰도 있는 분석" 이라는 잘못된 인상을 주는 문제 (관측). gray 신호등으로
+    "측정 불충분" 임을 명확히 한다.
+    """
+    if effective_n < _INSUFFICIENT_SAMPLE_THRESHOLD:
+        return ("gray", "⚪", "측정 불충분",
+                f"인용률 {rate:.1f}% 는 measurable 이슈 {effective_n} 건 기준으로만 산출돼 "
+                f"통계적으로 의미가 약합니다 (최소 {_INSUFFICIENT_SAMPLE_THRESHOLD} 건 필요). "
+                f"먼저 RAG 가 빈 결과를 돌려준 이슈 (참고자료 다양성 신호 참조) 부터 "
+                f"개선해야 인용률 자체를 신뢰할 수 있습니다.")
     if rate >= 60.0:
         return ("green", "🟢", "충분",
-                f"AI 가 프로젝트 코드 맥락을 답변에 적극 반영했습니다 (인용률 {rate:.1f}%).")
+                f"AI 가 프로젝트 코드 맥락을 답변에 적극 반영했습니다 (인용률 {rate:.1f}%, n={effective_n}).")
     if rate >= 30.0:
         return ("yellow", "🟡", "보통",
-                f"AI 가 일부 프로젝트 맥락을 반영했으나 일반 원칙 비중이 큽니다 (인용률 {rate:.1f}%).")
+                f"AI 가 일부 프로젝트 맥락을 반영했으나 일반 원칙 비중이 큽니다 (인용률 {rate:.1f}%, n={effective_n}).")
     return ("red", "🔴", "낮음",
-            f"AI 가 제공된 프로젝트 코드 맥락을 답변에 거의 반영하지 않았습니다 (인용률 {rate:.1f}%). "
-            f"이번 분석은 '일반 지식 기반 조언'에 가깝습니다.")
+            f"AI 가 제공된 프로젝트 코드 맥락을 답변에 거의 반영하지 않았습니다 "
+            f"(인용률 {rate:.1f}%, n={effective_n}). 이번 분석은 '일반 지식 기반 조언'에 가깝습니다.")
 
 
 def _verdict_buckets(callers_pct: float, tests_pct: float) -> tuple:
@@ -231,15 +247,25 @@ def _verdict_buckets(callers_pct: float, tests_pct: float) -> tuple:
 
 
 def _verdict_quality(retry_pct: float, context_empty_pct: float) -> tuple:
-    if retry_pct <= 5.0 and context_empty_pct <= 10.0:
-        return ("green", "🟢", "정상",
-                f"AI 가 모든 이슈에 정상 응답했습니다 (재시도 소진 {retry_pct:.1f}%).")
-    if retry_pct <= 20.0:
+    """기술적 품질 — retry 와 context_empty 모두 강하게 가중.
+
+    이전 임계치 (retry≤5 AND ctx≤10 → 🟢, retry≤20 → 🟡) 는 context_empty 75%
+    같은 명백한 이상치도 🟡 보통 으로 표시. 수정: retry / context_empty 둘 중
+    하나라도 임계 초과면 단계적으로 강등.
+    """
+    # 빨강 — 둘 중 하나가 압도적으로 나쁨
+    if retry_pct > 20.0 or context_empty_pct > 50.0:
+        return ("red", "🔴", "불안정",
+                f"재시도 소진 {retry_pct:.1f}% / 빈 컨텍스트 {context_empty_pct:.1f}% — "
+                f"AI 응답 품질이 불안정합니다. RAG retrieval 또는 EMPTY-DEBUG 점검 필요 (README §12.18).")
+    # 노랑 — 일부 문제
+    if retry_pct > 5.0 or context_empty_pct > 25.0:
         return ("yellow", "🟡", "보통",
-                "일부 이슈에서 AI 재시도 또는 빈 컨텍스트가 발생했습니다.")
-    return ("red", "🔴", "불안정",
-            f"재시도 소진 {retry_pct:.1f}% — AI 응답 품질이 불안정합니다. "
-            f"빌드 로그의 EMPTY-DEBUG 블록을 확인하세요 (README §12.18).")
+                f"일부 이슈에서 AI 재시도({retry_pct:.1f}%) 또는 빈 컨텍스트({context_empty_pct:.1f}%) 가 발생했습니다.")
+    # 초록 — 모두 양호
+    return ("green", "🟢", "정상",
+            f"AI 가 모든 이슈에 정상 응답했습니다 "
+            f"(재시도 {retry_pct:.1f}% / 빈 컨텍스트 {context_empty_pct:.1f}%).")
 
 
 def _render_executive_summary(agg: dict) -> str:
@@ -250,36 +276,45 @@ def _render_executive_summary(agg: dict) -> str:
     retry_pct = agg["retry_exhausted_pct"]
     ctx_empty_pct = agg["context_empty_pct"]
     llm_count = agg["llm_count"]
+    # citation 분모: context:empty 도 retry_exhausted 도 아닌, 즉 RAG 청크가
+    # 실제로 LLM 에 전달된 이슈 수. used_items 가 있는 이슈만 인용률 측정 의미.
+    effective_n = max(0, llm_count - agg.get("context_empty_count", 0)
+                                   - agg.get("retry_exhausted_count", 0))
 
-    v_cite = _verdict_citation(citation_rate)
+    v_cite = _verdict_citation(citation_rate, effective_n)
     v_buckets = _verdict_buckets(callers_pct, tests_pct)
     v_qual = _verdict_quality(retry_pct, ctx_empty_pct)
 
-    # 전반 verdict — 가장 나쁜 것 기준 (빨강 > 노랑 > 초록 우선순위)
-    order = {"red": 0, "yellow": 1, "green": 2}
-    overall = min([v_cite, v_buckets, v_qual], key=lambda v: order[v[0]])
-    _overall_color, overall_dot, overall_label, _ = overall
+    # 전반 verdict — 가장 나쁜 것 기준. gray (측정 불충분) 도 worst 후보로 포함.
+    order = {"red": 0, "gray": 1, "yellow": 2, "green": 3}
+    overall = min([v_cite, v_buckets, v_qual], key=lambda v: order.get(v[0], 99))
+    overall_color, overall_dot, overall_label, _ = overall
 
-    # TL;DR 본문 — citation 구간별로 맥락화된 한 문장 조언
-    tldr_msg = (
-        f"분석한 이슈 <strong>{llm_count} 건</strong> 중 AI 가 프로젝트 코드 맥락을 "
-        f"답변에 실제로 반영한 정도(인용률)는 <strong>{citation_rate:.1f}%</strong> 입니다. "
+    # TL;DR 본문 — overall verdict 색상별로 분기. 라벨과 본문 sentiment 일치.
+    base = (
+        f"분석한 이슈 <strong>{llm_count} 건</strong> 중 RAG 가 의미있는 컨텍스트를 제공해 "
+        f"인용률을 측정할 수 있었던 이슈는 <strong>{effective_n} 건</strong> 입니다 "
+        f"(평균 인용률 {citation_rate:.1f}%, 빈 컨텍스트 {ctx_empty_pct:.1f}%). "
     )
-    if citation_rate < 30:
-        tldr_msg += (
-            "이 값이 낮다는 것은 AI 가 '이 프로젝트 고유의 맥락'이 아닌 "
-            "'일반적인 코드 리뷰 원칙'에 의존해 답했다는 신호입니다. "
-            "중요 이슈 (CRITICAL/MAJOR) 는 반드시 개발자 직접 리뷰가 필요합니다."
+    if overall_color == "red":
+        tldr_msg = base + (
+            "RAG 검색 또는 인용 품질에 심각한 문제가 있어 이번 분석 결과를 "
+            "그대로 신뢰하기 어렵습니다. CRITICAL/MAJOR 이슈는 반드시 개발자가 직접 리뷰하세요."
         )
-    elif citation_rate < 60:
-        tldr_msg += (
-            "일반 원칙과 프로젝트 맥락이 절반씩 섞인 상태입니다. "
-            "요건 추적성 확보가 필요한 이슈는 개발자 재검토를 권장합니다."
+    elif overall_color == "gray":
+        tldr_msg = base + (
+            "측정에 충분한 표본이 모이지 않아 신호등 자체를 신뢰하기 어렵습니다. "
+            "먼저 RAG 검색이 비어있는 이슈를 줄여야 인용률 지표가 의미를 가집니다 "
+            f"(현재 measurable n={effective_n}, 권장 ≥{_INSUFFICIENT_SAMPLE_THRESHOLD})."
         )
-    else:
-        tldr_msg += (
-            "AI 가 프로젝트 코드 맥락을 적극 활용했습니다. "
-            "리뷰 시간을 대폭 단축할 수 있는 신뢰도 있는 분석입니다."
+    elif overall_color == "yellow":
+        tldr_msg = base + (
+            "전반적으로 작동은 하지만 일부 축에서 품질 저하가 있습니다. "
+            "아래 신호등 중 빨강·회색이 있는 항목을 우선 점검하세요."
+        )
+    else:  # green
+        tldr_msg = base + (
+            "모든 품질 축이 양호합니다. 이번 분석은 신뢰도 있게 활용 가능합니다."
         )
 
     tldr_html = (
@@ -315,6 +350,12 @@ def _render_executive_summary(agg: dict) -> str:
 
     # 액션 가이드 — verdict 조합에 따라 실무 권장 사항
     actions = []
+    if v_cite[0] == "gray":
+        actions.append(
+            f"<strong>RAG 가 빈 결과를 돌려준 이슈가 {ctx_empty_pct:.0f}%</strong> 로 많아 인용률 측정 자체가 "
+            "의미를 잃었습니다. retrieval threshold (현재 0.35) 완화, kb_query 변형, 또는 self-exclusion "
+            "범위를 path 단위에서 symbol 단위로 좁히는 방향을 우선 검토하세요."
+        )
     if v_cite[0] == "red":
         actions.append(
             "<strong>중요 이슈 (CRITICAL / MAJOR) 는 반드시 개발자가 직접 재검토</strong>하세요. "
@@ -331,8 +372,10 @@ def _render_executive_summary(agg: dict) -> str:
         )
     if v_qual[0] == "red":
         actions.append(
-            "04 파이프라인의 빌드 로그에서 <code>[EMPTY-DEBUG]</code> 블록을 찾아 "
-            "<code>parse_status</code> 값별 원인을 확인하세요 (README §12.18)."
+            f"빈 컨텍스트(context:empty) {ctx_empty_pct:.0f}% — RAG retrieval 단계에서 "
+            "self-exclusion (issue_file_path 와 동일 path 청크 제거) 이 너무 공격적인지 확인하세요. "
+            "stub 함수 위주의 작은 프로젝트에서는 동일 파일의 sibling 함수까지 모두 제외되어 "
+            "kept=0 이 되는 경향이 있습니다."
         )
     if not actions:
         actions.append(
