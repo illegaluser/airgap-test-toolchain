@@ -260,9 +260,13 @@ workflow:
               value_selector:
                 - start
                 - issue_file_path
+            - variable: issue_symbol
+              value_selector:
+                - start
+                - enclosing_function
           code_language: python3
           code: |
-            def main(retrieval_results, issue_file_path: str) -> dict:
+            def main(retrieval_results, issue_file_path: str, issue_symbol: str = "") -> dict:
                 """RAG 결과 후처리 — self-exclusion + 카테고리 분류 + 섹션화.
 
                 P1.5 확장:
@@ -279,6 +283,12 @@ workflow:
                 """
                 results = retrieval_results or []
                 issue_file = (issue_file_path or "").strip()
+                # Fix R — self-exclusion 을 (path, symbol) 단위로 정밀화.
+                # 이전엔 path 단위라 같은 파일의 sibling 함수까지 모두 제외돼
+                # 작은 stub 프로젝트 (ttc-sample-app 등) 에서 kept=0 이 빈발했다
+                # (관측: dc8bdce4 request_reset 이 retrieved=4/excl_self=4/kept=0).
+                # symbol 까지 일치할 때만 self 로 간주 → sibling 함수 청크 keep.
+                issue_sym = (issue_symbol or "").strip()
 
                 def parse_footer(content: str):
                     meta = {}
@@ -328,7 +338,12 @@ workflow:
                         elif title_or_name:
                             meta["path"] = title_or_name
                     chunk_path = meta.get("path", "")
-                    if issue_file and chunk_path == issue_file:
+                    chunk_symbol = meta.get("symbol", "")
+                    # Fix R — symbol 까지 같을 때만 self exclusion. sibling
+                    # 함수 (같은 파일의 다른 함수) 는 keep — stub 패턴에서
+                    # 가장 의미있는 컨텍스트가 sibling 이기 때문.
+                    if (issue_file and chunk_path == issue_file
+                            and (not issue_sym or chunk_symbol == issue_sym)):
                         excluded_self += 1
                         continue
                     if meta.get("is_test") == "true":

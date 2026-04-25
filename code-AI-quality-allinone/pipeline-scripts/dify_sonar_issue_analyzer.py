@@ -252,7 +252,7 @@ def _compute_citation(impact_md: str, used_items: list) -> dict:
     """P1.5 M-2 — LLM 의 impact_analysis_markdown 이 used_items 중 어떤 청크를
     실제로 인용했는지 계산.
 
-    Heuristic (Fix C 로 3-tier 완화):
+    Heuristic (Fix C 로 3-tier 완화 + Fix 4 로 dedup):
       tier 1: 전체 path 문자열 일치 (`src/auth/login.py`)
       tier 2: symbol (함수명) 일치
       tier 3: path 의 basename 일치 (`login.py` 만 언급해도 인정)
@@ -260,11 +260,29 @@ def _compute_citation(impact_md: str, used_items: list) -> dict:
     `?` 또는 빈 값은 매칭 대상에서 제외 — 잘못된 청크 메타데이터가 실제
     내용에 우연히 substring 으로 맞아도 cited 가 되는 false-positive 차단.
 
+    Fix 4 (dedup): Dify segmentation 으로 동일 document 의 여러 segment 가
+    각각 retrieve 되어 used_items 에 같은 (path, symbol) 이 중복 등장한다.
+    cited_count 와 total_used 둘 다 (path, symbol) 기준 dedup 후 산출 — 같은
+    파일을 한 번 인용한 것이 두 번으로 부풀려져 100% 처럼 보이는 현상 방지.
+
     반환: {"cited_count": int, "cited_items": [{...}, ...], "total_used": int}
     """
     impact = impact_md or ""
-    cited = []
+
+    # Fix 4 — used_items 를 (path, symbol) 기준 dedup. 첫 등장 보존.
+    seen = set()
+    deduped = []
     for it in (used_items or []):
+        path = (it.get("path") or "").strip()
+        symbol = (it.get("symbol") or "").strip()
+        key = (path, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(it)
+
+    cited = []
+    for it in deduped:
         path = (it.get("path") or "").strip()
         symbol = (it.get("symbol") or "").strip()
         # 메타데이터 footer 미포함 청크 (`?::?`) 는 매칭 대상 아님
@@ -276,9 +294,7 @@ def _compute_citation(impact_md: str, used_items: list) -> dict:
         elif symbol and symbol not in ("?",) and symbol in impact:
             matched = True
         elif path and path not in ("?",):
-            # tier 3 — basename 매칭. 경로 구분자 기준 마지막 조각.
             base = path.rsplit("/", 1)[-1]
-            # 너무 짧은 basename (예: `a.py`) 은 오탐 위험 — 5자 이상만 인정.
             if len(base) >= 5 and base in impact:
                 matched = True
         if matched:
@@ -291,7 +307,7 @@ def _compute_citation(impact_md: str, used_items: list) -> dict:
     return {
         "cited_count": len(cited),
         "cited_items": cited,
-        "total_used": len(used_items or []),
+        "total_used": len(deduped),
     }
 
 
