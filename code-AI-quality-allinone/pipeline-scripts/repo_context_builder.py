@@ -2376,168 +2376,157 @@ def write_html_report(
       §6 📚 AI 학습 진단 (4-stage from diagnostic_report_builder)
       §7 🤖 AI 신뢰도 + 액션 제안
       §9 🔧 디버깅 정보 (접힘)
-
-    PM 이 위→아래 5분 안에 의사결정 가능. 모든 메트릭에 verdict 동반.
     """
     import datetime
+    from collections import Counter
 
-    # ─ 0. 집계 ──────────────────────────────────────────────────────────────
-    lang_count: dict = {}
-    kind_count: dict = {}
+    # ─ 1. 청크 집계 ─────────────────────────────────────────────────────────
+    lang_count: Counter = Counter()
+    kind_count: Counter = Counter()
     caller_hub: list = []
-    callees_hub: list = []
+    callees_counter: Counter = Counter()
+    endpoints_rows: list = []
+    decorators_count = 0
+    docstring_count = 0
     orphan_chunks = 0
     is_test_chunks = 0
-    total_chunks = 0
-    decorators_count = 0
-    endpoints_count = 0
-    endpoints_list: list = []
-    callees_total = 0
-    parser_failed = 0
+    total_chunks_local = 0
     for rel_path, chunks in chunks_by_path.items():
         for ch in chunks:
-            total_chunks += 1
-            lang_count[ch["lang"]] = lang_count.get(ch["lang"], 0) + 1
-            kind_count[ch["kind"]] = kind_count.get(ch["kind"], 0) + 1
-            if not ch["callers"]:
+            total_chunks_local += 1
+            lang_count[ch["lang"]] += 1
+            kind_count[ch["kind"]] += 1
+            cls = ch.get("callers") or []
+            if not cls:
                 orphan_chunks += 1
             if ch.get("is_test"):
                 is_test_chunks += 1
-            caller_hub.append((len(ch["callers"]), rel_path, ch["symbol"], ch["lang"]))
-            callees = ch.get("callees") or []
-            if callees:
-                callees_hub.append((len(callees), rel_path, ch["symbol"], ch["lang"]))
-                callees_total += len(callees)
-            if ch.get("decorators"):
-                decorators_count += 1
+            caller_hub.append((len(cls), rel_path, ch["symbol"], ch["lang"]))
+            for callee in ch.get("callees") or []:
+                callees_counter[callee] += 1
             ep = (ch.get("endpoint") or "").strip()
             if ep:
-                endpoints_count += 1
-                endpoints_list.append((ep, ch["symbol"], rel_path))
+                endpoints_rows.append((ep, ch["symbol"], rel_path))
+            if ch.get("decorators"):
+                decorators_count += 1
+            if (ch.get("doc") or "").strip():
+                docstring_count += 1
 
     caller_hub.sort(reverse=True)
     caller_hub_top = [x for x in caller_hub if x[0] > 0][:10]
-    callees_hub.sort(reverse=True)
-    callees_hub_top = callees_hub[:10]
+    callees_top = callees_counter.most_common(10)
+    endpoints_rows.sort()
+    orphan_pct = (orphan_chunks * 100.0 / total_chunks_local) if total_chunks_local else 0.0
 
-    orphan_pct = (orphan_chunks * 100.0 / total_chunks) if total_chunks else 0.0
-    callees_avg = (callees_total / total_chunks) if total_chunks else 0.0
-
-    # parser_failed_files 사이드카에서 시도
-    parser_failed_files: list = []
-    if kb_dir:
-        try:
-            sidecar = Path(kb_dir) / "_kb_intelligence.json"
-            if sidecar.is_file():
-                import json as _json
-                pf = _json.loads(sidecar.read_text(encoding="utf-8")).get(
-                    "scope", {}).get("parser_failed_files", [])
-                if isinstance(pf, list):
-                    parser_failed_files = pf
-                    parser_failed = len(pf)
-        except Exception:
-            pass
-
-    # 언어별 샘플 (디버깅 §9 용)
-    lang_samples: dict = {}
-    for rel_path, chunks in chunks_by_path.items():
-        for ch in chunks:
-            lang_samples.setdefault(ch["lang"], []).append((rel_path, ch))
-    for lg in lang_samples:
-        lang_samples[lg] = lang_samples[lg][:3]
-
-    # ─ 1. PM 친화 데이터 추출 (A1~A6) ──────────────────────────────────────
+    # ─ 2. 신규 추출 (A1~A5) ──────────────────────────────────────────────────
     overview = extract_project_overview(repo_root)
     deps = extract_dependencies(repo_root)
-    entities = extract_domain_entities(chunks_by_path)
-    inheritance = extract_class_inheritance(chunks_by_path, repo_root)
-    coverage = compute_test_coverage_map(chunks_by_path)
+    entities = extract_domain_entities(chunks_by_path, top_n=10)
+    inheritance = extract_class_inheritance(chunks_by_path, repo_root, top_n=10)
+    coverage = compute_test_coverage_map(chunks_by_path, top_n=10)
 
-    extras = {
-        "orphan_pct": orphan_pct,
-        "endpoints_count": endpoints_count,
-        "decorators_count": decorators_count,
-        "parser_failed": parser_failed,
-        "callees_avg": callees_avg,
-        "orphan_ratio": orphan_pct / 100.0,
-    }
-    verdict_stats = {**stats, **extras}
-    verdict = compute_overall_verdict(verdict_stats, coverage, kb_intel=None)
-    actions = suggest_pm_actions(verdict_stats, coverage, verdict)
+    # ─ 3. verdict 산출용 stats 풍부화 ────────────────────────────────────────
+    stats_for_verdict = dict(stats)
+    stats_for_verdict["total_chunks"] = total_chunks_local
+    stats_for_verdict["orphan_ratio"] = orphan_pct / 100.0
+    stats_for_verdict["endpoints_count"] = len(endpoints_rows)
+    stats_for_verdict["decorators_count"] = decorators_count
+    stats_for_verdict["docstring_count"] = docstring_count
+    parser_failed = stats.get("parser_failed", 0) or 0
+    stats_for_verdict["parser_failed"] = parser_failed
+    callers_links = stats.get("total_callers_links", 0)
+    stats_for_verdict["total_callers_links"] = callers_links
 
-    # ─ 2. §6 4-stage 학습진단 (B1) ─────────────────────────────────────────
+    verdict = compute_overall_verdict(stats_for_verdict, coverage, {})
+    actions = suggest_pm_actions(stats_for_verdict, coverage, verdict)
+
+    # ─ 4. KB intelligence narrative (B1) — 가능 시 import ────────────────────
     kb_intel_html = ""
     if kb_dir:
         try:
             from diagnostic_report_builder import render_kb_intelligence_section
-            kb_intel_html = render_kb_intelligence_section(kb_dir, agg=None)
+            kb_intel_html = render_kb_intelligence_section(kb_dir)
         except Exception as e:
-            kb_intel_html = (
-                f"<p class='note'>(4-stage 학습진단 렌더 실패: "
-                f"{_html_escape(str(e))})</p>"
-            )
+            kb_intel_html = f"<p class='note warn'>KB intelligence 섹션 렌더 실패: {_html_escape(str(e))}</p>"
 
-    # ─ 3. HTML 조립 ─────────────────────────────────────────────────────────
+    # ─ 5. HTML helpers ───────────────────────────────────────────────────────
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     repo_display = _html_escape(str(repo_root))
     commit_display = _html_escape((commit_sha or "n/a")[:12])
+    primary_lang = lang_count.most_common(1)[0][0] if lang_count else ""
 
     css = """
 <style>
+* { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-       margin: 0; padding: 0; color: #24292e; background: #fafbfc; }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
-.nav { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #e1e4e8;
-       padding: 12px 24px; font-size: 13px; z-index: 100; }
-.nav a { color: #0366d6; text-decoration: none; margin-right: 16px; }
-.nav a:hover { text-decoration: underline; }
-h1 { border-bottom: 2px solid #0366d6; padding-bottom: 6px; margin-top: 0; }
-h2 { margin-top: 40px; padding-bottom: 4px; border-bottom: 1px solid #e1e4e8; }
-h3 { color: #586069; margin-top: 20px; }
-.meta { color: #586069; font-size: 13px; margin-bottom: 16px; }
-.tldr { background: linear-gradient(135deg, #f0f7ff 0%, #fff 100%);
-        border: 1px solid #c8e1ff; border-radius: 8px; padding: 20px; margin-bottom: 32px; }
-.tldr-summary { font-size: 15px; line-height: 1.6; color: #24292e; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-         gap: 12px; margin: 16px 0; }
-.card { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px; padding: 14px 16px; }
+       margin: 0; color: #24292e; background: #fafbfc; }
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+nav.toc { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #e1e4e8;
+          padding: 10px 24px; font-size: 13px; z-index: 100;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+nav.toc a { color: #0366d6; text-decoration: none; margin-right: 14px; }
+nav.toc a:hover { text-decoration: underline; }
+h1 { border-bottom: 2px solid #0366d6; padding-bottom: 6px; }
+h2 { margin-top: 36px; border-bottom: 1px solid #e1e4e8; padding-bottom: 6px;
+     scroll-margin-top: 60px; }
+h3 { margin-top: 20px; color: #0366d6; }
+.meta { color: #586069; font-size: 13px; margin-bottom: 24px; }
+.tldr-summary { background: #fff; border-left: 4px solid #0366d6;
+                padding: 12px 16px; margin: 16px 0 24px;
+                font-size: 14px; line-height: 1.6; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+         gap: 12px; margin-bottom: 24px; }
+.card { padding: 14px 16px; background: #fff; border: 1px solid #e1e4e8;
+        border-radius: 8px; transition: transform 0.1s; }
+.card:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.card a { text-decoration: none; color: inherit; display: block; }
 .card .label { color: #586069; font-size: 11px; text-transform: uppercase;
-                letter-spacing: 0.5px; }
-.card .value { font-size: 22px; font-weight: 600; color: #0366d6; margin-top: 4px; }
-.card.verdict { border-left: 4px solid #0366d6; }
-.card.verdict.green { border-left-color: #28a745; }
-.card.verdict.yellow { border-left-color: #d4a017; }
-.card.verdict.red { border-left-color: #d73a49; }
-.verdict-badge { display: inline-block; padding: 2px 8px; border-radius: 12px;
-                 font-size: 11px; font-weight: 600; }
-.verdict-badge.green { background: #dcffe4; color: #176f2c; }
-.verdict-badge.yellow { background: #fff5b1; color: #735c0f; }
-.verdict-badge.red { background: #ffeef0; color: #9e1828; }
-table { border-collapse: collapse; margin: 12px 0; font-size: 13px; width: 100%; }
-th, td { border: 1px solid #e1e4e8; padding: 6px 10px; text-align: left; vertical-align: top; }
+                letter-spacing: 0.5px; font-weight: 600; }
+.card .value { font-size: 26px; font-weight: 700; color: #0366d6; margin-top: 6px; }
+.card .sub { color: #586069; font-size: 12px; margin-top: 4px; }
+.verdict-card { background: #fff; border: 2px solid; border-radius: 8px; padding: 16px;
+                margin: 16px 0; }
+.verdict-card.high { border-color: #2da44e; }
+.verdict-card.medium { border-color: #d4a72c; }
+.verdict-card.low { border-color: #cf222e; }
+.verdict-emoji { font-size: 28px; margin-right: 12px; vertical-align: middle; }
+.verdict-label { font-size: 22px; font-weight: 700; vertical-align: middle; }
+.verdict-score { color: #586069; font-size: 13px; margin-left: 8px; }
+.action-card { background: #fff; border-left: 4px solid #0969da;
+               padding: 12px 16px; margin: 10px 0; border-radius: 4px; }
+.action-card .title { font-weight: 600; font-size: 15px; color: #0969da; }
+.action-card .why { color: #24292e; font-size: 13px; margin: 6px 0 4px; }
+.action-card .where { color: #586069; font-size: 12px; font-style: italic; }
+table { border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+th, td { border: 1px solid #e1e4e8; padding: 6px 12px; text-align: left; }
 th { background: #f6f8fa; font-weight: 600; }
 code { font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
-       background: #f6f8fa; padding: 1px 4px; border-radius: 3px; }
+       background: #f6f8fa; padding: 2px 4px; border-radius: 3px; }
 pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px;
-      padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.4; }
+      padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.4; max-height: 320px; }
 .bar { display: inline-block; height: 10px; background: #0366d6;
        border-radius: 2px; vertical-align: middle; }
-.note { color: #586069; font-size: 12px; margin: 6px 0 12px; }
-.action { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px;
-          padding: 12px 16px; margin-bottom: 8px; }
-.action .title { font-weight: 600; margin-bottom: 4px; }
-.action .why { color: #586069; font-size: 12px; }
-.action .where { color: #0366d6; font-size: 12px; margin-top: 4px; }
-details { margin-top: 24px; }
-details summary { cursor: pointer; font-weight: 600; padding: 8px;
-                  background: #f6f8fa; border-radius: 4px; }
-.tree { font-family: monospace; font-size: 12px; line-height: 1.5;
-        background: #f6f8fa; padding: 12px; border-radius: 4px;
-        white-space: pre; overflow-x: auto; }
+.warn { color: #b08800; }
+.note { color: #586069; font-size: 12px; margin: 6px 0 16px; }
+details { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px;
+          padding: 12px; margin: 12px 0; }
+details summary { cursor: pointer; font-weight: 600; color: #586069; }
+.dep-pill { display: inline-block; background: #ddf4ff; color: #0969da;
+            padding: 2px 8px; border-radius: 12px; font-size: 12px; margin: 2px; }
+.tree { font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
+        line-height: 1.4; white-space: pre; background: #f6f8fa;
+        padding: 12px; border-radius: 6px; max-height: 400px; overflow: auto; }
+.endpoint-method { display: inline-block; padding: 2px 8px; border-radius: 3px;
+                   font-weight: 700; font-size: 11px; color: #fff; }
+.endpoint-method.GET { background: #2da44e; }
+.endpoint-method.POST { background: #0969da; }
+.endpoint-method.PUT { background: #bf8700; }
+.endpoint-method.DELETE { background: #cf222e; }
+.endpoint-method.PATCH { background: #8250df; }
 </style>
 """
 
-    def _table_from_dict(d: dict, header_a: str, header_b: str) -> str:
+    def table_from_dict(d: dict, header_a: str, header_b: str) -> str:
         if not d:
             return "<p class='note'>(데이터 없음)</p>"
         total = sum(d.values()) or 1
@@ -2554,278 +2543,244 @@ details summary { cursor: pointer; font-weight: 600; padding: 8px;
             f"<th>비율</th></tr>" + "".join(rows) + "</table>"
         )
 
-    # § 1 — TL;DR
-    verdict_emoji, verdict_label, verdict_score, verdict_reason, reason_lines = verdict
-    verdict_class = {"high": "green", "medium": "yellow", "low": "red"}.get(verdict_label, "yellow")
-    project_title = (
-        overview.get("description")
-        or (overview.get("summary", "") or "")[:80]
-        or repo_root.name
-    )
-    tldr_html = (
-        "<div class='tldr'>"
-        f"<div class='tldr-summary'><strong>📦 {_html_escape(project_title)}</strong></div>"
-        "<div class='cards'>"
-        f"<div class='card'><div class='label'>파일</div>"
-        f"<div class='value'>{stats.get('total_files', 0)}</div></div>"
-        f"<div class='card'><div class='label'>함수·클래스</div>"
-        f"<div class='value'>{total_chunks}</div></div>"
-        f"<div class='card'><div class='label'>API endpoint</div>"
-        f"<div class='value'>{endpoints_count}</div></div>"
-        f"<div class='card'><div class='label'>테스트 커버</div>"
-        f"<div class='value'>{coverage['coverage_pct']:.0f}%</div></div>"
-        f"<div class='card verdict {verdict_class}'><div class='label'>AI 신뢰도</div>"
-        f"<div class='value'>{verdict_emoji} {verdict_label}</div>"
-        f"<div class='note'>{verdict_score}/100 — {_html_escape(verdict_reason)}</div></div>"
-        "</div></div>"
-    )
+    # ─ §1 TL;DR ──────────────────────────────────────────────────────────────
+    coverage_pct = coverage.get("coverage_pct", 0.0)
+    summary_line = overview.get("description") or overview.get("summary") or ""
 
-    # § 2 — 프로젝트 정보
-    desc = overview.get("description") or overview.get("summary") or "(README description 없음)"
-    deps_total = deps.get("total", 0)
-    deps_rows = []
-    for cat in ("framework", "db", "auth", "test", "util", "other"):
-        items = deps.get(cat, [])
-        if not items:
-            continue
-        names = ", ".join(f"<code>{_html_escape(n)}</code>" for n, _ in items[:8])
-        more = f" <span class='note'>(+{len(items) - 8})</span>" if len(items) > 8 else ""
-        deps_rows.append(
-            f"<tr><td><strong>{cat}</strong></td><td>{len(items)}</td><td>{names}{more}</td></tr>"
-        )
-    deps_table = (
-        "<table><tr><th>카테고리</th><th>개수</th><th>주요 라이브러리</th></tr>"
-        + "".join(deps_rows) + "</table>"
-        if deps_rows else "<p class='note'>(의존성 추출 실패)</p>"
-    )
-    sec2 = (
-        "<h2 id='sec-2'>📖 §2. 이 프로젝트는 무엇인가</h2>"
-        f"<p>{_html_escape(desc)}</p>"
-        f"<p class='note'>빌드 도구: <strong>{_html_escape(overview.get('build_tool', '?'))}</strong>"
-        f" · 라이선스: {_html_escape(overview.get('license') or '?')}"
-        f" · 총 의존성: {deps_total}</p>" + deps_table
-    )
+    s1 = [
+        "<h2 id='sec-1'>🎯 §1 한눈에 — 5초 만에 파악</h2>",
+        (f"<div class='tldr-summary'>📦 <strong>{_html_escape(repo_root.name)}</strong> "
+         f"— {_html_escape(summary_line) if summary_line else '(설명 없음)'}</div>"),
+        "<div class='cards'>",
+        (f"<div class='card'><a href='#sec-3'><div class='label'>파일</div>"
+         f"<div class='value'>{stats.get('total_files', 0)}</div>"
+         f"<div class='sub'>{_html_escape(primary_lang)}</div></a></div>"),
+        (f"<div class='card'><a href='#sec-3'><div class='label'>함수·클래스</div>"
+         f"<div class='value'>{total_chunks_local}</div>"
+         f"<div class='sub'>tree-sitter AST 청크</div></a></div>"),
+        (f"<div class='card'><a href='#sec-4'><div class='label'>HTTP API</div>"
+         f"<div class='value'>{len(endpoints_rows)}</div>"
+         f"<div class='sub'>endpoint 식별</div></a></div>"),
+        (f"<div class='card'><a href='#sec-5'><div class='label'>테스트 커버</div>"
+         f"<div class='value'>{coverage_pct:.0f}%</div>"
+         f"<div class='sub'>{coverage.get('covered_methods',0)}/{coverage.get('total_production_methods',0)} 매핑</div></a></div>"),
+        (f"<div class='card'><a href='#sec-7'><div class='label'>AI 신뢰도</div>"
+         f"<div class='value'>{verdict[0]} {verdict[2]}</div>"
+         f"<div class='sub'>{_html_escape(verdict[1])} ({verdict[2]}/100)</div></a></div>"),
+        "</div>",
+    ]
 
-    # § 3 — 코드 구조
-    tree_text = build_tree(repo_root, max_lines=80)
-    pkg_count = {}
-    for rel_path in chunks_by_path.keys():
-        top_pkg = rel_path.split("/")[0] if "/" in rel_path else rel_path
-        pkg_count[top_pkg] = pkg_count.get(top_pkg, 0) + 1
+    # ─ §2 프로젝트 ───────────────────────────────────────────────────────────
+    s2 = ["<h2 id='sec-2'>📖 §2 이 프로젝트는 무엇인가</h2>"]
+    if overview.get("summary"):
+        s2.append(f"<p>{_html_escape(overview['summary'])}</p>")
+    meta_bits = []
+    if overview.get("license"):
+        meta_bits.append(f"라이선스 <code>{_html_escape(overview['license'])}</code>")
+    if overview.get("build_tool"):
+        meta_bits.append(f"빌드 <code>{_html_escape(overview['build_tool'])}</code>")
+    if primary_lang:
+        meta_bits.append(f"주 언어 <code>{_html_escape(primary_lang)}</code>")
+    if meta_bits:
+        s2.append("<p class='note'>" + " · ".join(meta_bits) + "</p>")
 
+    s2.append("<h3>핵심 의존성</h3>")
+    if deps["total"] == 0:
+        s2.append("<p class='note'>(의존성 추출 결과 없음 — build.gradle/pom.xml/package.json 미발견)</p>")
+    else:
+        s2.append(f"<p class='note'>총 {deps['total']}개 의존성 — 카테고리별 분류:</p>")
+        cat_labels = {"framework": "🏛 Framework", "db": "🗄 Database", "auth": "🔐 Auth/Security",
+                       "test": "🧪 Test", "util": "🔧 Util", "other": "📦 Other"}
+        for cat, label in cat_labels.items():
+            items = deps[cat]
+            if not items:
+                continue
+            pills = " ".join(f"<span class='dep-pill'>{_html_escape(n)}</span>" for n, _v in items[:15])
+            s2.append(f"<p><strong>{label}</strong> ({len(items)}): {pills}</p>")
+
+    # ─ §3 코드 구조 ──────────────────────────────────────────────────────────
+    s3 = ["<h2 id='sec-3'>🏗 §3 코드 구조</h2>", "<h3>디렉토리 트리 (top 200 lines)</h3>"]
+    try:
+        tree_text = build_tree(repo_root, max_lines=200)
+    except Exception as e:
+        tree_text = f"(트리 생성 실패: {e})"
+    s3.append(f"<div class='tree'>{_html_escape(tree_text)}</div>")
+
+    s3.append("<h3>도메인 엔티티 후보 (호출 빈도순 top 10)</h3>")
+    s3.append("<p class='note'>이름 패턴 (`*Entity / *Model / *Domain / *Data`) 또는 경로 (`entity / model / core / domain`) 기반 자동 인식.</p>")
     if entities:
         ent_rows = "".join(
             f"<tr><td><code>{_html_escape(e['name'])}</code></td>"
+            f"<td>{_html_escape(e['kind'])}</td><td>{e['callers']}</td>"
             f"<td><code>{_html_escape(e['path'])}</code></td>"
-            f"<td>{e['kind']}</td><td>{e['callers']}</td>"
-            f"<td>{_html_escape(e.get('doc', ''))}</td></tr>"
+            f"<td>{_html_escape(e['doc'])}</td></tr>"
             for e in entities
         )
-        ent_table = (
-            "<table><tr><th>이름</th><th>경로</th><th>kind</th><th>참조</th><th>설명</th></tr>"
-            + ent_rows + "</table>"
-        )
+        s3.append(f"<table><tr><th>이름</th><th>kind</th><th>callers</th><th>경로</th><th>설명</th></tr>{ent_rows}</table>")
     else:
-        ent_table = "<p class='note'>(도메인 엔티티 패턴 인식 실패)</p>"
-    sec3 = (
-        "<h2 id='sec-3'>🏗 §3. 코드 구조</h2>"
-        "<h3>디렉토리 트리 (depth 3, 80줄 cap)</h3>"
-        f"<div class='tree'>{_html_escape(tree_text)}</div>"
-        "<h3>패키지/모듈 분포</h3>" + _table_from_dict(pkg_count, "디렉토리", "청크 수")
-        + "<h3>도메인 엔티티 후보 top 10</h3>" + ent_table
-    )
+        s3.append("<p class='note'>(도메인 엔티티 패턴에 매칭되는 청크 없음)</p>")
 
-    # § 4 — 코드 연관관계
-    if endpoints_list:
-        ep_rows = []
-        for ep, sym, p in endpoints_list[:30]:
-            method = ep.split()[0] if " " in ep else ""
-            path_part = ep.split(" ", 1)[1] if " " in ep else ep
-            ep_rows.append(
-                f"<tr><td><code>{_html_escape(method)}</code></td>"
+    # ─ §4 코드 연관관계 ──────────────────────────────────────────────────────
+    s4 = ["<h2 id='sec-4'>🔗 §4 코드 연관관계</h2>", "<h3>HTTP 진입점 맵</h3>"]
+    if endpoints_rows:
+        ep_rows_html = []
+        for ep, handler, fp in endpoints_rows[:30]:
+            method, _, path_part = ep.partition(" ")
+            ep_rows_html.append(
+                f"<tr><td><span class='endpoint-method {_html_escape(method)}'>{_html_escape(method)}</span></td>"
                 f"<td><code>{_html_escape(path_part)}</code></td>"
-                f"<td><code>{_html_escape(sym)}</code></td>"
-                f"<td><code>{_html_escape(p)}</code></td></tr>"
+                f"<td><code>{_html_escape(handler)}</code></td>"
+                f"<td><code>{_html_escape(fp)}</code></td></tr>"
             )
-        ep_table = (
-            "<table><tr><th>method</th><th>path</th><th>handler</th><th>file</th></tr>"
-            + "".join(ep_rows) + "</table>"
-        )
-        if endpoints_count > 30:
-            ep_table += f"<p class='note'>(+{endpoints_count - 30}개 더)</p>"
+        s4.append(f"<table><tr><th>method</th><th>path</th><th>handler</th><th>파일</th></tr>{''.join(ep_rows_html)}</table>")
+        if len(endpoints_rows) > 30:
+            s4.append(f"<p class='note'>...전체 {len(endpoints_rows)}개 중 상위 30개 표시.</p>")
     else:
-        ep_table = "<p class='note'>(HTTP endpoint 0개)</p>"
+        s4.append("<p class='note'>(HTTP endpoint 추출 결과 없음 — 라이브러리 프로젝트면 정상)</p>")
 
+    s4.append("<h3>호출 hub (다른 곳에서 가장 많이 호출되는 함수 top 10)</h3>")
     if caller_hub_top:
-        caller_rows = "".join(
-            f"<tr><td>{n}</td><td><code>{_html_escape(p)}::{_html_escape(sym)}</code></td>"
-            f"<td>{_html_escape(lg)}</td></tr>"
+        hub_rows = "".join(
+            f"<tr><td>{n}</td><td><code>{_html_escape(p)}::{_html_escape(sym)}</code></td><td>{_html_escape(lg)}</td></tr>"
             for n, p, sym, lg in caller_hub_top
         )
-        caller_table = (
-            "<table><tr><th>callers</th><th>심볼</th><th>언어</th></tr>"
-            + caller_rows + "</table>"
-        )
+        s4.append(f"<table><tr><th>callers</th><th>심볼</th><th>언어</th></tr>{hub_rows}</table>")
     else:
-        caller_table = "<p class='note'>(caller 역인덱스 비어있음)</p>"
+        s4.append("<p class='note'>(caller 매칭 0건)</p>")
 
-    if callees_hub_top:
+    s4.append("<h3>의존도 hub (가장 많이 호출하는 함수 top 10 — '의존성' 측면)</h3>")
+    if callees_top:
         callees_rows = "".join(
-            f"<tr><td>{n}</td><td><code>{_html_escape(p)}::{_html_escape(sym)}</code></td>"
-            f"<td>{_html_escape(lg)}</td></tr>"
-            for n, p, sym, lg in callees_hub_top
+            f"<tr><td><code>{_html_escape(name)}</code></td><td>{cnt}</td></tr>"
+            for name, cnt in callees_top
         )
-        callees_table = (
-            "<table><tr><th>callees</th><th>심볼</th><th>언어</th></tr>"
-            + callees_rows + "</table>"
-        )
+        s4.append(f"<table><tr><th>호출되는 심볼</th><th>호출 빈도</th></tr>{callees_rows}</table>")
+        s4.append("<p class='note'>이 목록 상위는 외부 라이브러리 함수 또는 레포 핵심 유틸. 변경 시 영향 범위 큼.</p>")
     else:
-        callees_table = "<p class='note'>(callees 추출 결과 없음)</p>"
+        s4.append("<p class='note'>(callees 추출 결과 없음)</p>")
 
     if inheritance:
+        s4.append("<h3>클래스 상속/구현 (Java)</h3>")
         inh_rows = "".join(
-            f"<tr><td><code>{_html_escape(it['child'])}</code></td>"
-            f"<td>{_html_escape(it['kind'])}</td>"
-            f"<td>{', '.join(f'<code>{_html_escape(p)}</code>' for p in it['parents'])}</td>"
-            f"<td><code>{_html_escape(it['child_path'])}</code></td></tr>"
-            for it in inheritance[:15]
+            f"<tr><td><code>{_html_escape(x['child'])}</code></td>"
+            f"<td>{_html_escape(x['kind'])}</td>"
+            f"<td>{_html_escape(', '.join(x['parents'][:3]))}</td>"
+            f"<td><code>{_html_escape(x['child_path'])}</code></td></tr>"
+            for x in inheritance
         )
-        inh_table = (
-            "<table><tr><th>child</th><th>관계</th><th>parents</th><th>file</th></tr>"
-            + inh_rows + "</table>"
+        s4.append(f"<table><tr><th>자식</th><th>관계</th><th>부모</th><th>파일</th></tr>{inh_rows}</table>")
+
+    # ─ §5 테스트 커버리지 ────────────────────────────────────────────────────
+    cov_emoji = "🟢" if coverage_pct >= 70 else ("🟡" if coverage_pct >= 30 else "🔴")
+    s5 = [
+        "<h2 id='sec-5'>🧪 §5 테스트 커버리지</h2>",
+        (f"<div class='cards'><div class='card'><div class='label'>커버 비율</div>"
+         f"<div class='value'>{cov_emoji} {coverage_pct:.0f}%</div>"
+         f"<div class='sub'>{coverage.get('covered_methods',0)} / {coverage.get('total_production_methods',0)} production methods</div></div></div>"),
+        "<h3>⚠ 테스트 없는 public 함수 — 우선 추가 권장 top 10</h3>",
+        "<p class='note'>caller 가 많은 public/exported 함수 중 매핑된 테스트가 없는 것. 변경 위험이 큰 곳부터.</p>",
+    ]
+    uncov = coverage.get("uncovered_public_top10") or []
+    if uncov:
+        uc_rows = "".join(
+            f"<tr><td>{'🔴 PUB' if u['is_public'] else 'pri'}</td>"
+            f"<td>{u['callers']}</td>"
+            f"<td><code>{_html_escape(u['symbol'])}</code></td>"
+            f"<td><code>{_html_escape(u['path'])}</code></td></tr>"
+            for u in uncov
         )
+        s5.append(f"<table><tr><th>가시성</th><th>callers</th><th>심볼</th><th>경로</th></tr>{uc_rows}</table>")
     else:
-        inh_table = "<p class='note'>(상속/구현 관계 없음 — Java 외 언어는 v1 미지원)</p>"
+        s5.append("<p class='note'>(미매핑 public 함수 없음 — 좋은 신호)</p>")
 
-    sec4 = (
-        "<h2 id='sec-4'>🔗 §4. 코드 연관관계</h2>"
-        f"<h3>HTTP 진입점 ({endpoints_count}개)</h3>" + ep_table
-        + "<h3>호출 hub — 가장 많이 호출되는 함수 (공용 유틸 식별)</h3>" + caller_table
-        + "<h3>의존도 hub — 가장 많이 호출하는 함수 (god function 후보)</h3>" + callees_table
-        + "<h3>클래스 상속/구현 관계 (Java)</h3>" + inh_table
-    )
-
-    # § 5 — 테스트 커버리지
-    cov_pct = coverage["coverage_pct"]
-    cov_color = "green" if cov_pct >= 50 else ("yellow" if cov_pct >= 20 else "red")
-    if coverage["uncovered_public_top10"]:
-        uncov_rows = "".join(
-            f"<tr><td><code>{_html_escape(e['symbol'])}</code></td>"
-            f"<td><code>{_html_escape(e['path'])}</code></td>"
-            f"<td>{e['callers']}</td></tr>"
-            for e in coverage["uncovered_public_top10"]
-        )
-        uncov_table = (
-            "<table><tr><th>심볼</th><th>경로</th><th>호출자</th></tr>"
-            + uncov_rows + "</table>"
-        )
+    # ─ §6 4-stage AI 학습 진단 ──────────────────────────────────────────────
+    s6 = ["<h2 id='sec-6'>📚 §6 AI 학습 진단 (4-stage)</h2>"]
+    if kb_intel_html:
+        s6.append(kb_intel_html)
     else:
-        uncov_table = "<p class='note'>(테스트 미매핑 public 함수 없음)</p>"
-    sec5 = (
-        "<h2 id='sec-5'>🧪 §5. 테스트 커버리지</h2>"
-        f"<p>전체 production 함수 <strong>{coverage['total_production_methods']}</strong> 개 중 "
-        f"테스트 매핑된 것 <strong>{coverage['covered_methods']}</strong> 개 "
-        f"<span class='verdict-badge {cov_color}'>{cov_pct:.0f}%</span></p>"
-        "<h3>⚠️ 테스트 없는 public 함수 — 호출자 많은 순 top 10</h3>"
-        "<p class='note'>호출자 많은 public 함수에 테스트가 없으면 변경 시 회귀 위험. "
-        "백로그에 우선 추가 권장.</p>" + uncov_table
-    )
+        s6.append("<p class='note'>(kb_dir 미전달 또는 kb_intelligence 데이터 없음 — 04 빌드 후 활용 가능)</p>")
 
-    # § 6 — 4-stage
-    sec6 = (
-        "<h2 id='sec-6'>📚 §6. AI 학습 진단 (4-stage)</h2>"
-        + (kb_intel_html or
-           "<p class='note'>(_kb_intelligence.json 사이드카 미발견)</p>")
-    )
+    # ─ §7 verdict + 액션 ────────────────────────────────────────────────────
+    # verdict 5-tuple: (emoji, label, score, label_text, reasons)
+    verdict_label_text = verdict[3] if len(verdict) >= 5 else ""
+    verdict_reasons = verdict[4] if len(verdict) >= 5 else (verdict[3] if isinstance(verdict[3], list) else [])
+    s7 = [
+        "<h2 id='sec-7'>🤖 §7 AI 신뢰도 + 다음 액션</h2>",
+        (f"<div class='verdict-card {verdict[1]}'>"
+         f"<span class='verdict-emoji'>{verdict[0]}</span>"
+         f"<span class='verdict-label'>학습 신뢰도 {verdict[1]}</span>"
+         f"<span class='verdict-score'>({verdict[2]}/100)</span>"
+         f"<p style='margin:8px 0 0;font-size:14px;'>{_html_escape(verdict_label_text)}</p>"
+         "<ul style='margin-top:12px;font-size:13px;line-height:1.6;'>"
+         + "".join(f"<li>{_html_escape(r)}</li>" for r in verdict_reasons)
+         + "</ul></div>"),
+        "<h3>PM 액션 제안</h3>",
+    ]
+    for a in actions:
+        s7.append(
+            f"<div class='action-card'>"
+            f"<div class='title'>{_html_escape(a['title'])}</div>"
+            f"<div class='why'>{_html_escape(a['why'])}</div>"
+            f"<div class='where'>📍 {_html_escape(a['where'])}</div>"
+            "</div>"
+        )
 
-    # § 7 — verdict + 액션
-    reason_html = "".join(f"<li>{_html_escape(r)}</li>" for r in reason_lines)
-    actions_html = "".join(
-        "<div class='action'>"
-        f"<div class='title'>{_html_escape(a['title'])}</div>"
-        f"<div class='why'>왜: {_html_escape(a['why'])}</div>"
-        f"<div class='where'>액션: {_html_escape(a['where'])}</div>"
-        "</div>"
-        for a in actions
-    )
-    sec7 = (
-        "<h2 id='sec-7'>🤖 §7. AI 신뢰도 + 다음 액션</h2>"
-        f"<div class='card verdict {verdict_class}'>"
-        f"<div class='label'>종합 verdict</div>"
-        f"<div class='value'>{verdict_emoji} {verdict_label} ({verdict_score}/100)</div>"
-        f"<div class='note'>{_html_escape(verdict_reason)}</div></div>"
-        f"<h3>점수 산출 근거</h3><ul>{reason_html}</ul>"
-        "<h3>PM 추천 액션</h3>" + actions_html
-    )
-
-    # § 9 — 디버깅 (접힘)
-    sample_html_parts = []
-    for lg in sorted(lang_samples.keys()):
-        sample_html_parts.append(f"<h4>{_html_escape(lg)}</h4>")
-        for rel_path, ch in lang_samples[lg]:
-            header = f"<code>{_html_escape(rel_path)}::{_html_escape(ch['symbol'])}</code>"
-            sub = []
-            if ch["callers"]:
-                sub.append(f"callers={len(ch['callers'])}")
-            if ch["test_paths"]:
-                sub.append(f"tests={len(ch['test_paths'])}")
-            if ch["callees"]:
-                sub.append(f"callees={len(ch['callees'])}")
-            sub_str = " · ".join(sub) or "no links"
-            code_preview = ch["code"][:1200]
-            if len(ch["code"]) > 1200:
-                code_preview += "\n# ... [truncated]"
-            sample_html_parts.append(
-                f"<p>{header} <span class='note'>({sub_str}, lines {ch['lines']})</span></p>"
-                f"<pre>{_html_escape(code_preview)}</pre>"
-            )
-    pf_html = ""
+    # ─ §9 디버깅 (접힘) ─────────────────────────────────────────────────────
+    parser_failed_files = stats.get("parser_failed_files") or []
+    debug_inner = [
+        "<h3>언어 분포</h3>",
+        table_from_dict(dict(lang_count), "언어", "청크 수"),
+        "<h3>Kind 분포</h3>",
+        table_from_dict(dict(kind_count), "kind", "청크 수"),
+        f"<h3>고아 심볼 비율</h3>"
+        f"<p>callers=0 청크: <strong>{orphan_chunks}</strong> / {total_chunks_local} ({orphan_pct:.1f}%)</p>"
+        "<p class='note'>public entry point (main, 라우트 핸들러) 는 caller 외부라 0 정상.</p>",
+        f"<h3>Parser 실패 파일 ({parser_failed} 건)</h3>",
+    ]
     if parser_failed_files:
-        pf_items = "".join(f"<li><code>{_html_escape(f)}</code></li>"
-                           for f in parser_failed_files[:50])
-        pf_html = (f"<h4>parser_failed_files ({len(parser_failed_files)} 건, 상위 50)</h4>"
-                   f"<ul>{pf_items}</ul>")
+        debug_inner.append("<ul style='font-size:12px;'>" + "".join(
+            f"<li><code>{_html_escape(f)}</code></li>" for f in parser_failed_files[:50]
+        ) + "</ul>")
+    else:
+        debug_inner.append("<p class='note'>(없음)</p>")
 
-    sec9 = (
-        "<details><summary>🔧 §9. 디버깅 정보 (개발자 진단용 — 클릭하여 펼치기)</summary>"
-        "<h3>언어 분포</h3>" + _table_from_dict(lang_count, "언어", "청크 수")
-        + "<h3>Kind 분포</h3>" + _table_from_dict(kind_count, "kind", "청크 수")
-        + f"<h3>고아 심볼</h3><p>callers=0 인 청크: <strong>{orphan_chunks}</strong> / "
-        f"{total_chunks} ({orphan_pct:.1f}%)</p>"
-        "<p class='note'>public entry point 는 caller 가 외부라 0 이 정상.</p>"
-        + pf_html
-        + "<h3>언어별 청크 샘플</h3>"
-        + "".join(sample_html_parts)
-        + "</details>"
-    )
+    s9 = [
+        "<h2 id='sec-9'>🔧 §9 디버깅 정보 (개발자용)</h2>",
+        "<details><summary>펼쳐 보기 — 청크 분포 / 고아 비율 / parser 실패 / 메타 통계</summary>",
+        "".join(debug_inner),
+        "<h3>메타 통계</h3>",
+        f"<p>decorator 보유 청크: {decorators_count} · doc 보유 청크: {docstring_count} · "
+        f"caller links: {callers_links} · test links: {stats.get('total_test_links', 0)}</p>",
+        "</details>",
+    ]
 
-    nav_html = (
-        "<div class='nav'>"
+    # ─ Sticky Nav ───────────────────────────────────────────────────────────
+    nav = (
+        "<nav class='toc'>"
         "<a href='#sec-1'>§1 한눈에</a>"
         "<a href='#sec-2'>§2 프로젝트</a>"
         "<a href='#sec-3'>§3 구조</a>"
         "<a href='#sec-4'>§4 연관관계</a>"
         "<a href='#sec-5'>§5 테스트</a>"
         "<a href='#sec-6'>§6 학습진단</a>"
-        "<a href='#sec-7'>§7 결론</a>"
-        "</div>"
+        "<a href='#sec-7'>§7 신뢰도+액션</a>"
+        "<a href='#sec-9'>§9 디버깅</a>"
+        "</nav>"
     )
 
-    body = (
-        nav_html
-        + "<div class='wrap'>"
-        + "<h1 id='sec-1'>🎯 §1. 한눈에 — Pre-training Report</h1>"
-        + f"<div class='meta'>repo: <code>{repo_display}</code> · commit: "
-          f"<code>{commit_display}</code> · generated: {now}</div>"
-        + tldr_html
-        + sec2 + sec3 + sec4 + sec5 + sec6 + sec7 + sec9
-        + "</div>"
-    )
+    body_parts = [
+        nav,
+        "<div class='container'>",
+        f"<h1>📊 사전학습 리포트 v3 — {_html_escape(repo_root.name)}</h1>",
+        f"<div class='meta'>repo: <code>{repo_display}</code> · commit: <code>{commit_display}</code> · generated: {now}</div>",
+        *s1, *s2, *s3, *s4, *s5, *s6, *s7, *s9,
+        "</div>",
+    ]
 
     html_doc = (
         "<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
-        f"<title>Pre-training Report — {commit_display}</title>{css}</head>"
-        f"<body>{body}</body></html>"
+        f"<title>사전학습 리포트 v3 — {_html_escape(repo_root.name)} ({commit_display})</title>"
+        f"{css}</head><body>{''.join(body_parts)}</body></html>"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_doc, encoding="utf-8")
