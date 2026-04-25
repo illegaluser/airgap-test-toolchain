@@ -175,7 +175,9 @@ pipeline {
               --sonar-host-url "${SONAR_HOST_URL}" \
               --sonar-public-url "${params.SONAR_PUBLIC_URL}" \
               --sonar-token "\${SONAR_TOKEN_PRIVATE}" \
-              --analysis-mode "${params.ANALYSIS_MODE}"
+              --analysis-mode "${params.ANALYSIS_MODE}" \
+              --ollama-base-url "http://host.docker.internal:11434" \
+              --ollama-model "gemma4:e4b"
           """
         }
       }
