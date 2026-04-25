@@ -186,7 +186,7 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
             parts.append(hyde_text)
         return "\n".join([p for p in parts if p])
 
-    # 기본 (attempt=0) — 풀 구조화
+    # 기본 (attempt=0) — 풀 구조화 + P1 자연어 힌트
     parts = [window]
     if enclosing:
         parts.append(f"function: {enclosing}")
@@ -197,6 +197,14 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
         parts.append(f"path: {rel_path}")
     if rule_name:
         parts.append(rule_name)
+    # P1 — bge-m3 dense retrieval 이 metadata-style 라인 (`callees: X`) 의
+    # 의미를 약하게 잡는 경향이 관측됨 (callers bucket fill 10%, tests 0%).
+    # 자연어 한 줄을 추가해 caller/test 카테고리의 임베딩 매칭 면적을 넓힌다.
+    if enclosing:
+        parts.append(
+            f"이 함수 {enclosing} 를 호출하는 caller route handler controller, "
+            f"관련 테스트 spec e2e cypress 시나리오"
+        )
     return "\n".join([p for p in parts if p])
 
 
