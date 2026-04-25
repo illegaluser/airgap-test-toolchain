@@ -60,6 +60,18 @@ def _aggregate(rows: list) -> dict:
     context_empty = 0
     classification_counts = Counter()
     retry_exhausted = 0  # M-4 지표
+    # Phase C F4 — Stage 4 의 핵심 입력. 사전학습 신호 → 답변 활용 인과.
+    ts_total_hits_list = []
+    ts_endpoint_hits = 0       # 이슈 단위 — endpoint 신호 1회 이상 등장
+    ts_decorator_hits = 0
+    ts_param_hits = 0
+    ts_rag_meta_hits = 0
+    ts_any_hit_issues = 0      # total_hits > 0 인 이슈 수
+    # used_items 메타 보유율 (Phase C F3 의 has_* 플래그)
+    used_with_decorators = 0
+    used_with_endpoint = 0
+    used_with_doc_struct = 0
+    used_total_count = 0
     for r in llm_rows:
         if r.get("retry_exhausted"):
             retry_exhausted += 1
@@ -85,9 +97,36 @@ def _aggregate(rows: list) -> dict:
         if total_used > 0:
             citation_ratios.append(cited / total_used)
             citation_depths.append(depth)
+        # Phase C F4 — tree_sitter_hits 집계
+        ts = d.get("tree_sitter_hits") or {}
+        if ts:
+            t = ts.get("total_hits", 0) or 0
+            ts_total_hits_list.append(t)
+            if t > 0:
+                ts_any_hit_issues += 1
+            if (ts.get("endpoint_hits") or 0) > 0:
+                ts_endpoint_hits += 1
+            if (ts.get("decorator_hits") or 0) > 0:
+                ts_decorator_hits += 1
+            if (ts.get("param_hits") or 0) > 0:
+                ts_param_hits += 1
+            if (ts.get("rag_meta_hits") or 0) > 0:
+                ts_rag_meta_hits += 1
+        # Phase C F3 — used_items 메타 보유 집계
+        for it in d.get("used_items") or []:
+            used_total_count += 1
+            if it.get("has_decorators"):
+                used_with_decorators += 1
+            if it.get("has_endpoint"):
+                used_with_endpoint += 1
+            if it.get("has_doc_struct"):
+                used_with_doc_struct += 1
 
     avg_citation = (sum(citation_ratios) / len(citation_ratios)) if citation_ratios else 0.0
     avg_depth = (sum(citation_depths) / len(citation_depths)) if citation_depths else 0.0
+    avg_ts_hits = (
+        sum(ts_total_hits_list) / len(ts_total_hits_list)
+    ) if ts_total_hits_list else 0.0
 
     def pct(n: int, denom: int) -> float:
         return (n * 100.0 / denom) if denom else 0.0
@@ -111,6 +150,19 @@ def _aggregate(rows: list) -> dict:
         "context_empty_pct": pct(context_empty, len(llm_rows)),
         "retry_exhausted_count": retry_exhausted,
         "retry_exhausted_pct": pct(retry_exhausted, len(llm_rows)),
+        # Phase C F4 — Stage 4 narrative 데이터
+        "ts_avg_hits": avg_ts_hits,
+        "ts_any_hit_issues": ts_any_hit_issues,
+        "ts_any_hit_pct": pct(ts_any_hit_issues, len(diag_rows)),
+        "ts_endpoint_issue_count": ts_endpoint_hits,
+        "ts_decorator_issue_count": ts_decorator_hits,
+        "ts_param_issue_count": ts_param_hits,
+        "ts_rag_meta_issue_count": ts_rag_meta_hits,
+        # Phase C F3 — used_items 메타 보유율
+        "used_items_total": used_total_count,
+        "used_with_decorators_pct": pct(used_with_decorators, used_total_count),
+        "used_with_endpoint_pct": pct(used_with_endpoint, used_total_count),
+        "used_with_doc_struct_pct": pct(used_with_doc_struct, used_total_count),
     }
 
 
@@ -196,6 +248,67 @@ details.technical { margin-top: 24px; padding: 8px 12px;
 details.technical > summary { cursor: pointer; font-weight: 600; color: #0366d6;
                               font-size: 13px; padding: 4px 0; }
 details.technical > summary:hover { color: #0a4a96; }
+
+/* --- Phase C: 4-stage 학습진단 sliding ladder --- */
+.stages { display: flex; flex-direction: column; gap: 12px;
+          margin: 12px 0 24px 0; }
+.stage { border-left: 6px solid #0366d6; background: #fff;
+         border: 1px solid #e1e4e8; border-radius: 6px;
+         padding: 14px 18px; }
+.stage-green  { border-left-color: #2ea043; background: #f7fef9; }
+.stage-yellow { border-left-color: #d4a017; background: #fffdf5; }
+.stage-red    { border-left-color: #cf222e; background: #fff5f5; }
+.stage-gray   { border-left-color: #8b949e; background: #f5f6f8; }
+.stage-head { display: flex; align-items: center; gap: 12px;
+              flex-wrap: wrap; margin-bottom: 6px; }
+.stage-num { font-size: 11px; font-weight: 700; color: #586069;
+             text-transform: uppercase; letter-spacing: 0.5px;
+             background: #e1e4e8; padding: 2px 8px; border-radius: 10px; }
+.stage-title { font-size: 16px; font-weight: 600; color: #24292e; flex: 1; }
+.stage-dot { font-size: 18px; }
+.stage-label { font-size: 13px; font-weight: 600; color: #586069; }
+.stage-msg { color: #24292e; font-size: 13px; line-height: 1.55;
+             margin: 4px 0 12px 0; }
+.stage-body { margin-top: 6px; }
+.mini-cards { display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+              gap: 8px; }
+.mini-card { background: #fff; border: 1px solid #d8dee4;
+             border-radius: 4px; padding: 10px 12px; }
+.mini-v { font-size: 22px; font-weight: 600; color: #0366d6;
+          line-height: 1.1; }
+.mini-l { font-size: 12px; color: #24292e; margin-top: 3px;
+          font-weight: 500; }
+.mini-sub { font-size: 11px; color: #586069; margin-top: 4px;
+            line-height: 1.4; }
+.mini-h { font-size: 12px; font-weight: 600; color: #586069;
+          margin: 0 0 6px 0; text-transform: uppercase;
+          letter-spacing: 0.3px; }
+.depth-bar { height: 4px; background: #eef0f3; border-radius: 2px;
+             margin-top: 6px; overflow: hidden; }
+.depth-fill { display: block; height: 100%; background: #2ea043; }
+.lang-bars { margin-top: 12px; padding: 10px 12px; background: #f6f8fa;
+             border: 1px solid #e1e4e8; border-radius: 4px; }
+.lang-row { display: flex; align-items: center; gap: 10px;
+            margin: 3px 0; font-size: 12px; }
+.lang-name { width: 72px; color: #24292e; font-family: 'SF Mono', Monaco, monospace; }
+.lang-bar { flex: 1; height: 8px; background: #eef0f3; border-radius: 4px;
+            overflow: hidden; }
+.lang-fill { display: block; height: 100%; background: #0366d6; }
+.lang-pct { width: 76px; text-align: right; color: #586069; }
+.lang-sub { font-size: 10px; color: #8b949e; }
+.warn-box { margin-top: 10px; padding: 10px 12px; background: #fffdf5;
+            border: 1px solid #e6c878; border-radius: 4px; }
+.example-box { margin-top: 10px; padding: 6px 10px;
+               background: #f6f8fa; border: 1px solid #e1e4e8;
+               border-radius: 4px; font-size: 12px; }
+.example-box > summary { cursor: pointer; color: #0366d6;
+                          padding: 2px 0; }
+
+/* --- Phase C F3: per-issue used_items 메타 컬럼 아이콘 --- */
+.meta-icons { display: inline-block; font-size: 11px;
+              letter-spacing: 1px; }
+.meta-icons span { opacity: 0.85; }
 </style>
 """
 
@@ -525,17 +638,30 @@ def _render_issue(row: dict) -> str:
             cls = "ok" if cited else ""
             score = item.get("score")
             score_s = f"{score:.2f}" if isinstance(score, (int, float)) else ""
+            # Phase C F3 — tree-sitter 메타 보유 아이콘
+            icons = []
+            if item.get("has_decorators"):
+                icons.append("<span title='decorators 보유'>🛡️</span>")
+            if item.get("has_endpoint"):
+                icons.append("<span title='HTTP route 보유'>🌐</span>")
+            if item.get("has_doc_struct"):
+                icons.append("<span title='docstring 구조 (params/returns/throws) 보유'>📝</span>")
+            meta_html = (
+                "<span class='meta-icons'>" + "".join(icons) + "</span>"
+            ) if icons else ""
             return (
                 f"<tr>"
                 f"<td>{_esc(item.get('bucket',''))}</td>"
                 f"<td><code>{_esc(item.get('path','?'))}::{_esc(item.get('symbol','?'))}</code></td>"
                 f"<td class='num'>{score_s}</td>"
                 f"<td class='num {cls}'>{cited}</td>"
+                f"<td>{meta_html}</td>"
                 f"</tr>"
             )
         used_table = (
             "<table>"
-            "<tr><th>bucket</th><th>symbol</th><th>score</th><th>cited?</th></tr>"
+            "<tr><th>bucket</th><th>symbol</th><th>score</th><th>cited?</th>"
+            "<th title='tree-sitter 메타 보유: 🛡️ decorator · 🌐 endpoint · 📝 docstring'>meta</th></tr>"
             + "".join(row_for(i) for i in used_items) +
             "</table>"
         ) if used_items else "<p class='empty'>(used_items 없음 — context_filter 가 빈 상태로 LLM 호출)</p>"
@@ -577,39 +703,52 @@ def _render_issue(row: dict) -> str:
 
 
 def _collect_kb_intelligence_stats(kb_dir) -> dict:
-    """사전학습 KB JSONL 들을 읽어 코드 인텔리전스 통계 집계.
+    """사전학습 인텔리전스 통계 수집. Phase A 의 _kb_intelligence.json 사이드카가
+    있으면 우선 읽고, 없으면 JSONL 직접 스캔으로 fallback (backward-compat).
 
-    PM 시각: "AI 가 우리 프로젝트에서 무엇을 배웠는가" 정량화.
-    개발자 시각: tree-sitter 추출 메타 (decorators / endpoints / callers /
-    test_paths / type-kind 청크) 의 총량 + 평균.
-
-    반환:
-      total_files, total_chunks, lang_breakdown,
-      callers_links, test_links, decorators_count, endpoints_count,
-      type_chunks_count (interface/type/enum), test_chunks_count,
-      docstring_count, top_endpoints (예시 5개)
+    PM 시각: "AI 가 우리 프로젝트에서 무엇을 배웠는가" 4-stage narrative 데이터.
     """
-    from collections import Counter
-    stats = {
-        "total_files": 0,
-        "total_chunks": 0,
-        "lang_breakdown": {},
-        "callers_links": 0,
-        "test_links": 0,
-        "decorators_count": 0,
-        "endpoints_count": 0,
-        "endpoints_examples": [],
-        "type_chunks_count": 0,
-        "test_chunks_count": 0,
-        "docstring_count": 0,
-    }
     if not kb_dir or not Path(kb_dir).exists():
-        return stats
+        return {}
 
-    lang_counter = Counter()
+    # Phase A 사이드카 우선
+    sidecar = Path(kb_dir) / "_kb_intelligence.json"
+    if sidecar.exists():
+        try:
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            # 요약 평면 필드도 함께 반환 — 기존 코드가 참조하는 키와 호환.
+            depth = data.get("depth", {}) or {}
+            scope = data.get("scope", {}) or {}
+            quality = data.get("quality", {}) or {}
+            data["_flat"] = {
+                "total_files": scope.get("files_analyzed", 0),
+                "total_chunks": depth.get("total_chunks", 0),
+                "lang_breakdown": depth.get("lang_breakdown", {}),
+                "callers_links": depth.get("callers_links_total", 0),
+                "test_links": depth.get("test_links_total", 0),
+                "decorators_count": depth.get("decorators_count", 0),
+                "endpoints_count": depth.get("endpoints_count", 0),
+                "endpoints_examples": depth.get("endpoints_examples", []),
+                "type_chunks_count": depth.get("type_chunks_count", 0),
+                "test_chunks_count": depth.get("test_chunks_count", 0),
+                "docstring_count": depth.get("docstring_count", 0),
+            }
+            return data
+        except Exception:
+            pass  # fallback
+
+    # Fallback: JSONL 직접 스캔 (사이드카 부재 — 구버전 KB)
+    from collections import Counter as _Counter
+    flat = {
+        "total_files": 0, "total_chunks": 0, "lang_breakdown": {},
+        "callers_links": 0, "test_links": 0,
+        "decorators_count": 0, "endpoints_count": 0, "endpoints_examples": [],
+        "type_chunks_count": 0, "test_chunks_count": 0, "docstring_count": 0,
+    }
+    lang_counter = _Counter()
     endpoints_seen = []
     for jsonl_path in sorted(Path(kb_dir).glob("*.jsonl")):
-        stats["total_files"] += 1
+        flat["total_files"] += 1
         try:
             with jsonl_path.open(encoding="utf-8") as fh:
                 for line in fh:
@@ -620,99 +759,404 @@ def _collect_kb_intelligence_stats(kb_dir) -> dict:
                         ch = json.loads(line)
                     except Exception:
                         continue
-                    stats["total_chunks"] += 1
+                    flat["total_chunks"] += 1
                     lang_counter[ch.get("lang") or "?"] += 1
-                    stats["callers_links"] += len(ch.get("callers") or [])
-                    stats["test_links"] += len(ch.get("test_paths") or [])
+                    flat["callers_links"] += len(ch.get("callers") or [])
+                    flat["test_links"] += len(ch.get("test_paths") or [])
                     if ch.get("decorators"):
-                        stats["decorators_count"] += 1
+                        flat["decorators_count"] += 1
                     ep = (ch.get("endpoint") or "").strip()
                     if ep:
-                        stats["endpoints_count"] += 1
+                        flat["endpoints_count"] += 1
                         if len(endpoints_seen) < 5:
-                            endpoints_seen.append((ep, ch.get("path", "?"), ch.get("symbol", "?")))
+                            endpoints_seen.append({
+                                "endpoint": ep,
+                                "path": ch.get("path", "?"),
+                                "symbol": ch.get("symbol", "?"),
+                            })
                     if (ch.get("kind") or "") in ("type", "enum", "interface"):
-                        stats["type_chunks_count"] += 1
+                        flat["type_chunks_count"] += 1
                     if ch.get("is_test"):
-                        stats["test_chunks_count"] += 1
+                        flat["test_chunks_count"] += 1
                     if (ch.get("doc") or "").strip():
-                        stats["docstring_count"] += 1
+                        flat["docstring_count"] += 1
         except Exception:
             continue
-    stats["lang_breakdown"] = dict(lang_counter)
-    stats["endpoints_examples"] = endpoints_seen
-    return stats
+    flat["lang_breakdown"] = dict(lang_counter)
+    flat["endpoints_examples"] = endpoints_seen
+    return {"_flat": flat, "schema_version": 0}
 
 
-def _render_kb_intelligence(kb_stats: dict) -> str:
-    """PM 친화 — 사전학습 결과 카드 섹션. tree-sitter 가 추출한 정적 인텔리전스를
-    "AI가 우리 프로젝트에서 배운 것" 시각으로 노출.
+# ─ Phase C — 4-stage 학습진단 verdict 함수들 ────────────────────────────────
+# 사전학습이 PM 에게 의미 있도록 4단계 narrative 신호등으로 변환.
+# Stage 1 (범위) / Stage 2 (깊이) / Stage 3 (품질) / Stage 4 (영향).
+# 임계치는 작은 sample-app ~ 큰 nodegoat 둘 다 의미있는 verdict 가 나오도록
+# 휴리스틱하게 잡음. 절대치보다 비율 기반 (parser_success_rate, callees_present_rate 등).
+
+def _verdict_learn_scope(scope: dict, depth: dict) -> tuple:
+    """Stage 1 — 학습 범위. 분석 대상 파일을 충분히 봤는가."""
+    files_seen = scope.get("files_seen_total", 0) or 0
+    files_analyzed = scope.get("files_analyzed", 0) or 0
+    parser_failed = scope.get("parser_failed", 0) or 0
+    n_chunks = depth.get("total_chunks", 0) or 0
+    if n_chunks == 0:
+        return ("red", "🔴", "분석 실패",
+                "AI 가 학습할 코드 청크를 하나도 추출하지 못했습니다. "
+                "지원 언어 (Python/Java/JS/TS/Go/Rust 등) 의 파일이 레포에 있는지 확인하세요.")
+    # parser 성공률 — 지원 확장자였는데 청크 0 인 비율이 높으면 경고.
+    denom = files_analyzed + parser_failed
+    success_rate = (files_analyzed * 100.0 / denom) if denom else 0.0
+    if success_rate < 70.0:
+        return ("yellow", "🟡", "부분 학습",
+                f"지원 언어 파일 중 {success_rate:.0f}% 만 청크 추출 성공 "
+                f"(분석 {files_analyzed} / 파서 실패·빈파일 {parser_failed}). "
+                "일부 파일은 정의 패턴이 특수해 분해되지 않았을 수 있습니다.")
+    return ("green", "🟢", "충분",
+            f"{files_analyzed} 개 파일에서 {n_chunks:,} 개의 코드 조각 (함수·클래스·타입) 을 "
+            f"학습했습니다. 파서 성공률 {success_rate:.0f}%.")
+
+
+def _verdict_learn_depth(depth: dict) -> tuple:
+    """Stage 2 — 학습 깊이. 호출 관계/라우트/테스트 연결이 풍부한가."""
+    n_chunks = depth.get("total_chunks", 0) or 0
+    if n_chunks == 0:
+        return ("gray", "⚪", "측정 불가", "청크가 없어 깊이 측정 불가.")
+    callees_rate = depth.get("callees_present_rate_pct", 0) or 0.0
+    test_link_rate = depth.get("test_link_rate_pct", 0) or 0.0
+    endpoints = depth.get("endpoints_count", 0) or 0
+    types = depth.get("type_chunks_count", 0) or 0
+    docstr_rate = (
+        (depth.get("docstring_count", 0) or 0) * 100.0 / n_chunks
+    ) if n_chunks else 0.0
+
+    # 4개 신호 중 몇 개가 양호한가 (각 신호 임계: callees ≥40%, test ≥20%,
+    # endpoint ≥1, types ≥1, docstring ≥30%).
+    healthy = 0
+    if callees_rate >= 40.0:
+        healthy += 1
+    if test_link_rate >= 20.0:
+        healthy += 1
+    if endpoints > 0:
+        healthy += 1
+    if types > 0 or docstr_rate >= 30.0:
+        healthy += 1
+
+    if healthy >= 3:
+        return ("green", "🟢", "풍부",
+                f"호출 관계·라우트·테스트 연결·도메인 모델 4개 신호 중 {healthy} 개가 충실하게 추출됐습니다.")
+    if healthy >= 2:
+        return ("yellow", "🟡", "보통",
+                f"4개 학습 신호 중 {healthy} 개만 충실. 일부 신호가 약하면 "
+                "이슈 분석 시 caller/test 청크 회수가 떨어질 수 있습니다.")
+    return ("red", "🔴", "얕음",
+            f"4개 학습 신호 중 {healthy} 개만 충실. AI 가 함수 간 관계나 "
+            "외부 진입점을 거의 학습하지 못해 답변이 단편적일 수 있습니다.")
+
+
+def _verdict_learn_quality(quality: dict, scope: dict) -> tuple:
+    """Stage 3 — 학습 품질. 노이즈 잘 걸러졌고 언어 비대칭 없나."""
+    asymm = quality.get("lang_callers_asymmetry", []) or []
+    minified = scope.get("skipped_minified_files", 0) or 0
+    excluded = scope.get("skipped_excluded_dirs", 0) or 0
+    parser_rate = quality.get("parser_success_rate_pct", 0) or 0.0
+    if parser_rate < 50.0:
+        return ("red", "🔴", "낮음",
+                f"파서 성공률 {parser_rate:.0f}% — 학습 결과 신뢰도가 낮습니다. "
+                "특수 문법 (script tag JS, kotlin DSL 등) 이 많은 레포일 수 있습니다.")
+    if asymm:
+        lang_msg = ", ".join(f"{a['lang']} ({a['chunks']}개)" for a in asymm[:3])
+        return ("yellow", "🟡", "비대칭",
+                f"일부 언어 ({lang_msg}) 는 청크는 있으나 호출 관계가 추출되지 않았습니다. "
+                "해당 영역 이슈는 caller 정보가 약할 수 있습니다.")
+    if minified or excluded:
+        return ("green", "🟢", "정상",
+                f"노이즈 자동 제외 정상 (벤더·minified {minified} 개, 제외 디렉토리 파일 {excluded} 개). "
+                f"파서 성공률 {parser_rate:.0f}%.")
+    return ("green", "🟢", "정상",
+            f"파서 성공률 {parser_rate:.0f}% · 언어별 비대칭 없음.")
+
+
+def _verdict_learn_impact(agg: dict) -> tuple:
+    """Stage 4 — 학습 영향. 사전학습 신호가 답변에 실제로 반영됐나.
+
+    핵심 지표: ts_any_hit_pct = 답변 중 endpoint/decorator/param/RAG-meta 신호가
+    1번이라도 등장한 비율. 이게 높을수록 "사전학습 → 답변 활용" 인과가 살아있음.
     """
-    if not kb_stats or not kb_stats.get("total_chunks"):
+    diag_n = agg.get("diag_count", 0) or 0
+    if diag_n == 0:
+        return ("gray", "⚪", "측정 불충분",
+                "RAG 진단 데이터가 있는 이슈가 없습니다 — Stage 4 측정 불가.")
+    any_hit_pct = agg.get("ts_any_hit_pct", 0.0) or 0.0
+    avg_hits = agg.get("ts_avg_hits", 0.0) or 0.0
+    if any_hit_pct >= 50.0:
+        return ("green", "🟢", "잘 활용됨",
+                f"AI 답변의 {any_hit_pct:.0f}% 가 우리 프로젝트의 라우트·데코레이터·매개변수명 등 "
+                f"정적 메타를 직접 인용했습니다 (이슈당 평균 {avg_hits:.1f} 개 신호).")
+    if any_hit_pct >= 20.0:
+        return ("yellow", "🟡", "부분 활용",
+                f"AI 답변의 {any_hit_pct:.0f}% 만 정적 메타를 인용. 사전학습은 풍부했으나 "
+                "이슈 분석 단계에서 일부만 답변에 반영됐습니다.")
+    return ("red", "🔴", "거의 미반영",
+            f"AI 답변의 {any_hit_pct:.0f}% 만 정적 메타 인용. 사전학습 결과가 답변에 거의 전달되지 "
+            "않았습니다 — RAG retrieval 또는 LLM 프롬프트 점검 필요.")
+
+
+def _render_kb_intelligence(kb_intel: dict, agg: dict) -> str:
+    """Phase C — 4-stage 학습진단 narrative 섹션.
+
+    PM 이 위→아래 사다리로 읽으면서 (1) 범위 → (2) 깊이 → (3) 품질 → (4) 영향
+    인과를 체감. 기존 8개 카드 나열 대신 각 stage 가 신호등 1개 + 한 줄 메시지
+    + 핵심 mini-card 묶음.
+    """
+    if not kb_intel:
         return ""
-    s = kb_stats
-    lang_summary = ", ".join(
-        f"{k} {v}"
-        for k, v in sorted((s.get("lang_breakdown") or {}).items(), key=lambda x: -x[1])[:5]
-    ) or "—"
+    flat = kb_intel.get("_flat", {})
+    if not flat.get("total_chunks"):
+        return ""
+    scope = kb_intel.get("scope", {}) or {}
+    depth = kb_intel.get("depth", {}) or {}
+    quality = kb_intel.get("quality", {}) or {}
 
-    # PM 친화 카드 정의: (이모지+제목, 큰 숫자, 한 줄 설명)
-    intel_cards = [
-        ("📂 분석한 파일",
-         f"{s['total_files']}",
-         "프로젝트의 코드·테스트 파일 수"),
-        ("🧩 코드 자료(청크)",
-         f"{s['total_chunks']}",
-         f"함수·클래스·타입 단위로 분할 ({lang_summary})"),
-        ("🔗 호출 관계 링크",
-         f"{s['callers_links']}",
-         "\"이 함수가 어디서 호출되는가\" 자동 매핑"),
-        ("🌐 HTTP endpoint 매핑",
-         f"{s['endpoints_count']}",
-         "@app.route / @app.get 등 라우트 정의 검출"),
-        ("🛡️ 데코레이터 보유 청크",
-         f"{s['decorators_count']}",
-         "@require_role · @app.route 등 정적 의도 정보"),
-        ("🧪 테스트 ↔ 본문 연결",
-         f"{s['test_links']}",
-         "\"이 함수는 어느 테스트가 검증하는가\" 자동 연결"),
-        ("📐 도메인 모델·타입",
-         f"{s['type_chunks_count']}",
-         "TS interface · type · enum (도메인 어휘)"),
-        ("📝 문서화된 함수",
-         f"{s['docstring_count']}",
-         "docstring/JSDoc 보유 — 의도 자연어 활용"),
-    ]
-    cards_html = "<div class='cards'>" + "".join(
-        f"<div class='card'><div class='label'>{_esc(k)}</div>"
-        f"<div class='value'>{_esc(v)}</div>"
-        f"<div class='sub'>{_esc(sub)}</div></div>"
-        for k, v, sub in intel_cards
-    ) + "</div>"
+    v_scope = _verdict_learn_scope(scope, depth)
+    v_depth = _verdict_learn_depth(depth)
+    v_quality = _verdict_learn_quality(quality, scope)
+    v_impact = _verdict_learn_impact(agg)
 
-    # endpoint 예시 — 있으면 PM 가 "AI 가 진짜 우리 라우트를 알았는가" 즉시 검증
-    endpoint_examples_html = ""
-    if s.get("endpoints_examples"):
+    def _stage(idx: int, title: str, verdict: tuple, body_html: str) -> str:
+        color, dot, label, msg = verdict
+        return (
+            f"<div class='stage stage-{color}'>"
+            f"<div class='stage-head'>"
+            f"<span class='stage-num'>Stage {idx}</span>"
+            f"<span class='stage-title'>{_esc(title)}</span>"
+            f"<span class='stage-dot'>{dot}</span>"
+            f"<span class='stage-label'>{_esc(label)}</span>"
+            "</div>"
+            f"<div class='stage-msg'>{_esc(msg)}</div>"
+            f"<div class='stage-body'>{body_html}</div>"
+            "</div>"
+        )
+
+    # ─ Stage 1 body — 학습 범위 ───────────────────────────────────────────
+    files_seen = scope.get("files_seen_total", 0) or 0
+    files_analyzed = scope.get("files_analyzed", 0) or 0
+    n_chunks = depth.get("total_chunks", 0) or 0
+    lang_bd = depth.get("lang_breakdown", {}) or {}
+    lang_pairs = sorted(lang_bd.items(), key=lambda x: -x[1])
+    # 언어별 막대 — 비율 기준
+    lang_bar_html = ""
+    if lang_pairs:
+        bars = []
+        for lang, n in lang_pairs[:6]:
+            pct = (n * 100.0 / n_chunks) if n_chunks else 0.0
+            bars.append(
+                f"<div class='lang-row'><span class='lang-name'>{_esc(lang)}</span>"
+                f"<span class='lang-bar'><span class='lang-fill' style='width:{pct:.1f}%'></span></span>"
+                f"<span class='lang-pct'>{n} <span class='lang-sub'>({pct:.0f}%)</span></span></div>"
+            )
+        lang_bar_html = (
+            "<div class='lang-bars'><div class='mini-h'>언어별 코드 조각 분포</div>"
+            + "".join(bars) + "</div>"
+        )
+    skip_lines = []
+    sm = scope.get("skipped_minified_files", 0) or 0
+    sd = scope.get("skipped_duplicate_chunks", 0) or 0
+    se = scope.get("skipped_excluded_dirs", 0) or 0
+    se_ext = scope.get("skipped_unsupported_ext", 0) or 0
+    if sm or sd:
+        skip_lines.append(f"노이즈 자동 제외 — 미니파이/벤더 파일 {sm}, 중복 청크 {sd}")
+    if se or se_ext:
+        skip_lines.append(f"분석 대상 외 — 제외 디렉토리 {se} 파일, 비지원 확장자 {se_ext} 파일")
+    skip_html = (
+        "<div class='note' style='margin-top:8px;'>"
+        + " · ".join(_esc(l) for l in skip_lines) + "</div>"
+    ) if skip_lines else ""
+    stage1_body = (
+        "<div class='mini-cards'>"
+        f"<div class='mini-card'><div class='mini-v'>{files_seen:,}</div>"
+        "<div class='mini-l'>전체 파일 수</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{files_analyzed:,}</div>"
+        "<div class='mini-l'>학습 가능한 파일 (지원 언어)</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{n_chunks:,}</div>"
+        "<div class='mini-l'>학습된 코드 조각 (함수·클래스·타입)</div></div>"
+        "</div>"
+        + lang_bar_html
+        + skip_html
+    )
+
+    # ─ Stage 2 body — 학습 깊이 ───────────────────────────────────────────
+    callees_rate = depth.get("callees_present_rate_pct", 0) or 0.0
+    test_link_rate = depth.get("test_link_rate_pct", 0) or 0.0
+    endpoints_n = depth.get("endpoints_count", 0) or 0
+    decorators_n = depth.get("decorators_count", 0) or 0
+    types_n = depth.get("type_chunks_count", 0) or 0
+    test_chunks = depth.get("test_chunks_count", 0) or 0
+    docstr_n = depth.get("docstring_count", 0) or 0
+
+    def _depth_mini(value: str, label: str, sub: str = "", bar_pct: float = -1) -> str:
+        bar = ""
+        if 0 <= bar_pct <= 100:
+            bar = (
+                "<div class='depth-bar'>"
+                f"<span class='depth-fill' style='width:{bar_pct:.1f}%'></span></div>"
+            )
+        sub_html = f"<div class='mini-sub'>{_esc(sub)}</div>" if sub else ""
+        return (
+            "<div class='mini-card'>"
+            f"<div class='mini-v'>{_esc(value)}</div>"
+            f"<div class='mini-l'>{_esc(label)}</div>"
+            f"{bar}{sub_html}</div>"
+        )
+
+    # endpoint 예시 펼침
+    ep_examples_html = ""
+    eps = depth.get("endpoints_examples", []) or []
+    if eps:
         rows = "".join(
-            f"<tr><td><code>{_esc(ep)}</code></td>"
-            f"<td><code>{_esc(p)}</code></td>"
-            f"<td><code>{_esc(sym)}</code></td></tr>"
-            for ep, p, sym in s["endpoints_examples"]
+            f"<tr><td><code>{_esc(e.get('endpoint',''))}</code></td>"
+            f"<td><code>{_esc(e.get('path','?'))}</code></td>"
+            f"<td><code>{_esc(e.get('symbol','?'))}</code></td></tr>"
+            for e in eps[:5]
         )
-        endpoint_examples_html = (
-            "<h4 style='margin-top:14px;'>검출된 HTTP endpoint 예시</h4>"
+        ep_examples_html = (
+            "<details class='example-box'>"
+            "<summary>AI 가 알아낸 우리 프로젝트의 API 진입점 보기 ▾</summary>"
             "<table><tr><th>endpoint</th><th>파일</th><th>함수</th></tr>"
-            f"{rows}</table>"
+            f"{rows}</table></details>"
         )
+    stage2_body = (
+        "<div class='mini-cards'>"
+        + _depth_mini(
+            f"{callees_rate:.0f}%",
+            "함수 간 호출 관계 매핑률",
+            "이 함수가 다른 함수를 부른다는 정보 비율 — 영향 범위 추적의 기반",
+            callees_rate,
+        )
+        + _depth_mini(
+            f"{endpoints_n:,}",
+            "HTTP API 진입점",
+            "@app.route / app.get('/x', handler) 등 외부 노출 지점",
+        )
+        + _depth_mini(
+            f"{test_link_rate:.0f}%",
+            "테스트 ↔ 본문 자동 연결률",
+            "비-테스트 코드 중 검증 테스트가 자동 매핑된 비율",
+            test_link_rate,
+        )
+        + _depth_mini(
+            f"{decorators_n:,}",
+            "정적 의도 정보 (데코레이터)",
+            "@require_role · @cached 등 — 코드 한 줄로 동작 의도 명시",
+        )
+        + _depth_mini(
+            f"{types_n:,}",
+            "도메인 모델 (타입·인터페이스)",
+            "비즈니스 어휘 — User · Order 등 도메인 개념",
+        )
+        + _depth_mini(
+            f"{docstr_n:,}",
+            "문서화된 함수 / 클래스",
+            "docstring · JSDoc · Javadoc 보유 — 자연어 의도 활용",
+        )
+        + "</div>"
+        + ep_examples_html
+    )
+
+    # ─ Stage 3 body — 학습 품질 ───────────────────────────────────────────
+    parser_rate = quality.get("parser_success_rate_pct", 0) or 0.0
+    asymm = quality.get("lang_callers_asymmetry", []) or []
+    asymm_html = ""
+    if asymm:
+        rows = "".join(
+            f"<tr><td><code>{_esc(a.get('lang',''))}</code></td>"
+            f"<td class='num'>{a.get('chunks', 0)}</td>"
+            f"<td class='num'>{a.get('callers_links', 0)}</td></tr>"
+            for a in asymm
+        )
+        asymm_html = (
+            "<div class='warn-box'>"
+            "<div class='mini-h'>⚠️ 언어별 학습 비대칭</div>"
+            "<table><tr><th>언어</th><th>청크 수</th><th>호출 관계</th></tr>"
+            f"{rows}</table>"
+            "<div class='note'>해당 언어의 이슈는 caller 청크 회수가 부족할 수 있습니다.</div>"
+            "</div>"
+        )
+    stage3_body = (
+        "<div class='mini-cards'>"
+        f"<div class='mini-card'><div class='mini-v'>{parser_rate:.0f}%</div>"
+        "<div class='mini-l'>tree-sitter 파서 성공률</div>"
+        f"<div class='depth-bar'><span class='depth-fill' style='width:{parser_rate:.1f}%'></span></div>"
+        "</div>"
+        f"<div class='mini-card'><div class='mini-v'>{sm:,}</div>"
+        "<div class='mini-l'>자동 제외된 비-원본 파일</div>"
+        "<div class='mini-sub'>벤더 라이브러리 · minified 번들 — AI 답변 노이즈 차단 목적</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{sd:,}</div>"
+        "<div class='mini-l'>중복 제거된 청크</div>"
+        "<div class='mini-sub'>같은 본문이 여러 위치에 복제된 코드 — KB 인덱싱 노이즈 차단</div></div>"
+        "</div>"
+        + asymm_html
+    )
+
+    # ─ Stage 4 body — 사전학습이 답변에 미친 영향 ─────────────────────────
+    diag_n = agg.get("diag_count", 0) or 0
+    ts_any_pct = agg.get("ts_any_hit_pct", 0.0) or 0.0
+    avg_hits = agg.get("ts_avg_hits", 0.0) or 0.0
+    ts_endpoint_n = agg.get("ts_endpoint_issue_count", 0) or 0
+    ts_decorator_n = agg.get("ts_decorator_issue_count", 0) or 0
+    ts_param_n = agg.get("ts_param_issue_count", 0) or 0
+    ts_rag_meta_n = agg.get("ts_rag_meta_issue_count", 0) or 0
+    citation_pct = agg.get("avg_citation_rate", 0.0) or 0.0
+    used_with_ep = agg.get("used_with_endpoint_pct", 0.0) or 0.0
+    used_with_dec = agg.get("used_with_decorators_pct", 0.0) or 0.0
+    stage4_body = (
+        "<div class='mini-cards'>"
+        f"<div class='mini-card'><div class='mini-v'>{ts_any_pct:.0f}%</div>"
+        "<div class='mini-l'>답변에 정적 메타가 등장한 이슈 비율</div>"
+        f"<div class='depth-bar'><span class='depth-fill' style='width:{ts_any_pct:.1f}%'></span></div>"
+        "<div class='mini-sub'>endpoint · decorator · 매개변수명 · RAG 청크 메타 중 하나라도 인용</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{avg_hits:.1f}</div>"
+        "<div class='mini-l'>이슈당 평균 정적 메타 인용 수</div>"
+        "<div class='mini-sub'>구체성 깊이 — 클수록 답변이 우리 프로젝트 어휘로 작성됨</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{citation_pct:.0f}%</div>"
+        "<div class='mini-l'>RAG 청크 인용률 (평균)</div>"
+        f"<div class='depth-bar'><span class='depth-fill' style='width:{citation_pct:.1f}%'></span></div>"
+        "<div class='mini-sub'>받은 청크 대비 답변에 실제로 인용된 비율</div></div>"
+        "</div>"
+        "<div class='mini-cards' style='margin-top:8px;'>"
+        f"<div class='mini-card'><div class='mini-v'>{ts_endpoint_n}</div>"
+        "<div class='mini-l'>HTTP route 인용 이슈</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{ts_decorator_n}</div>"
+        "<div class='mini-l'>데코레이터 인용 이슈</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{ts_param_n}</div>"
+        "<div class='mini-l'>매개변수명 인용 이슈</div></div>"
+        f"<div class='mini-card'><div class='mini-v'>{ts_rag_meta_n}</div>"
+        "<div class='mini-l'>RAG 청크 메타 인용 이슈</div></div>"
+        "</div>"
+        + (
+            "<div class='note' style='margin-top:8px;'>"
+            f"AI 가 받은 RAG 청크 중 정적 메타 보유 비율 — endpoint {used_with_ep:.0f}% · "
+            f"decorator {used_with_dec:.0f}%. 보유 비율이 낮으면 답변에 인용될 수 있는 신호 자체가 적은 것."
+            "</div>"
+        )
+        + (
+            "<div class='note'>대상 이슈 수 (RAG 진단 보유): "
+            f"<code>{diag_n}</code></div>"
+        )
+    )
 
     return (
-        "<h2>📚 사전학습 결과 — AI 가 우리 프로젝트에서 배운 코드 지식</h2>"
-        "<p class='note'>이 단계에서 AI 가 코드를 함수·클래스·테스트 단위로 분해하고, "
-        "정적 분석으로 호출 관계·HTTP 라우트·도메인 모델·테스트 연결 같은 "
-        "<strong>'코드 인텔리전스'</strong>를 자동 추출했습니다. 이 지식이 풍부할수록 "
-        "이슈 분석 단계의 답변이 우리 프로젝트 맥락에 더 가까워집니다.</p>"
-        + cards_html
-        + endpoint_examples_html
+        "<h2>📚 사전학습 진단 — AI 가 우리 프로젝트를 어떻게 이해했는가</h2>"
+        "<p class='note'>아래 4단계는 사다리입니다. <strong>범위</strong>(무엇을 봤는가) → "
+        "<strong>깊이</strong>(얼마나 풍부히 이해했는가) → <strong>품질</strong>(노이즈 없이 깨끗한가) → "
+        "<strong>영향</strong>(이번 분석 답변에 어떻게 반영됐는가). "
+        "Stage 4 가 빨간색이면 사전학습은 잘됐는데 활용이 새고 있다는 뜻 — "
+        "이슈별 RAG 검색을 점검해야 합니다.</p>"
+        "<div class='stages'>"
+        + _stage(1, "학습 범위 — AI 가 본 것", v_scope, stage1_body)
+        + _stage(2, "학습 깊이 — 이해의 풍부함", v_depth, stage2_body)
+        + _stage(3, "학습 품질 — 학습이 깨끗한가", v_quality, stage3_body)
+        + _stage(4, "분석에 미친 영향 — 답변에 어떻게 쓰였나", v_impact, stage4_body)
+        + "</div>"
     )
 
 
@@ -808,9 +1252,9 @@ def render(rows: list, title: str = "RAG Diagnostic Report", kb_stats: dict = No
     # v2 — 비개발자 친화 상단 블록
     exec_summary_html = _render_executive_summary(agg)
 
-    # 사전학습 결과 — tree-sitter 가 추출한 코드 인텔리전스 정량화
-    # PM/스폰서가 "AI 가 우리 프로젝트에서 무엇을 배웠는가" 한눈에 파악 가능.
-    kb_intel_html = _render_kb_intelligence(kb_stats) if kb_stats else ""
+    # 사전학습 4-stage 진단 — Phase C 재설계.
+    # PM 이 사다리 형태로 (1)범위 → (2)깊이 → (3)품질 → (4)영향 인과를 따라 읽는다.
+    kb_intel_html = _render_kb_intelligence(kb_stats, agg) if kb_stats else ""
 
     # 기존 상세 카드 — 기술 관점 수치. 이제는 technical details 안으로.
     cards = [

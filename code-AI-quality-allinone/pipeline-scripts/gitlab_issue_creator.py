@@ -247,20 +247,218 @@ def _trim_code_snippet(snippet: str, target_line: int, context: int = 10) -> str
     return "\n".join(lines[lo:hi])
 
 
+def _action_verdict(severity: str, classification: str, confidence: str,
+                    cited_count: int, total_used: int) -> tuple:
+    """Phase C — PM 친화 action verdict 신호등.
+
+    Severity / classification / confidence + RAG citation 정황을 종합해
+    "지금 뭘 해야 하는가" 를 한 줄로 압축. PM 이 본문 첫 줄만 봐도 우선순위
+    판단 가능.
+
+    반환: (emoji, 한 줄 라벨, 1줄 근거).
+    """
+    sev = (severity or "").upper()
+    cls = (classification or "").lower()
+    conf = (confidence or "").lower()
+    no_context = total_used == 0
+    weak_basis = (no_context or (cited_count == 0 and conf in ("low", ""))) and cls != "false_positive"
+
+    # false_positive 는 우선순위 낮음 (특히 confidence high 면 자신있게 오탐)
+    if cls == "false_positive":
+        if conf == "high":
+            return ("⚪", "오탐 가능성 (확신도 높음)",
+                    "AI 가 분석 결과 SonarQube 의 오판으로 판정. 무시 또는 sonar 측 mark FP 처리.")
+        return ("⚪", "오탐 가능성",
+                "AI 가 오판으로 추정 — 개발자 검토 후 mark FP 또는 fix 결정.")
+
+    if cls == "wont_fix":
+        return ("🟢", "무시 가능 (기술 부채)",
+                "실제 문제는 맞으나 비용 대비 우선순위 낮음. 백로그 등록 후 차후 처리.")
+
+    # true_positive 또는 빈 값 — 심각도 + 근거에 따라 색깔.
+    if sev in ("BLOCKER", "CRITICAL"):
+        if weak_basis:
+            return ("🟠", "즉시 수정 권장 (단, AI 근거 약함)",
+                    "심각도가 높아 즉시 조치 권장. 다만 AI 답변이 일반 원칙에 의존했으니 "
+                    "**개발자가 코드 컨텍스트를 직접 확인 후** 수정하세요.")
+        return ("🔴", "즉시 수정",
+                "심각도 높음 + AI 근거 충실. 본 이슈는 우선 처리 대상입니다.")
+
+    if sev == "MAJOR":
+        if weak_basis:
+            return ("🟡", "검토 후 수정",
+                    "AI 분석 근거가 약하니 개발자 검토 후 수정 여부 결정.")
+        return ("🟡", "검토 후 수정",
+                "중간 심각도 — 다음 스프린트 내 처리 권장.")
+
+    # MINOR / INFO
+    if sev in ("MINOR", "INFO"):
+        return ("🟢", "여유 처리",
+                "낮은 심각도 — 코드 정리 시 함께 처리.")
+
+    # severity 없음 (auto_template 같은 케이스)
+    return ("⚪", "추가 검토 필요",
+            "심각도 정보 부재 — 개발자가 직접 우선순위 평가 권장.")
+
+
+def _location_natural_text(rel_path: str, line_int: int, enclosing_fn: str,
+                            enclosing_kind: str) -> str:
+    """Phase C — 위치 정보를 자연어 한 줄로. PM 시야 친화."""
+    if not rel_path:
+        return "(파일 위치 정보 없음)"
+    fn_part = ""
+    if enclosing_fn:
+        kind_word = {
+            "method": "메서드", "function": "함수", "class": "클래스",
+            "type": "타입", "interface": "인터페이스",
+        }.get(enclosing_kind, "함수")
+        fn_part = f" 의 `{enclosing_fn}` {kind_word}"
+    return f"`{rel_path}` (line {line_int}){fn_part}"
+
+
+def _format_static_context_pm(row: dict) -> str:
+    """Phase C — PM 친화 정적 메타 노출. enclosing 함수의 HTTP route, decorator,
+    매개변수 등을 자연어 1~3줄로. 비어있으면 빈 문자열.
+    """
+    lines = []
+    endpoint = (row.get("enclosing_endpoint") or "").strip()
+    decorators = row.get("enclosing_decorators") or []
+    params = row.get("enclosing_doc_params") or []
+
+    if endpoint:
+        lines.append(f"- 🌐 외부 노출: HTTP `{endpoint}` 엔드포인트로 접근 가능합니다.")
+    if decorators:
+        # 식별자만 추출 (`@app.route('/x')` → `app.route`)
+        dec_idents = []
+        for d in decorators[:3]:
+            if isinstance(d, str):
+                body = d.lstrip("@").split("(", 1)[0].strip()
+                if body:
+                    dec_idents.append(f"`@{body}`")
+        if dec_idents:
+            lines.append(f"- 🛡️ 적용된 정적 의도: {', '.join(dec_idents)}")
+    if params:
+        names = []
+        for p in params[:5]:
+            if isinstance(p, (list, tuple)) and len(p) >= 2 and p[1]:
+                names.append(f"`{p[1]}`")
+        if names:
+            lines.append(f"- 📝 입력 매개변수: {', '.join(names)}")
+    return "\n".join(lines)
+
+
+def _format_ai_basis_pm(row: dict) -> str:
+    """Phase C — 'AI 판단 근거' 섹션. 사전학습 → 답변 인과를 PM 에게 노출.
+
+    rag_diagnostic 의 used_items + tree_sitter_hits 를 자연어로 요약.
+    """
+    diag = row.get("rag_diagnostic") or {}
+    if not diag:
+        # skip_llm 또는 진단 없는 경우 — 짧은 안내
+        if row.get("llm_skipped"):
+            return "_(자동 템플릿 응답 — RAG 분석 미수행. 개발자 직접 검토를 권장합니다.)_"
+        return ""
+
+    used_items = diag.get("used_items") or []
+    citation = diag.get("citation") or {}
+    cited = citation.get("cited_count", 0) or 0
+    total_used = citation.get("total_used", 0) or 0
+    ts = diag.get("tree_sitter_hits") or {}
+    ts_total = ts.get("total_hits", 0) or 0
+
+    lines = []
+
+    if total_used == 0:
+        lines.append(
+            "- ⚠️ AI 가 우리 프로젝트의 관련 코드 청크를 받지 못한 상태에서 답변을 생성했습니다. "
+            "이번 분석은 **일반 원칙·rule 설명** 에 의존했으며, 프로젝트 특수성은 반영되지 않았을 수 있습니다."
+        )
+        return "\n".join(lines)
+
+    # 1) 참조한 코드 — used_items 의 path::symbol 을 카테고리별로 묶어 자연어
+    callers = [it for it in used_items if it.get("bucket") == "callers"]
+    tests = [it for it in used_items if it.get("bucket") == "tests"]
+    others = [it for it in used_items if it.get("bucket") == "others"]
+
+    def _refs(items, limit=3):
+        out = []
+        for it in items[:limit]:
+            sym = it.get("symbol", "")
+            path = it.get("path", "")
+            if sym and sym != "?":
+                out.append(f"`{sym}`")
+            elif path and path != "?":
+                out.append(f"`{path.rsplit('/', 1)[-1]}`")
+        return out
+
+    parts = []
+    if callers:
+        cs = _refs(callers)
+        if cs:
+            parts.append(f"호출하는 함수 {len(callers)} 곳 ({', '.join(cs)})")
+    if tests:
+        ts_refs = _refs(tests)
+        if ts_refs:
+            parts.append(f"관련 테스트 {len(tests)} 개 ({', '.join(ts_refs)})")
+    if others:
+        os_refs = _refs(others)
+        if os_refs:
+            parts.append(f"관련 코드 {len(others)} 곳 ({', '.join(os_refs)})")
+
+    if parts:
+        lines.append(f"- 🔎 참조한 프로젝트 코드: {' · '.join(parts)}")
+
+    # 2) 인용 정황 — cited / total
+    if total_used > 0:
+        rate = cited * 100.0 / total_used
+        if rate >= 60:
+            lines.append(
+                f"- ✅ AI 가 받은 청크 {total_used} 개 중 {cited} 개를 답변에 직접 인용 "
+                f"({rate:.0f}%). 근거 충실."
+            )
+        elif rate >= 30:
+            lines.append(
+                f"- 🟡 AI 가 받은 청크 {total_used} 개 중 {cited} 개만 답변에 인용 "
+                f"({rate:.0f}%). 근거 일부 활용."
+            )
+        elif cited == 0:
+            lines.append(
+                f"- ⚠️ AI 가 받은 청크 {total_used} 개를 답변에 인용하지 않음 — "
+                "근거가 일반 원칙에 의존했을 가능성이 있어 직접 검토 권장."
+            )
+
+    # 3) 정적 메타 활용 — tree_sitter_hits
+    if ts_total > 0:
+        sigs = []
+        if ts.get("endpoint_hits"):
+            sigs.append("HTTP route")
+        if ts.get("decorator_hits"):
+            sigs.append("decorator")
+        if ts.get("param_hits"):
+            sigs.append("매개변수명")
+        if ts.get("rag_meta_hits"):
+            sigs.append("RAG 청크 메타")
+        if sigs:
+            lines.append(
+                f"- 📚 사전학습 정적 메타 활용: {', '.join(sigs)} ({ts_total} 회 인용). "
+                "AI 답변이 우리 프로젝트의 어휘·구조를 직접 반영했습니다."
+            )
+
+    return "\n".join(lines)
+
+
 def render_issue_body(row: dict, args) -> str:
-    """Step R 에서 도입된 deterministic 본문 렌더링.
+    """Phase C — PM 친화 GitLab Issue 본문 재설계.
 
-    구조 (모두 섹션 제목에 이모지):
-      1. TL;DR callout
-      2. 📍 위치 테이블
-      3. 🔴 문제 코드
-      4. ✅ 수정 제안 (LLM, optional — 빈 문자열이면 섹션 생략)
-      5. 📊 영향 분석 (LLM)
-      6. 📖 Rule 상세 (<details> 접기)
-      7. 🔗 링크 섹션
-
-    LLM 출력 (`outputs`) 은 `impact_analysis_markdown`, `suggested_fix_markdown`
-    두 필드. 나머지는 creator 가 row 의 사실 정보로 직접 렌더.
+    개발자 친화에서 PM 친화로 전환:
+    - 최상단: 🚦 Action Verdict — 심각도/오탐/근거 종합 신호등
+    - 📌 무엇이 문제인가 (LLM 한 줄 요약)
+    - 🎯 어디서 발생하나 (자연어 위치 + 정적 컨텍스트)
+    - ⚠️ 영향과 이유 (LLM impact_analysis)
+    - 🛠️ 어떻게 고치나 (LLM suggested_fix + diff)
+    - 🔍 AI 판단 근거 (NEW — 사전학습 활용 인과)
+    - 📂 같은 패턴의 다른 위치 (조건부)
+    - 📖 기술 상세 (▶ 접기 — 코드 블록 / Rule key / 모든 링크)
     """
     outputs = row.get("outputs") or {}
     rel_path = row.get("relative_path", "") or ""
@@ -271,6 +469,7 @@ def render_issue_body(row: dict, args) -> str:
         line_int = 0
     enclosing_fn = row.get("enclosing_function", "") or ""
     enclosing_ln = row.get("enclosing_lines", "") or ""
+    enclosing_kind = row.get("enclosing_kind", "") or ""
     rule_key = row.get("rule_key", "") or ""
     rule_name = row.get("rule_name", "") or ""
     rule_desc = row.get("rule_description", "") or ""
@@ -278,8 +477,13 @@ def render_issue_body(row: dict, args) -> str:
     commit_sha = row.get("commit_sha", "") or ""
     sonar_msg = row.get("sonar_message", "") or ""
     sonar_issue_url = row.get("sonar_issue_url", "") or ""
+    classification = (outputs.get("classification") or "").lower()
+    confidence = (outputs.get("confidence") or "").lower()
+    impact_md = (outputs.get("impact_analysis_markdown") or "").strip()
+    suggested_fix = (outputs.get("suggested_fix_markdown") or "").strip()
+    suggested_diff = (outputs.get("suggested_diff") or "").strip()
 
-    # URL 구성 (public url 치환 포함)
+    # URL 구성
     sonar_public_url = _replace_sonar_url(
         sonar_issue_url, args.sonar_host_url, args.sonar_public_url
     )
@@ -291,22 +495,112 @@ def render_issue_body(row: dict, args) -> str:
         args.gitlab_public_url, args.gitlab_project, commit_sha
     )
 
-    # 1. TL;DR
-    location_hint = f"`{rel_path}:{line_int}`" if rel_path and line_int else "이슈 위치"
-    fn_hint = f" `{enclosing_fn}` 함수" if enclosing_fn else ""
-    tldr = f"> **TL;DR** — {location_hint}{fn_hint} · {sonar_msg or rule_name}"
+    # ─ 0. Action Verdict 신호등 ───────────────────────────────────────────
+    diag = row.get("rag_diagnostic") or {}
+    citation = (diag.get("citation") or {}) if diag else {}
+    verdict_emoji, verdict_label, verdict_basis = _action_verdict(
+        severity, classification, confidence,
+        citation.get("cited_count", 0) or 0,
+        citation.get("total_used", 0) or 0,
+    )
+    verdict_block = (
+        f"> ## {verdict_emoji} {verdict_label}\n"
+        f"> {verdict_basis}\n"
+        f"> _(severity={severity or '—'} · classification={classification or '—'} · confidence={confidence or '—'})_"
+    )
 
-    # 2. 위치 테이블
+    # ─ 1. 무엇이 문제인가 ─────────────────────────────────────────────────
+    # LLM impact 의 첫 줄을 가져와 PM 한 줄 요약으로. 빈 경우 sonar_message fallback.
+    one_line = ""
+    if impact_md:
+        for ln in impact_md.splitlines():
+            s = ln.strip()
+            if s and not s.startswith("#"):
+                one_line = s
+                break
+    if not one_line:
+        one_line = sonar_msg or rule_name or "(영향 분석 없음)"
+    # 너무 길면 자르기
+    if len(one_line) > 240:
+        one_line = one_line[:237] + "..."
+    what_section = f"### 📌 무엇이 문제인가\n\n{one_line}"
+
+    # ─ 2. 어디서 발생하나 ─────────────────────────────────────────────────
+    location_natural = _location_natural_text(rel_path, line_int, enclosing_fn, enclosing_kind)
+    static_ctx = _format_static_context_pm(row)
+    where_section = "### 🎯 어디서 발생하나\n\n" + location_natural
+    if static_ctx:
+        where_section += "\n\n" + static_ctx
+
+    # ─ 3. 영향과 이유 ─────────────────────────────────────────────────────
+    if impact_md:
+        impact_section = f"### ⚠️ 영향과 이유\n\n{impact_md}"
+    else:
+        impact_section = "### ⚠️ 영향과 이유\n\n_(LLM 이 영향 분석을 제공하지 않음)_"
+
+    # ─ 4. 어떻게 고치나 ───────────────────────────────────────────────────
+    fix_blocks = []
+    if suggested_fix:
+        if "```" not in suggested_fix:
+            lines = suggested_fix.splitlines()
+            diff_count = sum(1 for ln in lines if ln.startswith(("+ ", "- ", "+", "-")))
+            lang = "diff" if diff_count >= 2 else "python"
+            suggested_fix = f"```{lang}\n{suggested_fix}\n```"
+        fix_blocks.append(suggested_fix)
+    if suggested_diff and suggested_diff.lower() not in ("", "null", "none"):
+        if "```" not in suggested_diff:
+            suggested_diff = f"```diff\n{suggested_diff}\n```"
+        fix_blocks.append("**기계 적용 가능한 diff:**\n\n" + suggested_diff)
+    fix_section = ""
+    if fix_blocks:
+        fix_section = "### 🛠️ 어떻게 고치나\n\n" + "\n\n".join(fix_blocks)
+
+    # ─ 5. AI 판단 근거 (Phase C 신규) ─────────────────────────────────────
+    ai_basis = _format_ai_basis_pm(row)
+    basis_section = ""
+    if ai_basis:
+        basis_section = "### 🔍 AI 판단 근거\n\n" + ai_basis
+
+    # ─ 6. 같은 패턴의 다른 위치 (조건부) ───────────────────────────────────
+    affected = row.get("affected_locations") or []
+    aff_section = ""
+    if affected:
+        rows_md = ["| 파일 | 라인 | Sonar Key |", "|------|------|-----------|"]
+        for a in affected[:20]:
+            comp = a.get("component") or a.get("relative_path") or ""
+            lno = a.get("line") or ""
+            skey = a.get("sonar_issue_key") or ""
+            rows_md.append(f"| `{comp}` | {lno} | `{skey}` |")
+        aff_section = (
+            f"### 📂 같은 패턴의 다른 위치 ({len(affected)} 곳)\n\n"
+            + "\n".join(rows_md)
+        )
+
+    # ─ 7. 기술 상세 (접기) ────────────────────────────────────────────────
+    # 코드 블록 + Rule 전체 + 위치 표 + 모든 링크 — 모두 collapsed 안.
+    # Markdown 안에서 details 사용 시, GitLab 은 HTML <details> 태그를 인식.
+    snippet = _trim_code_snippet(
+        row.get("code_snippet", "") or "", line_int, context=10
+    )
+    code_block = ""
+    if snippet and snippet != "(Code not found in SonarQube)":
+        code_block = "**문제 코드:**\n\n```\n" + snippet + "\n```"
+
     file_cell = f"[`{rel_path}:{line_int}`]({blob_url})" if blob_url else (
         f"`{rel_path}:{line_int}`" if rel_path else "(unknown)"
     )
-    fn_cell = f"`{enclosing_fn}`" + (f" *(line {enclosing_ln})*" if enclosing_ln else "") if enclosing_fn else "—"
-    rule_cell = f"`{rule_key}`" + (f" · {rule_name}" if rule_name else "")
-    commit_cell = f"[`{_short_sha(commit_sha)}`]({commit_url})" if commit_url and commit_sha else (
-        f"`{_short_sha(commit_sha)}`" if commit_sha else "—"
+    fn_cell = (
+        f"`{enclosing_fn}`" + (f" *(line {enclosing_ln})*" if enclosing_ln else "")
+        if enclosing_fn else "—"
     )
-    location_table = (
-        "### 📍 위치\n\n"
+    rule_cell = f"`{rule_key}`" + (f" · {rule_name}" if rule_name else "")
+    commit_cell = (
+        f"[`{_short_sha(commit_sha)}`]({commit_url})"
+        if commit_url and commit_sha
+        else (f"`{_short_sha(commit_sha)}`" if commit_sha else "—")
+    )
+    loc_table = (
+        "**메타 정보:**\n\n"
         "| 항목 | 값 |\n"
         "|------|-----|\n"
         f"| 파일 | {file_cell} |\n"
@@ -316,75 +610,10 @@ def render_issue_body(row: dict, args) -> str:
         f"| Commit | {commit_cell} |"
     )
 
-    # 3. 문제 코드
-    snippet = _trim_code_snippet(
-        row.get("code_snippet", "") or "", line_int, context=10
-    )
-    if snippet and snippet != "(Code not found in SonarQube)":
-        code_section = (
-            "### 🔴 문제 코드\n\n"
-            "```\n"
-            f"{snippet}\n"
-            "```"
-        )
-    else:
-        code_section = ""
-
-    # 4. 수정 제안 (optional) — LLM 이 코드펜스 없이 코드만 준 경우 자동으로 감싸 가독성 유지.
-    suggested_fix = (outputs.get("suggested_fix_markdown") or "").strip()
-    fix_section = ""
-    if suggested_fix:
-        # 코드펜스(```) 없으면 python/diff 로 자동 감싸기 (LLM 의 흔한 실수 보완).
-        if "```" not in suggested_fix:
-            lines = suggested_fix.splitlines()
-            # 간단 휴리스틱: diff 마커(+/-) 가 라인 시작에 2개 이상이면 diff.
-            diff_count = sum(1 for ln in lines if ln.startswith(("+ ", "- ", "+", "-")))
-            lang = "diff" if diff_count >= 2 else "python"
-            suggested_fix = f"```{lang}\n{suggested_fix}\n```"
-        fix_section = f"### ✅ 수정 제안\n\n{suggested_fix}"
-
-    # 4-b. Step D — Suggested Diff (unified diff, optional) — suggested_fix_markdown 과 별개로
-    # 기계 적용 가능한 diff 가 있을 때만 추가. LLM 이 비워두면 섹션 생략.
-    suggested_diff = (outputs.get("suggested_diff") or "").strip()
-    diff_section = ""
-    if suggested_diff and suggested_diff.lower() not in ("", "null", "none"):
-        # 이미 코드펜스 감싸져 있으면 그대로, 아니면 diff 펜스로 감싸기.
-        if "```" not in suggested_diff:
-            suggested_diff = f"```diff\n{suggested_diff}\n```"
-        diff_section = f"### 💡 Suggested Diff\n\n{suggested_diff}"
-
-    # 5. 영향 분석 (required from LLM)
-    impact = (outputs.get("impact_analysis_markdown") or "").strip()
-    if impact:
-        impact_section = f"### 📊 영향 분석\n\n{impact}"
-    else:
-        impact_section = "### 📊 영향 분석\n\n_(LLM 이 영향 분석을 제공하지 않음)_"
-
-    # 6. Rule 상세 (접기)
-    rule_section = ""
+    rule_full = ""
     if rule_desc:
-        rule_desc_safe = rule_desc.strip()
-        rule_section = (
-            "### 📖 Rule 상세\n\n"
-            f"<details><summary>{rule_key or 'Rule'} 전체 설명</summary>\n\n"
-            f"{rule_desc_safe}\n\n"
-            "</details>"
-        )
+        rule_full = f"**Rule 전체 설명:**\n\n{rule_desc.strip()}"
 
-    # 7. Step D — Affected Locations (같은 cluster 의 나머지 이슈). row.affected_locations
-    # 가 비어 있으면 섹션 생략 (단일 이슈). Step B exporter 가 채움.
-    affected = row.get("affected_locations") or []
-    aff_section = ""
-    if affected:
-        rows_md = ["| component | line | sonar key |", "|-----------|------|-----------|"]
-        for a in affected[:20]:  # 본문이 너무 길어지지 않도록 상한
-            comp = a.get("component") or a.get("relative_path") or ""
-            lno = a.get("line") or ""
-            skey = a.get("sonar_issue_key") or ""
-            rows_md.append(f"| `{comp}` | {lno} | `{skey}` |")
-        aff_section = "### 🧭 Affected Locations\n\n" + "\n".join(rows_md)
-
-    # 8. 링크 섹션
     link_lines = []
     if sonar_public_url:
         link_lines.append(f"- [SonarQube 이슈 상세]({sonar_public_url})")
@@ -393,11 +622,20 @@ def render_issue_body(row: dict, args) -> str:
         link_lines.append(f"- [GitLab 파일{line_suffix}]({blob_url})")
     if commit_url:
         link_lines.append(f"- [GitLab 커밋 `{_short_sha(commit_sha)}`]({commit_url})")
-    link_section = ""
+    links_block = ""
     if link_lines:
-        link_section = "### 🔗 링크\n\n" + "\n".join(link_lines)
+        links_block = "**링크:**\n\n" + "\n".join(link_lines)
 
-    # 9. Step D — footer: commit 추적용 메타 한 줄. dedup 에서도 활용.
+    detail_inner_parts = [p for p in (loc_table, code_block, rule_full, links_block) if p]
+    technical_section = ""
+    if detail_inner_parts:
+        inner = "\n\n".join(detail_inner_parts)
+        technical_section = (
+            "<details><summary>📖 기술 상세 (개발자용 — 코드 / Rule / 링크)</summary>\n\n"
+            + inner + "\n\n</details>"
+        )
+
+    # ─ 8. footer ──────────────────────────────────────────────────────────
     analysis_mode = getattr(args, "analysis_mode", "") or ""
     scan_label = f" ({analysis_mode} scan)" if analysis_mode else ""
     footer_parts = []
@@ -409,15 +647,14 @@ def render_issue_body(row: dict, args) -> str:
     if footer_parts:
         footer = "---\n_" + " · ".join(footer_parts) + "_"
 
-    # 조립 (섹션 사이 빈 줄 유지)
-    sections = [tldr, location_table]
-    for s in (code_section, fix_section, diff_section, impact_section, aff_section, rule_section, link_section):
+    # 조립
+    sections = [verdict_block, what_section, where_section, impact_section]
+    for s in (fix_section, basis_section, aff_section, technical_section):
         if s:
             sections.append(s)
     body = "\n\n---\n\n".join(sections)
     if footer:
         body = body + "\n\n" + footer
-    # LLM 본문에 섞여 나올 수 있는 내부 URL 을 public 으로 최종 한 번 더 정규화
     body = _replace_sonar_url(body, args.sonar_host_url, args.sonar_public_url)
     return body
 

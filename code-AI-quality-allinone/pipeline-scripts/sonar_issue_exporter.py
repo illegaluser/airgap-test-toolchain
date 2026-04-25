@@ -200,26 +200,43 @@ def _enclosing_function(repo_root: str, rel_path: str, target_line: int) -> tupl
     """레포 루트·상대경로·이슈 라인을 받아 해당 라인을 포함하는 함수/메서드의
     (symbol, lines_str) 튜플을 반환. 실패 시 ("", "").
 
-    repo_context_builder 의 `extract_chunks_from_file` 가 이미 LANG_CONFIG 에 맞춰
-    AST 청크를 만들므로, 그중 `lines` 범위가 target_line 을 포함하는 청크의
-    `symbol` 을 가져온다. 리팩터 대신 재사용.
+    backward-compat. 신규 코드는 _enclosing_meta() 사용 — tree-sitter 추출
+    메타 (decorators / endpoint / doc_struct) 까지 함께 반환.
     """
+    meta = _enclosing_meta(repo_root, rel_path, target_line)
+    return (meta.get("symbol", ""), meta.get("lines", ""))
+
+
+def _enclosing_meta(repo_root: str, rel_path: str, target_line: int) -> dict:
+    """이슈 라인을 포함하는 청크 전체 메타를 반환.
+
+    Phase B F2a: 기존 _enclosing_function 은 (symbol, lines) 만 줘 LLM 프롬프트
+    측에서 함수의 decorator / endpoint / docstring 구조를 알 수 없었다. 이제
+    매칭된 청크의 tree-sitter 메타를 통째로 가져와 analyzer 가 LLM 프롬프트에
+    구조화된 힌트로 넣을 수 있게 한다.
+
+    반환 dict 키 (모두 optional, 실패 시 빈 값):
+      symbol, lines, kind, lang, decorators, endpoint,
+      doc_params, doc_returns, doc_throws, doc, callees
+    """
+    empty = {
+        "symbol": "", "lines": "", "kind": "", "lang": "",
+        "decorators": [], "endpoint": "", "doc_params": [],
+        "doc_returns": None, "doc_throws": [], "doc": "", "callees": [],
+    }
     if not _TS_AVAILABLE or not repo_root or not rel_path or target_line <= 0:
-        return ("", "")
+        return empty
     abs_path = Path(repo_root) / rel_path
     if not abs_path.is_file():
-        return ("", "")
-    # 지원 확장자 필터 (LANG_CONFIG 에 없으면 skip)
+        return empty
     if abs_path.suffix.lower() not in LANG_CONFIG:
-        return ("", "")
+        return empty
     try:
         chunks = extract_chunks_from_file(abs_path, Path(repo_root), commit_sha="")
     except Exception:
-        return ("", "")
-    # 가장 좁은 범위(= 이슈 라인에 가장 가까운) 청크 선택. class 가 전체 파일을
-    # 감쌀 수 있으므로 function/method 를 우선, 없으면 class 도 수용.
+        return empty
     best = None
-    best_span = float("inf")
+    best_key = None
     for ch in chunks:
         lines = ch.get("lines", "")
         try:
@@ -229,15 +246,26 @@ def _enclosing_function(repo_root: str, rel_path: str, target_line: int) -> tupl
         if s <= target_line <= e:
             span = e - s
             kind = ch.get("kind", "")
-            # function/method 는 class 보다 선호 (span tie-break 전에 kind 우선)
             pref = 0 if kind in ("function", "method") else 1
             key = (pref, span)
-            if best is None or key < best_span:
+            if best is None or key < best_key:
                 best = ch
-                best_span = key
+                best_key = key
     if best is None:
-        return ("", "")
-    return (best.get("symbol", ""), best.get("lines", ""))
+        return empty
+    return {
+        "symbol": best.get("symbol", ""),
+        "lines": best.get("lines", ""),
+        "kind": best.get("kind", ""),
+        "lang": best.get("lang", ""),
+        "decorators": list(best.get("decorators") or []),
+        "endpoint": (best.get("endpoint") or "").strip(),
+        "doc_params": list(best.get("doc_params") or []),
+        "doc_returns": best.get("doc_returns"),
+        "doc_throws": list(best.get("doc_throws") or []),
+        "doc": (best.get("doc") or "").strip(),
+        "callees": list(best.get("callees") or []),
+    }
 
 
 def _git_context(repo_root: str, rel_path: str, line: int) -> str:
@@ -589,11 +617,13 @@ def main():
         snippet = _get_code_lines(args.sonar_host_url, headers, component, line)
         if not snippet: snippet = "(Code not found in SonarQube)"
 
-        # --- 3-c. Step R: 위치 메타 보강 (relative_path + enclosing_function) ---
+        # --- 3-c. Step R + Phase B F2a: 위치 메타 + tree-sitter 보강 ---
+        # _enclosing_meta 는 symbol/lines 외에도 decorators/endpoint/doc_struct
+        # 까지 한 번에 반환. analyzer 가 kb_query 와 LLM 프롬프트에 활용.
         rel_path = _relative_path_from_component(component, args.project_key)
-        enclosing_symbol, enclosing_lines = _enclosing_function(
-            args.repo_root, rel_path, line
-        )
+        enc_meta = _enclosing_meta(args.repo_root, rel_path, line)
+        enclosing_symbol = enc_meta["symbol"]
+        enclosing_lines = enc_meta["lines"]
 
         # --- 3-d. Step B: git context + direct_callers + severity routing + cluster_key ---
         git_ctx = _git_context(args.repo_root, rel_path, line)
@@ -618,6 +648,18 @@ def main():
             "line": line,                     # 정수 라인 번호
             "enclosing_function": enclosing_symbol,   # 예: "login" (tree-sitter, 실패 시 "")
             "enclosing_lines": enclosing_lines,       # 예: "22-27"
+            # Phase B F2a — enclosing 청크의 tree-sitter 메타. analyzer 의
+            # build_kb_query (F1) 와 enclosing_meta inputs (F2b) 가 활용.
+            # 빈 값이면 LLM 프롬프트에서 해당 줄 자동 생략.
+            "enclosing_kind": enc_meta["kind"],
+            "enclosing_lang": enc_meta["lang"],
+            "enclosing_decorators": enc_meta["decorators"],
+            "enclosing_endpoint": enc_meta["endpoint"],
+            "enclosing_doc_params": enc_meta["doc_params"],
+            "enclosing_doc_returns": enc_meta["doc_returns"],
+            "enclosing_doc_throws": enc_meta["doc_throws"],
+            "enclosing_doc": enc_meta["doc"],
+            "enclosing_callees": enc_meta["callees"],
             "commit_sha": args.commit_sha,            # 빈 문자열이면 본문에 commit 섹션 생략
             # Step B 신규 필드 — P3 LLM 프롬프트 + clustering + skip_llm 분기
             "git_context": git_ctx,                   # "blame L24: alice (abc123)" 등 3줄

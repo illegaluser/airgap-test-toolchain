@@ -121,12 +121,17 @@ def hyde_expand(row, ollama_base_url: str, ollama_model: str, timeout: int = 60)
 
 
 def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
-    """P1 — 구조화 multi-query kb_query 구성.
+    """P1 + Phase B F1 — 구조화 multi-query kb_query 구성.
 
     P2 R-4: attempt 별 variation — 동일 쿼리를 3회 반복하던 기존 retry 로직의
     효율을 끌어올리기 위해, 매번 다른 모양의 쿼리를 보낸다. 같은 KB 에 대해
     검색 신호를 다양화하면 누적 recall 이 단일 쿼리보다 높다는 multi-query
     retrieval 의 직관에 기반.
+
+    Phase B F1: 이슈 함수의 tree-sitter 메타 (endpoint / decorators / doc_params)
+    를 attempt=0 과 attempt=2 쿼리에 추가. 같은 라우트의 다른 핸들러,
+    @require_role 같은 공통 데코레이터 패턴, 같은 param 이름의 caller 청크가
+    BM25/dense 양쪽에서 매칭되도록 검색 면적을 넓힌다.
 
     attempt=0 (기본 — 풀 구조화):
       1) 이슈 라인 근처 코드 창 (`>>` 마커 앞뒤 3~4줄)
@@ -136,6 +141,9 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
       5) is_test: true                 — test 청크 일반 매칭
       6) path: relative_path
       7) rule name
+      8) [F1] endpoint: <method path>  — 같은 라우트의 다른 핸들러
+      9) [F1] decorators: ...          — 같은 데코레이터 패턴
+      10) [F1] params: ...             — 같은 매개변수 이름의 caller
 
     attempt=1 (자연어 중심):
       1) rule name + 짧은 sonar_message — 의미 매칭 가중
@@ -146,6 +154,7 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
       1) enclosing_function 만 — symbol 정확 일치 BM25
       2) callees: enclosing_function
       3) callers: enclosing_function
+      4) [F1] endpoint: <method path>  — symbol 매칭 fallback 으로 라우트 매칭
     """
     snippet = row.get("code_snippet", "") or ""
     lines = snippet.splitlines()
@@ -161,6 +170,25 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
     rule_detail = row.get("rule_detail", {}) or {}
     rule_name = rule_detail.get("name") or row.get("sonar_rule_key", "") or ""
     sonar_msg = row.get("sonar_message", "") or ""
+
+    # Phase B F1 — tree-sitter 메타 추출 (exporter 가 채운 enclosing_* 필드)
+    endpoint = (row.get("enclosing_endpoint") or "").strip()
+    decorators = row.get("enclosing_decorators") or []
+    doc_params = row.get("enclosing_doc_params") or []
+    # decorator 식별자만 (`@app.route('/x')` → `app.route`) 짧은 토큰화로 BM25 매칭 강화
+    dec_tokens = []
+    for d in decorators[:5]:
+        if not isinstance(d, str):
+            continue
+        # `@module.func(args)` → `module.func`
+        body = d.lstrip("@").split("(", 1)[0].strip()
+        if body:
+            dec_tokens.append(body)
+    # param 이름만 (type/desc 제외) — caller 코드의 실제 호출 인자명 매칭
+    param_names = []
+    for p in doc_params[:8]:
+        if isinstance(p, (list, tuple)) and len(p) >= 2 and p[1]:
+            param_names.append(str(p[1]).strip())
 
     if attempt == 1:
         parts = []
@@ -182,12 +210,15 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
             parts.append(f"callers: {enclosing}")
         elif rule_name:
             parts.append(rule_name)
+        # F1 — endpoint 매칭 (식별자 중심 모드에서도 라우트 신호는 살린다)
+        if endpoint:
+            parts.append(f"endpoint: {endpoint}")
         # P2 R-3 — HyDE 자연어 보강 (analyzer 가 호스트 Ollama 호출 결과 주입)
         if hyde_text:
             parts.append(hyde_text)
         return "\n".join([p for p in parts if p])
 
-    # 기본 (attempt=0) — 풀 구조화 + P1 자연어 힌트
+    # 기본 (attempt=0) — 풀 구조화 + P1 자연어 힌트 + F1 tree-sitter 메타
     parts = [window]
     if enclosing:
         parts.append(f"function: {enclosing}")
@@ -198,6 +229,14 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
         parts.append(f"path: {rel_path}")
     if rule_name:
         parts.append(rule_name)
+    # F1 — endpoint / decorators / params 라인 (값 있을 때만).
+    # KB footer 가 동일 키 형식으로 직렬화되므로 BM25 직접 매칭 + dense 매칭 양쪽 가능.
+    if endpoint:
+        parts.append(f"endpoint: {endpoint}")
+    if dec_tokens:
+        parts.append(f"decorators: {' '.join(dec_tokens)}")
+    if param_names:
+        parts.append(f"params: {' '.join(param_names)}")
     # P1 — bge-m3 dense retrieval 이 metadata-style 라인 (`callees: X`) 의
     # 의미를 약하게 잡는 경향이 관측됨 (callers bucket fill 10%, tests 0%).
     # 자연어 한 줄을 추가해 caller/test 카테고리의 임베딩 매칭 면적을 넓힌다.
@@ -207,6 +246,68 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
             f"관련 테스트 spec e2e cypress 시나리오"
         )
     return "\n".join([p for p in parts if p])
+
+
+def format_enclosing_meta(item) -> str:
+    """Phase B F2b — exporter 가 채운 enclosing_* 메타를 LLM 친화 멀티라인 텍스트로.
+
+    Dify start.enclosing_meta paragraph 변수에 들어가 LLM user 프롬프트의
+    '이슈 함수 정적 메타' 섹션으로 렌더된다. 비어있으면 빈 문자열 — workflow
+    템플릿이 자동으로 해당 줄을 비워 출력 (jinja 가 빈 paragraph 처리).
+
+    포맷 (값 있는 라인만 출력):
+      - decorators: @app.post('/login'), @require_role('user')
+      - HTTP route: POST /login
+      - parameters: email (str), password (str)
+      - returns: User
+      - raises: AuthError
+      - callees: hash_password, verify_session
+      - leading doc: Authenticate user against the local DB.
+    """
+    lines = []
+    decorators = item.get("enclosing_decorators") or []
+    if decorators:
+        lines.append("- decorators: " + ", ".join(d for d in decorators[:5] if d))
+    endpoint = (item.get("enclosing_endpoint") or "").strip()
+    if endpoint:
+        lines.append(f"- HTTP route: {endpoint}")
+    doc_params = item.get("enclosing_doc_params") or []
+    if doc_params:
+        param_strs = []
+        for p in doc_params[:10]:
+            if not isinstance(p, (list, tuple)):
+                continue
+            t = (p[0] or "").strip() if len(p) >= 1 else ""
+            n = (p[1] or "").strip() if len(p) >= 2 else ""
+            if not n:
+                continue
+            param_strs.append(f"{n} ({t})" if t else n)
+        if param_strs:
+            lines.append("- parameters: " + ", ".join(param_strs))
+    doc_returns = item.get("enclosing_doc_returns")
+    if isinstance(doc_returns, (list, tuple)) and len(doc_returns) >= 2:
+        rt, rd = (doc_returns[0] or "").strip(), (doc_returns[1] or "").strip()
+        if rt or rd:
+            lines.append("- returns: " + (f"{rt} — {rd}" if rt and rd else (rt or rd)))
+    doc_throws = item.get("enclosing_doc_throws") or []
+    if doc_throws:
+        thr_strs = []
+        for t in doc_throws[:5]:
+            if not isinstance(t, (list, tuple)):
+                continue
+            ex = (t[1] or t[0] or "").strip() if len(t) >= 2 else ""
+            if ex:
+                thr_strs.append(ex)
+        if thr_strs:
+            lines.append("- raises: " + ", ".join(thr_strs))
+    callees = item.get("enclosing_callees") or []
+    if callees:
+        lines.append("- internal callees: " + ", ".join(callees[:8]))
+    doc = (item.get("enclosing_doc") or "").strip()
+    if doc:
+        # 200자 cap 이미 적용된 oneline. LLM 자연어 의도 인식.
+        lines.append(f"- leading doc: {doc}")
+    return "\n".join(lines)
 
 
 # Step C — skip_llm 이슈 (MINOR/INFO) 에 대한 템플릿 응답 생성.
@@ -255,6 +356,113 @@ def normalize_outputs(outputs: dict) -> dict:
             else:
                 out[k] = v
     return out
+
+
+def _compute_tree_sitter_hits(impact_md: str, item: dict, used_items: list) -> dict:
+    """Phase C F4 — LLM 답변이 tree-sitter 정적 메타를 실제로 인용했는지 측정.
+
+    citation rate (path/symbol 매칭) 만으로는 "AI 가 사전학습 결과를 활용했는가" 의
+    인과를 알 수 없다. 이 함수는 답변 본문에서 다음 4종 신호의 등장 횟수를 센다:
+
+    1. enclosing 함수의 endpoint URL (`POST /login` → `/login`, `POST` 토큰)
+    2. enclosing 함수의 decorator (`@require_role` 등 식별자)
+    3. enclosing 함수의 docstring param 이름 (`email`, `password` 등)
+    4. used_items 의 endpoint/decorator (RAG 로 받은 다른 청크의 메타 활용)
+
+    반환:
+      {
+        "endpoint_hits": int,       # endpoint URL 또는 method 토큰 매칭 수
+        "decorator_hits": int,      # decorator 식별자 매칭 수
+        "param_hits": int,          # param 이름 매칭 수
+        "rag_meta_hits": int,       # used_items 의 endpoint/decorator 매칭 수
+        "total_hits": int,          # 위 4개의 합 (대시보드용 단일 지표)
+      }
+
+    PM 관점: total_hits 가 0 이면 "사전학습 신호가 답변에 안 닿음", >0 이면
+    "정적 메타가 실제 답변에 반영됨". 4-stage 진단 리포트의 Stage 4 핵심 입력.
+    """
+    impact = impact_md or ""
+    if not impact:
+        return {"endpoint_hits": 0, "decorator_hits": 0, "param_hits": 0,
+                "rag_meta_hits": 0, "total_hits": 0}
+
+    # 1. enclosing endpoint
+    endpoint_hits = 0
+    enc_ep = (item.get("enclosing_endpoint") or "").strip()
+    if enc_ep:
+        # "POST /login" → 두 토큰 모두 검사. URL path 가 들어가면 1점, method 도 들어가면 +1.
+        parts = enc_ep.split(maxsplit=1)
+        method = parts[0] if parts else ""
+        path = parts[1] if len(parts) > 1 else ""
+        if path and path in impact:
+            endpoint_hits += 1
+        if method and method in ("GET", "POST", "PUT", "PATCH", "DELETE") and method in impact:
+            # method 단독 매칭은 노이즈 (영어 단어 GET 흔함) → path 와 함께 있을 때만.
+            if path and path in impact:
+                endpoint_hits += 1
+
+    # 2. enclosing decorators
+    decorator_hits = 0
+    enc_decs = item.get("enclosing_decorators") or []
+    seen_dec_idents = set()
+    for d in enc_decs[:5]:
+        if not isinstance(d, str):
+            continue
+        body = d.lstrip("@").split("(", 1)[0].strip()
+        if not body or len(body) < 3:
+            continue
+        if body in seen_dec_idents:
+            continue
+        seen_dec_idents.add(body)
+        if body in impact:
+            decorator_hits += 1
+
+    # 3. enclosing doc_params
+    param_hits = 0
+    enc_params = item.get("enclosing_doc_params") or []
+    seen_pnames = set()
+    for p in enc_params[:10]:
+        if not isinstance(p, (list, tuple)) or len(p) < 2:
+            continue
+        name = (p[1] or "").strip()
+        if not name or len(name) < 3 or name in seen_pnames:
+            continue
+        seen_pnames.add(name)
+        # backtick 으로 감쌌거나 단어 경계로 분리된 경우만 — 흔한 영단어 false-positive 차단
+        if re.search(rf"[`\b]{re.escape(name)}[`\b]", impact) or f"`{name}`" in impact:
+            param_hits += 1
+
+    # 4. used_items 의 endpoint/decorator — RAG 로 받은 다른 청크의 정적 메타가
+    #    답변에 반영됐는지. context_filter 가 has_endpoint/decorators_raw 를 전달.
+    rag_meta_hits = 0
+    seen_rag = set()
+    for it in used_items or []:
+        ep = (it.get("endpoint_raw") or "").strip()
+        if ep:
+            parts = ep.split(maxsplit=1)
+            path = parts[1] if len(parts) > 1 else ""
+            if path and path in impact and path not in seen_rag:
+                rag_meta_hits += 1
+                seen_rag.add(path)
+        # decorators_raw 는 footer 의 한 줄 string ("@app.route('/x') @auth")
+        dec_raw = (it.get("decorators_raw") or "").strip()
+        if dec_raw:
+            # 첫 decorator 식별자만 취함 (`@module.func(args)` → `module.func`)
+            for token in dec_raw.split():
+                token = token.lstrip("@").split("(", 1)[0].strip()
+                if len(token) >= 3 and token in impact and token not in seen_rag:
+                    rag_meta_hits += 1
+                    seen_rag.add(token)
+                    break
+
+    total = endpoint_hits + decorator_hits + param_hits + rag_meta_hits
+    return {
+        "endpoint_hits": endpoint_hits,
+        "decorator_hits": decorator_hits,
+        "param_hits": param_hits,
+        "rag_meta_hits": rag_meta_hits,
+        "total_hits": total,
+    }
 
 
 def _compute_citation(impact_md: str, used_items: list) -> dict:
@@ -353,7 +561,10 @@ def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln
     diagnostic = None
     if context_stats is not None:
         used = context_stats.get("used_items") or []
-        citation = _compute_citation(normalized.get("impact_analysis_markdown", ""), used)
+        impact_md = normalized.get("impact_analysis_markdown", "")
+        citation = _compute_citation(impact_md, used)
+        # Phase C F4 — tree-sitter 메타가 답변에 실제로 반영됐는지 측정.
+        ts_hits = _compute_tree_sitter_hits(impact_md, item, used)
         # P7 — confidence calibration: 부분 인용이면 high → medium 강등 + 라벨.
         # is_partial_citation 은 _compute_citation 이 (cited/total < 0.5) 일 때 true.
         if citation.get("is_partial_citation") and (normalized.get("confidence") or "").lower() == "high":
@@ -371,6 +582,8 @@ def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln
             "used_per_bucket": context_stats.get("used_per_bucket", {}),
             "used_items": used,
             "citation": citation,
+            # Phase C F4 — Stage 4 진단 리포트의 핵심 입력.
+            "tree_sitter_hits": ts_hits,
         }
     return {
         "sonar_issue_key": key,
@@ -382,6 +595,17 @@ def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln
         "line": line,
         "enclosing_function": enclosing_fn,
         "enclosing_lines": enclosing_ln,
+        # Phase B F2a passthrough — GitLab issue creator (PM 친화 본문) 가
+        # 'AI 판단 근거' 섹션과 정적 메타 노출에 사용.
+        "enclosing_kind": item.get("enclosing_kind", "") or "",
+        "enclosing_lang": item.get("enclosing_lang", "") or "",
+        "enclosing_decorators": item.get("enclosing_decorators", []) or [],
+        "enclosing_endpoint": item.get("enclosing_endpoint", "") or "",
+        "enclosing_doc_params": item.get("enclosing_doc_params", []) or [],
+        "enclosing_doc_returns": item.get("enclosing_doc_returns"),
+        "enclosing_doc_throws": item.get("enclosing_doc_throws", []) or [],
+        "enclosing_doc": item.get("enclosing_doc", "") or "",
+        "enclosing_callees": item.get("enclosing_callees", []) or [],
         "commit_sha": commit_sha,
         # Rule 정보 (creator '📖 Rule 상세' 섹션용)
         "rule_key": rule,
@@ -592,6 +816,10 @@ def main():
         # 렌더되므로 본문에 반복하지 말 것" 명시).
         # 초기 kb_query 는 attempt=0 (풀 구조화). 재시도 시 build_kb_query(item, attempt=i)
         # 로 다른 모양의 쿼리로 변경 — P2 R-4.
+        # Phase B F2b — exporter 가 채운 tree-sitter 메타를 LLM 프롬프트용 텍스트로 직렬화.
+        # 빈 문자열이면 workflow user 프롬프트의 해당 섹션이 자동으로 비어 출력.
+        enclosing_meta_text = format_enclosing_meta(item)
+
         inputs = {
             "sonar_issue_key": key,
             "sonar_project_key": project,
@@ -604,6 +832,9 @@ def main():
             "enclosing_function": enclosing_fn,
             "enclosing_lines": enclosing_ln,
             "commit_sha": commit_sha,
+            # Phase B F2b — enclosing 함수의 tree-sitter 메타 (decorators / endpoint /
+            # doc_params/returns/throws / callees / leading doc). 빈 값이면 빈 문자열.
+            "enclosing_meta": enclosing_meta_text,
             # P1: self-exclusion — workflow 의 context_filter Code 노드가 이 경로와
             # 일치하는 RAG 청크를 제외해 "자기 파일을 다시 돌려받는" degenerate case 해소.
             "issue_file_path": item.get("relative_path", "") or "",
