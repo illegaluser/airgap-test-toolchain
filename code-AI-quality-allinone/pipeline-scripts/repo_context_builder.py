@@ -1873,33 +1873,527 @@ def _html_escape(s: str) -> str:
     return _html.escape(s or "", quote=True)
 
 
+# ─ A1~A6: PM 친화 리포트용 데이터 추출 함수 ─────────────────────────────────
+# 모두 LLM/네트워크 호출 없음 — 청크 JSONL + repo metadata 만으로 동작.
+
+def extract_project_overview(repo_root: Path) -> dict:
+    """README 첫 단락 + LICENSE + build tool + description.
+
+    PM 이 "이 프로젝트가 뭐 하는 프로젝트인가" 를 첫 5초에 파악하는 입력.
+    여러 메타 소스 중 가장 풍부한 것 우선 — README description > build.gradle > pom.xml > package.json.
+    """
+    out = {"summary": "", "license": "", "build_tool": "", "language_primary": "", "description": ""}
+
+    for readme_name in ("README.md", "README.txt", "README.rst", "README"):
+        p = repo_root / readme_name
+        if p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            paras = [pa.strip() for pa in txt.split("\n\n") if pa.strip()]
+            # 자연어 단어 수 기반 휴리스틱 — markdown link/image/URL/HTML tag 모두
+            # strip 한 후 알파벳 단어 (≥3자) 5개 이상이면 진짜 설명 paragraph.
+            # nested badge `[![label](url)](link)` 도 greedy 매칭으로 제거.
+            for pa in paras:
+                # markdown 헤더 (`#`), blockquote (`>`), whitespace 를 안정될 때까지 반복 제거.
+                # 단순 lstrip("#>") 만으로는 "> ### ..." 같은 중첩 prefix 처리 불가.
+                clean = pa
+                for _ in range(8):
+                    new = clean.strip().lstrip(">").lstrip("#").strip()
+                    if new == clean:
+                        break
+                    clean = new
+                stripped = _re.sub(r"!?\[.*?\]\([^)]*\)", "", clean)  # markdown link/image (nested OK)
+                stripped = _re.sub(r"https?://\S+", "", stripped)
+                stripped = _re.sub(r"<[^>]+>", "", stripped)
+                words = [w for w in _re.findall(r"[A-Za-z가-힣]+", stripped) if len(w) >= 3]
+                if len(words) < 5:
+                    continue
+                out["summary"] = clean[:250] + ("..." if len(clean) > 250 else "")
+                break
+            break
+
+    lic_path = repo_root / "LICENSE"
+    if lic_path.is_file():
+        try:
+            for ln in lic_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                ln = ln.strip()
+                if ln:
+                    out["license"] = ln[:80]
+                    break
+        except Exception:
+            pass
+
+    if (repo_root / "build.gradle").is_file() or (repo_root / "build.gradle.kts").is_file():
+        out["build_tool"] = "gradle"
+        for f in ("build.gradle", "build.gradle.kts"):
+            p = repo_root / f
+            if p.is_file():
+                try:
+                    txt = p.read_text(encoding="utf-8", errors="ignore")
+                    m = _re.search(r"description\s*=\s*['\"](.+?)['\"]", txt)
+                    if m:
+                        out["description"] = m.group(1)[:200]
+                        break
+                except Exception:
+                    pass
+    elif (repo_root / "pom.xml").is_file():
+        out["build_tool"] = "maven"
+        try:
+            txt = (repo_root / "pom.xml").read_text(encoding="utf-8", errors="ignore")
+            m = _re.search(r"<description>(.+?)</description>", txt, _re.DOTALL)
+            if m:
+                out["description"] = m.group(1).strip()[:200]
+        except Exception:
+            pass
+    elif (repo_root / "package.json").is_file():
+        out["build_tool"] = "npm"
+        try:
+            import json as _json
+            data = _json.loads((repo_root / "package.json").read_text(encoding="utf-8", errors="ignore"))
+            out["description"] = (data.get("description") or "")[:200]
+        except Exception:
+            pass
+    elif (repo_root / "pyproject.toml").is_file() or (repo_root / "requirements.txt").is_file():
+        out["build_tool"] = "pip"
+    elif (repo_root / "go.mod").is_file():
+        out["build_tool"] = "go"
+
+    return out
+
+
+# 핵심 의존성 분류 휴리스틱 — 이름 substring 매칭
+_DEP_CATEGORIES = {
+    "framework": ["spring", "django", "flask", "express", "fastapi", "gin", "actix", "rails", "laravel", "rocket"],
+    "db":        ["mybatis", "jpa", "hibernate", "sqlalchemy", "mongoose", "prisma", "gorm", "diesel", "sequelize", "knex", "pg-", "mysql", "postgres", "mongodb", "redis"],
+    "auth":      ["jwt", "oauth", "security", "passport", "cas-", "saml", "keycloak"],
+    "test":      ["junit", "jest", "pytest", "mocha", "testify", "rspec", "phpunit", "minitest", "cucumber", "spock", "assertj", "mockito"],
+    "util":      ["lodash", "jackson", "gson", "requests", "axios", "guava", "commons-", "okhttp", "retrofit"],
+}
+
+
+def _classify_dep(name: str) -> str:
+    nm = name.lower()
+    for cat, patterns in _DEP_CATEGORIES.items():
+        for pat in patterns:
+            if pat in nm:
+                return cat
+    return "other"
+
+
+def extract_dependencies(repo_root: Path) -> dict:
+    """build.gradle / pom.xml / package.json 의 의존성을 5 카테고리로 분류.
+
+    PM 이 기술 스택을 한눈에 파악. 카테고리: framework / db / auth / test / util / other.
+    """
+    deps_raw: list = []  # [(name, version), ...]
+
+    for fname in ("build.gradle", "build.gradle.kts"):
+        p = repo_root / fname
+        if p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+                for m in _re.finditer(
+                    r"(?:implementation|api|compile|runtimeOnly|testImplementation|annotationProcessor)\s*[\(\s]['\"]([^:'\"]+):([^:'\"]+):?([^:'\"]*)['\"]",
+                    txt,
+                ):
+                    group, art, ver = m.group(1), m.group(2), m.group(3)
+                    deps_raw.append((art, ver or "—"))
+            except Exception:
+                pass
+
+    pom = repo_root / "pom.xml"
+    if pom.is_file():
+        try:
+            txt = pom.read_text(encoding="utf-8", errors="ignore")
+            for m in _re.finditer(
+                r"<dependency>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>(?:\s*<version>([^<]+)</version>)?",
+                txt,
+            ):
+                _g, art, ver = m.group(1), m.group(2), m.group(3)
+                deps_raw.append((art, ver or "—"))
+        except Exception:
+            pass
+
+    pj = repo_root / "package.json"
+    if pj.is_file():
+        try:
+            import json as _json
+            data = _json.loads(pj.read_text(encoding="utf-8", errors="ignore"))
+            for section in ("dependencies", "devDependencies"):
+                for name, ver in (data.get(section) or {}).items():
+                    deps_raw.append((name, ver))
+        except Exception:
+            pass
+
+    pyproj = repo_root / "pyproject.toml"
+    req = repo_root / "requirements.txt"
+    if pyproj.is_file():
+        try:
+            txt = pyproj.read_text(encoding="utf-8", errors="ignore")
+            for m in _re.finditer(r'^([a-zA-Z0-9_\-\.]+)\s*=\s*[\"\']([^\"\']+)[\"\']', txt, _re.MULTILINE):
+                deps_raw.append((m.group(1), m.group(2)))
+        except Exception:
+            pass
+    if req.is_file():
+        try:
+            for ln in req.read_text(encoding="utf-8", errors="ignore").splitlines():
+                ln = ln.strip()
+                if not ln or ln.startswith("#"):
+                    continue
+                m = _re.match(r"([a-zA-Z0-9_\-\.]+)\s*([=<>!~].+)?", ln)
+                if m:
+                    deps_raw.append((m.group(1), (m.group(2) or "").strip() or "—"))
+        except Exception:
+            pass
+
+    seen = set()
+    deps_dedup = []
+    for name, ver in deps_raw:
+        if name not in seen:
+            seen.add(name)
+            deps_dedup.append((name, ver))
+
+    out: dict = {"framework": [], "db": [], "auth": [], "test": [], "util": [], "other": [], "total": len(deps_dedup)}
+    for name, ver in deps_dedup:
+        out[_classify_dep(name)].append((name, ver))
+    return out
+
+
+# 도메인 엔티티 패턴
+_ENTITY_NAME_SUFFIXES = ("entity", "model", "domain", "dto", "data", "record", "vo")
+_ENTITY_PATH_HINTS = ("/entity/", "/model/", "/domain/", "/core/", "/data/")
+
+
+def extract_domain_entities(chunks_by_path: dict, top_n: int = 10) -> list:
+    """도메인 엔티티 후보 — class/type/interface/struct/record 청크 중 이름·경로 패턴 매칭.
+
+    PM 이 시스템의 핵심 데이터 모델을 한눈에 파악.
+    """
+    candidates = []
+    for rel_path, chunks in chunks_by_path.items():
+        for ch in chunks:
+            kind = ch.get("kind", "")
+            if kind not in ("class", "type", "interface", "struct", "record"):
+                continue
+            symbol = ch.get("symbol", "")
+            sym_lower = symbol.lower()
+            path_lower = ("/" + rel_path.lower())
+
+            name_match = any(sym_lower.endswith(suf) for suf in _ENTITY_NAME_SUFFIXES)
+            path_match = any(hint in path_lower for hint in _ENTITY_PATH_HINTS)
+
+            if not (name_match or path_match):
+                continue
+            # 안티패턴 — Controller / Service / Repository 는 제외
+            if any(sym_lower.endswith(anti) for anti in ("controller", "service", "repository", "config", "handler", "test", "validator")):
+                continue
+
+            candidates.append({
+                "name": symbol,
+                "path": rel_path,
+                "kind": kind,
+                "callers": len(ch.get("callers") or []),
+                "doc": (ch.get("doc") or "")[:120],
+            })
+
+    candidates.sort(key=lambda x: x["callers"], reverse=True)
+    return candidates[:top_n]
+
+
+def extract_class_inheritance(chunks_by_path: dict, repo_root: Path, top_n: int = 20) -> list:
+    """클래스 상속/구현 관계 추출 (v1: Java only).
+
+    Java class_declaration 의 superclass / superinterfaces 를 tree-sitter 로 재추출.
+    Python/TS 는 다음 사이클.
+    """
+    out = []
+    try:
+        from tree_sitter_languages import get_language, get_parser
+    except Exception:
+        return out
+
+    try:
+        java_parser = get_parser("java")
+    except Exception:
+        return out
+
+    for rel_path, chunks in chunks_by_path.items():
+        if not rel_path.endswith(".java"):
+            continue
+        # 파일 단위 1회 파싱 (각 chunk 가 같은 파일이라 비효율 방지)
+        file_path = repo_root / rel_path
+        if not file_path.is_file():
+            continue
+        try:
+            source = file_path.read_bytes()
+            tree = java_parser.parse(source)
+        except Exception:
+            continue
+
+        def _walk(node):
+            if node.type == "class_declaration":
+                name_node = node.child_by_field_name("name")
+                child_name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace") if name_node else "?"
+                parents = []
+                kind = ""
+                superclass = node.child_by_field_name("superclass")
+                if superclass:
+                    parents.append(source[superclass.start_byte:superclass.end_byte].decode("utf-8", errors="replace").lstrip("extends").strip())
+                    kind = "extends"
+                interfaces = node.child_by_field_name("interfaces")
+                if interfaces:
+                    for c in interfaces.children:
+                        if c.type in ("type_identifier", "scoped_type_identifier", "generic_type"):
+                            parents.append(source[c.start_byte:c.end_byte].decode("utf-8", errors="replace"))
+                    if not kind:
+                        kind = "implements"
+                if parents:
+                    out.append({
+                        "child": child_name,
+                        "parents": parents,
+                        "kind": kind,
+                        "child_path": rel_path,
+                    })
+            for c in node.children:
+                _walk(c)
+
+        _walk(tree.root_node)
+
+    out.sort(key=lambda x: len(x["parents"]), reverse=True)
+    return out[:top_n]
+
+
+def compute_test_coverage_map(chunks_by_path: dict, top_n: int = 10) -> dict:
+    """테스트 커버리지 매핑 — 어떤 production 함수에 테스트가 매핑됐는가.
+
+    test_for 역인덱스 활용. uncovered_public_top10 = 테스트 없는 + caller 많은 함수.
+    PM 액션 직결: "테스트 추가가 시급한 영역".
+    """
+    total_prod = 0
+    covered = 0
+    uncovered_candidates = []
+
+    for rel_path, chunks in chunks_by_path.items():
+        for ch in chunks:
+            if ch.get("is_test"):
+                continue
+            kind = ch.get("kind", "")
+            if kind not in ("function", "method"):
+                continue
+            total_prod += 1
+            test_paths = ch.get("test_paths") or []
+            if test_paths:
+                covered += 1
+                continue
+            symbol = ch.get("symbol", "")
+            # public/exported 식별 (휴리스틱)
+            code = ch.get("code", "")
+            is_public = (
+                code.lstrip().startswith("public ")  # Java
+                or code.lstrip().startswith("export ")  # JS/TS
+                or (not symbol.startswith("_"))  # Python convention
+            )
+            uncovered_candidates.append({
+                "symbol": symbol,
+                "path": rel_path,
+                "callers": len(ch.get("callers") or []),
+                "is_public": is_public,
+            })
+
+    # public 우선 + caller 많은 순
+    uncovered_candidates.sort(key=lambda x: (x["is_public"], x["callers"]), reverse=True)
+    coverage_pct = (covered / total_prod * 100.0) if total_prod else 0.0
+
+    return {
+        "total_production_methods": total_prod,
+        "covered_methods": covered,
+        "coverage_pct": coverage_pct,
+        "uncovered_public_top10": uncovered_candidates[:top_n],
+    }
+
+
+def compute_overall_verdict(stats: dict, coverage: dict, kb_intel: dict) -> tuple:
+    """종합 신뢰도 verdict — rule-based 0~100 scoring.
+
+    Returns: (emoji, label, score, summary, reason_lines)
+      - summary: 한 줄 종합 평가 (TL;DR 카드용)
+      - reason_lines: 점수 산출 근거 list (§7 펼침)
+    """
+    score = 0
+    reasons = []
+
+    chunks = stats.get("total_chunks", 0)
+    if chunks > 50:
+        score += 30
+        reasons.append(f"✓ 청크 {chunks}개 — 의미있는 학습 (>50)")
+    elif chunks > 0:
+        score += 10
+        reasons.append(f"⚠ 청크 {chunks}개 — 적은 양 (≤50)")
+    else:
+        reasons.append("✗ 청크 0개 — 학습 실패")
+
+    orphan = stats.get("orphan_ratio", 1.0)
+    if orphan < 0.7:
+        score += 20
+        reasons.append(f"✓ 고아 비율 {orphan*100:.0f}% — 역인덱스 작동 (<70%)")
+    else:
+        reasons.append(f"⚠ 고아 비율 {orphan*100:.0f}% — 역인덱스 매칭 적음 (≥70%)")
+
+    endpoints = stats.get("endpoints_count", 0)
+    if endpoints > 0:
+        score += 15
+        reasons.append(f"✓ HTTP API {endpoints}개 식별 — 진입점 추적 가능")
+    else:
+        reasons.append("⚠ HTTP API 0개 — Web 프로젝트면 추출 누수, 라이브러리면 정상")
+
+    cov = coverage.get("coverage_pct", 0.0)
+    if cov > 30:
+        score += 15
+        reasons.append(f"✓ 테스트 커버 {cov:.0f}% — 검증 가능 (>30%)")
+    else:
+        reasons.append(f"⚠ 테스트 커버 {cov:.0f}% — 검증 부족 (≤30%)")
+
+    parser_failed = stats.get("parser_failed", 0)
+    if parser_failed == 0:
+        score += 10
+        reasons.append("✓ AST 파싱 100% 성공")
+    else:
+        reasons.append(f"⚠ AST 파싱 실패 {parser_failed} 파일")
+
+    callers_links = stats.get("total_callers_links", 0)
+    if callers_links > chunks:  # 평균 1+ caller
+        score += 10
+        reasons.append(f"✓ caller 링크 {callers_links}개 — 호출 그래프 풍부")
+    else:
+        reasons.append(f"⚠ caller 링크 {callers_links}개 — 호출 매핑 부족")
+
+    if score >= 80:
+        return ("🟢", "high", score,
+                "이 KB 로 04 분석이 정확한 답변을 낼 가능성이 높음", reasons)
+    elif score >= 50:
+        return ("🟡", "medium", score,
+                "부분 정확도 — 04 답변에 RAG 보조 필요", reasons)
+    else:
+        return ("🔴", "low", score,
+                "재학습/데이터 보강 필요 — 04 답변 신뢰도 낮음", reasons)
+
+
+def suggest_pm_actions(stats: dict, coverage: dict, verdict: tuple) -> list:
+    """PM 액션 제안 (rule-based, 최대 3개)."""
+    actions = []
+
+    if coverage.get("coverage_pct", 0) < 30:
+        actions.append({
+            "title": "🧪 테스트 우선 추가",
+            "why": f"테스트 커버 {coverage.get('coverage_pct', 0):.0f}% — public 함수 다수 미검증",
+            "where": "§5 의 'uncovered_public_top10' 표를 백로그에 옮기기",
+        })
+
+    if stats.get("endpoints_count", 0) > 0 and stats.get("decorators_count", 0) == 0:
+        actions.append({
+            "title": "🔐 API 룰북 정의 권장",
+            "why": "HTTP endpoint 는 발견됐으나 decorator (인증/검증) 추출 0건",
+            "where": "§4 의 HTTP 진입점 표 — 각 endpoint 에 인증/입력검증 정책 매핑",
+        })
+
+    if stats.get("orphan_ratio", 0) > 0.8:
+        actions.append({
+            "title": "🔍 역인덱스 분석",
+            "why": f"고아 심볼 {stats.get('orphan_ratio', 0)*100:.0f}% — caller 매칭 누수 의심",
+            "where": "동명 심볼 / import resolution 부재 가능. 파이프라인 02 의 pass 2 로직 점검",
+        })
+
+    if stats.get("parser_failed", 0) > 5:
+        actions.append({
+            "title": "🛠 AST 추출 실패 파일 점검",
+            "why": f"{stats.get('parser_failed', 0)} 파일 파싱 실패 — KB 누락 위험",
+            "where": "§9 디버깅의 parser_failed_files 목록 확인",
+        })
+
+    if not actions:
+        actions.append({
+            "title": "✅ 큰 액션 불필요",
+            "why": f"학습 신뢰도 {verdict[1]} ({verdict[2]}점) — KB 활용 가능",
+            "where": "04 분석 결과를 그대로 사용. 결과 부족 시 RAG retrieval 임계치 조정 검토",
+        })
+
+    return actions[:3]
+
+
+def load_chunks_from_jsonl_dir(jsonl_dir: Path) -> tuple:
+    """E4 검증용 — 기존 JSONL 디렉토리에서 chunks_by_path / stats 재구성.
+
+    KB 재학습 없이 리포트만 다시 그릴 때 사용 (--report-only 모드).
+    """
+    import json as _json
+    chunks_by_path: dict = {}
+    total_chunks = 0
+    total_callers = 0
+    total_tests = 0
+    for jsonl_path in sorted(Path(jsonl_dir).glob("*.jsonl")):
+        try:
+            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                ch = _json.loads(line)
+                rel_path = ch.get("path", "")
+                if not rel_path:
+                    continue
+                chunks_by_path.setdefault(rel_path, []).append(ch)
+                total_chunks += 1
+                total_callers += len(ch.get("callers") or [])
+                total_tests += len(ch.get("test_paths") or [])
+        except Exception as e:
+            print(f"[load_chunks] {jsonl_path.name} skip: {e}")
+            continue
+    stats = {
+        "total_files": len(chunks_by_path),
+        "total_chunks": total_chunks,
+        "total_callers_links": total_callers,
+        "total_test_links": total_tests,
+    }
+    return stats, chunks_by_path
+
+
 def write_html_report(
     out_path: Path,
     repo_root: Path,
     commit_sha: str,
     stats: dict,
     chunks_by_path: dict,
+    kb_dir: "Path | None" = None,
 ) -> None:
-    """Pre-training 결과 HTML 리포트 1 장 생성.
+    """v3 — PM 친화 사전학습 리포트 (8 섹션 + sticky nav + 9 디버깅 접힘).
 
-    섹션:
-      1. 헤더 — repo / commit / 실행 시각
-      2. 통계 카드 — files / chunks / callers_links / test_links / is_test 청크 수
-      3. 언어 분포 표
-      4. kind 분포 표
-      5. 상위 caller hub 심볼 (레포 공용 유틸 식별)
-      6. 고아 심볼 비율
-      7. 언어별 청크 샘플 (top-3 × 언어)
+    구조:
+      §1 🎯 한눈에 (TL;DR 카드 + 종합 verdict)
+      §2 📖 이 프로젝트는 무엇인가 (overview + deps)
+      §3 🏗 코드 구조 (tree + entities)
+      §4 🔗 코드 연관관계 (endpoints + caller/callees hub + inheritance)
+      §5 🧪 테스트 커버리지 (uncovered_public_top10)
+      §6 📚 AI 학습 진단 (4-stage from diagnostic_report_builder)
+      §7 🤖 AI 신뢰도 + 액션 제안
+      §9 🔧 디버깅 정보 (접힘)
+
+    PM 이 위→아래 5분 안에 의사결정 가능. 모든 메트릭에 verdict 동반.
     """
     import datetime
 
-    # 집계
+    # ─ 0. 집계 ──────────────────────────────────────────────────────────────
     lang_count: dict = {}
     kind_count: dict = {}
     caller_hub: list = []
+    callees_hub: list = []
     orphan_chunks = 0
     is_test_chunks = 0
     total_chunks = 0
+    decorators_count = 0
+    endpoints_count = 0
+    endpoints_list: list = []
+    callees_total = 0
+    parser_failed = 0
     for rel_path, chunks in chunks_by_path.items():
         for ch in chunks:
             total_chunks += 1
@@ -1910,11 +2404,41 @@ def write_html_report(
             if ch.get("is_test"):
                 is_test_chunks += 1
             caller_hub.append((len(ch["callers"]), rel_path, ch["symbol"], ch["lang"]))
+            callees = ch.get("callees") or []
+            if callees:
+                callees_hub.append((len(callees), rel_path, ch["symbol"], ch["lang"]))
+                callees_total += len(callees)
+            if ch.get("decorators"):
+                decorators_count += 1
+            ep = (ch.get("endpoint") or "").strip()
+            if ep:
+                endpoints_count += 1
+                endpoints_list.append((ep, ch["symbol"], rel_path))
 
     caller_hub.sort(reverse=True)
     caller_hub_top = [x for x in caller_hub if x[0] > 0][:10]
+    callees_hub.sort(reverse=True)
+    callees_hub_top = callees_hub[:10]
 
-    # 언어별 샘플 top-3 (첫 N 개. 정렬 없음 — 파일 순서)
+    orphan_pct = (orphan_chunks * 100.0 / total_chunks) if total_chunks else 0.0
+    callees_avg = (callees_total / total_chunks) if total_chunks else 0.0
+
+    # parser_failed_files 사이드카에서 시도
+    parser_failed_files: list = []
+    if kb_dir:
+        try:
+            sidecar = Path(kb_dir) / "_kb_intelligence.json"
+            if sidecar.is_file():
+                import json as _json
+                pf = _json.loads(sidecar.read_text(encoding="utf-8")).get(
+                    "scope", {}).get("parser_failed_files", [])
+                if isinstance(pf, list):
+                    parser_failed_files = pf
+                    parser_failed = len(pf)
+        except Exception:
+            pass
+
+    # 언어별 샘플 (디버깅 §9 용)
     lang_samples: dict = {}
     for rel_path, chunks in chunks_by_path.items():
         for ch in chunks:
@@ -1922,7 +2446,38 @@ def write_html_report(
     for lg in lang_samples:
         lang_samples[lg] = lang_samples[lg][:3]
 
-    # HTML 조립
+    # ─ 1. PM 친화 데이터 추출 (A1~A6) ──────────────────────────────────────
+    overview = extract_project_overview(repo_root)
+    deps = extract_dependencies(repo_root)
+    entities = extract_domain_entities(chunks_by_path)
+    inheritance = extract_class_inheritance(chunks_by_path, repo_root)
+    coverage = compute_test_coverage_map(chunks_by_path)
+
+    extras = {
+        "orphan_pct": orphan_pct,
+        "endpoints_count": endpoints_count,
+        "decorators_count": decorators_count,
+        "parser_failed": parser_failed,
+        "callees_avg": callees_avg,
+        "orphan_ratio": orphan_pct / 100.0,
+    }
+    verdict_stats = {**stats, **extras}
+    verdict = compute_overall_verdict(verdict_stats, coverage, kb_intel=None)
+    actions = suggest_pm_actions(verdict_stats, coverage, verdict)
+
+    # ─ 2. §6 4-stage 학습진단 (B1) ─────────────────────────────────────────
+    kb_intel_html = ""
+    if kb_dir:
+        try:
+            from diagnostic_report_builder import render_kb_intelligence_section
+            kb_intel_html = render_kb_intelligence_section(kb_dir, agg=None)
+        except Exception as e:
+            kb_intel_html = (
+                f"<p class='note'>(4-stage 학습진단 렌더 실패: "
+                f"{_html_escape(str(e))})</p>"
+            )
+
+    # ─ 3. HTML 조립 ─────────────────────────────────────────────────────────
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     repo_display = _html_escape(str(repo_root))
     commit_display = _html_escape((commit_sha or "n/a")[:12])
@@ -1930,67 +2485,283 @@ def write_html_report(
     css = """
 <style>
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-       margin: 24px; color: #24292e; max-width: 1100px; }
-h1 { border-bottom: 2px solid #0366d6; padding-bottom: 6px; }
-h2 { margin-top: 32px; border-bottom: 1px solid #e1e4e8; padding-bottom: 4px; }
-.meta { color: #586069; font-size: 13px; margin-bottom: 24px; }
-.cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
-.card { flex: 1; min-width: 150px; padding: 12px 16px; background: #f6f8fa;
-        border: 1px solid #e1e4e8; border-radius: 6px; }
-.card .label { color: #586069; font-size: 12px; text-transform: uppercase;
+       margin: 0; padding: 0; color: #24292e; background: #fafbfc; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+.nav { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #e1e4e8;
+       padding: 12px 24px; font-size: 13px; z-index: 100; }
+.nav a { color: #0366d6; text-decoration: none; margin-right: 16px; }
+.nav a:hover { text-decoration: underline; }
+h1 { border-bottom: 2px solid #0366d6; padding-bottom: 6px; margin-top: 0; }
+h2 { margin-top: 40px; padding-bottom: 4px; border-bottom: 1px solid #e1e4e8; }
+h3 { color: #586069; margin-top: 20px; }
+.meta { color: #586069; font-size: 13px; margin-bottom: 16px; }
+.tldr { background: linear-gradient(135deg, #f0f7ff 0%, #fff 100%);
+        border: 1px solid #c8e1ff; border-radius: 8px; padding: 20px; margin-bottom: 32px; }
+.tldr-summary { font-size: 15px; line-height: 1.6; color: #24292e; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+         gap: 12px; margin: 16px 0; }
+.card { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px; padding: 14px 16px; }
+.card .label { color: #586069; font-size: 11px; text-transform: uppercase;
                 letter-spacing: 0.5px; }
-.card .value { font-size: 24px; font-weight: 600; color: #0366d6; margin-top: 4px; }
-table { border-collapse: collapse; margin: 12px 0; font-size: 13px; }
-th, td { border: 1px solid #e1e4e8; padding: 6px 12px; text-align: left; }
+.card .value { font-size: 22px; font-weight: 600; color: #0366d6; margin-top: 4px; }
+.card.verdict { border-left: 4px solid #0366d6; }
+.card.verdict.green { border-left-color: #28a745; }
+.card.verdict.yellow { border-left-color: #d4a017; }
+.card.verdict.red { border-left-color: #d73a49; }
+.verdict-badge { display: inline-block; padding: 2px 8px; border-radius: 12px;
+                 font-size: 11px; font-weight: 600; }
+.verdict-badge.green { background: #dcffe4; color: #176f2c; }
+.verdict-badge.yellow { background: #fff5b1; color: #735c0f; }
+.verdict-badge.red { background: #ffeef0; color: #9e1828; }
+table { border-collapse: collapse; margin: 12px 0; font-size: 13px; width: 100%; }
+th, td { border: 1px solid #e1e4e8; padding: 6px 10px; text-align: left; vertical-align: top; }
 th { background: #f6f8fa; font-weight: 600; }
 code { font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
-       background: #f6f8fa; padding: 2px 4px; border-radius: 3px; }
+       background: #f6f8fa; padding: 1px 4px; border-radius: 3px; }
 pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px;
       padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.4; }
 .bar { display: inline-block; height: 10px; background: #0366d6;
        border-radius: 2px; vertical-align: middle; }
-.warn { color: #b08800; }
-.note { color: #586069; font-size: 12px; margin: 6px 0 16px; }
+.note { color: #586069; font-size: 12px; margin: 6px 0 12px; }
+.action { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px;
+          padding: 12px 16px; margin-bottom: 8px; }
+.action .title { font-weight: 600; margin-bottom: 4px; }
+.action .why { color: #586069; font-size: 12px; }
+.action .where { color: #0366d6; font-size: 12px; margin-top: 4px; }
+details { margin-top: 24px; }
+details summary { cursor: pointer; font-weight: 600; padding: 8px;
+                  background: #f6f8fa; border-radius: 4px; }
+.tree { font-family: monospace; font-size: 12px; line-height: 1.5;
+        background: #f6f8fa; padding: 12px; border-radius: 4px;
+        white-space: pre; overflow-x: auto; }
 </style>
 """
 
-    def table_from_dict(d: dict, header_a: str, header_b: str) -> str:
+    def _table_from_dict(d: dict, header_a: str, header_b: str) -> str:
         if not d:
             return "<p class='note'>(데이터 없음)</p>"
         total = sum(d.values()) or 1
         rows = []
         for k, v in sorted(d.items(), key=lambda x: -x[1]):
             pct = v * 100.0 / total
-            bar_w = int(pct * 3)  # 300px max
+            bar_w = int(pct * 3)
             rows.append(
                 f"<tr><td>{_html_escape(str(k))}</td><td>{v}</td>"
-                f"<td><span class='bar' style='width:{bar_w}px'></span> "
-                f"{pct:.1f}%</td></tr>"
+                f"<td><span class='bar' style='width:{bar_w}px'></span> {pct:.1f}%</td></tr>"
             )
         return (
             f"<table><tr><th>{_html_escape(header_a)}</th><th>{_html_escape(header_b)}</th>"
-            f"<th>비율</th></tr>"
-            + "".join(rows) + "</table>"
+            f"<th>비율</th></tr>" + "".join(rows) + "</table>"
         )
 
-    # caller hub
+    # § 1 — TL;DR
+    verdict_emoji, verdict_label, verdict_score, verdict_reason, reason_lines = verdict
+    verdict_class = {"high": "green", "medium": "yellow", "low": "red"}.get(verdict_label, "yellow")
+    project_title = (
+        overview.get("description")
+        or (overview.get("summary", "") or "")[:80]
+        or repo_root.name
+    )
+    tldr_html = (
+        "<div class='tldr'>"
+        f"<div class='tldr-summary'><strong>📦 {_html_escape(project_title)}</strong></div>"
+        "<div class='cards'>"
+        f"<div class='card'><div class='label'>파일</div>"
+        f"<div class='value'>{stats.get('total_files', 0)}</div></div>"
+        f"<div class='card'><div class='label'>함수·클래스</div>"
+        f"<div class='value'>{total_chunks}</div></div>"
+        f"<div class='card'><div class='label'>API endpoint</div>"
+        f"<div class='value'>{endpoints_count}</div></div>"
+        f"<div class='card'><div class='label'>테스트 커버</div>"
+        f"<div class='value'>{coverage['coverage_pct']:.0f}%</div></div>"
+        f"<div class='card verdict {verdict_class}'><div class='label'>AI 신뢰도</div>"
+        f"<div class='value'>{verdict_emoji} {verdict_label}</div>"
+        f"<div class='note'>{verdict_score}/100 — {_html_escape(verdict_reason)}</div></div>"
+        "</div></div>"
+    )
+
+    # § 2 — 프로젝트 정보
+    desc = overview.get("description") or overview.get("summary") or "(README description 없음)"
+    deps_total = deps.get("total", 0)
+    deps_rows = []
+    for cat in ("framework", "db", "auth", "test", "util", "other"):
+        items = deps.get(cat, [])
+        if not items:
+            continue
+        names = ", ".join(f"<code>{_html_escape(n)}</code>" for n, _ in items[:8])
+        more = f" <span class='note'>(+{len(items) - 8})</span>" if len(items) > 8 else ""
+        deps_rows.append(
+            f"<tr><td><strong>{cat}</strong></td><td>{len(items)}</td><td>{names}{more}</td></tr>"
+        )
+    deps_table = (
+        "<table><tr><th>카테고리</th><th>개수</th><th>주요 라이브러리</th></tr>"
+        + "".join(deps_rows) + "</table>"
+        if deps_rows else "<p class='note'>(의존성 추출 실패)</p>"
+    )
+    sec2 = (
+        "<h2 id='sec-2'>📖 §2. 이 프로젝트는 무엇인가</h2>"
+        f"<p>{_html_escape(desc)}</p>"
+        f"<p class='note'>빌드 도구: <strong>{_html_escape(overview.get('build_tool', '?'))}</strong>"
+        f" · 라이선스: {_html_escape(overview.get('license') or '?')}"
+        f" · 총 의존성: {deps_total}</p>" + deps_table
+    )
+
+    # § 3 — 코드 구조
+    tree_text = build_tree(repo_root, max_lines=80)
+    pkg_count = {}
+    for rel_path in chunks_by_path.keys():
+        top_pkg = rel_path.split("/")[0] if "/" in rel_path else rel_path
+        pkg_count[top_pkg] = pkg_count.get(top_pkg, 0) + 1
+
+    if entities:
+        ent_rows = "".join(
+            f"<tr><td><code>{_html_escape(e['name'])}</code></td>"
+            f"<td><code>{_html_escape(e['path'])}</code></td>"
+            f"<td>{e['kind']}</td><td>{e['callers']}</td>"
+            f"<td>{_html_escape(e.get('doc', ''))}</td></tr>"
+            for e in entities
+        )
+        ent_table = (
+            "<table><tr><th>이름</th><th>경로</th><th>kind</th><th>참조</th><th>설명</th></tr>"
+            + ent_rows + "</table>"
+        )
+    else:
+        ent_table = "<p class='note'>(도메인 엔티티 패턴 인식 실패)</p>"
+    sec3 = (
+        "<h2 id='sec-3'>🏗 §3. 코드 구조</h2>"
+        "<h3>디렉토리 트리 (depth 3, 80줄 cap)</h3>"
+        f"<div class='tree'>{_html_escape(tree_text)}</div>"
+        "<h3>패키지/모듈 분포</h3>" + _table_from_dict(pkg_count, "디렉토리", "청크 수")
+        + "<h3>도메인 엔티티 후보 top 10</h3>" + ent_table
+    )
+
+    # § 4 — 코드 연관관계
+    if endpoints_list:
+        ep_rows = []
+        for ep, sym, p in endpoints_list[:30]:
+            method = ep.split()[0] if " " in ep else ""
+            path_part = ep.split(" ", 1)[1] if " " in ep else ep
+            ep_rows.append(
+                f"<tr><td><code>{_html_escape(method)}</code></td>"
+                f"<td><code>{_html_escape(path_part)}</code></td>"
+                f"<td><code>{_html_escape(sym)}</code></td>"
+                f"<td><code>{_html_escape(p)}</code></td></tr>"
+            )
+        ep_table = (
+            "<table><tr><th>method</th><th>path</th><th>handler</th><th>file</th></tr>"
+            + "".join(ep_rows) + "</table>"
+        )
+        if endpoints_count > 30:
+            ep_table += f"<p class='note'>(+{endpoints_count - 30}개 더)</p>"
+    else:
+        ep_table = "<p class='note'>(HTTP endpoint 0개)</p>"
+
     if caller_hub_top:
-        hub_rows = "".join(
+        caller_rows = "".join(
             f"<tr><td>{n}</td><td><code>{_html_escape(p)}::{_html_escape(sym)}</code></td>"
             f"<td>{_html_escape(lg)}</td></tr>"
             for n, p, sym, lg in caller_hub_top
         )
-        hub_table = (
+        caller_table = (
             "<table><tr><th>callers</th><th>심볼</th><th>언어</th></tr>"
-            + hub_rows + "</table>"
+            + caller_rows + "</table>"
         )
     else:
-        hub_table = "<p class='note'>(caller 가 하나도 없는 레포 — 단일 파일 실험/샘플 가능성)</p>"
+        caller_table = "<p class='note'>(caller 역인덱스 비어있음)</p>"
 
-    # 언어별 샘플
+    if callees_hub_top:
+        callees_rows = "".join(
+            f"<tr><td>{n}</td><td><code>{_html_escape(p)}::{_html_escape(sym)}</code></td>"
+            f"<td>{_html_escape(lg)}</td></tr>"
+            for n, p, sym, lg in callees_hub_top
+        )
+        callees_table = (
+            "<table><tr><th>callees</th><th>심볼</th><th>언어</th></tr>"
+            + callees_rows + "</table>"
+        )
+    else:
+        callees_table = "<p class='note'>(callees 추출 결과 없음)</p>"
+
+    if inheritance:
+        inh_rows = "".join(
+            f"<tr><td><code>{_html_escape(it['child'])}</code></td>"
+            f"<td>{_html_escape(it['kind'])}</td>"
+            f"<td>{', '.join(f'<code>{_html_escape(p)}</code>' for p in it['parents'])}</td>"
+            f"<td><code>{_html_escape(it['child_path'])}</code></td></tr>"
+            for it in inheritance[:15]
+        )
+        inh_table = (
+            "<table><tr><th>child</th><th>관계</th><th>parents</th><th>file</th></tr>"
+            + inh_rows + "</table>"
+        )
+    else:
+        inh_table = "<p class='note'>(상속/구현 관계 없음 — Java 외 언어는 v1 미지원)</p>"
+
+    sec4 = (
+        "<h2 id='sec-4'>🔗 §4. 코드 연관관계</h2>"
+        f"<h3>HTTP 진입점 ({endpoints_count}개)</h3>" + ep_table
+        + "<h3>호출 hub — 가장 많이 호출되는 함수 (공용 유틸 식별)</h3>" + caller_table
+        + "<h3>의존도 hub — 가장 많이 호출하는 함수 (god function 후보)</h3>" + callees_table
+        + "<h3>클래스 상속/구현 관계 (Java)</h3>" + inh_table
+    )
+
+    # § 5 — 테스트 커버리지
+    cov_pct = coverage["coverage_pct"]
+    cov_color = "green" if cov_pct >= 50 else ("yellow" if cov_pct >= 20 else "red")
+    if coverage["uncovered_public_top10"]:
+        uncov_rows = "".join(
+            f"<tr><td><code>{_html_escape(e['symbol'])}</code></td>"
+            f"<td><code>{_html_escape(e['path'])}</code></td>"
+            f"<td>{e['callers']}</td></tr>"
+            for e in coverage["uncovered_public_top10"]
+        )
+        uncov_table = (
+            "<table><tr><th>심볼</th><th>경로</th><th>호출자</th></tr>"
+            + uncov_rows + "</table>"
+        )
+    else:
+        uncov_table = "<p class='note'>(테스트 미매핑 public 함수 없음)</p>"
+    sec5 = (
+        "<h2 id='sec-5'>🧪 §5. 테스트 커버리지</h2>"
+        f"<p>전체 production 함수 <strong>{coverage['total_production_methods']}</strong> 개 중 "
+        f"테스트 매핑된 것 <strong>{coverage['covered_methods']}</strong> 개 "
+        f"<span class='verdict-badge {cov_color}'>{cov_pct:.0f}%</span></p>"
+        "<h3>⚠️ 테스트 없는 public 함수 — 호출자 많은 순 top 10</h3>"
+        "<p class='note'>호출자 많은 public 함수에 테스트가 없으면 변경 시 회귀 위험. "
+        "백로그에 우선 추가 권장.</p>" + uncov_table
+    )
+
+    # § 6 — 4-stage
+    sec6 = (
+        "<h2 id='sec-6'>📚 §6. AI 학습 진단 (4-stage)</h2>"
+        + (kb_intel_html or
+           "<p class='note'>(_kb_intelligence.json 사이드카 미발견)</p>")
+    )
+
+    # § 7 — verdict + 액션
+    reason_html = "".join(f"<li>{_html_escape(r)}</li>" for r in reason_lines)
+    actions_html = "".join(
+        "<div class='action'>"
+        f"<div class='title'>{_html_escape(a['title'])}</div>"
+        f"<div class='why'>왜: {_html_escape(a['why'])}</div>"
+        f"<div class='where'>액션: {_html_escape(a['where'])}</div>"
+        "</div>"
+        for a in actions
+    )
+    sec7 = (
+        "<h2 id='sec-7'>🤖 §7. AI 신뢰도 + 다음 액션</h2>"
+        f"<div class='card verdict {verdict_class}'>"
+        f"<div class='label'>종합 verdict</div>"
+        f"<div class='value'>{verdict_emoji} {verdict_label} ({verdict_score}/100)</div>"
+        f"<div class='note'>{_html_escape(verdict_reason)}</div></div>"
+        f"<h3>점수 산출 근거</h3><ul>{reason_html}</ul>"
+        "<h3>PM 추천 액션</h3>" + actions_html
+    )
+
+    # § 9 — 디버깅 (접힘)
     sample_html_parts = []
     for lg in sorted(lang_samples.keys()):
-        sample_html_parts.append(f"<h3>{_html_escape(lg)}</h3>")
+        sample_html_parts.append(f"<h4>{_html_escape(lg)}</h4>")
         for rel_path, ch in lang_samples[lg]:
             header = f"<code>{_html_escape(rel_path)}::{_html_escape(ch['symbol'])}</code>"
             sub = []
@@ -2008,53 +2779,53 @@ pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px;
                 f"<p>{header} <span class='note'>({sub_str}, lines {ch['lines']})</span></p>"
                 f"<pre>{_html_escape(code_preview)}</pre>"
             )
+    pf_html = ""
+    if parser_failed_files:
+        pf_items = "".join(f"<li><code>{_html_escape(f)}</code></li>"
+                           for f in parser_failed_files[:50])
+        pf_html = (f"<h4>parser_failed_files ({len(parser_failed_files)} 건, 상위 50)</h4>"
+                   f"<ul>{pf_items}</ul>")
 
-    orphan_pct = (orphan_chunks * 100.0 / total_chunks) if total_chunks else 0.0
+    sec9 = (
+        "<details><summary>🔧 §9. 디버깅 정보 (개발자 진단용 — 클릭하여 펼치기)</summary>"
+        "<h3>언어 분포</h3>" + _table_from_dict(lang_count, "언어", "청크 수")
+        + "<h3>Kind 분포</h3>" + _table_from_dict(kind_count, "kind", "청크 수")
+        + f"<h3>고아 심볼</h3><p>callers=0 인 청크: <strong>{orphan_chunks}</strong> / "
+        f"{total_chunks} ({orphan_pct:.1f}%)</p>"
+        "<p class='note'>public entry point 는 caller 가 외부라 0 이 정상.</p>"
+        + pf_html
+        + "<h3>언어별 청크 샘플</h3>"
+        + "".join(sample_html_parts)
+        + "</details>"
+    )
 
-    body_parts = [
-        f"<h1>Pre-training Report</h1>",
-        f"<div class='meta'>"
-        f"repo: <code>{repo_display}</code> · commit: <code>{commit_display}</code> · "
-        f"generated: {now}"
-        f"</div>",
-        "<div class='cards'>",
-        f"<div class='card'><div class='label'>files</div>"
-        f"<div class='value'>{stats['total_files']}</div></div>",
-        f"<div class='card'><div class='label'>chunks</div>"
-        f"<div class='value'>{stats['total_chunks']}</div></div>",
-        f"<div class='card'><div class='label'>callers links</div>"
-        f"<div class='value'>{stats['total_callers_links']}</div></div>",
-        f"<div class='card'><div class='label'>test links</div>"
-        f"<div class='value'>{stats['total_test_links']}</div></div>",
-        f"<div class='card'><div class='label'>is_test chunks</div>"
-        f"<div class='value'>{is_test_chunks}</div></div>",
-        f"<div class='card'><div class='label'>orphan ratio</div>"
-        f"<div class='value'>{orphan_pct:.1f}%</div></div>",
-        "</div>",
-        "<h2>언어 분포</h2>",
-        table_from_dict(lang_count, "언어", "청크 수"),
-        "<h2>Kind 분포</h2>",
-        table_from_dict(kind_count, "kind", "청크 수"),
-        "<h2>상위 caller hub (레포 공용 유틸 식별)</h2>",
-        "<p class='note'>callers 배열이 긴 심볼일수록 레포에서 널리 쓰이는 유틸일 가능성이 높다. "
-        "이 목록이 비어 있으면 pass 2 역인덱스 매칭이 거의 발생하지 않은 상태로, "
-        "import resolution 부재 (동명 심볼만으로 매칭) 의 한계와 연관될 수 있다.</p>",
-        hub_table,
-        "<h2>고아 심볼 비율</h2>",
-        f"<p>callers 역링크가 0 인 청크: <strong>{orphan_chunks}</strong> / "
-        f"{total_chunks} ({orphan_pct:.1f}%).</p>",
-        "<p class='note'>public entry point (main, 라우트 핸들러, 이벤트 리스너 등) 는 "
-        "당연히 caller 가 외부이므로 0 이 정상. 이 비율이 80% 를 크게 넘으면 "
-        "파싱/역인덱싱 결함을 의심할 여지.</p>",
-        "<h2>언어별 청크 샘플</h2>",
-        "<p class='note'>각 언어의 첫 3 청크 미리보기. 본문 1200자까지만 표시.</p>",
-        *sample_html_parts,
-    ]
+    nav_html = (
+        "<div class='nav'>"
+        "<a href='#sec-1'>§1 한눈에</a>"
+        "<a href='#sec-2'>§2 프로젝트</a>"
+        "<a href='#sec-3'>§3 구조</a>"
+        "<a href='#sec-4'>§4 연관관계</a>"
+        "<a href='#sec-5'>§5 테스트</a>"
+        "<a href='#sec-6'>§6 학습진단</a>"
+        "<a href='#sec-7'>§7 결론</a>"
+        "</div>"
+    )
+
+    body = (
+        nav_html
+        + "<div class='wrap'>"
+        + "<h1 id='sec-1'>🎯 §1. 한눈에 — Pre-training Report</h1>"
+        + f"<div class='meta'>repo: <code>{repo_display}</code> · commit: "
+          f"<code>{commit_display}</code> · generated: {now}</div>"
+        + tldr_html
+        + sec2 + sec3 + sec4 + sec5 + sec6 + sec7 + sec9
+        + "</div>"
+    )
 
     html_doc = (
         "<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
         f"<title>Pre-training Report — {commit_display}</title>{css}</head>"
-        f"<body>{''.join(body_parts)}</body></html>"
+        f"<body>{body}</body></html>"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_doc, encoding="utf-8")
@@ -2067,6 +2838,9 @@ def main() -> int:
     ap.add_argument("--commit-sha", default="", help="커밋 SHA (미지정 시 git rev-parse HEAD)")
     ap.add_argument("--report-html", default="",
                     help="HTML 리포트 출력 경로 (비어있으면 생성 skip). Jenkins publishHTML 대상.")
+    ap.add_argument("--report-only", action="store_true",
+                    help="청크 추출 skip 하고 기존 JSONL 디렉토리 (--out) 에서 리포트만 재생성. "
+                         "v3 리포트 디자인 검증 / KB 재학습 없이 리포트만 갱신할 때 사용.")
     args = ap.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -2076,7 +2850,16 @@ def main() -> int:
         raise SystemExit(f"[repo_context_builder] repo_root 없음: {repo_root}")
 
     commit_sha = resolve_commit_sha(repo_root, args.commit_sha)
-    _total, stats, chunks_by_path = scan_repo(repo_root, out_dir, commit_sha)
+
+    if args.report_only:
+        # 기존 JSONL 디렉토리에서 chunks_by_path / stats 재구성. scan_repo 호출 X.
+        if not out_dir.is_dir():
+            raise SystemExit(f"[repo_context_builder] --report-only — out_dir 없음: {out_dir}")
+        stats, chunks_by_path = load_chunks_from_jsonl_dir(out_dir)
+        print(f"[repo_context_builder] --report-only: 기존 JSONL 에서 {stats['total_files']} 파일 / "
+              f"{stats['total_chunks']} 청크 로드")
+    else:
+        _total, stats, chunks_by_path = scan_repo(repo_root, out_dir, commit_sha)
 
     if args.report_html:
         write_html_report(
@@ -2085,6 +2868,7 @@ def main() -> int:
             commit_sha=commit_sha,
             stats=stats,
             chunks_by_path=chunks_by_path,
+            kb_dir=out_dir,  # § 6 4-stage 학습진단 + parser_failed_files 사이드카 source
         )
         print(f"[repo_context_builder] HTML 리포트 생성: {args.report_html}")
     return 0
