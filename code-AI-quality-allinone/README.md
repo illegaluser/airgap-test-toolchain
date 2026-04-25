@@ -31,6 +31,7 @@
 | **P2 추가 액션 (2026-04-25 후속)** | **다언어 지원 확장**: Go/Rust/C#/Kotlin/C/C++ LANG_CONFIG 추가. **docstring 추출**: tree-sitter 로 함수 leading comment + Python docstring 을 청크 footer 의 `doc:` 라인에 추가 (의미 매칭 보강). **retry variation**: attempt 0/1/2 별로 다른 모양의 kb_query (구조화 / 자연어 / 식별자 중심). **HyDE (간소화)**: attempt=2 (마지막 retry) 에서만 호스트 Ollama 로 한 줄 자연어 변환 호출 → kb_query 보강. **임베딩 모델 환경변수 override** (운영자가 코드 특화 임베딩으로 교체 가능, §8.2.4.2). **자동 평가**: golden CSV vs llm_analysis.jsonl 비교 스크립트 `eval_rag_quality.py` (§8.4.2.2) — 변경 전후 metric 비교 |
 | **04 안정화 + GitLab UX 패치 (2026-04-25 심야)** | `gemma4:e4b` (thinking 모델) 이 원인이 된 04 파이프라인 "Dify succeeded but outputs empty" 대량 실패 해소. **(1) 진단**: workflow `json_parser` Code 노드에 `parse_status` / `llm_text_preview` / `parse_error_msg` 필드 노출, `dify_sonar_issue_analyzer.py` 가 empty 감지 시 stderr 에 LLM 원문 + 실패 유형 덤프 (`--print-first-errors N` 으로 샘플 수 제한). **(2) 근본 fix**: `<think>...</think>` reasoning block 제거 (종료·미종료 모두 대응), Workflow `max_tokens` 2048→16384, Ollama provider credential `max_tokens` 4096→16384 · `context_size` 8192→32768 (provision.sh 동시 반영), JSON string 내 raw `\n\r\t` + invalid `\escape` (regex 룰의 `\d\s\w` 등) 을 상태기계로 자동 fixup. **(3) UX**: analyzer stdout/stderr + `llm_analysis.jsonl` 을 line-buffered 로 전환 — Jenkins console 실시간 진행 로그 반영. **(4) GitLab 18.x Work Items UI**: description 기본 Truncate 가 본 스택 생성 이슈(3~5K자)에 불리 → webpack chunk 의 `truncationEnabled:!0 → !1` sed 패치 (`scripts/gitlab-truncate-patch.sh`, `run-mac.sh` · `run-wsl2.sh` 가 백그라운드 호출, 멱등). **(5) 로그 잡음**: `tree_sitter_languages` `FutureWarning` 60+ 줄 `warnings.filterwarnings` 로 억제. **결과**: MAX_ISSUES=10 실측 10/10 성공 (FAIL-EMPTY 0), Stage 3 까지 GitLab 이슈 자동 등록. 상세 트러블슈팅 §12.20. |
 | **RAG 효용 시리즈 (2026-04-25 새벽)** | 정적분석 이슈 분석에서 사전학습 KB 가 실질적 도움을 주는지 측정·정직화. **citation rate 2.1% → 75%, partial_citation 자동 강등 도입, KB 인텔리전스 PM 카드 신설**. 주요 fix: **(A) Dataset purge** (02 full mode 시 기존 청크 전수 삭제, 프로젝트 격리), **(B/B') segmentation 안정화** (청크 2200자 cap + footer 잘린 segment 의 document.name fallback), **(C/D) 3-tier citation 매칭** (path/symbol/basename) + (path,symbol) 단위 dedup, **(D) 인용 의무 prompt** + **(P5) line-range self-exclusion** (ProfileDAO 같은 동명 method 다중 케이스), **(P7) confidence calibration** (cited<50% → medium 강등 + `partial_citation` 라벨), **(+T1) test_for 다중 후보 + PascalCase prefix 매칭** (`Login` → `LoginHandler`), **(+T2) citation_depth 측정** (distinct backtick 식별자 수). **사이클 1 (D1+D3+B+A1+F1+F2)**: footer 에 `_context_summary` / 자연어 동의어 / e2e description 노출, score_threshold 0.35→0.25, RAG retrieve trace 로그, 실패 패턴 자동 진단 섹션. **사이클 2 (F+C+D+E+H tree-sitter 강화)**: import 기반 caller 그래프 (false-positive 차단), `@app.route` 데코레이터 → endpoint 추출, decorator 텍스트 footer 노출, TS interface/type/enum 청크화, JSDoc `@param/@returns/@throws` 구조 분리. **PM 친화 리포트**: RAG Diagnostic Report v2 — TL;DR + 3축 신호등 + 실무 액션 + **KB 인텔리전스 8 카드** (분석 파일 / 청크 / 호출 관계 / endpoint / 데코레이터 / 테스트 연결 / 도메인 모델 / 문서화). 측정 자가모순 4종 (라벨↔본문, 표본 부족, 임계 관대, 중복) 해소. 사용법 §11.2 참조. |
+| **사이클 3 (2026-04-25 후속) — tree-sitter 누수 봉쇄 + 4-stage 학습진단 + PM 친화 GitLab Issue 본문** | 사이클 2 까지 KB 까지의 추출은 풍부했으나 **쿼리/프롬프트/진단 가시화** 단계에서 tree-sitter 신호가 새고 있던 7개 누수 (다언어 callees 부재, imperative route 미검출, Google/NumPy docstring 미지원, kb_query 가 endpoint/decorator/params 미사용, 이슈 함수의 정적 메타가 LLM 프롬프트에 미주입, used_items 메타 가시화 부재, citation 측정이 정적 메타 활용 미감지) 를 모두 봉쇄. **Phase A (추출 보강)**: `collect_callees()` 에 go/rust/c#/kotlin/c/cpp 분기 추가 (생성자·매크로·method_call 포함 — 11개 언어 전부 callers 역인덱스 가능), `extract_imperative_routes()` 신설 (Express/Koa `app.get('/x', handler)` + Flask `add_url_rule` AST 검출 → endpoint 매핑), `parse_docstring_structure()` 에 Google `Args:` / `Raises:` block + NumPy `----` underline 파서 추가 (raw 추출 경로 분리), `_kb_intelligence.json` 사이드카 자동 작성 (scope/depth/quality 3계층 — 진단 리포트 데이터 소스). **Phase B (보존+쿼리+프롬프트)**: `sonar_issue_exporter._enclosing_meta()` 신설 — 이슈 함수의 decorators/endpoint/doc_struct/callees 까지 통째로 청크에서 추출해 enriched 항목에 9개 필드 첨부, analyzer 가 `build_kb_query()` attempt=0/2 에 endpoint/decorators/params 라인 추가 + `format_enclosing_meta()` 로 LLM 프롬프트 멀티라인 텍스트 생성 → Dify start 변수 `enclosing_meta` 로 전달, workflow user 프롬프트에 `## 이슈 함수 정적 메타 (tree-sitter)` 섹션 신설, system 프롬프트에 "정적 메타 활용 의무" 규칙 추가. **Phase C (가시화 두 리포트 모두)**: context_filter Code 노드의 `used_items` 에 `has_decorators`/`has_endpoint`/`has_doc_struct` boolean + raw 메타 첨부, `_compute_tree_sitter_hits()` 신설 — endpoint/decorator/param/RAG-meta 4종 신호의 답변 등장 횟수 측정해 `tree_sitter_hits` 메트릭으로 보관, **RAG Diagnostic Report 4-stage 학습진단 재설계** (기존 8 카드 나열 → Scope/Depth/Quality/Impact 사다리: PM 이 위→아래로 인과 추적, 언어 비대칭 자동 경고, "AI 가 알아낸 우리 프로젝트 API 진입점" 펼침 박스, per-issue 표에 🛡️🌐📝 메타 아이콘 컬럼), **GitLab Issue 본문 PM 친화 재설계** (🚦 Action Verdict 신호등 최상단 + 📌 무엇이 / 🎯 어디서 + 정적 컨텍스트 / ⚠️ 영향 / 🛠️ 수정 / **🔍 AI 판단 근거 NEW** / 📂 같은 패턴 / 📖 기술 상세 ▶ 접기 — 코드 블록·Rule·링크는 모두 펼침 안). 사용법 §9, §10.5 참조. |
 | 빌드 방식 | `DOCKER_BUILDKIT=1 docker build` (legacy builder, buildx 미사용). export/load tarball 단계 제거로 같은 캐시 상태에서 14.9GB 이미지 빌드 ≈ 1 분 |
 | 최근 실측 검증 | Jenkins `28080`, Dify `28081`, SonarQube `29000`, GitLab `28090` 정상 응답 확인 |
 
@@ -183,13 +184,13 @@ curl -sS -u admin:password \
 
 결과물별 확인 위치:
 
-- **GitLab 이슈** (LLM 분석 본문 + 위치 / 룰 / 영향 / 수정안 / 인용 링크) — `http://localhost:28090/root/<프로젝트>/-/issues`
+- **GitLab 이슈** (PM 친화 본문 — 🚦 Action Verdict 신호등 + 무엇이 / 어디서 / 영향 / 수정 / **🔍 AI 판단 근거** + 📖 기술 상세 ▶ 접기) — `http://localhost:28090/root/<프로젝트>/-/issues`
 - **Jenkins 빌드 콘솔** (단계별 진행 로그, 실패 진단용) — Jenkins UI → 해당 빌드 → Console Output
-- **RAG Diagnostic Report** (PM 친화 신호등 + KB 인텔리전스 + 이슈별 평가) — `04` 빌드 → "RAG Diagnostic Report" 탭. 읽는 법은 §10.5
+- **RAG Diagnostic Report** (3축 신호등 + **4-stage 학습진단 사다리** Scope/Depth/Quality/Impact + 이슈별 평가) — `04` 빌드 → "RAG Diagnostic Report" 탭. 읽는 법은 §10.5
 - **Pre-training Report** (KB 청킹 통계 HTML) — `02` 빌드 → "Pre-training Report" 탭
 - **`chain_summary.json`** (각 단계 commit SHA / 결과 / GitLab 이슈 수) — `01` 빌드 아티팩트
 
-GitLab Issue 본문의 섹션 구조 (TL;DR · 위치 · 문제 코드 · 수정 제안 · Suggested Diff · 영향 분석 · Rule 상세 · 링크) 는 §9 참조.
+GitLab Issue 본문의 PM 친화 섹션 구조 (Action Verdict 신호등 · 무엇이 · 어디서 + 정적 컨텍스트 · 영향 · 수정 · AI 판단 근거 · 같은 패턴 · 기술 상세 접기) 는 §9 참조.
 
 ---
 
@@ -198,7 +199,7 @@ GitLab Issue 본문의 섹션 구조 (TL;DR · 위치 · 문제 코드 · 수정
 빠른 시작:
 
 - [§0.4 전체 운영 절차 — 빌드부터 첫 결과까지](#04-전체-운영-절차--빌드부터-첫-결과까지)
-- [§10.5 RAG Diagnostic Report 읽는 법](#105-rag-diagnostic-report-읽는-법--pm-친화)
+- [§10.5 RAG Diagnostic Report 읽는 법 — 4-stage 학습진단](#105-rag-diagnostic-report-읽는-법--4-stage-학습진단)
 
 상세 절차:
 
@@ -210,7 +211,7 @@ GitLab Issue 본문의 섹션 구조 (TL;DR · 위치 · 문제 코드 · 수정
 6. [오프라인 머신에서 스택 기동](#6-오프라인-머신에서-스택-기동)
 7. [첫 실행 — 샘플 레포로 파이프라인 돌려보기](#7-첫-실행--샘플-레포로-파이프라인-돌려보기)
 8. [각 파이프라인 상세](#8-각-파이프라인-상세)
-9. [GitLab Issue 결과물 읽는 법](#9-gitlab-issue-결과물-읽는-법)
+9. [GitLab Issue 결과물 읽는 법 — PM 친화 본문](#9-gitlab-issue-결과물-읽는-법--pm-친화-본문)
 10. [접속 정보 & 자격](#10-접속-정보--자격)
 11. [자동 프로비저닝 내부 동작](#11-자동-프로비저닝-내부-동작)
 12. [트러블슈팅](#12-트러블슈팅)
@@ -257,24 +258,23 @@ GitLab Issue 본문의 섹션 구조 (TL;DR · 위치 · 문제 코드 · 수정
 
 두 가지 산출물이 생성되며, 각각 역할이 다릅니다.
 
-**① 코드 품질 (`00~03`) — GitLab Issue**
+**① 코드 품질 (`00~03`) — GitLab Issue (PM 친화 본문 구조)**
 
-파이프라인이 종료되면 GitLab 프로젝트의 Issues 페이지에 **조치가 필요한 항목만** 새 Issue 로 등록되어 있습니다. 각 Issue 는 표준화된 구조를 가지며, 개발자가 다른 도구로 이동할 필요 없이 **Issue 페이지 하나에서 판단·조치가 가능** 하도록 설계되었습니다.
+파이프라인이 종료되면 GitLab 프로젝트의 Issues 페이지에 **조치가 필요한 항목만** 새 Issue 로 등록되어 있습니다. 본문은 **PM 가 첫 줄 신호등만 봐도 우선순위 판단이 가능**하도록 재설계되었으며, 개발자용 코드/Rule/링크는 모두 펼침 섹션 안으로 들어가 PM 시야를 가리지 않습니다.
 
 | Issue 섹션 | 담고 있는 것 | 생성 주체 |
 |-----------|-------------|:---------:|
-| TL;DR | "어느 파일의 어느 함수에서 무슨 일이 일어나는가" 를 한 줄로 요약 | 템플릿 |
-| 위치 테이블 | 파일 경로·함수명·규칙 ID·심각도·커밋 해시 (모두 클릭 가능 링크) | 사실 정보 |
-| 문제 코드 | 해당 라인 ±10 줄을 발췌, 문제 라인에 `>>` 마커 | Sonar 원본 |
-| 수정 제안 | 어떻게 고쳐야 하는지 자연어 설명 | LLM |
-| 수정 Diff | 그대로 적용 가능한 unified diff 패치 | LLM |
-| 영향 분석 | "이 함수는 X 에서 호출되므로 Y 에 영향" 같은 파급 효과 해석 | LLM (RAG 기반) |
-| 동일 패턴 다른 위치 | 같은 규칙으로 다른 파일에서도 같은 문제가 발견되면 일괄 표로 | 자동 집계 |
-| 규칙 상세 | SonarQube 규칙 원문 (접기/펼치기) | Sonar |
-| 링크 | SonarQube 상세 · GitLab 파일 해당 라인 · GitLab 커밋 상세 | URL 조합 |
-| 라벨 | 심각도 / 진짜문제·오탐 구분 / 확신도 등 | LLM + 자동 |
+| 🚦 **Action Verdict 신호등** | "🔴 즉시 수정 / 🟡 검토 후 수정 / ⚪ 오탐 가능성 / 🟢 무시 가능 (기술 부채)" 중 하나를 한 줄로. severity + classification + confidence + RAG 근거 정황을 종합 | 자동 |
+| 📌 무엇이 문제인가 | LLM 영향 분석의 첫 문장 + 비즈니스 영향 한 줄 | LLM 한 줄 추출 |
+| 🎯 어디서 발생하나 | "`src/auth/login.py` (line 42) 의 `verifyPassword` 함수" 자연어 + HTTP route / decorator / 매개변수명 정적 컨텍스트 | 사실 + tree-sitter |
+| ⚠️ 영향과 이유 | "이 함수는 X 에서 호출되므로 Y 에 영향" 같은 파급 효과 해석 | LLM (RAG 기반) |
+| 🛠️ 어떻게 고치나 | 자연어 수정 방향 + (옵션) 그대로 적용 가능한 unified diff | LLM |
+| 🔍 **AI 판단 근거 (NEW)** | "AI 가 받은 청크 N 개 중 M 개 인용 · 사전학습 정적 메타 K 회 활용 · HTTP route, decorator, 매개변수명 인용" — 사전학습 → 답변 인과를 자연어로 노출 | 자동 (RAG 진단) |
+| 📂 같은 패턴의 다른 위치 | 같은 규칙으로 다른 파일에서도 같은 문제가 발견되면 일괄 표 (조건부) | 자동 집계 |
+| 📖 **기술 상세 (▶ 접기)** | 코드 블록 (이슈 라인 ±10 줄) · 파일/함수/Rule/Severity/Commit 표 · Rule 원문 · SonarQube/GitLab 링크 — **모두 펼침 안** | 사실 + Sonar |
+| 라벨 | 심각도 / 진짜문제·오탐 구분 / 확신도 / partial_citation 자동 강등 등 | LLM + 자동 |
 
-개발자는 이 Issue 하나만 열면 **문제 코드 확인 → 영향 범위 파악 → 수정 방향 결정 → Diff 적용** 까지 수행할 수 있습니다. IDE·Sonar 대시보드·팀 메신저를 오갈 필요가 없습니다.
+PM 은 본문 첫 신호등 + "무엇이 / 어디서 / 영향" 만 읽으면 **우선순위·담당 배정** 결정 가능. 개발자는 펼침 섹션을 열어 코드/Rule/링크까지 따라가면 됩니다. IDE·Sonar 대시보드·팀 메신저를 오갈 필요가 없습니다.
 
 **② AI 응답 품질 (`05`) — `summary.html` / `summary.json` 리포트**
 
@@ -1226,7 +1226,7 @@ status: SUCCESS
 | `02-코드-사전학습` 빌드 #N | **Pre-training Report** | KB **빌드** 품질: 청크 수, callers_links, vendor 노이즈 제거 효과, 언어/kind 분포, 샘플 청크 미리보기 |
 | `04-정적분석-결과분석-이슈등록` 빌드 #N | **RAG Diagnostic Report** | 이슈 분석 **품질**: 이슈당 context_filter 버킷 상태, **LLM citation rate** (LLM 이 실제로 RAG 결과 인용했는지), context:empty 발동률, retry exhausted 비율 |
 
-두 리포트는 **서로 다른 질문에 답합니다** — Pre-training 은 "KB 가 제대로 빌드됐는지", Diagnostic 은 "LLM 이 KB 를 실제로 활용했는지". §8.2.4.1 / §8.4.2.1 에서 각 카드 해석 가이드 참조.
+두 리포트는 **서로 다른 질문에 답합니다** — Pre-training 은 "KB 가 제대로 빌드됐는지", Diagnostic 은 "LLM 이 KB 를 실제로 활용했는지". RAG Diagnostic Report 는 사전학습 결과를 **4-stage narrative 사다리** (학습 범위 → 학습 깊이 → 학습 품질 → 분석 영향) 로 PM 시각으로 노출하므로, 비개발자도 위→아래로 따라 읽으면 인과를 체감할 수 있습니다. §10.5 / §8.2.4.1 / §8.4.2.1 에서 각 카드 해석 가이드 참조.
 
 **⑤ 상태 파일 — 파이프라인 내부 메타**:
 
@@ -2455,36 +2455,109 @@ README 단일 원천 원칙 상, 사용자가 문제 파악에 필요한 구현 
 
 ---
 
-## 9. GitLab Issue 결과물 읽는 법
+## 9. GitLab Issue 결과물 읽는 법 — PM 친화 본문
 
-P3 는 **사실 정보는 creator 가 deterministic 렌더**, **해석 필요 부분만 LLM** 이 작성합니다. 해결자가 30초 내에 "어디·무엇·왜·어떻게" 를 파악할 수 있게 설계:
+> 04 파이프라인이 GitLab 에 등록하는 Issue 본문은 **PM 이 첫 줄 신호등만 봐도
+> 우선순위 판단이 가능**하도록 재설계되었습니다. 개발자가 필요로 하는 코드
+> 블록 / Rule key / Severity / 모든 외부 링크는 본문 하단의 펼침 섹션 안으로
+> 묶여 PM 시야를 가리지 않습니다. 사실 정보는 creator 가 deterministic 으로,
+> 해석은 LLM 이, 신호등·근거 섹션은 RAG 진단 결과에서 자동 생성됩니다.
 
-```
-> **TL;DR** — `src/auth.py:21` `login` 함수 · Specify an exception class...
+### 9.1 본문 구조 한눈에 보기
 
-### 📍 위치 (테이블)
-파일(클릭→GitLab 라인) · 함수(라인 범위) · Rule · Severity · Commit(클릭→GitLab 커밋)
+```text
+🚦 [신호등 한 줄]   즉시 수정 / 검토 후 수정 / 오탐 가능성 / 무시 가능
+   └ severity + classification + confidence + RAG 근거 정황 종합 (1줄)
 
-### 🔴 문제 코드 (이슈 라인 ±10줄, '>>' 마커)
+📌 무엇이 문제인가     LLM 영향 분석의 첫 문장 (PM 한 줄 요약)
 
-### ✅ 수정 제안 (LLM — 빈 값이면 섹션 생략)
+🎯 어디서 발생하나
+   ├ 자연어: "src/auth/login.py (line 42) 의 verifyPassword 함수"
+   ├ 🌐 외부 노출: HTTP `POST /login` 엔드포인트로 접근 가능합니다.
+   ├ 🛡️ 적용된 정적 의도: `@require_auth`, `@app.post`
+   └ 📝 입력 매개변수: `email`, `password`
 
-### 💡 Suggested Diff (unified diff, 기계 적용 가능할 때만)
+⚠️ 영향과 이유                LLM impact_analysis_markdown
+🛠️ 어떻게 고치나               LLM suggested_fix_markdown (+ optional diff)
 
-### 📊 영향 분석 (LLM — RAG 가 찾은 호출 관계 기반)
-"이 함수는 src/session.py::check_session 에서 호출되므로..."
+🔍 AI 판단 근거 (NEW)
+   ├ 🔎 참조한 프로젝트 코드: 호출하는 함수 1 곳 (`handleLogin`) · 관련 테스트 1 개
+   ├ ✅/🟡/⚠️ AI 가 받은 청크 N 개 중 M 개 인용 (X%). 근거 충실 / 일부 활용 / 약함
+   └ 📚 사전학습 정적 메타 활용: HTTP route, decorator, 매개변수명 (3 회 인용)
 
-### 🧭 Affected Locations (clustering 으로 묶인 유사 이슈)
+📂 같은 패턴의 다른 위치        조건부 (cluster 가 있을 때만)
 
-### 📖 Rule 상세 (<details> 접기)
-
-### 🔗 링크 (Sonar · GitLab blob · GitLab commit)
+📖 기술 상세 (▶ 접기)
+   ├ 메타 정보 표 (파일/함수/Rule/Severity/Commit — 모두 클릭 가능 링크)
+   ├ 문제 코드 (이슈 라인 ±10 줄, ">>" 마커)
+   ├ Rule 전체 설명 (SonarQube 원문)
+   └ 링크 (SonarQube · GitLab blob · GitLab commit)
 
 ---
 _commit: `e38bd123` (full scan) · sonar: http://localhost:29000/..._
 ```
 
-**라벨**: `severity:CRITICAL`, `classification:true_positive`, `confidence:high`, LLM 도메인 라벨들, 오탐 전이 실패 시 `fp_transition_failed`, skip_llm 시 `auto_template:true`.
+### 9.2 🚦 Action Verdict 신호등 — PM 의 1초 판단
+
+| 신호등 | 메시지 예 | 판정 조건 |
+|--------|---------|----------|
+| 🔴 **즉시 수정** | "심각도 높음 + AI 근거 충실. 본 이슈는 우선 처리 대상입니다." | severity ∈ {BLOCKER, CRITICAL} + classification=true_positive + RAG 근거 충실 |
+| 🟠 **즉시 수정 권장 (단, AI 근거 약함)** | "심각도가 높아 즉시 조치 권장. 다만 AI 답변이 일반 원칙에 의존했으니 개발자가 코드 컨텍스트를 직접 확인 후 수정하세요." | 위 + RAG 빈 결과 또는 cited=0 + confidence low/empty |
+| 🟡 **검토 후 수정** | "중간 심각도 — 다음 스프린트 내 처리 권장." | severity=MAJOR |
+| 🟢 **여유 처리** | "낮은 심각도 — 코드 정리 시 함께 처리." | severity ∈ {MINOR, INFO} |
+| 🟢 **무시 가능 (기술 부채)** | "실제 문제는 맞으나 비용 대비 우선순위 낮음. 백로그 등록 후 차후 처리." | classification=wont_fix |
+| ⚪ **오탐 가능성 (확신도 높음)** | "AI 가 분석 결과 SonarQube 의 오판으로 판정. 무시 또는 sonar 측 mark FP 처리." | classification=false_positive + confidence=high |
+| ⚪ **오탐 가능성** | "AI 가 오판으로 추정 — 개발자 검토 후 mark FP 또는 fix 결정." | classification=false_positive + 그 외 |
+| ⚪ **추가 검토 필요** | "심각도 정보 부재 — 개발자가 직접 우선순위 평가 권장." | severity 없음 |
+
+### 9.3 🎯 어디서 발생하나 — 정적 컨텍스트 자동 노출
+
+`enclosing_function` (tree-sitter 추출) 의 **decorator / HTTP route / docstring 매개변수**가 있으면 자연어 라인으로 자동 노출됩니다. 비어 있으면 해당 라인은 생략.
+
+| 라인 | 트리거 |
+|------|--------|
+| 🌐 외부 노출 | enclosing 함수에 `endpoint` 가 추출됐을 때 (decorator 기반 `@app.get('/x')` 또는 imperative `app.get('/x', handler)`) |
+| 🛡️ 적용된 정적 의도 | `decorators` 가 1개 이상 추출됐을 때 — `@require_auth`, `@cached`, `@admin_only` 등 |
+| 📝 입력 매개변수 | docstring 의 `doc_params` 가 추출됐을 때 (JSDoc / Sphinx / Google `Args:` / NumPy 모두 지원) |
+
+이 정보를 PM 이 직접 보면 "이 함수가 외부 API 인지", "권한 검사가 적용돼 있는지", "어떤 입력을 받는지" 가 코드를 안 열고도 파악됩니다.
+
+### 9.4 🔍 AI 판단 근거 — 사전학습 → 답변 인과 노출
+
+PM 이 본문을 읽으면서 **"AI 가 정말로 우리 프로젝트를 보고 답한 건지, 일반 원칙으로 답한 건지"** 를 검증할 수 있는 섹션입니다. 자동 생성 라인 3종:
+
+```
+- 🔎 참조한 프로젝트 코드: 호출하는 함수 1 곳 (`handleLogin`) · 관련 테스트 1 개 (`testLogin`)
+- ✅ AI 가 받은 청크 2 개 중 2 개를 답변에 직접 인용 (100%). 근거 충실.
+- 📚 사전학습 정적 메타 활용: HTTP route, decorator, 매개변수명 (3 회 인용).
+  AI 답변이 우리 프로젝트의 어휘·구조를 직접 반영했습니다.
+```
+
+| 라인 | 의미 |
+|------|------|
+| 🔎 참조한 프로젝트 코드 | RAG 가 retrieve 해서 LLM 에 넘긴 청크 — bucket 별 (callers / tests / others) 로 묶어 자연어로 노출 |
+| ✅ / 🟡 / ⚠️ 인용 정황 | 받은 청크 대비 답변에 실제로 인용한 비율. 60%↑ ✅ · 30%↑ 🟡 · 0% ⚠️ (직접 검토 권장) |
+| 📚 정적 메타 활용 | LLM 답변 본문에서 enclosing 함수의 `endpoint` URL · decorator 식별자 · 매개변수명 · RAG 청크 메타가 인용된 횟수 (사전학습 → 답변 인과) |
+
+`rag_diagnostic` 데이터가 없으면 (skip_llm 케이스 등) 짧은 안내 문장으로 대체됩니다.
+
+### 9.5 📖 기술 상세 — 개발자 펼침 영역
+
+GitLab 의 `<details>` 태그를 사용해 **기본 접힘**. PM 본문 상단을 코드/링크로 가리지 않기 위함. 펼치면 다음이 한꺼번에 노출:
+
+- 메타 정보 표 (파일·함수·Rule·Severity·Commit — 모두 GitLab/Sonar 클릭 링크)
+- 문제 코드 블록 (이슈 라인 ±10 줄, `>>` 마커)
+- Rule 전체 설명 (SonarQube 원문)
+- 외부 링크 3종 (SonarQube 이슈 상세 / GitLab 파일 라인 / GitLab 커밋)
+
+### 9.6 라벨
+
+- `severity:CRITICAL` / `MAJOR` / `MINOR` / `INFO` — Sonar 원본 심각도
+- `classification:true_positive` / `false_positive` / `wont_fix` — LLM 분류
+- `confidence:high` / `medium` / `low` — LLM 본인 판정 확신도
+- `partial_citation` — 받은 RAG 청크 절반 미만 인용 시 자동 부착 (confidence high → medium 자동 강등)
+- `auto_template:true` — skip_llm 경로 (현재 비활성, 모든 severity 분석)
+- `fp_transition_failed` — false_positive 인데 SonarQube mark FP 가 실패한 경우
 
 ---
 
@@ -2520,27 +2593,34 @@ docker exec ttc-allinone cat /data/.provision/sonar_token
 
 ---
 
-## 10.5 RAG Diagnostic Report 읽는 법 — PM 친화
+## 10.5 RAG Diagnostic Report 읽는 법 — 4-stage 학습진단
 
 > 04 파이프라인 (`정적분석 결과분석 및 이슈등록`) 빌드 후 Jenkins 에서
 > **RAG Diagnostic Report** 탭으로 노출되는 HTML 리포트입니다. 이 리포트
 > 한 장으로 **"AI 가 우리 프로젝트에서 무엇을 배웠고, 그 학습 결과를 이번
 > 이슈 분석에 얼마나 정직하게 활용했는가"** 를 비개발자 / 스폰서 / 운영
-> 책임자도 즉시 판단할 수 있도록 설계됐습니다.
+> 책임자도 즉시 판단할 수 있도록 설계됐습니다. 사전학습 결과는 PM 시각의
+> **4-stage narrative 사다리** 로 재구성되어, 위→아래로 읽으면서 인과를
+> 자연스럽게 추적할 수 있습니다.
 
 ### 1) 한 장에 보는 구성
 
-```
+```text
 ┌─ 종합 판정 (TL;DR)              어느 축이 worst 인지 명시 ──────────────┐
 ├─ 신호등 3 축                    근거충분도 / 참고자료 다양성 / 응답품질  ┤
 ├─ 📋 실무 권장 액션              CRITICAL/MAJOR 재검토 등 구체 지시       ┤
-├─ 📚 사전학습 결과               KB 인텔리전스 8 카드 + endpoint 예시    ┤
+├─ 📚 사전학습 진단 (4-stage)     ───────────────────────────────────────  ┤
+│    Stage 1 학습 범위            AI 가 본 것 (파일 / 청크 / 언어 분포)    ┤
+│    Stage 2 학습 깊이            호출 매핑 / endpoint / 테스트 연결       ┤
+│    Stage 3 학습 품질            파서 성공률 / 노이즈 제외 / 언어 비대칭 ┤
+│    Stage 4 분석 영향            답변에 정적 메타가 어떻게 반영됐나       ┤
 ├─ 🔧 기술 상세 지표 (접기)       기존 카드 + 분포 + 실패 패턴 자동 진단   ┤
-└─ 📄 이슈별 상세                 ⚠️/✓ 한 줄 평가 + 인용 매칭 표         ┘
+└─ 📄 이슈별 상세                 ⚠️/✓ 한 줄 평가 + 인용 + 메타 아이콘    ┘
 ```
 
-비개발자는 위 4 블록 (TL;DR → 신호등 → 액션 → KB 카드) 만 읽으면 충분.
-개발자는 🔧 접기 섹션 + 이슈별 상세까지 펼쳐 본다.
+비개발자는 상단 4 블록 (TL;DR → 신호등 → 액션 → 4-stage 사다리) 만 읽으면 충분.
+Stage 4 가 빨간색이면 **"사전학습은 잘됐는데 활용이 새고 있다"** 는 신호 — 즉,
+이슈별 RAG 검색 / 프롬프트 점검이 필요하다는 뜻.
 
 ### 2) 종합 판정 (TL;DR) — 어느 축이 worst 인가 정직 표기
 
@@ -2552,12 +2632,7 @@ docker exec ttc-allinone cat /data/.provision/sonar_token
 | 참고자료 다양성 (RAG 검색) | "인용 자체는 평균 X% 로 정상이지만 RAG 검색 단계에서 호출 관계·테스트 청크를 충분히 회수 못 함" |
 | AI 응답 기술적 품질 | "재시도 N% / 빈 컨텍스트 N% — RAG retrieval 또는 LLM 응답 파이프라인 점검" |
 
-전체 색상은 4 단계:
-
-- 🟢 충분/정상 — 신뢰 가능
-- 🟡 보통 — 일부 축 품질 저하
-- 🔴 부족 — worst 축의 명시적 문제
-- ⚪ 측정 불충분 — RAG 가 빈 결과 이슈가 많아 measurable n < 3
+전체 색상은 4 단계: 🟢 충분 · 🟡 보통 · 🔴 부족 · ⚪ 측정 불충분 (n < 3).
 
 ### 3) 신호등 3 축 — 의미
 
@@ -2567,22 +2642,70 @@ docker exec ttc-allinone cat /data/.provision/sonar_token
 | **참고자료 다양성** | callers + tests 평균 | ≥60% 🟢 / ≥30% 🟡 / <30% 🔴 | 호출 관계 / 테스트 청크가 이슈마다 제공된 비율 |
 | **AI 응답 기술적 품질** | retry / context:empty | retry≤5%·ctx≤25% 🟢 / ≤20%·≤50% 🟡 / 그 외 🔴 | LLM 호출 자체가 안정적인가 (Dify 응답 파이프라인) |
 
-### 4) 📚 사전학습 결과 — AI 가 우리 프로젝트에서 배운 코드 지식
+### 4) 📚 사전학습 진단 — 4-stage narrative 사다리
 
-PM/스폰서가 **"AI 가 코드를 어떻게 이해했는가"** 를 한 눈에 검증:
+기존의 "8 개 카드 나열" 방식은 PM 입장에서 숫자만 던져 놓고 판정이 없어 모호했습니다. 신규 4-stage 사다리는 **Scope → Depth → Quality → Impact** 순서로 위에서 아래로 읽으면서 "사전학습 → 답변 활용" 의 인과를 체감하도록 재설계되었습니다.
 
-| 카드 | 의미 |
-|------|------|
-| 📂 **분석한 파일** | 프로젝트의 코드/테스트 파일 수 |
-| 🧩 **코드 자료(청크)** | 함수·클래스·타입 단위로 분할된 청크 수 + 언어 분포 |
-| 🔗 **호출 관계 링크** | "이 함수가 어디서 호출되는가" 자동 매핑 (tree-sitter import 검증) |
-| 🌐 **HTTP endpoint 매핑** | `@app.route('/x')`, `@app.get('/y')` 등 라우트 정의 자동 검출 |
-| 🛡️ **데코레이터 보유 청크** | `@require_role`, `@app.route` 등 정적 의도 정보 |
-| 🧪 **테스트↔본문 연결** | "이 함수는 어느 테스트가 검증하는가" 자동 연결 (PascalCase prefix 매칭) |
-| 📐 **도메인 모델·타입** | TS `interface` / `type` / `enum` (도메인 어휘) |
-| 📝 **문서화된 함수** | docstring/JSDoc 보유 청크 |
+각 Stage 는 **신호등 1개 + 한 줄 평어 + mini-card 묶음** 으로 구성됩니다.
 
-**검출된 endpoint 예시 5 건** 도 표로 노출 — PM 가 "AI 가 진짜 우리 라우트를 알았는가" 즉시 검증 가능.
+#### Stage 1 — 학습 **범위** (Scope) "AI 가 본 것"
+
+| 신호등 | 조건 |
+|--------|------|
+| 🟢 충분 | 파서 성공률 ≥70% + 청크 1개 이상 |
+| 🟡 부분 학습 | 파서 성공률 <70% — 일부 파일 정의 패턴이 특수해 분해되지 않음 |
+| 🔴 분석 실패 | 청크 0 — 지원 언어 파일 부재 |
+
+mini-card: 전체 파일 수 / 학습 가능한 파일 / 학습된 코드 조각 수 + **언어별 비율 막대그래프** (Python 60%, JS 35%, ...) + 노이즈 자동 제외 카운트 (벤더·미니파이·중복).
+
+#### Stage 2 — 학습 **깊이** (Depth) "이해의 풍부함"
+
+4 개 정적 신호 (호출 관계 매핑률 / HTTP 라우트 수 / 테스트 연결률 / 도메인 모델·문서화) 중 몇 개가 양호한가로 신호등 결정.
+
+| 신호등 | 조건 |
+|--------|------|
+| 🟢 풍부 | 4 개 신호 중 3 개 이상 충실 |
+| 🟡 보통 | 2 개만 충실 |
+| 🔴 얕음 | 1 개 이하 |
+
+mini-card 6 종:
+
+- **함수 간 호출 관계 매핑률** (%) + 막대 — "이 함수가 어디서 호출되는가" 추적 기반
+- **HTTP API 진입점** (개수) — `@app.route` / `app.get('/x', handler)` 자동 검출 (decorator + imperative 양쪽)
+- **테스트 ↔ 본문 자동 연결률** (%) + 막대
+- **정적 의도 정보 (데코레이터)** — `@require_role` 등
+- **도메인 모델 (타입·인터페이스)** — TS interface / enum
+- **문서화된 함수 / 클래스** — docstring / JSDoc / Javadoc / Google `Args:` / NumPy 모두 지원
+
+`▶ AI 가 알아낸 우리 프로젝트의 API 진입점 보기` 펼침 박스 — 검출된 endpoint 예시 5 건 표 노출 (PM 가 "AI 가 진짜 우리 라우트를 알았나" 즉시 검증).
+
+#### Stage 3 — 학습 **품질** (Quality) "학습이 깨끗한가"
+
+| 신호등 | 조건 |
+|--------|------|
+| 🟢 정상 | 파서 성공률 ≥50% + 언어 비대칭 없음 |
+| 🟡 비대칭 | 일부 언어 (예: Go 42%) 가 청크는 있으나 호출 관계 추출 0 |
+| 🔴 낮음 | 파서 성공률 <50% |
+
+mini-card: tree-sitter 파서 성공률 + 막대 / 자동 제외된 비-원본 파일 / 중복 제거 청크. 언어 비대칭 발견 시 **⚠️ 경고 카드** 가 자동 추가되어 "해당 언어의 이슈는 caller 청크 회수가 부족할 수 있습니다" 안내.
+
+#### Stage 4 — 분석에 미친 **영향** (Impact) "답변에 어떻게 쓰였나"
+
+사전학습이 LLM 답변에 실제로 반영됐는지 측정. **이 Stage 가 빨강이면 사전학습은 잘됐는데 활용이 새고 있다는 뜻**.
+
+| 신호등 | 조건 |
+|--------|------|
+| 🟢 잘 활용됨 | 답변 중 정적 메타 1회 이상 인용한 이슈 비율 ≥50% |
+| 🟡 부분 활용 | ≥20% |
+| 🔴 거의 미반영 | <20% — RAG retrieval / LLM 프롬프트 점검 필요 |
+| ⚪ 측정 불충분 | RAG 진단 데이터 보유 이슈 0 |
+
+mini-card 3 종 + 보조:
+
+- **답변에 정적 메타가 등장한 이슈 비율** (%) + 막대 — endpoint · decorator · 매개변수명 · RAG 청크 메타 중 하나라도 인용된 이슈 비율
+- **이슈당 평균 정적 메타 인용 수** — 구체성 깊이
+- **RAG 청크 인용률 (평균)** + 막대 — 받은 청크 대비 답변에 실제 인용된 비율
+- 보조 카드 4 종: HTTP route 인용 이슈 / 데코레이터 인용 이슈 / 매개변수명 인용 이슈 / RAG 청크 메타 인용 이슈 (각 카운트)
 
 ### 5) 📋 실무 권장 액션
 
@@ -2592,27 +2715,34 @@ worst 축에 따라 자동 분기되는 구체 지시:
 - **citation ⚪ (측정 불충분)**: RAG 빈 결과 이슈 줄이기 우선 (threshold 완화 / kb_query 변형 / self-exclusion 정밀화)
 - **buckets 🔴/🟡**: 02 사전학습 단계 KB 메타데이터 확인 (callers/tests/symbol 필드)
 - **quality 🔴**: 빈 컨텍스트 비율 점검, self-exclusion 정밀화 검토 (§12.18)
+- **Stage 4 🔴 (4-stage 진단)**: 사전학습은 충실한데 답변 활용이 안 됨 — kb_query 빌더의 endpoint/decorator 라인 누락 / `enclosing_meta` Dify 변수 미주입 / context_filter 의 `has_*` 플래그 부재 등 점검
 - 모두 🟢: 신뢰 가능 — 결과 활용 권장
 
 ### 6) 🔧 기술 상세 (개발자용)
 
 기본 접힘. 펼치면:
 
-- 9 카드: total_issues / LLM calls / callers·tests·others bucket filled / **avg citation rate** / **avg citation depth (구체성)** / **partial_citation %** (자동 강등) / context:empty / retry exhausted
+- 10 카드: total_issues / LLM calls / callers·tests·others bucket filled / **avg citation rate** / **avg citation depth (구체성)** / **partial_citation %** (자동 강등) / context:empty / retry exhausted
 - confidence 분포 + classification 분포
-- **🔬 RAG 검색 실패 패턴 자동 진단** — A(context:empty) / B(callers=0) / C(tests=0) / D(partial_citation) 4 카테고리 별 카운트 + 예시 path/line. 후속 fix 우선순위 결정용.
+- **🔬 RAG 검색 실패 패턴 자동 진단** — A(context:empty) / B(callers=0) / C(tests=0) / D(partial_citation) 4 카테고리 별 카운트 + 예시 path/line.
 
-### 7) 📄 이슈별 상세 — ⚠️/✓ 한 줄 평가
+### 7) 📄 이슈별 상세 — 한 줄 평가 + 메타 아이콘
 
 각 이슈 카드 상단의 자동 평가 5 종:
 
-- **⚠️ skip_llm** — severity 자동 템플릿 (MINOR/INFO). LLM 미호출, 수동 리뷰 권장.
-- **⚠️ retry_exhausted** — 3 회 재시도 실패. 직접 리뷰 필수.
-- **⚠️ context:empty** — RAG 빈 결과. 답변이 일반 원칙만, 재검토 권장.
-- **⚠️ partial_citation** — cited/total < 50%. confidence medium 강등됨.
-- **✓ cited X/Y · 구체 인용 N 개** — 정상 인용 + citation_depth. 신뢰 가능.
+- **⚠️ skip_llm** — severity 자동 템플릿. LLM 미호출, 수동 리뷰 권장 (현재 비활성)
+- **⚠️ retry_exhausted** — 3 회 재시도 실패. 직접 리뷰 필수
+- **⚠️ context:empty** — RAG 빈 결과. 답변이 일반 원칙만, 재검토 권장
+- **⚠️ partial_citation** — cited/total < 50%. confidence medium 강등됨
+- **✓ cited X/Y · 구체 인용 N 개** — 정상 인용 + citation_depth. 신뢰 가능
 
-각 이슈는 retrieve / excl_self / kept / used / callers / tests / others / cited 표 + impact_md 접기 섹션 제공.
+각 이슈의 used_items 표 컬럼:
+
+| bucket | symbol | score | cited? | meta |
+|--------|--------|-------|--------|------|
+| callers / tests / others | path::symbol | 0.0~1.0 | ✓ 또는 빈칸 | 🛡️ decorator · 🌐 endpoint · 📝 docstring 구조 보유 |
+
+`meta` 컬럼의 아이콘은 **해당 청크가 tree-sitter 정적 메타를 들고 있었는지** 를 보여줘 — "AI 가 인용 가능한 신호가 청크에 있었는데 답변에 반영했나" 를 이슈 단위에서 검증할 수 있게 합니다.
 
 ### 8) 진단 메트릭 자동 강등 정책
 
@@ -2622,14 +2752,33 @@ worst 축에 따라 자동 분기되는 구체 지시:
 - **표본 부족 시 회색 신호**: measurable n < 3 (RAG 가 빈 결과 이슈가 다수) 인 경우 신호등 ⚪ "측정 불충분"
 - **(path,symbol) dedup**: Dify segmentation 으로 같은 청크가 여러 번 retrieve 되어도 인용 카운트가 부풀려지지 않음
 
-### 9) 새 CLI 옵션 / 환경변수
+### 9) KB 인텔리전스 사이드카 (Phase A 신규)
+
+`02 코드 사전학습` 빌드 시 `repo_context_builder.py` 가 KB 디렉토리에 `_kb_intelligence.json` 사이드카를 자동 작성합니다. 진단 리포트 빌더는 이 사이드카를 우선 읽어 4-stage 데이터 소스로 활용. 사이드카 부재 시 (구버전 KB) JSONL 직접 스캔으로 fallback.
+
+```bash
+# 사이드카 위치 확인
+docker exec ttc-allinone ls /var/knowledges/docs/result/_kb_intelligence.json
+
+# 핵심 통계 한 줄 요약
+docker exec ttc-allinone python3 -c "
+import json
+d = json.load(open('/var/knowledges/docs/result/_kb_intelligence.json'))
+print('chunks:', d['depth']['total_chunks'],
+      '| callers_rate:', f\"{d['depth']['callees_present_rate_pct']:.0f}%\",
+      '| endpoints:', d['depth']['endpoints_count'],
+      '| parser_ok:', f\"{d['quality']['parser_success_rate_pct']:.0f}%\")
+"
+```
+
+### 10) 새 CLI 옵션 / 환경변수
 
 ```bash
 # 04 Jenkinsfile 가 자동 전달 — 수동 실행 시 참고
 python3 diagnostic_report_builder.py \
   --input llm_analysis.jsonl \
   --output report.html \
-  --kb-dir /var/knowledges/docs/result   # ← KB 인텔리전스 카드 활성
+  --kb-dir /var/knowledges/docs/result   # ← 사이드카 우선, JSONL 스캔 fallback
 
 # RAG retrieve 결과를 stderr 한 줄로 trace (사후 분석용)
 RAG_TRACE=1 python3 dify_sonar_issue_analyzer.py ... \
@@ -2639,7 +2788,7 @@ RAG_TRACE=1 python3 dify_sonar_issue_analyzer.py ... \
 python3 doc_processor.py upload <KEY> <DSID> --purge   # 수동 실행 시
 ```
 
-### 10) RAG 효용 측정 추적 (2026-04-25 새벽 시리즈)
+### 11) RAG 효용 측정 추적 (사이클 누적)
 
 사이클 별 측정 변화:
 
@@ -2648,7 +2797,8 @@ python3 doc_processor.py upload <KEY> <DSID> --purge   # 수동 실행 시
 - P1+P3+P4 (검색 다양성) — citation 60%, callers 20%, tests 0%
 - P5+P7+T1+T2 (정직화) — citation 65%, depth 3.10, partial 2/10, callers 10%, tests 0%
 - 사이클 1 (D1+D3+B+A1+F1+F2) — citation 65%, depth 3.70, partial 1/10, callers 20%, tests 10%
-- **사이클 2 (F+C+D+E+H tree-sitter)** — **citation 75%, depth 4.20, partial 0/10**, callers 0%, tests 10%
+- 사이클 2 (F+C+D+E+H tree-sitter) — citation 75%, depth 4.20, partial 0/10, callers 0%, tests 10%
+- **사이클 3 (Phase A+B+C — tree-sitter 누수 봉쇄 + 4-stage 학습진단 + PM 친화 GitLab Issue 본문)** — 다언어 callees 분기 (go/rust/c#/kotlin/c/cpp) + imperative route 검출 + Google/NumPy docstring 파서 + KB 인텔리전스 사이드카 + enclosing_meta 를 LLM 프롬프트로 구조화 주입 + kb_query 에 endpoint/decorators/params 추가 + context_filter has_* 메타 플래그 + tree_sitter_hits 메트릭. 효과는 컨테이너 재빌드 후 다음 빌드부터 측정 (구체 수치는 빌드 결과 기준 추가 예정)
 
 🎯 누적 효과:
 
@@ -2656,6 +2806,7 @@ python3 doc_processor.py upload <KEY> <DSID> --purge   # 수동 실행 시
 - citation_depth (구체성) 신규 도입 **3.10 → 4.20**
 - partial_citation 자동 강등 **2 → 0** (모두 정직)
 - KB 메타데이터 `?::?` 비율 **79% → 0%**
+- 사이클 3 신규 메트릭: `tree_sitter_hits` (endpoint / decorator / param / RAG-meta 4종 신호의 답변 등장 횟수) — Stage 4 핵심 지표
 
 ## 11. 자동 프로비저닝 내부 동작
 

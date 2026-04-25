@@ -120,9 +120,9 @@ LANG_CONFIG = {
         "name_field": "name",
     },
     # P2 H-3 — 추가 언어. tree_sitter_languages 패키지가 모두 포함.
-    # callees 추출은 collect_callees() 가 언어별 분기를 가지므로 새 언어는
-    # 기본적으로 callees=[] 로 작동 (호출 그래프는 추후 확장). symbol/청크
-    # 자체 매칭은 즉시 작동.
+    # Phase A F5 (확장됨): collect_callees() 가 go/rust/c#/kotlin/c/cpp 분기를
+    # 모두 갖추므로 callers 역인덱스가 11개 언어 전부에서 동작. 언어별 비대칭
+    # 우려는 해소됐고, diagnostic 리포트는 lang_breakdown 으로 분포 노출.
     ".go": {
         "lang": "go",
         "node_types": {
@@ -268,34 +268,127 @@ def is_trivial_chunk(code: str) -> bool:
 
 
 # ─ 언어별 "call site" 추출 — callees 필드용 ──────────────────────────────────
+# Phase A F5 — 이전엔 python/java/js/ts 만 callees 추출되어 go/rust/c#/kotlin/c/cpp
+# 레포는 callers 역인덱스가 구조적으로 비었다. 추가 분기로 11개 LANG_CONFIG
+# 언어 모두 호출 그래프 추출 가능하게 확장.
 def collect_callees(node, lang: str) -> list:
     """node 서브트리에서 호출된 symbol 이름들을 수집 (중복 제거·정렬)."""
     callees = set()
+
+    def _trim_dotted(txt: str) -> str:
+        # obj.method / pkg::func 등에서 마지막 식별자만 추출
+        if "::" in txt:
+            txt = txt.rsplit("::", 1)[-1]
+        if "." in txt:
+            txt = txt.rsplit(".", 1)[-1]
+        return txt
+
+    def _is_ident_like(txt: str) -> bool:
+        # 영숫자 + underscore 만. 빈 문자열 / 연산자 / generic <...> 스킵.
+        if not txt or len(txt) < 2:
+            return False
+        return txt.replace("_", "").isalnum()
 
     def walk(n):
         if lang == "python":
             if n.type == "call":
                 fn = n.child_by_field_name("function")
                 if fn is not None:
-                    txt = fn.text.decode("utf-8", errors="replace")
-                    # attribute 형태 (obj.method) 에서 메서드명만 추출
-                    if "." in txt:
-                        txt = txt.rsplit(".", 1)[-1]
+                    txt = _trim_dotted(fn.text.decode("utf-8", errors="replace"))
                     if txt.isidentifier():
                         callees.add(txt)
-        elif lang in ("java",):
+        elif lang == "java":
             if n.type == "method_invocation":
                 name = n.child_by_field_name("name")
                 if name is not None:
                     callees.add(name.text.decode("utf-8", errors="replace"))
+            elif n.type == "object_creation_expression":
+                # `new Foo()` — 생성자 호출도 호출 그래프에 포함.
+                tp = n.child_by_field_name("type")
+                if tp is not None:
+                    txt = tp.text.decode("utf-8", errors="replace")
+                    if _is_ident_like(txt):
+                        callees.add(txt)
         elif lang in ("javascript", "typescript", "tsx"):
+            if n.type in ("call_expression", "new_expression"):
+                fn = n.child_by_field_name("function") or n.child_by_field_name("constructor")
+                if fn is not None:
+                    txt = _trim_dotted(fn.text.decode("utf-8", errors="replace"))
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+        elif lang == "go":
+            if n.type == "call_expression":
+                fn = n.child_by_field_name("function")
+                if fn is not None:
+                    txt = _trim_dotted(fn.text.decode("utf-8", errors="replace"))
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+        elif lang == "rust":
+            if n.type == "call_expression":
+                fn = n.child_by_field_name("function")
+                if fn is not None:
+                    txt = _trim_dotted(fn.text.decode("utf-8", errors="replace"))
+                    # rust 의 generic <T> 가 붙어 들어올 수 있으므로 < 이전까지
+                    if "<" in txt:
+                        txt = txt.split("<", 1)[0]
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+            elif n.type == "macro_invocation":
+                # rust 매크로 (`println!`, `assert_eq!` 등) 도 호출 그래프 신호.
+                # `!` 는 식별자가 아니므로 제거.
+                mac = n.child_by_field_name("macro")
+                if mac is not None:
+                    txt = _trim_dotted(mac.text.decode("utf-8", errors="replace")).rstrip("!")
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+            elif n.type == "method_call_expression":
+                # rust `obj.method(...)` — name 이 method 의 식별자 자식
+                name = n.child_by_field_name("method")
+                if name is not None:
+                    txt = name.text.decode("utf-8", errors="replace")
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+        elif lang == "c_sharp":
+            if n.type == "invocation_expression":
+                fn = n.child_by_field_name("function") or n.child_by_field_name("expression")
+                if fn is not None:
+                    txt = _trim_dotted(fn.text.decode("utf-8", errors="replace"))
+                    if "<" in txt:
+                        txt = txt.split("<", 1)[0]
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+            elif n.type == "object_creation_expression":
+                # `new Foo()` — C# 생성자
+                tp = n.child_by_field_name("type")
+                if tp is not None:
+                    txt = _trim_dotted(tp.text.decode("utf-8", errors="replace"))
+                    if "<" in txt:
+                        txt = txt.split("<", 1)[0]
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+        elif lang == "kotlin":
+            if n.type == "call_expression":
+                # kotlin tree-sitter 는 함수명을 첫 child (보통 simple_identifier
+                # 또는 navigation_expression) 에 둔다. field name 이 통일돼 있지
+                # 않아 휴리스틱 — 첫 자식이 식별자면 그대로, navigation 이면 마지막.
+                ch0 = n.children[0] if n.children else None
+                if ch0 is not None:
+                    txt = _trim_dotted(ch0.text.decode("utf-8", errors="replace"))
+                    if _is_ident_like(txt):
+                        callees.add(txt)
+        elif lang in ("c", "cpp"):
             if n.type == "call_expression":
                 fn = n.child_by_field_name("function")
                 if fn is not None:
                     txt = fn.text.decode("utf-8", errors="replace")
-                    if "." in txt:
-                        txt = txt.rsplit(".", 1)[-1]
-                    if txt.replace("_", "").isalnum():
+                    # cpp `obj->method(...)` 처리
+                    if "->" in txt:
+                        txt = txt.rsplit("->", 1)[-1]
+                    txt = _trim_dotted(txt)
+                    # cpp `Foo<T>::bar` 처리
+                    if "<" in txt:
+                        txt = txt.split("<", 1)[0]
+                    if _is_ident_like(txt):
                         callees.add(txt)
         for ch in n.children:
             walk(ch)
@@ -324,13 +417,15 @@ _COMMENT_NODE_TYPES = {
 }
 
 
-def extract_leading_doc(node, lang: str, source: bytes) -> str:
-    """함수 정의 위쪽의 연속 comment 또는 Python docstring 을 한 줄로 요약.
+def _extract_leading_doc_text(node, lang: str, source: bytes) -> str:
+    """raw docstring/comment 추출 (newline 보존). Python triple-quote / 주석
+    마커는 제거하지만 줄 구분은 유지 — Google/NumPy block 파서가 의미 단위로
+    분리할 수 있도록.
 
-    - Python: 함수 body 첫 statement 가 string literal 이면 docstring.
-    - 기타 언어: 함수 정의 노드 직전 sibling 들 중 연속 comment 노드 텍스트
-      를 위→아래 순으로 수집.
+    Phase A F7: Google-style `Args:` / `Returns:` / NumPy `----` 헤더 같은
+    block 구조는 newline 위에 의존하므로 normalize 이전 단계의 텍스트가 필요.
     """
+    raw = ""
     if lang == "python":
         body = node.child_by_field_name("body")
         if body is not None and body.child_count > 0:
@@ -339,54 +434,88 @@ def extract_leading_doc(node, lang: str, source: bytes) -> str:
                 expr = first.children[0]
                 if expr.type == "string":
                     raw = source[expr.start_byte:expr.end_byte].decode("utf-8", errors="replace")
-                    return _normalize_doc_text(raw)
 
-    collected = []
-    cur = node.prev_sibling
-    # 연속 comment + 빈 줄(파서가 sibling 으로 보지 않는 whitespace 는 자동) 만 인정.
-    while cur is not None and cur.type in _COMMENT_NODE_TYPES:
-        collected.append(source[cur.start_byte:cur.end_byte].decode("utf-8", errors="replace"))
-        cur = cur.prev_sibling
-    if not collected:
+    if not raw:
+        collected = []
+        cur = node.prev_sibling
+        while cur is not None and cur.type in _COMMENT_NODE_TYPES:
+            collected.append(source[cur.start_byte:cur.end_byte].decode("utf-8", errors="replace"))
+            cur = cur.prev_sibling
+        if collected:
+            collected.reverse()
+            raw = "\n".join(collected)
+    if not raw:
         return ""
-    collected.reverse()
-    return _normalize_doc_text("\n".join(collected))
+    return _strip_doc_markers(raw)
+
+
+def extract_leading_doc(node, lang: str, source: bytes) -> str:
+    """함수 정의 위쪽의 연속 comment 또는 Python docstring 을 한 줄로 요약.
+
+    - Python: 함수 body 첫 statement 가 string literal 이면 docstring.
+    - 기타 언어: 함수 정의 노드 직전 sibling 들 중 연속 comment 노드 텍스트
+      를 위→아래 순으로 수집.
+    """
+    raw = _extract_leading_doc_text(node, lang, source)
+    if not raw:
+        return ""
+    return _collapse_doc_to_oneline(raw)
+
+
+def _strip_doc_markers(raw: str) -> str:
+    """주석 마커 / Javadoc leading * / Python triple-quote 제거. newline 은 보존.
+
+    parse_docstring_structure 와 _collapse_doc_to_oneline 두 곳에서 공유.
+    """
+    s = raw.strip()
+    for q in ('"""', "'''"):
+        if s.startswith(q):
+            s = s[len(q):]
+        if s.endswith(q):
+            s = s[: -len(q)]
+    cleaned_lines = []
+    for line in s.splitlines():
+        ln = line  # leading whitespace 보존 (Google/NumPy block indentation 식별용)
+        stripped = ln.strip()
+        # 블록 주석 마커
+        if stripped.startswith("/**"):
+            ln = ln.replace("/**", "", 1)
+        elif stripped.startswith("/*"):
+            ln = ln.replace("/*", "", 1)
+        if ln.rstrip().endswith("*/"):
+            ln = ln.rstrip()[:-2]
+        # Javadoc leading * — 문자 자체는 제거하되 indentation 한 칸 유지
+        ln = re.sub(r"^(\s*)\*\s?", r"\1", ln)
+        # 라인 주석
+        for prefix in ("///", "//!", "//", "###", "##", "#"):
+            stripped2 = ln.lstrip()
+            if stripped2.startswith(prefix):
+                # prefix 제거하되 그 자리 공백 유지
+                idx = ln.find(prefix)
+                ln = ln[:idx] + ln[idx + len(prefix):]
+                break
+        cleaned_lines.append(ln.rstrip())
+    # 앞뒤 빈 줄 제거
+    while cleaned_lines and not cleaned_lines[0].strip():
+        cleaned_lines.pop(0)
+    while cleaned_lines and not cleaned_lines[-1].strip():
+        cleaned_lines.pop()
+    return "\n".join(cleaned_lines)
+
+
+def _collapse_doc_to_oneline(raw_or_stripped: str) -> str:
+    """multi-line text → 한 줄 + 200자 cap (footer 용)."""
+    pieces = [ln.strip() for ln in raw_or_stripped.splitlines() if ln.strip()]
+    return " ".join(pieces).strip()[:200]
 
 
 def _normalize_doc_text(raw: str) -> str:
     """주석 마커 / Javadoc leading * / Python triple-quote 제거 + 공백 정리.
 
     상한 200자. 줄바꿈은 공백으로 (footer 한 줄로 들어감).
+    backward-compat alias — 신규 코드는 _strip_doc_markers + _collapse_doc_to_oneline 사용.
     """
-    s = raw.strip()
-    # Python triple-quote 처리
-    for q in ('"""', "'''"):
-        if s.startswith(q):
-            s = s[len(q):]
-        if s.endswith(q):
-            s = s[: -len(q)]
-    cleaned = []
-    for line in s.splitlines():
-        ln = line.strip()
-        # 블록 주석 마커
-        if ln.startswith("/**"):
-            ln = ln[3:]
-        elif ln.startswith("/*"):
-            ln = ln[2:]
-        if ln.endswith("*/"):
-            ln = ln[:-2]
-        # Javadoc leading *
-        ln = ln.lstrip("* \t")
-        # 라인 주석
-        for prefix in ("///", "//!", "//", "###", "##", "#"):
-            if ln.startswith(prefix):
-                ln = ln[len(prefix):]
-                break
-        ln = ln.strip()
-        if ln:
-            cleaned.append(ln)
-    text = " ".join(cleaned).strip()
-    return text[:200]
+    return _collapse_doc_to_oneline(_strip_doc_markers(raw))
 
 
 def walk_symbols(node, node_types: dict):
@@ -481,6 +610,132 @@ def parse_route_endpoint(decorators: list) -> str:
     return ""
 
 
+# ─ Phase A F6 — imperative route 추출 ────────────────────────────────────
+# Express/Koa/Fastify/Python `add_url_rule` 같은 명령형 라우트 등록을 AST 로
+# 잡아내 handler 식별자에 endpoint 를 매핑. decorator 기반 등록은 이미
+# extract_decorators + parse_route_endpoint 가 커버하므로 두 경로를 합쳐야
+# 라우트 검출 누락이 없다.
+#
+# 잡는 패턴 (의사 코드):
+#   <obj>.<METHOD>('/path', handlerIdent)        # Express/Koa
+#   <obj>.<METHOD>('/path', mw1, mw2, handlerIdent)
+#   app.add_url_rule('/path', view_func=handler) # Flask
+# 익명 핸들러 (`(req, res) => {...}`) 는 chunk symbol 이 없어 매핑 불가 — skip.
+_IMPERATIVE_HTTP_METHODS = {
+    "get", "post", "put", "patch", "delete", "head", "options", "all", "use",
+}
+
+
+def _node_text(node, source: bytes) -> str:
+    return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def extract_imperative_routes(tree, source: bytes, lang: str) -> list:
+    """AST 에서 imperative route 등록을 찾아 (handler_symbol, "METHOD /path") 반환.
+
+    동일 handler 가 여러 번 등록되면 첫 매치 사용 (decorator 기반과 충돌 시도
+    같은 정책 — extract_chunks_from_file 호출자가 endpoint 이미 채워졌으면 skip).
+    """
+    out: list = []
+
+    def _string_literal(n) -> str:
+        # 문자열 리터럴 노드의 따옴표 벗긴 내용. 다양한 파서 노드 타입 대응.
+        if n is None:
+            return ""
+        txt = _node_text(n, source).strip()
+        if len(txt) >= 2 and txt[0] in ("'", '"', "`") and txt[-1] == txt[0]:
+            return txt[1:-1]
+        return ""
+
+    def _last_ident(n) -> str:
+        # 인자 노드에서 식별자 텍스트 추출. arrow/anon function 은 빈 문자열.
+        if n is None:
+            return ""
+        txt = _node_text(n, source).strip()
+        if not txt or "=>" in txt or "function" in txt.split("(")[0]:
+            return ""
+        # 식별자 만 (영숫자 + _) 인 경우 그대로
+        if txt.replace("_", "").isalnum():
+            return txt
+        # `module.handler` 같은 경우 마지막 토큰
+        if "." in txt:
+            tail = txt.rsplit(".", 1)[-1]
+            if tail.replace("_", "").isalnum():
+                return tail
+        return ""
+
+    def walk(n):
+        # JS/TS/Flow — call_expression: <fn>(args)
+        if lang in ("javascript", "typescript", "tsx") and n.type == "call_expression":
+            fn = n.child_by_field_name("function")
+            args = n.child_by_field_name("arguments")
+            if fn is not None and args is not None:
+                fn_txt = _node_text(fn, source)
+                # member_expression 만 관심 (`app.get`, `router.post`, ...).
+                # `app.use('/x', handler)` 도 포함 — 라우터 마운트.
+                if "." in fn_txt:
+                    method = fn_txt.rsplit(".", 1)[-1].lower()
+                    if method in _IMPERATIVE_HTTP_METHODS:
+                        # args 의 children 중 첫 string + 마지막 식별자
+                        path = ""
+                        last_ident = ""
+                        for ch in args.children:
+                            if ch.type in ("string", "template_string"):
+                                if not path:
+                                    path = _string_literal(ch)
+                            elif ch.type == "identifier":
+                                last_ident = _node_text(ch, source).strip()
+                            elif ch.type == "member_expression":
+                                ident = _last_ident(ch)
+                                if ident:
+                                    last_ident = ident
+                        if path and last_ident:
+                            mtag = method.upper()
+                            if mtag in ("ALL", "USE"):
+                                mtag = "ANY"
+                            out.append((last_ident, f"{mtag} {path}"))
+        # Python — call: app.add_url_rule('/x', view_func=handler) or
+        #                app.route 를 명령형으로 사용한 경우.
+        elif lang == "python" and n.type == "call":
+            fn = n.child_by_field_name("function")
+            args = n.child_by_field_name("arguments")
+            if fn is not None and args is not None:
+                fn_txt = _node_text(fn, source)
+                if fn_txt.endswith(".add_url_rule"):
+                    path = ""
+                    handler = ""
+                    method_hint = "ANY"
+                    for ch in args.children:
+                        if ch.type == "string" and not path:
+                            path = _string_literal(ch)
+                        elif ch.type == "keyword_argument":
+                            # view_func=<ident> / methods=[...]
+                            kn = ch.child_by_field_name("name")
+                            kv = ch.child_by_field_name("value")
+                            if kn is not None:
+                                key = _node_text(kn, source).strip()
+                                if key == "view_func" and kv is not None:
+                                    handler = _last_ident(kv)
+                                elif key == "methods" and kv is not None:
+                                    txt = _node_text(kv, source)
+                                    # ['GET', 'POST'] → 첫 메서드만 (간이)
+                                    mt = re.search(r"['\"](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)['\"]", txt, re.IGNORECASE)
+                                    if mt:
+                                        method_hint = mt.group(1).upper()
+                        elif ch.type == "identifier" and not handler:
+                            handler = _node_text(ch, source).strip()
+                    if path and handler:
+                        out.append((handler, f"{method_hint} {path}"))
+        for ch in n.children:
+            walk(ch)
+
+    try:
+        walk(tree.root_node)
+    except Exception:
+        return out
+    return out
+
+
 # ─ H — docstring 구조화 추출 ──────────────────────────────────────────────
 # extract_leading_doc 의 결과 텍스트에서 JSDoc/Sphinx/Google 패턴을 분리.
 # @param / @returns / @throws 정도만 우선. 비-구조 텍스트는 doc 필드로 유지.
@@ -500,15 +755,157 @@ _THROWS_RE = re.compile(
 )
 
 
+# Phase A F7 — Google-style 블록 헤더. 콜론 종결 + 다음 줄에 indented entries.
+_GOOGLE_BLOCK_HEADERS = {
+    "args": "params", "arguments": "params", "parameters": "params",
+    "returns": "returns", "return": "returns", "yields": "returns", "yield": "returns",
+    "raises": "throws", "raise": "throws", "throws": "throws",
+    "except": "throws", "exceptions": "throws",
+}
+# Google entry: `name (type): desc` 또는 `name: desc`
+_GOOGLE_ENTRY_RE = re.compile(
+    r"^\s+(\w+)\s*(?:\(([^)]+)\))?\s*:\s*(.*?)\s*$"
+)
+# NumPy entry: `name : type` 라인 + indented desc 라인. 헤더는 `Parameters\n----`.
+_NUMPY_ENTRY_RE = re.compile(
+    r"^\s*(\w+)\s*:\s*([^\n]+?)\s*$"
+)
+
+
+def _parse_google_blocks(raw_lines: list, out: dict) -> None:
+    """Google-style block (Args:/Returns:/Raises:) 을 한 패스로 분해해 out 에 누적.
+
+    헤더 라인: `<HEADER>:` 단독 (대소문자 무시)
+    엔트리: 헤더 다음 줄부터 헤더 들여쓰기보다 깊은 indented 라인
+    빈 줄 또는 새 헤더가 등장하면 블록 종료.
+    """
+    i = 0
+    n = len(raw_lines)
+    while i < n:
+        line = raw_lines[i]
+        stripped = line.strip()
+        # 헤더 검출: `Args:` `Returns:` `Raises:` 등 단독
+        if stripped.endswith(":") and " " not in stripped[:-1]:
+            header_word = stripped[:-1].lower()
+            target = _GOOGLE_BLOCK_HEADERS.get(header_word)
+            if target is not None:
+                header_indent = len(line) - len(line.lstrip())
+                i += 1
+                # 블록 본문 수집: header_indent 보다 깊고, 빈 줄 아니고, 새 헤더 아닌 라인.
+                while i < n:
+                    body_line = raw_lines[i]
+                    body_stripped = body_line.strip()
+                    if not body_stripped:
+                        i += 1
+                        # 다음 라인이 또 indented 면 같은 블록 (단순화 — 일단 종결)
+                        break
+                    body_indent = len(body_line) - len(body_line.lstrip())
+                    if body_indent <= header_indent:
+                        break  # 새 헤더 또는 다른 블록
+                    # 새 헤더가 indented 영역에 등장하는 경우 (드물지만 안전)
+                    if body_stripped.endswith(":") and " " not in body_stripped[:-1] \
+                            and body_stripped[:-1].lower() in _GOOGLE_BLOCK_HEADERS:
+                        break
+                    if target == "params":
+                        m = _GOOGLE_ENTRY_RE.match(body_line)
+                        if m:
+                            out["params"].append((
+                                (m.group(2) or "").strip(),
+                                (m.group(1) or "").strip(),
+                                (m.group(3) or "").strip()[:80],
+                            ))
+                    elif target == "returns":
+                        # `type: desc` 또는 단순 desc
+                        if ":" in body_stripped and not body_stripped.startswith("`"):
+                            t, _, d = body_stripped.partition(":")
+                            if not out["returns"]:
+                                out["returns"] = (t.strip(), d.strip()[:80])
+                        elif not out["returns"]:
+                            out["returns"] = ("", body_stripped[:80])
+                    elif target == "throws":
+                        m = _GOOGLE_ENTRY_RE.match(body_line)
+                        if m:
+                            out["throws"].append((
+                                (m.group(2) or "").strip(),
+                                (m.group(1) or "").strip(),
+                                (m.group(3) or "").strip()[:80],
+                            ))
+                        elif ":" in body_stripped:
+                            t, _, d = body_stripped.partition(":")
+                            out["throws"].append((t.strip(), "", d.strip()[:80]))
+                    i += 1
+                continue
+        i += 1
+
+
+def _parse_numpy_blocks(raw_lines: list, out: dict) -> None:
+    """NumPy-style block — 헤더 다음 줄이 `----` underline.
+
+    Parameters
+    ----------
+    name : type
+        description
+    """
+    i = 0
+    n = len(raw_lines)
+    while i < n - 1:
+        header = raw_lines[i].strip().lower()
+        underline = raw_lines[i + 1].strip()
+        target = _GOOGLE_BLOCK_HEADERS.get(header)
+        if target is not None and underline and set(underline) == {"-"}:
+            i += 2
+            # 블록 본문: 빈 줄 또는 다음 헤더+underline 패턴 만나기 전까지.
+            while i < n:
+                line = raw_lines[i]
+                stripped = line.strip()
+                if not stripped:
+                    i += 1
+                    # 빈 줄 다음에도 indented 데이터가 이어질 수 있으므로 한 번 더 보고 결정
+                    if i < n - 1 and raw_lines[i].strip() and \
+                            set(raw_lines[i + 1].strip() or "") == {"-"}:
+                        break
+                    continue
+                # 다음 헤더 검출 (현재 줄이 헤더, 다음 줄이 underline)
+                if i + 1 < n and set((raw_lines[i + 1].strip() or "")) == {"-"}:
+                    break
+                m = _NUMPY_ENTRY_RE.match(line)
+                if m and target == "params":
+                    name, type_ = m.group(1), m.group(2)
+                    # 다음 indented 줄이 desc
+                    desc = ""
+                    if i + 1 < n:
+                        nxt = raw_lines[i + 1]
+                        if nxt.strip() and (len(nxt) - len(nxt.lstrip())) > (len(line) - len(line.lstrip())):
+                            desc = nxt.strip()[:80]
+                            i += 1
+                    out["params"].append((type_.strip(), name.strip(), desc))
+                elif target == "returns" and not out["returns"]:
+                    if ":" in stripped:
+                        t, _, d = stripped.partition(":")
+                        out["returns"] = (t.strip(), d.strip()[:80])
+                    else:
+                        out["returns"] = (stripped[:40], "")
+                elif target == "throws" and m:
+                    name, type_ = m.group(1), m.group(2)
+                    out["throws"].append((type_.strip(), name.strip(), ""))
+                i += 1
+            continue
+        i += 1
+
+
 def parse_docstring_structure(doc_raw: str) -> dict:
-    """JSDoc/Sphinx/Google 풍 docstring 에서 구조 정보 추출.
+    """JSDoc/Sphinx/Google/NumPy 풍 docstring 에서 구조 정보 추출.
 
     반환: {"params": [(type, name, desc), ...], "returns": (type, desc), "throws": [...] }
     각 list 는 빈 list, returns 는 (None, "") 가능.
+
+    Phase A F7: Google-style (`Args:`/`Returns:`/`Raises:`) + NumPy-style
+    (`Parameters\n----`) 추가. 입력은 newline 보존된 raw 텍스트.
     """
     out = {"params": [], "returns": None, "throws": []}
     if not doc_raw:
         return out
+    # 1) JSDoc/Sphinx 인라인 패턴 — newline 비의존이라 raw / oneline 모두 OK.
     for m in _PARAM_RE.finditer(doc_raw):
         out["params"].append((
             (m.group(1) or "").strip(),
@@ -524,6 +921,11 @@ def parse_docstring_structure(doc_raw: str) -> dict:
             (m.group(2) or "").strip(),
             (m.group(3) or "").strip(),
         ))
+    # 2) Google/NumPy block parser — newline 의존. raw 에 줄이 있을 때만 작동.
+    if "\n" in doc_raw:
+        raw_lines = doc_raw.splitlines()
+        _parse_google_blocks(raw_lines, out)
+        _parse_numpy_blocks(raw_lines, out)
     return out
 
 
@@ -772,11 +1174,14 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
 
         test_for_cands = guess_test_for_candidates(rel_path, symbol)
         test_for = test_for_cands[0] if test_for_cands else None
-        # P2 K-4 — leading docstring/comment 추출 (실패해도 빈 문자열로 안전)
+        # P2 K-4 — leading docstring/comment 추출 (실패해도 빈 문자열로 안전).
+        # Phase A F7: raw (newline 보존) 와 oneline (200자 cap) 두 형태로 추출.
+        # raw 는 Google/NumPy block 파싱에, oneline 은 footer 노출에 사용.
         try:
-            doc = extract_leading_doc(node, cfg["lang"], source)
+            doc_raw = _extract_leading_doc_text(node, cfg["lang"], source)
         except Exception:
-            doc = ""
+            doc_raw = ""
+        doc = _collapse_doc_to_oneline(doc_raw) if doc_raw else ""
         # D — decorators
         try:
             decorators = extract_decorators(node, cfg["lang"], source)
@@ -787,9 +1192,9 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             endpoint = parse_route_endpoint(decorators)
         except Exception:
             endpoint = ""
-        # H — docstring 구조화 (params / returns / throws)
+        # H — docstring 구조화 (params / returns / throws). raw 텍스트 전달.
         try:
-            doc_struct = parse_docstring_structure(doc)
+            doc_struct = parse_docstring_structure(doc_raw)
         except Exception:
             doc_struct = {"params": [], "returns": None, "throws": []}
 
@@ -818,6 +1223,24 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             # F — 파일 단위 imports (run-time only, JSONL 직렬화는 doc_processor 에서 무시)
             "_file_imports": list(file_imports),
         })
+
+    # Phase A F6 — imperative route 패스. decorator 기반으로 endpoint 가 이미
+    # 채워진 청크는 보존, 빈 청크에 한해 명령형 등록 (`app.get('/x', handler)`,
+    # `app.add_url_rule('/x', view_func=handler)`) 로부터 매핑.
+    try:
+        imperative_pairs = extract_imperative_routes(tree, source, cfg["lang"])
+    except Exception:
+        imperative_pairs = []
+    if imperative_pairs:
+        # symbol → 첫 빈 endpoint chunk 인덱스. 같은 이름 다중 정의의 경우 첫 매치.
+        sym_to_idx: dict = {}
+        for i, c in enumerate(chunks):
+            if not c.get("endpoint"):
+                sym_to_idx.setdefault(c.get("symbol", ""), i)
+        for handler, endpoint in imperative_pairs:
+            i = sym_to_idx.get(handler)
+            if i is not None and not chunks[i].get("endpoint"):
+                chunks[i]["endpoint"] = endpoint
 
     return chunks
 
@@ -1072,6 +1495,13 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             old.unlink()
         except Exception:
             pass
+    # Phase A — 사이드카 통계 파일도 갱신해야 stale 가 안 남음.
+    sidecar_path = out_dir / "_kb_intelligence.json"
+    if sidecar_path.exists():
+        try:
+            sidecar_path.unlink()
+        except Exception:
+            pass
 
     # pass 1 — 파일별 청크 수집 (메모리 보유, pass 2 역인덱스 구축을 위함).
     # 중대형 레포도 청크 수는 수천~수만 수준, JSON 한 줄 1~5KB → 10~50MB 로 메모리 안전.
@@ -1079,14 +1509,22 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
     skipped_trivial = 0  # K-2 통계
     skipped_dup = 0      # K-3 통계
     skipped_minified = 0  # K-1 통계 (파일 수준)
+    # Phase A — 신규 통계: 사전학습 진단 리포트 4-stage 데이터 소스.
+    parser_failed = 0          # 지원 확장자인데 청크 0개 (parse 실패 또는 빈 파일)
+    skipped_excluded_dirs = 0   # vendor/min 등 EXCLUDE_DIRS 경로
+    skipped_unsupported_ext = 0 # LANG_CONFIG 에 없는 확장자
+    files_seen_total = 0        # 모든 일반 파일 (디렉토리 제외)
     seen_body_hashes: set = set()  # K-3 전역 중복 감지 — (symbol, body_hash) 키
     import hashlib
     for file_path in sorted(repo_root.rglob("*")):
         if not file_path.is_file():
             continue
+        files_seen_total += 1
         if any(part in EXCLUDE_DIRS for part in file_path.parts):
+            skipped_excluded_dirs += 1
             continue
         if file_path.suffix.lower() not in LANG_CONFIG:
+            skipped_unsupported_ext += 1
             continue
         # K-1 파일명 기반 minified 제외
         if MINIFIED_FILE_PATTERNS.search(file_path.name):
@@ -1097,8 +1535,12 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             raw_chunks = extract_chunks_from_file(file_path, repo_root, commit_sha)
         except Exception as e:
             print(f"[skip:{file_path.relative_to(repo_root)}] {e}")
+            parser_failed += 1
             continue
         if not raw_chunks:
+            # 지원 확장자였는데 청크 0 → 파서 실패 또는 함수/클래스 정의 부재.
+            # 두 케이스 구분 어려우므로 parser_failed 에 누적 (보수적).
+            parser_failed += 1
             continue
 
         # K-2 trivial skip + K-3 dedup
@@ -1128,6 +1570,21 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
     total_chunks = 0
     total_callers_links = 0
     total_test_links = 0
+    # Phase A — 사전학습 진단 리포트용 인텔리전스 통계 누적.
+    from collections import Counter as _Counter
+    lang_chunks = _Counter()         # 언어별 청크 수 (Stage 1 시각화)
+    lang_callers_links = _Counter()  # 언어별 callers 역링크 수 (Stage 3 비대칭 진단)
+    kind_breakdown = _Counter()      # function/class/method/type 분포 (Stage 2)
+    test_chunks_count = 0            # is_test 청크 수
+    test_linked_count = 0            # test_paths 가 채워진 비-test 청크 수
+    decorators_count = 0             # decorators 보유 청크
+    endpoints_count = 0              # endpoint 보유 청크
+    endpoints_examples = []          # PM 노출용 (top 5)
+    type_chunks_count = 0            # type/enum/interface 청크
+    docstring_count = 0              # doc 비지 않은 청크
+    doc_struct_count = 0             # doc_params/returns/throws 중 하나라도 채워진 청크
+    callees_present_count = 0        # callees 1개 이상 보유 청크 (Stage 2 호출관계 풍부도)
+    sym_lengths = []                 # 함수 라인 수 분포 (보조 통계)
     # JSONL 직렬화 시 run-time only 필드 제거 (KB upload 에 의미 없음 + 용량 절약)
     _RUNTIME_ONLY_KEYS = ("_file_imports", "test_for_candidates")
     for rel_path, chunks in chunks_by_path.items():
@@ -1137,6 +1594,43 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             for ch in chunks:
                 total_callers_links += len(ch["callers"])
                 total_test_links += len(ch["test_paths"])
+                lang = ch.get("lang") or "?"
+                lang_chunks[lang] += 1
+                if ch.get("callers"):
+                    lang_callers_links[lang] += len(ch["callers"])
+                kind = ch.get("kind") or "?"
+                kind_breakdown[kind] += 1
+                if kind in ("type", "enum", "interface"):
+                    type_chunks_count += 1
+                if ch.get("is_test"):
+                    test_chunks_count += 1
+                elif ch.get("test_paths"):
+                    test_linked_count += 1
+                if ch.get("decorators"):
+                    decorators_count += 1
+                ep = (ch.get("endpoint") or "").strip()
+                if ep:
+                    endpoints_count += 1
+                    if len(endpoints_examples) < 5:
+                        endpoints_examples.append({
+                            "endpoint": ep,
+                            "path": ch.get("path", "?"),
+                            "symbol": ch.get("symbol", "?"),
+                        })
+                if (ch.get("doc") or "").strip():
+                    docstring_count += 1
+                if (ch.get("doc_params") or ch.get("doc_returns") or ch.get("doc_throws")):
+                    doc_struct_count += 1
+                if ch.get("callees"):
+                    callees_present_count += 1
+                # 함수 라인 수 — "lines": "a-b" 형식
+                lines_str = ch.get("lines") or ""
+                if "-" in lines_str:
+                    a, _, b = lines_str.partition("-")
+                    try:
+                        sym_lengths.append(max(1, int(b) - int(a) + 1))
+                    except Exception:
+                        pass
                 # 직렬화 직전에 run-time only 필드 제거
                 serializable = {k: v for k, v in ch.items() if k not in _RUNTIME_ONLY_KEYS}
                 fh.write(json.dumps(serializable, ensure_ascii=False) + "\n")
@@ -1146,7 +1640,72 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
     # 사람이 읽는 요약 MD 병행 생성
     write_repo_summary(repo_root, out_dir)
 
-    # 통계 딕셔너리 — 리포트 생성용. Jenkinsfile 이 별도 리포트 경로로 참조.
+    # Phase A — 사전학습 인텔리전스 사이드카. 진단 리포트 (Phase C) 가
+    # JSONL 재스캔 대신 이 파일을 우선 읽어 4-stage narrative 데이터 소스로 사용.
+    avg_func_lines = (sum(sym_lengths) / len(sym_lengths)) if sym_lengths else 0.0
+    # 비-test 청크 중 test_paths 매칭 비율 (테스트 연결률).
+    non_test_chunks = total_chunks - test_chunks_count
+    test_link_rate = (test_linked_count / non_test_chunks * 100.0) if non_test_chunks else 0.0
+    # callees 보유 비율 — 호출 관계 그래프 풍부도 신호.
+    callees_present_rate = (callees_present_count / total_chunks * 100.0) if total_chunks else 0.0
+    # 언어별 callers 비대칭 — 청크는 있는데 callers 가 0 인 lang 식별.
+    lang_callers_asymmetry = []
+    for lang, n_chunks in lang_chunks.most_common():
+        n_callers = lang_callers_links.get(lang, 0)
+        # 청크 ≥ 5 인데 callers 0 인 lang 만 경고. 작은 샘플은 신뢰도 낮음.
+        if n_chunks >= 5 and n_callers == 0:
+            lang_callers_asymmetry.append({"lang": lang, "chunks": n_chunks, "callers_links": 0})
+
+    intelligence = {
+        "schema_version": 1,
+        "commit_sha": commit_sha,
+        "scope": {
+            "files_seen_total": files_seen_total,
+            "files_analyzed": total_files,
+            "skipped_excluded_dirs": skipped_excluded_dirs,
+            "skipped_unsupported_ext": skipped_unsupported_ext,
+            "skipped_minified_files": skipped_minified,
+            "parser_failed": parser_failed,
+            "skipped_trivial_chunks": skipped_trivial,
+            "skipped_duplicate_chunks": skipped_dup,
+        },
+        "depth": {
+            "total_chunks": total_chunks,
+            "lang_breakdown": dict(lang_chunks),
+            "kind_breakdown": dict(kind_breakdown),
+            "callees_present_count": callees_present_count,
+            "callees_present_rate_pct": callees_present_rate,
+            "callers_links_total": total_callers_links,
+            "endpoints_count": endpoints_count,
+            "endpoints_examples": endpoints_examples,
+            "decorators_count": decorators_count,
+            "type_chunks_count": type_chunks_count,
+            "test_chunks_count": test_chunks_count,
+            "test_links_total": total_test_links,
+            "test_linked_non_test_count": test_linked_count,
+            "test_link_rate_pct": test_link_rate,
+            "docstring_count": docstring_count,
+            "doc_struct_count": doc_struct_count,
+            "avg_func_lines": avg_func_lines,
+        },
+        "quality": {
+            "lang_callers_asymmetry": lang_callers_asymmetry,
+            # parser 성공률 (전체 지원 확장자 파일 중 청크가 1개라도 추출된 비율)
+            "parser_success_rate_pct": (
+                total_files * 100.0 / (total_files + parser_failed)
+            ) if (total_files + parser_failed) else 0.0,
+        },
+    }
+    try:
+        sidecar_path.write_text(
+            json.dumps(intelligence, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[repo_context_builder] KB intelligence sidecar → {sidecar_path}")
+    except Exception as e:
+        print(f"[repo_context_builder] sidecar write 실패: {e}")
+
+    # 통계 딕셔너리 — HTML 리포트 생성에 사용.
     stats = {
         "total_files": total_files,
         "total_chunks": total_chunks,
@@ -1156,13 +1715,18 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
         "skipped_minified_files": skipped_minified,
         "skipped_trivial_chunks": skipped_trivial,
         "skipped_duplicate_chunks": skipped_dup,
+        # Phase A 신규
+        "parser_failed": parser_failed,
+        "files_seen_total": files_seen_total,
+        "intelligence": intelligence,
     }
 
     print(
         f"[repo_context_builder] files={total_files} chunks={total_chunks} "
         f"callers_links={total_callers_links} test_links={total_test_links} "
         f"skipped(minified_files={skipped_minified}, trivial={skipped_trivial}, "
-        f"dup={skipped_dup}) commit={commit_sha[:8] or 'n/a'} → {out_dir}"
+        f"dup={skipped_dup}, parser_failed={parser_failed}) "
+        f"commit={commit_sha[:8] or 'n/a'} → {out_dir}"
     )
     return total_chunks, stats, chunks_by_path
 
