@@ -195,9 +195,12 @@ workflow:
       #     키워드 매칭보다 약간 유리. BM25 를 완전히 버리지 않는 이유는
       #     build_kb_query 가 쏘는 구조화 라인 (`callers: foo`, `is_test: true`)
       #     이 BM25 에 강하게 매칭되기 때문.
-      #   - score_threshold=0.35 — 무관한 상위 청크 배제. 경험상 0.3~0.4 에서
-      #     "전혀 다른 파일" 이 컷오프된다. 너무 높이면 tests/callers 버킷이
-      #     비어 context_filter 가 빈 상태로 빠지므로 보수적으로 0.35.
+      #   - score_threshold=0.25 (B 사이클) — 0.35 는 callers/tests bucket 이
+      #     0% 로 비는 원인이었다 (cypress vs DAO 의 임베딩 의미 거리).
+      #     0.25 로 완화해 caller/test 청크가 retrieve 통과하도록 한다.
+      #     무관 청크 유입 위험은 context_filter 의 (path, line) self-exclusion
+      #     + bucket 별 top-3 cap 으로 1차 방어, citation 측정에서 _compute_citation
+      #     의 ?:? 차단으로 2차 방어된다.
       # ────────────────────────────────────────────────────────────────────
       - id: knowledge_retrieval
         type: custom
@@ -215,7 +218,7 @@ workflow:
           multiple_retrieval_config:
             top_k: 15
             score_threshold_enabled: true
-            score_threshold: 0.35
+            score_threshold: 0.25
             reranking_enable: true
             reranking_mode: weighted_score
             weights:

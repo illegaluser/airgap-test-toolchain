@@ -25,6 +25,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import warnings
 from pathlib import Path
@@ -90,6 +91,9 @@ LANG_CONFIG = {
             "class_declaration": "class",
             "interface_declaration": "interface",
             "arrow_function": "function",
+            # E — type/schema 청크. TS 의 도메인 모델은 정적분석 진단의 핵심 맥락.
+            "type_alias_declaration": "type",
+            "enum_declaration": "enum",
         },
         "name_field": "name",
     },
@@ -99,6 +103,9 @@ LANG_CONFIG = {
             "function_declaration": "function",
             "method_definition": "method",
             "class_declaration": "class",
+            "interface_declaration": "interface",
+            "type_alias_declaration": "type",
+            "enum_declaration": "enum",
         },
         "name_field": "name",
     },
@@ -390,6 +397,193 @@ def walk_symbols(node, node_types: dict):
         yield from walk_symbols(ch, node_types)
 
 
+# ─ D — decorator 추출 ──────────────────────────────────────────────────────
+# Python: decorated_definition 의 child decorator 노드들
+# JS/TS: 함수/클래스 정의의 직전 sibling decorator (ECMAScript decorators stage 3)
+# Java: modifiers 안의 marker_annotation / annotation
+# Sonar 이슈 분석에서 `@require_role`, `@app.route` 같은 정적 의도 정보가 LLM 답변
+# 의 보안·도메인 맥락을 직접 짚어줄 수 있다.
+def extract_decorators(node, lang: str, source: bytes) -> list:
+    """함수/메소드/클래스 노드에서 데코레이터 텍스트 리스트 추출.
+
+    반환: ["@app.route('/login')", "@require_role('admin')", ...]
+    각 항목은 한 줄로 정규화된 데코레이터 호출 표현.
+    """
+    out: list = []
+    parent = node.parent
+    if lang == "python":
+        # Python tree-sitter 는 "decorated_definition" wrapper 안에 decorator 들과
+        # 실제 def 가 같은 children 으로 위치. parent.type == decorated_definition 인 경우만.
+        if parent is not None and parent.type == "decorated_definition":
+            for ch in parent.children:
+                if ch.type == "decorator":
+                    txt = source[ch.start_byte:ch.end_byte].decode("utf-8", errors="replace")
+                    out.append(_normalize_one_line(txt))
+    elif lang in ("javascript", "typescript", "tsx"):
+        # JS/TS 의 class member 에서 decorator 들은 같은 부모 (class_body) 안의
+        # 직전 sibling 들이거나 method_definition 의 child 일 수 있음.
+        # 단순 접근: 노드 자신의 children 에서 decorator 노드 수집 + 직전 sibling.
+        for ch in node.children:
+            if ch.type == "decorator":
+                txt = source[ch.start_byte:ch.end_byte].decode("utf-8", errors="replace")
+                out.append(_normalize_one_line(txt))
+        cur = node.prev_sibling
+        while cur is not None and cur.type == "decorator":
+            txt = source[cur.start_byte:cur.end_byte].decode("utf-8", errors="replace")
+            out.append(_normalize_one_line(txt))
+            cur = cur.prev_sibling
+    elif lang == "java":
+        # Java 의 modifiers 안에 annotation 들 — 함수/클래스 노드의 첫 child 가
+        # modifiers 인 경우가 일반적.
+        for ch in node.children:
+            if ch.type == "modifiers":
+                for m in ch.children:
+                    if m.type in ("marker_annotation", "annotation"):
+                        txt = source[m.start_byte:m.end_byte].decode("utf-8", errors="replace")
+                        out.append(_normalize_one_line(txt))
+    # 짧은 cap — footer 비대 방지
+    return out[:10]
+
+
+def _normalize_one_line(s: str) -> str:
+    """다중 라인 텍스트를 한 줄로, 연속 공백 정리, 200자 cap."""
+    import re as _re
+    out = _re.sub(r"\s+", " ", s.strip())
+    return out[:200]
+
+
+# ─ C — route endpoint 추출 ────────────────────────────────────────────────
+# decorator 기반 우선 — 명령형 (`app.get('/path', handler)`) 은 별도 패스에서.
+# 이 함수는 decorator 리스트에서 라우트 정보를 정규화해 반환.
+_ROUTE_RE = re.compile(
+    r"@(?:[\w.]+)\.(get|post|put|patch|delete|head|options|route)\s*\(\s*['\"]([^'\"]+)['\"]"
+)
+
+
+def parse_route_endpoint(decorators: list) -> str:
+    """decorator 리스트에서 라우트 endpoint 한 줄로 추출.
+
+    매칭:
+      @app.get('/login')               → "GET /login"
+      @app.route('/profile')           → "ANY /profile"
+      @router.post('/api/users', ...)  → "POST /api/users"
+      @blueprint.route('/x', methods=['GET'])  → "ANY /x" (methods 는 별도 파싱
+        없이 일단 ANY 로)
+    """
+    for dec in decorators:
+        m = _ROUTE_RE.search(dec)
+        if m:
+            method = m.group(1).upper()
+            path = m.group(2)
+            if method == "ROUTE":
+                method = "ANY"
+            return f"{method} {path}"
+    return ""
+
+
+# ─ H — docstring 구조화 추출 ──────────────────────────────────────────────
+# extract_leading_doc 의 결과 텍스트에서 JSDoc/Sphinx/Google 패턴을 분리.
+# @param / @returns / @throws 정도만 우선. 비-구조 텍스트는 doc 필드로 유지.
+# desc 부분은 다음 `@` 토큰 또는 줄 바꿈 전까지만 — 그렇지 않으면 다음
+# @param/@returns 를 흡수해 잘못된 결과가 나옴.
+_PARAM_RE = re.compile(
+    r"@param\s+(?:\{([^}]+)\}\s+)?(\w+)\s*[:\-—]?\s*([^\n@]{0,80})",
+    re.IGNORECASE,
+)
+_RETURNS_RE = re.compile(
+    r"@returns?\s*(?:\{([^}]+)\})?\s*[:\-—]?\s*([^\n@]{0,80})",
+    re.IGNORECASE,
+)
+_THROWS_RE = re.compile(
+    r"@throws?\s+(?:\{([^}]+)\})?\s*([\w.]+)?\s*[:\-—]?\s*([^\n@]{0,80})",
+    re.IGNORECASE,
+)
+
+
+def parse_docstring_structure(doc_raw: str) -> dict:
+    """JSDoc/Sphinx/Google 풍 docstring 에서 구조 정보 추출.
+
+    반환: {"params": [(type, name, desc), ...], "returns": (type, desc), "throws": [...] }
+    각 list 는 빈 list, returns 는 (None, "") 가능.
+    """
+    out = {"params": [], "returns": None, "throws": []}
+    if not doc_raw:
+        return out
+    for m in _PARAM_RE.finditer(doc_raw):
+        out["params"].append((
+            (m.group(1) or "").strip(),
+            (m.group(2) or "").strip(),
+            (m.group(3) or "").strip(),
+        ))
+    rm = _RETURNS_RE.search(doc_raw)
+    if rm:
+        out["returns"] = ((rm.group(1) or "").strip(), (rm.group(2) or "").strip())
+    for m in _THROWS_RE.finditer(doc_raw):
+        out["throws"].append((
+            (m.group(1) or "").strip(),
+            (m.group(2) or "").strip(),
+            (m.group(3) or "").strip(),
+        ))
+    return out
+
+
+# ─ F — import 그래프 추출 ────────────────────────────────────────────────
+# 파일별로 import 한 symbol 이름 set 을 수집. pass 2 의 callers 인덱싱이
+# "callee 이름이 caller 의 imports 에 있는가" 를 추가 검증해 동명 함수의
+# false-positive 매칭 차단.
+def collect_imports_for_file(tree, source: bytes, lang: str) -> set:
+    """파일에서 import 한 symbol name set 반환. simple 한 형태 (모듈 경로 추적
+    안 함, symbol 이름만). 같은 파일 내 호출 + builtin 호출은 import 없이도
+    OK 이므로 pass 2 가 fallback 처리.
+    """
+    names: set = set()
+
+    def walk(node):
+        nt = node.type
+        if lang == "python":
+            if nt == "import_from_statement":
+                # from <module> import <names>
+                # children: 'from', dotted_name(module), 'import', names...
+                for ch in node.children:
+                    if ch.type == "dotted_name" or ch.type == "aliased_import":
+                        # dotted_name 이 module 또는 이름. 두 번째 이후가 imported names.
+                        # 단순: 모든 dotted_name / identifier 의 leaf 를 흡수.
+                        for sub in walk_idents(ch):
+                            names.add(sub)
+                    elif ch.type == "identifier":
+                        names.add(source[ch.start_byte:ch.end_byte].decode("utf-8", errors="replace"))
+            elif nt == "import_statement":
+                # import x, y, z [as alias]
+                for ch in node.children:
+                    if ch.type in ("dotted_name", "aliased_import"):
+                        for sub in walk_idents(ch):
+                            names.add(sub)
+        elif lang in ("javascript", "typescript", "tsx"):
+            if nt == "import_statement":
+                # import { a, b } from '...' / import * as x from '...' / import a from '...'
+                for ch in node.children:
+                    for sub in walk_idents(ch):
+                        names.add(sub)
+            elif nt == "lexical_declaration":
+                # const { x } = require('...')
+                txt = source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+                if "require(" in txt:
+                    for sub in walk_idents(node):
+                        names.add(sub)
+        for ch in node.children:
+            walk(ch)
+
+    def walk_idents(n):
+        if n.type == "identifier" or n.type == "type_identifier":
+            yield source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
+        for ch in n.children:
+            yield from walk_idents(ch)
+
+    walk(tree.root_node)
+    # 흔한 builtin/keyword 노이즈 제거
+    return {n for n in names if n and len(n) >= 2 and n not in {"from", "import", "as"}}
+
+
 def is_test_location(rel_path: str) -> bool:
     """P1.5 H-1 / P4 확장 — 이 파일이 테스트 디렉토리/파일 규약에 해당하는지.
 
@@ -528,7 +722,11 @@ def path_to_safe_filename(rel_path: str) -> str:
 
 
 def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
-    """한 파일의 함수/클래스 청크 리스트 반환. 비지원/파싱실패는 [] 반환."""
+    """한 파일의 함수/클래스 청크 리스트 반환. 비지원/파싱실패는 [] 반환.
+
+    F: collect_imports_for_file 결과를 _file_imports 키로 보존 (호출자가 활용).
+    D/C/H: 각 청크에 decorators / endpoint / doc_params / doc_returns 박음.
+    """
     ext = file_path.suffix.lower()
     cfg = LANG_CONFIG.get(ext)
     if cfg is None:
@@ -552,6 +750,15 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
         return []
 
     rel_path = str(file_path.relative_to(repo_root))
+
+    # F — 파일 단위 import 정보. extract_chunks_from_file 호출자가 chunks_by_path
+    # 와 별도로 imports_by_path 를 유지하기 위해, 첫 청크의 _file_imports 에
+    # set 을 prefix 로 보존한다. (한 파일은 동일 imports 를 공유하므로 set 1 회 계산)
+    try:
+        file_imports = collect_imports_for_file(tree, source, cfg["lang"])
+    except Exception:
+        file_imports = set()
+
     chunks = []
     for node, kind in walk_symbols(tree.root_node, cfg["node_types"]):
         symbol = get_symbol_name(node, cfg["name_field"])
@@ -570,6 +777,22 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             doc = extract_leading_doc(node, cfg["lang"], source)
         except Exception:
             doc = ""
+        # D — decorators
+        try:
+            decorators = extract_decorators(node, cfg["lang"], source)
+        except Exception:
+            decorators = []
+        # C — endpoint (decorator 기반)
+        try:
+            endpoint = parse_route_endpoint(decorators)
+        except Exception:
+            endpoint = ""
+        # H — docstring 구조화 (params / returns / throws)
+        try:
+            doc_struct = parse_docstring_structure(doc)
+        except Exception:
+            doc_struct = {"params": [], "returns": None, "throws": []}
+
         chunks.append({
             "path": rel_path,
             "symbol": symbol,
@@ -586,6 +809,14 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             # +T1: pass 2 가 prefix 매칭에 사용. 직렬화는 안 함 (run-time only).
             "test_for_candidates": test_for_cands,
             "doc": doc,             # P2 K-4 — leading docstring/comment (200자 cap)
+            # D / C / H — tree-sitter 강화 메타
+            "decorators": decorators,        # D — ["@app.route('/x')", ...]
+            "endpoint": endpoint,            # C — "GET /x" 또는 ""
+            "doc_params": doc_struct["params"],    # H — list of (type, name, desc)
+            "doc_returns": doc_struct["returns"],  # H — (type, desc) | None
+            "doc_throws": doc_struct["throws"],    # H — list of (type, name, desc)
+            # F — 파일 단위 imports (run-time only, JSONL 직렬화는 doc_processor 에서 무시)
+            "_file_imports": list(file_imports),
         })
 
     return chunks
@@ -734,16 +965,43 @@ def build_reverse_indexes(chunks_by_path: dict) -> None:
         for idx, ch in enumerate(chunks):
             symbol_index.setdefault(ch["symbol"], []).append((path, idx))
 
+    # F — 파일 단위 imports 맵. 같은 파일 chunks 는 동일 imports 공유 (첫 청크에서 추출).
+    imports_by_path: dict = {}
+    for path, chunks in chunks_by_path.items():
+        if chunks:
+            imports_by_path[path] = set(chunks[0].get("_file_imports") or [])
+
     # callees → callers 역링크
     # P3 — generic / 짧은 callee 이름은 false-positive 가 다수라 인덱스에서
     # 제외. 진짜 의미있는 caller 시그널만 살아남도록.
+    # F — caller 가 callee symbol 을 import 했는지 (또는 같은 파일인지) 추가 검증.
+    # 동명 함수가 여러 파일에 있을 때 import 안 한 파일과의 false-positive 매칭 차단.
     for caller_path, caller_chunks in chunks_by_path.items():
+        caller_imports = imports_by_path.get(caller_path, set())
         for caller in caller_chunks:
             caller_ref = f"{caller_path}#{caller['symbol']}"
             for callee_name in caller["callees"]:
                 if not _is_useful_callee_name(callee_name):
                     continue
-                for target_path, target_idx in symbol_index.get(callee_name, []):
+                candidates = symbol_index.get(callee_name, [])
+                if not candidates:
+                    continue
+                # F — 후보 필터링.
+                #   가능 case:
+                #     1) 동일 파일 내 호출 → import 없이 OK (자기 모듈)
+                #     2) 다른 파일 호출 → caller 가 callee_name 을 import 했어야 함
+                #   imports 정보가 없으면 (수집 실패) 보수적으로 모두 통과 (이전 동작 유지).
+                same_file = [(p, i) for (p, i) in candidates if p == caller_path]
+                cross_file = [(p, i) for (p, i) in candidates if p != caller_path]
+                accepted = list(same_file)
+                if cross_file:
+                    if caller_imports and callee_name in caller_imports:
+                        accepted.extend(cross_file)
+                    elif not caller_imports:
+                        # imports 미수집 → 기존 동작 (모두 채택)
+                        accepted.extend(cross_file)
+                    # else: 명시적으로 import 안 했으면 cross-file 전부 차단
+                for target_path, target_idx in accepted:
                     tgt = chunks_by_path[target_path][target_idx]
                     tgt["callers"].append(caller_ref)
 
@@ -870,6 +1128,8 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
     total_chunks = 0
     total_callers_links = 0
     total_test_links = 0
+    # JSONL 직렬화 시 run-time only 필드 제거 (KB upload 에 의미 없음 + 용량 절약)
+    _RUNTIME_ONLY_KEYS = ("_file_imports", "test_for_candidates")
     for rel_path, chunks in chunks_by_path.items():
         safe_name = path_to_safe_filename(rel_path)
         out_file = out_dir / f"{safe_name}.jsonl"
@@ -877,7 +1137,9 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             for ch in chunks:
                 total_callers_links += len(ch["callers"])
                 total_test_links += len(ch["test_paths"])
-                fh.write(json.dumps(ch, ensure_ascii=False) + "\n")
+                # 직렬화 직전에 run-time only 필드 제거
+                serializable = {k: v for k, v in ch.items() if k not in _RUNTIME_ONLY_KEYS}
+                fh.write(json.dumps(serializable, ensure_ascii=False) + "\n")
         total_files += 1
         total_chunks += len(chunks)
 

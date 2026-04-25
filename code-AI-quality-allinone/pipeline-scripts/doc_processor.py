@@ -665,6 +665,12 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
         meta_lines.append(f"doc: {doc}")
     if is_test:
         meta_lines.append("is_test: true")
+        # D3 — test 청크 footer 에 자연어 동의어 강제 주입.
+        # cypress e2e (`cy.get`) vs DAO (`parseInt`) 처럼 vocabulary 가 멀어
+        # tests bucket 0% 가 되는 문제 (관측). 자연어 토큰 한 줄로 BM25 / dense
+        # 양쪽에서 caller 코드 측의 "테스트", "검증", "spec" 같은 의도 자연어와
+        # 매칭 가능하게.
+        meta_lines.append("tags: 테스트 검증 시나리오 spec assertion test e2e cypress unit integration")
     if test_for:
         meta_lines.append(f"test_for: {test_for}")
     if callees:
@@ -673,6 +679,61 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
         meta_lines.append(f"callers: {', '.join(callers[:20])}")
     if test_paths:
         meta_lines.append(f"test_paths: {', '.join(test_paths[:10])}")
+    # D — decorator 정보. 보안/auth/route 의도가 청크 매칭 면적에 노출.
+    decorators = chunk.get("decorators") or []
+    if decorators:
+        meta_lines.append(f"decorators: {' '.join(decorators[:5])}")
+    # C — endpoint (HTTP route). decorator 또는 명령형 등록에서 추출됨.
+    endpoint = (chunk.get("endpoint") or "").strip()
+    if endpoint:
+        meta_lines.append(f"endpoint: {endpoint}")
+    # H — docstring 구조화. params/returns/throws 토큰화로 dense + BM25 양쪽
+    # 매칭 가능. caller 코드 측의 "이 함수는 어떤 매개변수를 받는가" 검색 신호.
+    doc_params = chunk.get("doc_params") or []
+    if doc_params:
+        # [(type, name, desc), ...] 의 name 만 토큰으로
+        param_names = [p[1] for p in doc_params if isinstance(p, (list, tuple)) and len(p) >= 2 and p[1]]
+        if param_names:
+            meta_lines.append(f"params: {' '.join(param_names[:10])}")
+    doc_returns = chunk.get("doc_returns")
+    if doc_returns and isinstance(doc_returns, (list, tuple)) and len(doc_returns) >= 2:
+        rt_type, rt_desc = doc_returns[0], doc_returns[1]
+        if rt_type or rt_desc:
+            ret_str = (rt_type + " " + rt_desc).strip()
+            if ret_str:
+                meta_lines.append(f"returns: {ret_str[:80]}")
+    doc_throws = chunk.get("doc_throws") or []
+    if doc_throws:
+        thr_names = []
+        for t in doc_throws:
+            if isinstance(t, (list, tuple)):
+                thr_names.append((t[0] or t[1] or "").strip())
+        thr_names = [t for t in thr_names if t]
+        if thr_names:
+            meta_lines.append(f"throws: {' '.join(thr_names[:5])}")
+    # D1 — _context_summary (enricher 가 LLM 으로 생성한 청크 자연어 요약) 를
+    # footer 에 노출. 코드 식별자 매칭에 약한 케이스 (cypress / e2e 등) 에서
+    # 자연어 임베딩 의미 매칭의 면적을 확대 — caller 코드 측의 "이 함수의
+    # 동작 의도" 와 dense 매칭 가능.
+    summary = (chunk.get("_context_summary") or "").strip()
+    if summary:
+        # 너무 길면 footer 비대 — 240자 제한
+        meta_lines.append(f"summary: {summary[:240]}")
+    # A1 (간소판) — e2e/cypress 청크 본문에서 describe(...) / it(...) 의 자연어
+    # 설명을 추출해 footer 에 노출. tree-sitter 파싱 대신 정규식.
+    if is_test and lang in ("javascript", "typescript", "tsx"):
+        import re as _re
+        descs = []
+        body = chunk.get("code") or ""
+        # describe("...", ...) / it("...", ...) / context("...", ...) 패턴
+        for m in _re.finditer(
+                r"\b(?:describe|it|context|test)\s*\(\s*['\"]([^'\"]{4,140})['\"]",
+                body):
+            descs.append(m.group(1).strip())
+            if len(descs) >= 3:
+                break
+        if descs:
+            meta_lines.append(f"test_descriptions: {' / '.join(descs)}")
 
     # Fix B — code 본문 상한 적용 후 footer 추가
     code_body = _truncate_code_for_single_segment(chunk.get("code", ""))
