@@ -448,6 +448,11 @@ workflow:
                     * 아래 '프로젝트 컨텍스트' RAG 결과의 실제 파일/함수를 구체적으로 언급.
                     * 예: "`src/session.py::check_session` 가 이 함수를 호출하므로 세션 검증 흐름 전체가 영향을 받음."
                     * 3~6줄 권장. 헤딩(##) 사용 금지 — 창 밖 상단 헤딩이 이미 있음.
+                    * **인용 의무 (Fix D)**: impact_analysis_markdown 안에 '프로젝트 컨텍스트' 섹션에 등장한
+                      파일 경로 혹은 함수 심볼 **최소 1 개를 backtick(`) 으로 감싸 그대로 인용**하세요.
+                      예: `` `src/auth/login.py` ``, `` `handle_login` ``, `` `ProfileDAO::updateUser` ``.
+                      프로젝트 컨텍스트 섹션이 "(관련 RAG 청크 없음)" 으로 비어있는 경우에는 인용 없이 작성해도 됩니다.
+                      인용이 있으면 downstream 품질 리포트에서 "프로젝트 맥락 반영" 으로 집계됩니다.
                 - suggested_fix_markdown:
                     * 바로 적용 가능한 diff 가 가장 좋음. 없으면 before/after python 블록도 허용.
                     * 코드펜스 1개만. 주석 설명은 코드펜스 바깥 1~2줄만.

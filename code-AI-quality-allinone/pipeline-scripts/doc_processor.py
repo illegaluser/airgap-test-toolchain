@@ -600,6 +600,27 @@ def upload_text_document(
     return False, f"upload failed after retries: {last_err}"
 
 
+# Fix B — Dify 기본 automatic_mode segmentation (~1024 tokens, ≈ 3~4KB) 보다
+# 긴 청크는 여러 segment 로 쪼개지며, footer 가 한 segment 에만 몰리고 다른
+# segment 는 code-only 로 저장돼 context_filter 의 parse_footer 가 path/symbol
+# 을 못 뽑아 `?::?` 로 표기되는 문제 관측. code 본문을 상한으로 자른다.
+# head 70% + tail 30% 전략 — signature / 초반 흐름과 return / 후반 흐름을
+# 동시에 보존해 대부분의 분석 맥락을 유지. 가운데 잘림 표시를 남긴다.
+MAX_CODE_CHARS_PER_CHUNK = int(os.environ.get("DOC_PROCESSOR_MAX_CODE_CHARS", "2200"))
+
+
+def _truncate_code_for_single_segment(code: str, cap: int = MAX_CODE_CHARS_PER_CHUNK) -> str:
+    if not code or len(code) <= cap:
+        return code
+    head_budget = int(cap * 0.7)
+    tail_budget = cap - head_budget - 40  # 잘림 표시 라인 여백
+    if tail_budget < 0:
+        tail_budget = 0
+    trimmed_middle = len(code) - head_budget - tail_budget
+    marker = f"\n... [middle {trimmed_middle} chars truncated for single-segment upload] ...\n"
+    return code[:head_budget] + marker + code[-tail_budget:]
+
+
 def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     """JSONL 청크 → (document_name, document_text).
 
@@ -653,8 +674,60 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     if test_paths:
         meta_lines.append(f"test_paths: {', '.join(test_paths[:10])}")
 
-    text = chunk.get("code", "") + "\n" + "\n".join(meta_lines)
+    # Fix B — code 본문 상한 적용 후 footer 추가
+    code_body = _truncate_code_for_single_segment(chunk.get("code", ""))
+    text = code_body + "\n" + "\n".join(meta_lines)
     return name, text
+
+
+# ─ Fix A — Dataset purge 헬퍼 ─────────────────────────────────────────────
+# 02 사전학습을 --mode full 로 돌릴 때 이전 프로젝트/이전 실행의 잔재 청크가
+# 같은 Dataset 에 누적되면 retrieve 결과에 무관한 프로젝트 청크가 섞여 RAG
+# 품질이 급락한다 (관측: nodegoat + ttc-sample-app 혼재로 citation 2.1%).
+# 업로드 전에 기존 문서를 모두 삭제해 프로젝트 간 격리를 보장.
+def purge_dataset_documents(api_key: str, dataset_id: str) -> int:
+    """Dataset 의 모든 document 를 삭제. 삭제 건수 반환."""
+    log("[Purge] 기존 Dataset 문서 전수 삭제 시작")
+    import urllib.request
+    import urllib.error
+    headers = dify_headers(api_key)
+    deleted = 0
+    # pagination — 한 번에 최대 100 건씩 조회해 삭제
+    while True:
+        list_url = f"{DIFY_API_BASE}/datasets/{dataset_id}/documents?page=1&limit=100"
+        req = urllib.request.Request(list_url, headers=headers, method="GET")
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as e:
+            log(f"[Purge:WARN] document list HTTP {e.code}")
+            break
+        except Exception as e:
+            log(f"[Purge:WARN] document list 실패: {e}")
+            break
+        items = data.get("data") or []
+        if not items:
+            break
+        for doc in items:
+            doc_id = doc.get("id")
+            if not doc_id:
+                continue
+            del_url = f"{DIFY_API_BASE}/datasets/{dataset_id}/documents/{doc_id}"
+            del_req = urllib.request.Request(del_url, headers=headers, method="DELETE")
+            try:
+                urllib.request.urlopen(del_req, timeout=30).read()
+                deleted += 1
+                if deleted % 20 == 0:
+                    log(f"[Purge] {deleted} 건 삭제됨...")
+            except urllib.error.HTTPError as e:
+                log(f"[Purge:WARN] {doc.get('name','?')} 삭제 실패 HTTP {e.code}")
+            except Exception as e:
+                log(f"[Purge:WARN] {doc.get('name','?')} 삭제 실패: {e}")
+        # 한 페이지 삭제 후 다음 루프에서 다시 list (page=1) — 삭제됐으면 다음 100 건이 올라옴
+        if len(items) < 100:
+            break
+    log(f"[Purge] 완료 — 총 {deleted} 건 삭제")
+    return deleted
 
 
 def upload_jsonl_chunks(
@@ -733,10 +806,18 @@ def _write_kb_manifest(dataset_id: str, doc_count: int, path: str = "/data/kb_ma
         log(f"[KB-Manifest:WARN] write failed: {e}")
 
 
-def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str) -> int:
-    """RESULT_DIR 의 *.jsonl (AST 청크) + fallback *.md (레거시) 를 Dify 로 업로드."""
+def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str,
+               purge_first: bool = False) -> int:
+    """RESULT_DIR 의 *.jsonl (AST 청크) + fallback *.md (레거시) 를 Dify 로 업로드.
+
+    purge_first=True 일 때 업로드 전에 Dataset 의 기존 문서를 모두 삭제한다.
+    02 --mode full 에서 프로젝트 간 청크 혼재 방지 용도 (Fix A).
+    """
     log("=== [Hybrid Doc Processor] Upload Start ===")
     ensure_doc_form_matches(api_key, dataset_id, doc_form)
+
+    if purge_first:
+        purge_dataset_documents(api_key, dataset_id)
 
     result_root = Path(RESULT_DIR)
     if not result_root.exists():
@@ -810,17 +891,24 @@ def main() -> None:
     
     # 2. 업로드 모드 실행
     if cmd == "upload":
-        # 최소 2개의 인자(API_KEY, DATASET_ID)가 필요함
-        if len(sys.argv) < 4:
-            raise SystemExit("usage: doc_processor.py upload <API_KEY> <DATASET_ID> [doc_form] [doc_language]")
-        
-        api_key = sys.argv[2]
-        dataset_id = sys.argv[3]
+        # 최소 2개의 인자(API_KEY, DATASET_ID)가 필요함. --purge 플래그 지원.
+        # 사용법:
+        #   doc_processor.py upload <API_KEY> <DATASET_ID> [doc_form] [doc_language] [--purge]
+        argv = sys.argv[2:]
+        purge_first = False
+        if "--purge" in argv:
+            purge_first = True
+            argv = [a for a in argv if a != "--purge"]
+        if len(argv) < 2:
+            raise SystemExit("usage: doc_processor.py upload <API_KEY> <DATASET_ID> [doc_form] [doc_language] [--purge]")
+
+        api_key = argv[0]
+        dataset_id = argv[1]
         # 인자가 없으면 기본값 사용 (하위 호환성 유지)
-        doc_form = sys.argv[4] if len(sys.argv) > 4 else "text_model"
-        doc_language = sys.argv[5] if len(sys.argv) > 5 else "Korean"
-        
-        fail_count = upload_all(api_key, dataset_id, doc_form, doc_language)
+        doc_form = argv[2] if len(argv) > 2 else "text_model"
+        doc_language = argv[3] if len(argv) > 3 else "Korean"
+
+        fail_count = upload_all(api_key, dataset_id, doc_form, doc_language, purge_first=purge_first)
         if fail_count > 0:
             sys.exit(1) # 실패가 있으면 에러 코드를 반환하여 Jenkins 빌드를 실패 처리함
         return

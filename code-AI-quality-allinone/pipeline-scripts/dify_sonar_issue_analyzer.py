@@ -252,19 +252,36 @@ def _compute_citation(impact_md: str, used_items: list) -> dict:
     """P1.5 M-2 — LLM 의 impact_analysis_markdown 이 used_items 중 어떤 청크를
     실제로 인용했는지 계산.
 
-    heuristic: path 또는 symbol 문자열이 impact_md 에 substring 으로 등장하면
-    인용한 것으로 본다. code-like identifier 는 LLM 이 문법 그대로 복붙하는
-    경향이 강해 substring 이 충분한 신호.
+    Heuristic (Fix C 로 3-tier 완화):
+      tier 1: 전체 path 문자열 일치 (`src/auth/login.py`)
+      tier 2: symbol (함수명) 일치
+      tier 3: path 의 basename 일치 (`login.py` 만 언급해도 인정)
+              — LLM 이 긴 path 를 생략하고 파일명만 쓰는 실전 패턴 반영.
+    `?` 또는 빈 값은 매칭 대상에서 제외 — 잘못된 청크 메타데이터가 실제
+    내용에 우연히 substring 으로 맞아도 cited 가 되는 false-positive 차단.
 
     반환: {"cited_count": int, "cited_items": [{...}, ...], "total_used": int}
     """
     impact = impact_md or ""
     cited = []
     for it in (used_items or []):
-        path = it.get("path") or ""
-        symbol = it.get("symbol") or ""
-        # path 또는 symbol 중 하나라도 impact_md 에 나타나면 인용
-        if (path and path in impact) or (symbol and symbol in impact):
+        path = (it.get("path") or "").strip()
+        symbol = (it.get("symbol") or "").strip()
+        # 메타데이터 footer 미포함 청크 (`?::?`) 는 매칭 대상 아님
+        if path in ("", "?") and symbol in ("", "?"):
+            continue
+        matched = False
+        if path and path not in ("?",) and path in impact:
+            matched = True
+        elif symbol and symbol not in ("?",) and symbol in impact:
+            matched = True
+        elif path and path not in ("?",):
+            # tier 3 — basename 매칭. 경로 구분자 기준 마지막 조각.
+            base = path.rsplit("/", 1)[-1]
+            # 너무 짧은 basename (예: `a.py`) 은 오탐 위험 — 5자 이상만 인정.
+            if len(base) >= 5 and base in impact:
+                matched = True
+        if matched:
             cited.append({
                 "bucket": it.get("bucket"),
                 "path": path,
