@@ -41,22 +41,23 @@
 
 ## 0.1 이 문서를 어떻게 읽으면 되나
 
-처음 보는 사용자는 아래 순서만 따라가면 됩니다.
+상황별로 먼저 펼쳐볼 절을 다음과 같이 권장합니다.
 
-| 상황 | 먼저 읽을 섹션 |
-|------|----------------|
-| 오프라인/폐쇄망에 처음 설치 | §2 → §3 → §4 → §5 → §6 |
-| 이미 이미지와 모델이 준비되어 있고 바로 띄우기만 하면 됨 | §6 |
-| 스택이 올라온 뒤 샘플로 실제 파이프라인 검증 | §7 |
-| 각 Jenkins 파이프라인의 역할과 입력값을 알고 싶음 | §8 |
-| 실패 원인 조사 | §12 |
-| 데이터 초기화 후 완전 재프로비저닝 | §13 |
+- 빌드부터 결과까지 **단일 흐름** 으로 이해하고 싶다 → **§0.4**
+- 오프라인/폐쇄망에 처음 설치 → §2 → §3 → §4 → §5 → §6
+- 이미지와 모델이 이미 있고 곧장 기동 → §6
+- 스택이 올라온 뒤 샘플로 실제 파이프라인 검증 → §7
+- 각 Jenkins 파이프라인의 역할·입력값·산출물 → §8
+- AI 분석 결과 리포트(PM 친화) 읽는 법 → **§10.5**
+- 실패 원인 조사 → §12
+- 데이터 초기화 후 완전 재프로비저닝 → §13
 
-핵심만 먼저 이해하면 아래 3줄입니다.
+전체 흐름을 한 단락으로 압축하면:
 
-1. 온라인 머신에서 이미지, 플러그인, Ollama 모델을 모두 준비해 반출합니다.
-2. 오프라인 머신에서 Docker/Ollama 를 복원하고 `run-mac.sh` 또는 `run-wsl2.sh` 로 스택을 올립니다.
-3. 프로비저닝이 끝나면 Jenkins `01-코드-분석-체인` 을 `root/nodegoat` 기준으로 바로 실행할 수 있습니다.
+1. 온라인 머신에서 이미지·플러그인·Ollama 모델을 모두 준비해 반출 (§3, §4)
+2. 오프라인 머신에서 Docker/Ollama 를 복원하고 `run-mac.sh` 또는 `run-wsl2.sh` 로 스택 기동 (§5, §6)
+3. 자동 프로비저닝 (§0.3, §11) 완료 후 Jenkins `01-코드-분석-체인` 실행 (§8.1)
+4. GitLab 이슈 + RAG Diagnostic Report 로 결과 검토 (§9, §10.5)
 
 ## 0.2 빠른 시작
 
@@ -78,25 +79,128 @@ bash scripts/run-wsl2.sh
 2. `docker logs -f ttc-allinone | grep -E "provision|entrypoint"` 에서 `자동 프로비저닝 완료`
 3. 브라우저에서 Jenkins `http://localhost:28080`, GitLab `http://localhost:28090`, SonarQube `http://localhost:29000`, Dify `http://localhost:28081` 접속 가능
 
-## 0.3 지금 자동으로 되는 것
+## 0.3 자동으로 처리되는 항목
 
-이 스택은 "컨테이너가 올라오면 그다음은 사람이 일일이 누르지 않아도 되는 것"이 핵심입니다.
+컨테이너가 기동되면 `provision.sh` 가 다음 작업을 자동 수행합니다 (멱등 — 재실행 안전):
 
-자동으로 완료되는 작업:
-- Dify 관리자 계정 생성
-- Ollama 플러그인 설치 및 기본 모델/provider 등록
-- Dify Workflow / Dataset import
-- SonarQube admin 비밀번호 변경 및 토큰 발급
-- GitLab root PAT 발급
-- GitLab 샘플 프로젝트 `root/nodegoat` 생성 및 초기 push
-- Jenkins Credentials 등록
-- Jenkins Job 5개 등록
+- Dify 관리자 계정 setup, Ollama 플러그인 설치 및 LLM/embedding provider 등록
+- Dify Workflow (`sonar-analyzer`) + Dataset (`code-context-kb`) import 및 publish
+- SonarQube 초기 비밀번호 변경, 분석용 토큰 발급
+- GitLab root PAT 발급, 샘플 프로젝트 (`root/nodegoat`, `root/ttc-sample-app`) 생성 및 초기 push
+- Jenkins credentials 5종 (Dify dataset/key, GitLab PAT, SonarQube token) 주입
+- Jenkins 파이프라인 Job 5개 등록 (`01`~`05`)
+- GitLab Work Items UI "Truncate descriptions" 기본값 OFF 패치 (`scripts/gitlab-truncate-patch.sh`, 호스트에서 백그라운드 실행)
 
-즉, 사용자는 보통 `이미지 준비 → 컨테이너 기동 → 프로비저닝 완료 대기 → Jenkins Job 실행`까지만 신경 쓰면 됩니다.
+운영자가 신경쓰는 단계는 **이미지 준비 → 컨테이너 기동 → 프로비저닝 완료 대기 → Jenkins Job 실행** 4 단계로 정리됩니다. 각 단계의 상세 절차는 §0.4 참조.
+
+## 0.4 전체 운영 절차 — 빌드부터 첫 결과까지
+
+이 절은 빌드 / 구동 / 프로비저닝 / 파이프라인 실행을 단일 흐름으로 보여줍니다. 각 단계의 상세는 명시된 절(§X.Y)을 참조하세요.
+
+### 1단계: 이미지 빌드 (온라인 준비 머신)
+
+빌드 컨텍스트는 `code-AI-quality-allinone/` 디렉터리 자체이며, Dockerfile 한 개로 Jenkins + SonarQube + Dify (api/web/plugin-daemon) + Postgres + Redis 를 단일 이미지(`ttc-allinone`)에 패키징합니다. GitLab 은 별도 컨테이너 (`gitlab/gitlab-ce:18.11.0-ce.0`) 입니다.
+
+```bash
+# 1) 사전 작업: Jenkins / Dify 플러그인 다운로드 (최초 1 회)
+bash scripts/download-plugins.sh
+
+# 2) 호스트 아키텍처에 맞춰 빌드
+bash scripts/build-mac.sh        # Apple Silicon (linux/arm64)
+# 또는
+bash scripts/build-wsl2.sh       # WSL2 / x86 Linux (linux/amd64)
+```
+
+빌드 결과:
+
+- `ttc-allinone:mac-dev` (또는 `wsl2-dev`) — 약 14.9 GB. 같은 캐시 상태에서 약 1 분.
+- 상세 옵션 / pinned base 이미지 / 변경점은 §3.6 참조.
+
+에어갭 운영을 위한 tarball 산출 (`offline-prefetch.sh`), 이미지 저장/복원, 매체 구성은 §3 ~ §4 참조.
+
+### 2단계: 스택 기동 (운영 머신)
+
+`docker compose up -d` 를 한 줄로 호출하는 헬퍼 스크립트:
+
+```bash
+bash scripts/run-mac.sh          # 또는 run-wsl2.sh
+```
+
+내부 동작:
+
+1. `docker compose -f docker-compose.<arch>.yaml up -d` — 컨테이너 4개 (`ttc-allinone`, `ttc-gitlab`, `ttc-sandbox`, 옵션) 기동.
+2. 백그라운드로 `scripts/gitlab-truncate-patch.sh` 호출 — GitLab healthy 대기 후 Work Items UI 의 기본 description 접힘 비활성화.
+
+기동 후 컨테이너 상태:
+
+```bash
+docker ps --filter "name=ttc-" --format "table {{.Names}}\t{{.Status}}"
+# ttc-allinone   Up 1 minute
+# ttc-sandbox    Up 1 minute (healthy)
+# ttc-gitlab     Up 1 minute (health: starting → healthy 까지 ~2분)
+```
+
+상세 (이미지 복원 / 태그 정합성 / 데이터 볼륨 위치) 는 §6 참조.
+
+### 3단계: 자동 프로비저닝 대기
+
+컨테이너 기동 직후 `entrypoint.sh` 가 `provision.sh` 를 호출해 §0.3 항목을 순차 수행합니다. 진행 상황 확인:
+
+```bash
+# 한 줄 요약 — 완료 또는 실패 마커 출력 시 종료
+docker logs -f ttc-allinone 2>&1 | grep -E "Phase A|Phase B|샘플|Job 등록|자동 프로비저닝 완료|provisioning 실패"
+```
+
+표준 완료 시간(첫 기동 기준):
+
+- GitLab 3-phase ready 대기: 약 2~5 분
+- Dify 플러그인 / provider / workflow / dataset 등록: 약 30 초
+- SonarQube ready + 토큰: 약 30 초
+- 샘플 프로젝트 push: 약 10 초
+- Jenkins Job 등록: 약 5 초
+
+`자동 프로비저닝 완료.` 로그가 보이면 4단계로 진행. 실패 패턴은 §12 참조.
+
+### 4단계: 파이프라인 실행
+
+Jenkins UI (`http://localhost:28080`, `admin / password`) 에서 직접 트리거하거나 REST API 로 자동 실행 가능합니다. 가장 흔한 사용 케이스 — `01-코드-분석-체인` 을 한 번 실행하면 02 → 03 → 04 → 체인 요약이 자동 chain.
+
+```bash
+# 옵션 A — Jenkins UI: 01-코드-분석-체인 → Build with Parameters
+#   (기본값이 nodegoat 이라 그대로 Build 클릭 가능)
+
+# 옵션 B — REST API (검증·자동화 용)
+curl -sS -u admin:password \
+  -X POST -H "$(curl -sS -u admin:password http://localhost:28080/crumbIssuer/api/json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["crumbRequestField"]+":"+d["crumb"])')" \
+  "http://localhost:28080/job/01-%EC%BD%94%EB%93%9C-%EB%B6%84%EC%84%9D-%EC%B2%B4%EC%9D%B8/buildWithParameters" \
+  --data-urlencode "REPO_URL=http://gitlab:80/root/nodegoat.git" \
+  --data-urlencode "MAX_ISSUES=10"
+```
+
+각 파이프라인의 입력/출력/소요 시간 표는 §8 참조.
+
+### 5단계: 결과 확인
+
+결과물별 확인 위치:
+
+- **GitLab 이슈** (LLM 분석 본문 + 위치 / 룰 / 영향 / 수정안 / 인용 링크) — `http://localhost:28090/root/<프로젝트>/-/issues`
+- **Jenkins 빌드 콘솔** (단계별 진행 로그, 실패 진단용) — Jenkins UI → 해당 빌드 → Console Output
+- **RAG Diagnostic Report** (PM 친화 신호등 + KB 인텔리전스 + 이슈별 평가) — `04` 빌드 → "RAG Diagnostic Report" 탭. 읽는 법은 §10.5
+- **Pre-training Report** (KB 청킹 통계 HTML) — `02` 빌드 → "Pre-training Report" 탭
+- **`chain_summary.json`** (각 단계 commit SHA / 결과 / GitLab 이슈 수) — `01` 빌드 아티팩트
+
+GitLab Issue 본문의 섹션 구조 (TL;DR · 위치 · 문제 코드 · 수정 제안 · Suggested Diff · 영향 분석 · Rule 상세 · 링크) 는 §9 참조.
 
 ---
 
 ## 목차
+
+빠른 시작:
+
+- [§0.4 전체 운영 절차 — 빌드부터 첫 결과까지](#04-전체-운영-절차--빌드부터-첫-결과까지)
+- [§10.5 RAG Diagnostic Report 읽는 법](#105-rag-diagnostic-report-읽는-법--pm-친화)
+
+상세 절차:
 
 1. [이 스택이 하는 일](#1-이-스택이-하는-일)
 2. [에어갭 배포 전체 그림](#2-에어갭-배포-전체-그림)
@@ -1636,6 +1740,18 @@ PY
 ---
 
 ## 8. 각 파이프라인 상세
+
+### 8.0 5 파이프라인 한 눈에 보기
+
+각 파이프라인의 역할 / 핵심 입력 / 핵심 출력 / 평균 소요:
+
+- **01 코드 분석 체인 (오케스트레이터)** — 02→03→04 를 단일 커밋 SHA 기준으로 순차 실행. 입력: `REPO_URL` · `BRANCH` · `ANALYSIS_MODE`. 출력: `chain_summary.json` (전 단계 결과 통합 + GitLab 이슈 수). 소요: 전체 약 10~15 분 (MAX_ISSUES=10 기준).
+- **02 코드 사전학습 (P1)** — 레포를 함수·메서드 단위 청크로 분해 후 Dify Knowledge Base 에 적재 (`tree-sitter` AST + 자연어 요약 enrichment). 입력: `REPO_URL` · `BRANCH` · `ANALYSIS_MODE`. 출력: Dify Dataset (`code-context-kb`) + `Pre-training Report` HTML. 소요: 약 3~5 분.
+- **03 코드 정적분석 (P2)** — SonarQube CLI 로 정적분석 실행, 이슈 목록 발행. 입력: `REPO_URL` · `BRANCH` · `SONAR_PROJECT_KEY`. 출력: SonarQube 프로젝트의 issues/measures. 소요: 약 1~2 분.
+- **04 정적분석 결과분석·이슈등록 (P3)** — Sonar 이슈를 Dify Workflow 로 LLM 분석 후 GitLab Issue 자동 생성. 입력: `SONAR_PROJECT_KEY` · `GITLAB_PROJECT` · `MAX_ISSUES`. 출력: `llm_analysis.jsonl` · GitLab 이슈 · `RAG Diagnostic Report` HTML. 소요: 이슈당 약 1~2 분.
+- **05 AI 평가** — 11 지표 × 5 단계로 AI 응답 품질 자동 평가 (deepeval 기반). 입력: `TARGET_TYPE` · `TARGET_URL` · `GOLDEN_CSV_PATH`. 출력: `eval_report.json` · 11 지표 통과/실패 표. 소요: 케이스당 약 30~60 초.
+
+각 파이프라인의 파라미터 전체 / Stage 구조 / 산출물 경로는 아래 §8.1 ~ §8.5 에서 상세히 다룹니다.
 
 ### 8.1 `01-코드-분석-체인` (오케스트레이터)
 
