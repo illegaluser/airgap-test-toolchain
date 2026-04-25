@@ -971,6 +971,32 @@ def _render_kb_intelligence(kb_intel: dict, agg: dict) -> str:
         "<div class='note' style='margin-top:8px;'>"
         + " · ".join(_esc(l) for l in skip_lines) + "</div>"
     ) if skip_lines else ""
+
+    # Phase D Fix C — parser_failed 가시화: 어떤 파일이 실패했는지 펼침 박스로
+    # 노출. PM/운영자가 "왜 청크가 적은지" 즉시 추적 가능.
+    pf_files = scope.get("parser_failed_files") or []
+    pf_count = scope.get("parser_failed", 0) or 0
+    pf_html = ""
+    if pf_files:
+        rows = "".join(f"<li><code>{_esc(p)}</code></li>" for p in pf_files[:50])
+        more = (
+            f"<div class='note' style='margin-top:6px;'>+{pf_count - len(pf_files)} 파일 더 (cap 50)</div>"
+            if pf_count > len(pf_files) else ""
+        )
+        pf_html = (
+            "<details class='example-box' style='margin-top:10px;'>"
+            f"<summary>⚠️ 청크 추출 실패 / 빈파일 {pf_count}개 — 어떤 파일인지 보기 ▾</summary>"
+            f"<ul style='margin:6px 0 0 18px;padding:0;font-size:11px;line-height:1.5;'>{rows}</ul>"
+            + more
+            + "<div class='note' style='margin-top:8px;'>가능한 원인: "
+              "(1) 함수/클래스 정의 부재 (라이센스 헤더만, 빈 파일), "
+              "(2) tree-sitter 파서가 파일의 특수 문법 구조 미지원, "
+              "(3) 익명 모듈 패턴 (`module.exports = () => {}` 만 있고 명명된 함수 없음). "
+              "(3) 의 경우 사이클 3 Fix A 가 부모 컨텍스트에서 이름을 부여하므로 일부 회복됨."
+            "</div>"
+            "</details>"
+        )
+
     stage1_body = (
         "<div class='mini-cards'>"
         f"<div class='mini-card'><div class='mini-v'>{files_seen:,}</div>"
@@ -982,6 +1008,7 @@ def _render_kb_intelligence(kb_intel: dict, agg: dict) -> str:
         "</div>"
         + lang_bar_html
         + skip_html
+        + pf_html
     )
 
     # ─ Stage 2 body — 학습 깊이 ───────────────────────────────────────────
@@ -1144,13 +1171,49 @@ def _render_kb_intelligence(kb_intel: dict, agg: dict) -> str:
         )
     )
 
+    # Phase D Fix D — narrative 도입문 동적 분기.
+    # 기존 고정 문구 ("Stage 4 빨강이면 활용이 새고 있다") 는 Stage 1/3 도 빨강/노랑인
+    # 케이스 (원료 부재) 에서 잘못된 trouble-shooting 을 안내. 색상 조합으로 분기.
+    s1_c, s3_c, s4_c = v_scope[0], v_quality[0], v_impact[0]
+    bad_set = {"red", "yellow"}
+    if s4_c == "red" and (s1_c in bad_set or s3_c in bad_set):
+        # 원료 부재 시나리오 — 사전학습이 부족해서 답변 활용도 자연 낮음
+        narrative_msg = (
+            "<strong>이번 빌드는 사전학습 단계 (Stage 1·3) 자체가 약해 답변 활용도 (Stage 4) "
+            "가 자연스럽게 낮아진 케이스</strong>입니다. 'RAG retrieval 누수' 보다 "
+            "<strong>원료 부족</strong>이 먼저 — 파서 실패 파일 정체 (Stage 1 의 펼침 박스), "
+            "지원 언어 추가, 또는 chunk 추출 로직 점검을 우선 검토하세요."
+        )
+    elif s4_c == "red":
+        # 원료는 충분한데 활용 누수 — 기존 메시지
+        narrative_msg = (
+            "<strong>Stage 1~3 은 정상인데 Stage 4 만 빨강</strong> — 사전학습은 "
+            "잘됐는데 답변 활용이 새고 있다는 뜻. 이슈별 RAG 검색 / LLM 프롬프트 / "
+            "context_filter 의 메타 보유 여부를 점검하세요."
+        )
+    elif s4_c == "yellow":
+        narrative_msg = (
+            "Stage 4 가 노랑 (부분 활용) — 사전학습 신호가 답변에 일부만 반영됐습니다. "
+            "정적 메타 추출량 확보 (Stage 2 endpoint/decorator/docstring) 와 LLM 프롬프트 "
+            "정적 메타 섹션 노출 둘 다 검토 가능."
+        )
+    elif s4_c == "gray":
+        narrative_msg = (
+            "Stage 4 측정 표본이 부족합니다. RAG 진단 데이터가 있는 이슈가 너무 적어 "
+            "활용 인과를 신뢰성 있게 측정할 수 없습니다."
+        )
+    else:  # green
+        narrative_msg = (
+            "Stage 4 초록 — 사전학습 → 답변 활용 인과가 정상 작동. "
+            "사이클 3 의 tree-sitter 메타 주입이 답변에 반영됨을 정량 입증."
+        )
+
     return (
         "<h2>📚 사전학습 진단 — AI 가 우리 프로젝트를 어떻게 이해했는가</h2>"
         "<p class='note'>아래 4단계는 사다리입니다. <strong>범위</strong>(무엇을 봤는가) → "
         "<strong>깊이</strong>(얼마나 풍부히 이해했는가) → <strong>품질</strong>(노이즈 없이 깨끗한가) → "
-        "<strong>영향</strong>(이번 분석 답변에 어떻게 반영됐는가). "
-        "Stage 4 가 빨간색이면 사전학습은 잘됐는데 활용이 새고 있다는 뜻 — "
-        "이슈별 RAG 검색을 점검해야 합니다.</p>"
+        "<strong>영향</strong>(이번 분석 답변에 어떻게 반영됐는가).</p>"
+        f"<p class='note'>{narrative_msg}</p>"
         "<div class='stages'>"
         + _stage(1, "학습 범위 — AI 가 본 것", v_scope, stage1_body)
         + _stage(2, "학습 깊이 — 이해의 풍부함", v_depth, stage2_body)

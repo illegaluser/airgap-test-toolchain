@@ -398,13 +398,73 @@ def collect_callees(node, lang: str) -> list:
 
 
 def get_symbol_name(node, name_field: str):
-    """child_by_field_name(name_field) 우선, 실패 시 첫 identifier 자식."""
+    """child_by_field_name(name_field) 우선, 익명 함수면 부모 컨텍스트에서 이름 부여.
+
+    Phase D Fix A — 익명 callback (`err => {...}`, `function(req,res){...}`) 의
+    파라미터를 함수명으로 잡는 fn:err 버그 수정. 추출 우선순위:
+
+      1. node.child_by_field_name(name_field) — 정상 명명된 함수
+      2. arrow_function / function_expression 의 부모가 명명 컨텍스트면:
+         - variable_declarator (`const X = () => {}`) → X
+         - assignment_expression (`X.y = function(){}`) → 좌변 마지막 식별자
+         - pair (`{ X: () => {} }`) → 키
+         - public_field_definition (TS class field) → 필드명
+      3. 그 외 익명 함수 → None (chunk skip 유도)
+    """
     n = node.child_by_field_name(name_field)
     if n is not None:
-        return n.text.decode("utf-8", errors="replace")
-    for ch in node.children:
-        if ch.type == "identifier":
-            return ch.text.decode("utf-8", errors="replace")
+        txt = n.text.decode("utf-8", errors="replace").strip()
+        if txt:
+            return txt
+
+    # arrow_function / function_expression / function — 익명 가능 타입에 한해 부모 lookup.
+    # 그 외 (function_declaration, method_definition, class_declaration 등) 는
+    # name field 없으면 진짜 익명이므로 None.
+    if node.type not in ("arrow_function", "function_expression", "function"):
+        return None
+
+    parent = node.parent
+    while parent is not None:
+        ptype = parent.type
+        if ptype == "variable_declarator":
+            # const X = () => {} 의 X
+            nm = parent.child_by_field_name("name")
+            if nm is not None:
+                txt = nm.text.decode("utf-8", errors="replace").strip()
+                if txt and txt.replace("_", "").isalnum():
+                    return txt
+            return None
+        if ptype == "assignment_expression":
+            # X.y = function(){} 의 y, 또는 X = () => {} 의 X
+            left = parent.child_by_field_name("left")
+            if left is not None:
+                txt = left.text.decode("utf-8", errors="replace").strip()
+                if "." in txt:
+                    txt = txt.rsplit(".", 1)[-1]
+                if txt and txt.replace("_", "").isalnum():
+                    return txt
+            return None
+        if ptype == "pair":
+            # { foo: () => {} } 의 foo
+            key = parent.child_by_field_name("key")
+            if key is not None:
+                txt = key.text.decode("utf-8", errors="replace").strip().strip("'\"`")
+                if txt and txt.replace("_", "").isalnum():
+                    return txt
+            return None
+        if ptype in ("public_field_definition", "field_definition"):
+            # TS class field — name field
+            nm = parent.child_by_field_name("name") or parent.child_by_field_name("property")
+            if nm is not None:
+                txt = nm.text.decode("utf-8", errors="replace").strip()
+                if txt and txt.replace("_", "").isalnum():
+                    return txt
+            return None
+        # variable_declarator → lexical_declaration → program 같은 wrapper 한 단계 통과.
+        if ptype in ("lexical_declaration", "variable_declaration"):
+            parent = parent.parent
+            continue
+        break
     return None
 
 
@@ -1224,15 +1284,20 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             "_file_imports": list(file_imports),
         })
 
-    # Phase A F6 — imperative route 패스. decorator 기반으로 endpoint 가 이미
-    # 채워진 청크는 보존, 빈 청크에 한해 명령형 등록 (`app.get('/x', handler)`,
-    # `app.add_url_rule('/x', view_func=handler)`) 로부터 매핑.
+    # Phase A F6 + Phase D Fix B — imperative route 패스.
+    # nodegoat 같은 일반적 Express 구조에서 라우트 등록 (`app/routes/index.js`) 과
+    # 핸들러 정의 (`app/routes/session.js::SessionHandler.displayLoginPage`) 가
+    # 분리된 파일에 있다. file-local 매칭만으로는 항상 0건이 되어 endpoint
+    # 추출이 실패하는 게 사이클 3 의 결정적 누수였다. 이제 file-local 매칭은
+    # 즉시 적용 (decorator 미사용 + 같은 파일 내 핸들러), 외부 파일 매칭용으로
+    # 모든 imperative_pairs 를 첫 청크의 _imperative_pairs 키에 보존하고
+    # scan_repo 가 pass 2 에서 cross-file 매핑을 수행한다.
     try:
         imperative_pairs = extract_imperative_routes(tree, source, cfg["lang"])
     except Exception:
         imperative_pairs = []
     if imperative_pairs:
-        # symbol → 첫 빈 endpoint chunk 인덱스. 같은 이름 다중 정의의 경우 첫 매치.
+        # 1) file-local 즉시 매칭 (기존 동작 보존)
         sym_to_idx: dict = {}
         for i, c in enumerate(chunks):
             if not c.get("endpoint"):
@@ -1241,6 +1306,29 @@ def extract_chunks_from_file(file_path: Path, repo_root: Path, commit_sha: str):
             i = sym_to_idx.get(handler)
             if i is not None and not chunks[i].get("endpoint"):
                 chunks[i]["endpoint"] = endpoint
+        # 2) 전체 pairs 를 첫 청크에 첨부 (run-time only, JSONL 직렬화는 scan_repo 에서 제거).
+        # 청크가 0 인 파일 (예: routes/index.js — 외부 핸들러만 등록)도 정보를
+        # 보존하기 위해 첫 청크가 없으면 빈 stub chunk 를 만들지 않고 별도 sentinel.
+        # 단순화: chunks 에 메타만 보존하는 sentinel chunk 1개 추가 (lines='0-0',
+        # is_routing_only=True 표시) — pass 2 가 cross-file 매칭에 사용 후 JSONL
+        # 직렬화 직전에 _is_routing_only=True chunk 는 제외.
+        if chunks:
+            chunks[0]["_imperative_pairs"] = list(imperative_pairs)
+        else:
+            chunks.append({
+                "path": rel_path, "symbol": "", "kind": "routing_only",
+                "lang": cfg["lang"], "lines": "0-0", "code": "",
+                "commit_sha": commit_sha,
+                "callers": [], "callees": [], "test_paths": [],
+                "is_test": False, "test_for": None,
+                "test_for_candidates": [],
+                "doc": "",
+                "decorators": [], "endpoint": "",
+                "doc_params": [], "doc_returns": None, "doc_throws": [],
+                "_file_imports": list(file_imports),
+                "_imperative_pairs": list(imperative_pairs),
+                "_is_routing_only": True,
+            })
 
     return chunks
 
@@ -1511,9 +1599,14 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
     skipped_minified = 0  # K-1 통계 (파일 수준)
     # Phase A — 신규 통계: 사전학습 진단 리포트 4-stage 데이터 소스.
     parser_failed = 0          # 지원 확장자인데 청크 0개 (parse 실패 또는 빈 파일)
+    parser_failed_files: list = []  # Phase D Fix C — 어떤 파일이 실패했는지 (cap 50)
     skipped_excluded_dirs = 0   # vendor/min 등 EXCLUDE_DIRS 경로
     skipped_unsupported_ext = 0 # LANG_CONFIG 에 없는 확장자
     files_seen_total = 0        # 모든 일반 파일 (디렉토리 제외)
+    # Phase D Fix B — cross-file imperative route 매핑.
+    # routing_only 파일들 (예: routes/index.js — 외부 핸들러만 등록) 의 pairs 를
+    # 모은 후 pass 2 가 모든 chunk symbol 인덱스 대비 매칭.
+    cross_file_pairs: list = []  # [(handler_name, "METHOD /path"), ...]
     seen_body_hashes: set = set()  # K-3 전역 중복 감지 — (symbol, body_hash) 키
     import hashlib
     for file_path in sorted(repo_root.rglob("*")):
@@ -1531,21 +1624,34 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             skipped_minified += 1
             continue
 
+        rel_path_str = str(file_path.relative_to(repo_root))
         try:
             raw_chunks = extract_chunks_from_file(file_path, repo_root, commit_sha)
         except Exception as e:
-            print(f"[skip:{file_path.relative_to(repo_root)}] {e}")
+            print(f"[skip:{rel_path_str}] {e}")
             parser_failed += 1
+            if len(parser_failed_files) < 50:
+                parser_failed_files.append(rel_path_str)
             continue
         if not raw_chunks:
             # 지원 확장자였는데 청크 0 → 파서 실패 또는 함수/클래스 정의 부재.
-            # 두 케이스 구분 어려우므로 parser_failed 에 누적 (보수적).
             parser_failed += 1
+            if len(parser_failed_files) < 50:
+                parser_failed_files.append(rel_path_str)
             continue
 
-        # K-2 trivial skip + K-3 dedup
+        # Phase D Fix B — routing_only 파일은 chunk 목록에서 제외하되 imperative
+        # pairs 는 보존해 cross-file 매핑에 사용. 그 외 파일도 pairs 가 있으면
+        # cross-file 후보로 흡수 (file-local 매칭은 이미 끝남, 다른 파일의
+        # 핸들러도 매칭될 수 있게).
         kept = []
         for ch in raw_chunks:
+            pairs = ch.get("_imperative_pairs") or []
+            if pairs:
+                cross_file_pairs.extend(pairs)
+            if ch.get("_is_routing_only"):
+                # sentinel — JSONL 로 직렬화하지 않음
+                continue
             if is_trivial_chunk(ch["code"]):
                 skipped_trivial += 1
                 continue
@@ -1557,10 +1663,30 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             seen_body_hashes.add(key)
             kept.append(ch)
         if not kept:
+            # 청크가 routing_only 만 있던 파일 — parser_failed 로 분류하지 않음
+            # (의도적으로 chunk 가 없는 게 정상). 다만 routing pairs 는 이미 흡수됨.
             continue
 
-        rel_path = str(file_path.relative_to(repo_root))
-        chunks_by_path[rel_path] = kept
+        chunks_by_path[rel_path_str] = kept
+
+    # Phase D Fix B — pass 1.5: cross-file imperative route 매핑.
+    # 모든 청크 symbol 인덱스를 만들고 handler 이름과 일치하는 청크에 endpoint
+    # 부여. 동명 handler 가 여러 파일에 있으면 모두 endpoint 받음 (recall 우선).
+    if cross_file_pairs:
+        sym_index: dict = {}  # symbol → [(path, idx), ...]
+        for path, chunks in chunks_by_path.items():
+            for i, ch in enumerate(chunks):
+                sym = ch.get("symbol", "")
+                if sym:
+                    sym_index.setdefault(sym, []).append((path, i))
+        applied = 0
+        for handler, endpoint in cross_file_pairs:
+            for path, i in sym_index.get(handler, []):
+                if not chunks_by_path[path][i].get("endpoint"):
+                    chunks_by_path[path][i]["endpoint"] = endpoint
+                    applied += 1
+        if applied:
+            print(f"[repo_context_builder] cross-file imperative routes 매핑: {applied} 청크")
 
     # pass 2 — callers / test_paths 역인덱스 채움
     build_reverse_indexes(chunks_by_path)
@@ -1586,7 +1712,10 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
     callees_present_count = 0        # callees 1개 이상 보유 청크 (Stage 2 호출관계 풍부도)
     sym_lengths = []                 # 함수 라인 수 분포 (보조 통계)
     # JSONL 직렬화 시 run-time only 필드 제거 (KB upload 에 의미 없음 + 용량 절약)
-    _RUNTIME_ONLY_KEYS = ("_file_imports", "test_for_candidates")
+    _RUNTIME_ONLY_KEYS = (
+        "_file_imports", "test_for_candidates",
+        "_imperative_pairs", "_is_routing_only",  # Phase D Fix B
+    )
     for rel_path, chunks in chunks_by_path.items():
         safe_name = path_to_safe_filename(rel_path)
         out_file = out_dir / f"{safe_name}.jsonl"
@@ -1666,6 +1795,8 @@ def scan_repo(repo_root: Path, out_dir: Path, commit_sha: str) -> int:
             "skipped_unsupported_ext": skipped_unsupported_ext,
             "skipped_minified_files": skipped_minified,
             "parser_failed": parser_failed,
+            # Phase D Fix C — 어떤 파일이 실패했는지 진단 가시화. cap 50.
+            "parser_failed_files": parser_failed_files,
             "skipped_trivial_chunks": skipped_trivial,
             "skipped_duplicate_chunks": skipped_dup,
         },

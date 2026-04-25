@@ -248,6 +248,65 @@ def build_kb_query(row, attempt: int = 0, hyde_text: str = ""):
     return "\n".join([p for p in parts if p])
 
 
+def format_dependency_tree(item) -> str:
+    """Phase E E1 — depth-2 caller graph 를 LLM 친화 텍스트로.
+
+    Phase E' (a): 헤더(`## Dependency Graph`) 도 결과에 포함. 빈 값이면 빈
+    문자열 반환 → user 프롬프트의 해당 라인이 통째 빈 줄. LLM noise 감소.
+    """
+    direct = item.get("direct_callers") or []
+    depth2 = item.get("depth2_callers") or []
+    if not direct and not depth2:
+        return ""
+    lines = ["## Dependency Graph (depth-2)"]
+    if direct:
+        lines.append("직접 caller (depth 1):")
+        for c in direct[:8]:
+            lines.append(f"  - {c}")
+    if depth2:
+        lines.append("그 caller 의 caller (depth 2):")
+        for c in depth2[:5]:
+            lines.append(f"  - {c}")
+    return "\n".join(lines)
+
+
+def format_git_history(item) -> str:
+    """Phase E E3 — git 이력을 LLM 친화 텍스트로. 헤더 포함, 빈 값이면 통째 생략."""
+    parts = []
+    git_ctx = (item.get("git_context") or "").strip()
+    similar = item.get("git_history_similar") or []
+    if not git_ctx and not similar:
+        return ""
+    parts.append("## Git History")
+    if git_ctx:
+        parts.append(git_ctx)
+    if similar:
+        parts.append("같은 rule 의 과거 fix 이력:")
+        for s in similar[:3]:
+            parts.append(f"  - {s}")
+    return "\n".join(parts)
+
+
+def format_similar_locations(item) -> str:
+    """Phase E E5 — 같은 rule 의 다른 위치. 헤더 포함, 빈 값이면 통째 생략."""
+    locs = item.get("similar_rule_locations") or []
+    if not locs:
+        return ""
+    lines = [
+        f"## 같은 rule 의 다른 위치 ({len(locs)} 곳에서 같은 패턴)",
+    ]
+    for loc in locs[:5]:
+        lines.append(f"  - {loc.get('relative_path', '?')}:{loc.get('line', '?')}")
+    return "\n".join(lines)
+
+
+def format_project_overview(text: str) -> str:
+    """Phase E E2-lite — project_overview 를 헤더와 함께. 빈 값이면 통째 생략."""
+    if not text or not text.strip():
+        return ""
+    return "## 프로젝트 개요 (README + 의존성 + CONTRIBUTING)\n" + text.strip()
+
+
 def format_enclosing_meta(item) -> str:
     """Phase B F2b — exporter 가 채운 enclosing_* 메타를 LLM 친화 멀티라인 텍스트로.
 
@@ -561,7 +620,24 @@ def _build_out_row(*, item, key, severity, msg, line, enclosing_fn, enclosing_ln
     diagnostic = None
     if context_stats is not None:
         used = context_stats.get("used_items") or []
-        impact_md = normalized.get("impact_analysis_markdown", "")
+        # Phase E' (b) — LLM 이 E4 검토범위 의무를 무시하면 (이전 cycle 측정 0/10)
+        # analyzer 가 답변 끝에 자동 부착. deterministic 보장률 100%.
+        # LLM 답변에 이미 '🔍 검토' 패턴이 있으면 중복 방지.
+        impact_md = normalized.get("impact_analysis_markdown", "") or ""
+        if impact_md.strip() and "🔍 검토" not in impact_md:
+            buckets = context_stats.get("used_per_bucket") or {}
+            cn = buckets.get("callers", 0) or 0
+            tn = buckets.get("tests", 0) or 0
+            on = buckets.get("others", 0) or 0
+            git_hist_n = len(item.get("git_history_similar") or [])
+            sim_n = len(item.get("similar_rule_locations") or [])
+            depth2_n = len(item.get("depth2_callers") or [])
+            scope_line = (
+                f"\n\n🔍 검토: callers {cn} · tests {tn} · others {on} · "
+                f"depth-2 {depth2_n} · git history {git_hist_n} · 유사 위치 {sim_n}"
+            )
+            impact_md = impact_md.rstrip() + scope_line
+            normalized["impact_analysis_markdown"] = impact_md
         citation = _compute_citation(impact_md, used)
         # Phase C F4 — tree-sitter 메타가 답변에 실제로 반영됐는지 측정.
         ts_hits = _compute_tree_sitter_hits(impact_md, item, used)
@@ -709,6 +785,13 @@ def main():
     issues = data.get("issues", [])
     if args.max_issues > 0: issues = issues[:args.max_issues]
 
+    # Phase E E2-lite — exporter 가 1회 작성한 metadata 섹션 (project_overview 등) 추출.
+    # 모든 LLM 호출에 동일 첨부 (이슈별 다른 정보 아님).
+    metadata = data.get("metadata", {}) or {}
+    project_overview_text = metadata.get("project_overview", "") or ""
+    if project_overview_text:
+        print(f"[INFO] project_overview 적용: {len(project_overview_text)}자", file=sys.stderr)
+
     # 결과를 기록할 JSONL 파일 열기
     # buffering=1 = line-buffered. 각 out_fp.write 뒤 명시적 flush 없이도 줄 단위로
     # 디스크 반영됨 → 장기 실행 중 Jenkins 가 실시간 JSONL 을 읽어 진행 상황 확인
@@ -819,6 +902,13 @@ def main():
         # Phase B F2b — exporter 가 채운 tree-sitter 메타를 LLM 프롬프트용 텍스트로 직렬화.
         # 빈 문자열이면 workflow user 프롬프트의 해당 섹션이 자동으로 비어 출력.
         enclosing_meta_text = format_enclosing_meta(item)
+        # Phase E — graph / git history / similar locations 텍스트 직렬화.
+        # Phase E' (a): format_*() 가 헤더(## ...) 까지 포함하므로 빈 값일 때
+        # 통째 빈 문자열 → workflow user 프롬프트의 해당 줄이 빈 줄로.
+        dependency_tree_text = format_dependency_tree(item)
+        git_history_text = format_git_history(item)
+        similar_locations_text = format_similar_locations(item)
+        project_overview_block = format_project_overview(project_overview_text)
 
         inputs = {
             "sonar_issue_key": key,
@@ -835,6 +925,11 @@ def main():
             # Phase B F2b — enclosing 함수의 tree-sitter 메타 (decorators / endpoint /
             # doc_params/returns/throws / callees / leading doc). 빈 값이면 빈 문자열.
             "enclosing_meta": enclosing_meta_text,
+            # Phase E — 실질적 원인분석 강화 4종 입력 (헤더 포함, 빈 값이면 빈 문자열)
+            "dependency_tree": dependency_tree_text,        # E1 — depth-2 caller graph
+            "git_history": git_history_text,                # E3 — 함수 변경 이력 + 같은 rule fix 이력
+            "similar_locations": similar_locations_text,    # E5 — 같은 rule 의 다른 위치
+            "project_overview": project_overview_block,     # E2-lite — 프로젝트 개요 (모든 이슈 동일)
             # P1: self-exclusion — workflow 의 context_filter Code 노드가 이 경로와
             # 일치하는 RAG 청크를 제외해 "자기 파일을 다시 돌려받는" degenerate case 해소.
             "issue_file_path": item.get("relative_path", "") or "",

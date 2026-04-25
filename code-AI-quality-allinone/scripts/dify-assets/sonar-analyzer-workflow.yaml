@@ -189,6 +189,35 @@ workflow:
               # 의 '이슈 함수 정적 메타' 섹션에 직접 노출. decorators / HTTP route /
               # docstring params/returns/raises / internal callees / leading doc.
               # 빈 문자열이면 user 프롬프트에서 섹션 자동 생략.
+            - variable: dependency_tree
+              label: Dependency Graph (depth-2)
+              type: paragraph
+              required: false
+              max_length: 2000
+              # Phase E E1 — 영향 범위 추적용 depth-2 caller graph.
+              # "직접 caller (depth 1) → 그 caller 의 caller (depth 2)" 텍스트 트리.
+              # 빈 값이면 자동 섹션 생략.
+            - variable: git_history
+              label: Git History
+              type: paragraph
+              required: false
+              max_length: 2000
+              # Phase E E3 — git blame + 함수 라인 변경 이력 5개 + 같은 rule
+              # 의 과거 fix commit 이력. "이 코드가 왜 이렇게 작성됐나" 단서 제공.
+            - variable: similar_locations
+              label: Similar Rule Locations (same project)
+              type: paragraph
+              required: false
+              max_length: 2000
+              # Phase E E5 — 같은 rule_key 의 다른 위치 (현재 Sonar 스캔 내).
+              # LLM 이 "프로젝트 전반의 일관된 패턴" 으로 인식해 일괄 fix 제안 가능.
+            - variable: project_overview
+              label: Project Overview
+              type: paragraph
+              required: false
+              max_length: 4000
+              # Phase E E2-lite — README + CONTRIBUTING + package.json deps 요약.
+              # 모든 이슈 분석에 동일 첨부 — 도메인/기술 스택 인식 향상.
             - variable: retry_hint
               label: Retry Hint
               type: paragraph
@@ -575,6 +604,11 @@ workflow:
                       예: "이 함수는 `POST /login` 라우트로 외부에 노출되어 있어 입력 검증이 중요"
                       혹은 "`@require_role('admin')` 데코레이터가 권한 검사를 담당하므로 우회 시 위험".
                       정적 메타 섹션이 비어있으면 이 규칙은 적용하지 않아도 됩니다.
+                    * **실질적 원인분석 (Phase E')**: dependency graph / git history /
+                      similar locations / project overview 섹션 중 비어있지 않은 정보가
+                      있으면 본문 1~2 곳에 구체 언급 (영향 범위 / 작성 의도 / 패턴 / 도메인 어휘 등).
+                      검토 범위 한 줄 (`🔍 검토: ...`) 은 analyzer 가 자동 부착하므로
+                      LLM 은 작성 안 함.
                 - suggested_fix_markdown:
                     * 바로 적용 가능한 diff 가 가장 좋음. 없으면 before/after python 블록도 허용.
                     * 코드펜스 1개만. 주석 설명은 코드펜스 바깥 1~2줄만.
@@ -607,6 +641,14 @@ workflow:
 
                 ## 이슈 함수 정적 메타 (tree-sitter)
                 {{#start.enclosing_meta#}}
+
+                {{#start.dependency_tree#}}
+
+                {{#start.git_history#}}
+
+                {{#start.similar_locations#}}
+
+                {{#start.project_overview#}}
 
                 ## Code Snippet (참고용 — 본문에 다시 쓰지 말 것)
                 ```
