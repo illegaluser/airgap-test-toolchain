@@ -190,25 +190,36 @@ pipeline {
       // llm_analysis.jsonl 의 rag_diagnostic 필드를 집계해 이슈 분석 품질 지표 렌더.
       // 리포트 파일이 없으면 placeholder 로 탭에 "왜 비었는지" 안내.
       script {
-        sh '''
+        // PM 친화 6 섹션 v2 리포트 생성. 사이클 6 — "정적분석 결과리포트".
+        // 신규 인자: --gitlab-output / --sonar-issues / --build-number / --commit-sha /
+        // --repo-root / --branch / --gitlab-public-url / --gitlab-project
+        // 부재 시 graceful degrade (§1 의 빌드 메타 일부 '(unknown)' 표시).
+        sh """
+        set -e
         mkdir -p diagnostic-report
+        REPO_NAME=\$(basename "${params.GITLAB_PROJECT}")
         if [ -f llm_analysis.jsonl ]; then
-          # --kb-dir 인자로 02 사전학습이 만든 KB JSONL 디렉터리 전달.
-          # 리포트가 사전학습 단계의 코드 인텔리전스 통계를 PM 친화 카드로
-          # 같이 노출 (decorators, HTTP endpoints, callers, test links 등).
-          python3 "${SCRIPTS_DIR}/diagnostic_report_builder.py" \
-            --input llm_analysis.jsonl \
-            --output diagnostic-report/diagnostic-report.html \
-            --kb-dir /var/knowledges/docs/result \
+          python3 "${SCRIPTS_DIR}/diagnostic_report_builder.py" \\
+            --input llm_analysis.jsonl \\
+            --output diagnostic-report/diagnostic-report.html \\
+            --kb-dir /var/knowledges/docs/result \\
+            --gitlab-output gitlab_issues_created.json \\
+            --sonar-issues sonar_issues.json \\
+            --build-number "\${BUILD_NUMBER}" \\
+            --commit-sha "${env.COMMIT_SHA}" \\
+            --repo-root "/var/knowledges/codes/\${REPO_NAME}" \\
+            --branch "${params.BRANCH}" \\
+            --gitlab-public-url "${params.GITLAB_PUBLIC_URL}" \\
+            --gitlab-project "${params.GITLAB_PROJECT}" \\
             || echo "[Diag] report builder 실패 — placeholder 생성"
         fi
         if [ ! -f diagnostic-report/diagnostic-report.html ]; then
           cat > diagnostic-report/diagnostic-report.html <<HTMLEOF
 <!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
-<title>RAG Diagnostic Report (empty)</title></head><body>
-<h1>RAG Diagnostic Report — 데이터 없음</h1>
+<title>정적분석 결과리포트 (empty)</title></head><body>
+<h1>정적분석 결과리포트 — 데이터 없음</h1>
 <p>이 빌드에서 <code>llm_analysis.jsonl</code> 이 생성되지 않았거나
-diagnostic_report_builder 가 실패했습니다. 아래를 확인하세요:</p>
+report builder 가 실패했습니다. 아래를 확인하세요:</p>
 <ul>
 <li>Stage (1) Export 가 0 건이면 분석할 이슈 자체가 없습니다 (Sonar 이슈 0건)</li>
 <li>Stage (2) Analyze 의 Dify 호출 로그 — 네트워크/PAT 오류</li>
@@ -217,11 +228,11 @@ diagnostic_report_builder 가 실패했습니다. 아래를 확인하세요:</p>
 </ul></body></html>
 HTMLEOF
         fi
-        '''
+        """
         try {
           publishHTML(
             target: [
-              reportName: 'RAG Diagnostic Report',
+              reportName: '정적분석 결과리포트',
               reportDir: 'diagnostic-report',
               reportFiles: 'diagnostic-report.html',
               keepAll: true,

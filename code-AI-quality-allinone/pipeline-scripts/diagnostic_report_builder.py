@@ -1309,6 +1309,763 @@ def _render_failure_diagnostic(rows: list) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# v2 — "정적분석 결과리포트" PM 친화 6 섹션 (사이클 6)
+# ─────────────────────────────────────────────────────────────────────────
+# §1 한눈에 (TL;DR)         — 빌드 메타 + funnel + GitLab 큰 버튼 + verdict
+# §2 즉시 조치 권장          — 위험도 룰 (severity ≥ MAJOR + callers ≥ 5 + AI 신뢰)
+# §3 모듈별 GitLab Issue 표  — path top segment 그룹화
+# §4 결함 종류 분포          — severity / type / 처리결과 막대그래프
+# §5 AI 답변 신뢰 신호       — confidence:low / partial_citation / fp_transitioned 카운트
+# §6 (접힘) 개발자 진단      — 기존 RAG diagnostic 모든 콘텐츠
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _load_sonar_count(sonar_issues_path) -> int:
+    """sonar_issues.json 의 issues 길이 = funnel 의 'Sonar 발견' 카운트."""
+    if not sonar_issues_path:
+        return 0
+    p = Path(sonar_issues_path)
+    if not p.is_file():
+        return 0
+    try:
+        with p.open(encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return len(data.get("issues") or [])
+        if isinstance(data, list):
+            return len(data)
+    except Exception:
+        pass
+    return 0
+
+
+def _load_gitlab_created(gitlab_output_path) -> dict:
+    """gitlab_issues_created.json 로드. 부재 시 모두 빈 list."""
+    default = {"created": [], "skipped": [], "failed": [],
+               "fp_transitioned": [], "fp_transition_failed": []}
+    if not gitlab_output_path:
+        return default
+    p = Path(gitlab_output_path)
+    if not p.is_file():
+        return default
+    try:
+        with p.open(encoding="utf-8") as f:
+            d = json.load(f)
+        for k in default:
+            default[k] = d.get(k, []) or []
+    except Exception:
+        pass
+    return default
+
+
+def _fetch_build_meta(build_number: str, repo_root: str, commit_sha: str,
+                      branch: str) -> dict:
+    """빌드 메타 (commit author / message / branch) 추출.
+
+    repo_root 가 git 저장소면 git log 호출. 실패 시 모든 필드 '(unknown)'.
+    """
+    import subprocess
+    meta = {
+        "build_number": build_number or "n/a",
+        "commit_sha_short": (commit_sha or "")[:8] or "n/a",
+        "commit_sha": commit_sha or "",
+        "branch": branch or "main",
+        "author": "(unknown)",
+        "message": "",
+        "generated_at": "",
+    }
+    import datetime
+    meta["generated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if commit_sha and repo_root and Path(repo_root).is_dir():
+        try:
+            out = subprocess.check_output(
+                ["git", "-C", repo_root, "log", "-1", "--format=%an|%s", commit_sha],
+                stderr=subprocess.DEVNULL, timeout=10,
+            ).decode("utf-8", errors="replace").strip()
+            if "|" in out:
+                author, message = out.split("|", 1)
+                meta["author"] = author.strip() or "(unknown)"
+                meta["message"] = message.strip()[:120]
+        except Exception:
+            pass
+    return meta
+
+
+def _compute_severity_distribution(rows: list, created_data: dict) -> dict:
+    """§4 — severity / type / 처리결과 분포."""
+    from collections import Counter
+    sev = Counter()
+    typ = Counter()
+    tags_counter = Counter()
+    for r in rows:
+        s = r.get("severity") or "?"
+        sev[s] += 1
+        # type 추출 — sonar issue_search_item.type 또는 LLM labels 의 분류 라벨
+        t = (r.get("issue_search_item") or {}).get("type") if r.get("issue_search_item") else None
+        if not t:
+            # llm_analysis row 에는 issue_search_item 없음 — labels 에서 추정
+            labels = (r.get("outputs") or {}).get("labels") or []
+            for lbl in labels:
+                if lbl in ("Code Smell", "Bug", "Vulnerability", "Security Hotspot"):
+                    t = lbl
+                    break
+        typ[t or "(unknown)"] += 1
+        # tags
+        for tag in (r.get("issue_search_item") or {}).get("tags") or []:
+            tags_counter[tag] += 1
+    processing = {
+        "created": len(created_data.get("created") or []),
+        "skipped": len(created_data.get("skipped") or []),
+        "failed": len(created_data.get("failed") or []),
+        "fp_transitioned": len(created_data.get("fp_transitioned") or []),
+    }
+    return {
+        "severity": dict(sev),
+        "type": dict(typ),
+        "tags_top10": tags_counter.most_common(10),
+        "processing": processing,
+    }
+
+
+# §2 위험도 룰 — 사용자 확정:
+#   severity ∈ {MAJOR, BLOCKER}  AND  callers ≥ 5  AND
+#   classification = true_positive  AND  confidence ∈ {high, medium}
+HIGH_RISK_MIN_CALLERS = 5
+HIGH_RISK_SEVERITY = {"MAJOR", "BLOCKER", "CRITICAL"}
+
+
+def _extract_high_risk(rows: list, created_data: dict) -> list:
+    """§2 — 위험도 룰 적용해 즉시 조치 권장 N건 추출.
+
+    callers 는 row 의 direct_callers field (이미 04 stage 1 에서 채워짐).
+    """
+    # sonar_key → iid 매핑
+    iid_by_key = {c["key"]: c.get("iid")
+                  for c in (created_data.get("created") or []) if c.get("key")}
+    out = []
+    for r in rows:
+        sev = (r.get("severity") or "").upper()
+        if sev not in HIGH_RISK_SEVERITY:
+            continue
+        callers = r.get("direct_callers") or []
+        if len(callers) < HIGH_RISK_MIN_CALLERS:
+            continue
+        outputs = r.get("outputs") or {}
+        cls = (outputs.get("classification") or "").lower()
+        conf = (outputs.get("confidence") or "").lower()
+        if cls != "true_positive":
+            continue
+        if conf not in ("high", "medium"):
+            continue
+        sonar_key = r.get("sonar_issue_key", "")
+        iid = iid_by_key.get(sonar_key)
+        # 한 줄 요약 — impact_analysis_markdown 첫 paragraph (max 200자)
+        impact = (outputs.get("impact_analysis_markdown") or "").strip()
+        # bold heading **문제의 본질** 같은 것 skip 하고 첫 실 paragraph
+        summary = ""
+        for para in impact.split("\n\n"):
+            p = para.strip()
+            if p.startswith("**") and p.endswith("**"):
+                continue
+            # 두 공백 trailing 제거
+            summary = " ".join(p.split())[:200]
+            if summary:
+                break
+        out.append({
+            "sonar_key": sonar_key,
+            "iid": iid,
+            "severity": sev,
+            "rule_key": r.get("rule_key", ""),
+            "path": r.get("relative_path", ""),
+            "line": r.get("line", 0),
+            "enclosing": r.get("enclosing_function", ""),
+            "callers_count": len(callers),
+            "callers_sample": callers[:3],
+            "classification": cls,
+            "confidence": conf,
+            "summary": summary,
+            "title": (outputs.get("title") or r.get("sonar_message") or "")[:120],
+        })
+    # 위험도 정렬 — severity 우선, callers 많은 순
+    sev_rank = {"BLOCKER": 0, "CRITICAL": 1, "MAJOR": 2}
+    out.sort(key=lambda x: (sev_rank.get(x["severity"], 9), -x["callers_count"]))
+    return out
+
+
+def _group_issues_by_module(rows: list, created_data: dict,
+                            gitlab_public_url: str, gitlab_project: str) -> dict:
+    """§3 — 모듈/패키지별 그룹. path 의 top segment 로 묶음.
+
+    구체:
+      - depth 4 (예: src/main/java/io/spring/api) 까지 키. 길어도 OK.
+      - 같은 그룹 1건이면 더 길게 (depth 5 또는 파일까지).
+    """
+    iid_by_key = {c["key"]: c.get("iid")
+                  for c in (created_data.get("created") or []) if c.get("key")}
+    title_by_key = {c["key"]: c.get("title", "")
+                    for c in (created_data.get("created") or []) if c.get("key")}
+
+    def _group_key(path: str) -> str:
+        if not path:
+            return "(unknown)"
+        parts = path.split("/")
+        return "/".join(parts[:5]) if len(parts) > 5 else "/".join(parts[:-1]) or "(root)"
+
+    groups: dict = {}
+    for r in rows:
+        sonar_key = r.get("sonar_issue_key", "")
+        if sonar_key not in iid_by_key:
+            # GitLab 등록 안 된 row (skipped/failed) — 표시는 §3 별도 표
+            continue
+        path = r.get("relative_path", "")
+        gk = _group_key(path)
+        outputs = r.get("outputs") or {}
+        iid = iid_by_key.get(sonar_key)
+        gitlab_link = ""
+        if iid is not None and gitlab_public_url and gitlab_project:
+            gitlab_link = f"{gitlab_public_url.rstrip('/')}/{gitlab_project}/-/issues/{iid}"
+        sonar_link = r.get("sonar_issue_url", "") or ""
+        groups.setdefault(gk, []).append({
+            "iid": iid,
+            "severity": r.get("severity", ""),
+            "rule_key": r.get("rule_key", ""),
+            "path": path,
+            "line": r.get("line", 0),
+            "title": title_by_key.get(sonar_key, "") or (outputs.get("title") or ""),
+            "classification": (outputs.get("classification") or "").lower(),
+            "confidence": (outputs.get("confidence") or "").lower(),
+            "gitlab_link": gitlab_link,
+            "sonar_link": sonar_link,
+            "preview": (outputs.get("impact_analysis_markdown") or "").strip()[:120],
+        })
+    # 그룹 내 severity 로 정렬
+    sev_rank = {"BLOCKER": 0, "CRITICAL": 1, "MAJOR": 2, "MINOR": 3, "INFO": 4}
+    for gk in groups:
+        groups[gk].sort(key=lambda x: sev_rank.get((x["severity"] or "").upper(), 9))
+    # 그룹 자체는 건수 많은 순
+    return dict(sorted(groups.items(), key=lambda kv: -len(kv[1])))
+
+
+def _compute_trust_signals(rows: list, created_data: dict) -> dict:
+    """§5 — AI 답변 신뢰 신호. PM 이 직접 검증해야 할 이슈 카운트."""
+    high_conf, med_conf, low_conf = 0, 0, 0
+    partial_count = 0
+    fp_count = len(created_data.get("fp_transitioned") or [])
+    fp_failed = len(created_data.get("fp_transition_failed") or [])
+    for r in rows:
+        outputs = r.get("outputs") or {}
+        conf = (outputs.get("confidence") or "").lower()
+        if conf == "high":
+            high_conf += 1
+        elif conf == "medium":
+            med_conf += 1
+        elif conf == "low":
+            low_conf += 1
+        # partial citation — labels 에서 또는 rag_diagnostic citation 비율
+        labels = outputs.get("labels") or []
+        if any("partial" in str(l).lower() for l in labels):
+            partial_count += 1
+        else:
+            cit = (r.get("rag_diagnostic") or {}).get("citation") or {}
+            cited = cit.get("cited_count", 0)
+            total_cite = cit.get("used_total", 0)
+            if total_cite > 0 and cited / total_cite < 0.5:
+                partial_count += 1
+    return {
+        "high": high_conf,
+        "medium": med_conf,
+        "low": low_conf,
+        "partial": partial_count,
+        "fp": fp_count,
+        "fp_failed": fp_failed,
+    }
+
+
+def _compute_overall_verdict_v2(funnel: dict, signals: dict, dist: dict) -> tuple:
+    """종합 verdict — §1 우측 하단의 한 줄 평가.
+
+    Returns: (emoji, label, one_liner)
+    """
+    created = dist.get("processing", {}).get("created", 0)
+    failed = dist.get("processing", {}).get("failed", 0)
+    low = signals.get("low", 0)
+    partial = signals.get("partial", 0)
+    high_ratio = signals.get("high", 0) / max(created, 1)
+
+    if failed > 0:
+        return ("🔴", "low", f"이슈 등록 중 {failed}건 실패 — 재실행 또는 인프라 점검 권장")
+    if low + partial > created // 2:
+        return ("🟡", "medium",
+                f"신뢰 낮은 답변 {low + partial}건 — §5 의 위험 신호 직접 확인 권장")
+    if high_ratio >= 0.7:
+        return ("🟢", "high", f"AI 가 자신있게 답변한 비율 {high_ratio*100:.0f}% — 그대로 활용 가능")
+    return ("🟡", "medium", f"부분적으로 신뢰 — §2 의 즉시 조치 권장 카드를 우선 검토")
+
+
+# ─ §1~§6 render 함수들 ─────────────────────────────────────────────────
+
+
+def _render_section_1_tldr(meta: dict, sonar_count: int, llm_count: int,
+                           created_data: dict, verdict: tuple,
+                           gitlab_public_url: str, gitlab_project: str) -> str:
+    """§1 한눈에 — 빌드 메타 + funnel + GitLab 큰 버튼 + verdict."""
+    emoji, label, one_liner = verdict
+    color = {"high": "green", "medium": "yellow", "low": "red"}.get(label, "yellow")
+    created_n = len(created_data.get("created") or [])
+    skipped_n = len(created_data.get("skipped") or [])
+    failed_n = len(created_data.get("failed") or [])
+    fp_n = len(created_data.get("fp_transitioned") or [])
+
+    gitlab_btn = ""
+    if gitlab_public_url and gitlab_project:
+        url = f"{gitlab_public_url.rstrip('/')}/{gitlab_project}/-/issues"
+        gitlab_btn = (
+            f"<a class='btn-primary' href='{_esc(url)}' target='_blank'>"
+            f"🔗 GitLab Issues 보러가기 ({created_n}건)</a>"
+        )
+    else:
+        gitlab_btn = "<p class='note'>(GitLab URL 미설정 — 본문 끝 §3 표에서 직접 이동)</p>"
+
+    funnel_html = (
+        "<div class='funnel'>"
+        f"<div class='funnel-stage'><div class='n'>{sonar_count}</div>"
+        f"<div class='lbl'>Sonar 발견</div></div>"
+        "<div class='funnel-arrow'>→</div>"
+        f"<div class='funnel-stage'><div class='n'>{llm_count}</div>"
+        f"<div class='lbl'>AI 분석</div></div>"
+        "<div class='funnel-arrow'>→</div>"
+        f"<div class='funnel-stage'><div class='n'>{created_n}</div>"
+        f"<div class='lbl'>GitLab 등록</div></div>"
+        "</div>"
+    )
+    sub_counts = []
+    if skipped_n: sub_counts.append(f"⚠️ skip {skipped_n} (중복 등록 회피)")
+    if failed_n:  sub_counts.append(f"❌ fail {failed_n}")
+    if fp_n:      sub_counts.append(f"🚫 false-positive 자동 종결 {fp_n}")
+    sub_str = " · ".join(sub_counts) if sub_counts else "이슈 처리 정상"
+
+    msg_part = f" — \"{_esc(meta['message'])}\"" if meta.get('message') else ""
+
+    return (
+        "<section id='sec-1' class='sec'>"
+        "<h2>🎯 §1. 한눈에 — 이번 빌드 결과</h2>"
+        "<div class='tldr'>"
+        f"<div class='build-meta'>"
+        f"<strong>04 빌드 #{_esc(meta['build_number'])}</strong> "
+        f"<span class='note'>· {_esc(meta['generated_at'])}</span><br>"
+        f"📦 commit <code>{_esc(meta['commit_sha_short'])}</code> "
+        f"by <strong>{_esc(meta['author'])}</strong>"
+        f"{msg_part}<br>"
+        f"🌿 branch <code>{_esc(meta['branch'])}</code>"
+        "</div>"
+        + funnel_html
+        + f"<div class='funnel-sub'>{_esc(sub_str)}</div>"
+        + f"<div class='cta'>{gitlab_btn}</div>"
+        + f"<div class='verdict-row {color}'>"
+        f"<span class='verdict-label'>AI 신뢰도:</span> "
+        f"<strong>{emoji} {label}</strong> &nbsp;<span class='note'>{_esc(one_liner)}</span>"
+        "</div>"
+        "</div></section>"
+    )
+
+
+def _render_section_2_high_risk(items: list) -> str:
+    """§2 즉시 조치 권장 — 위험도 룰 통과한 카드 N개."""
+    if not items:
+        return (
+            "<section id='sec-2' class='sec'>"
+            "<h2>🚨 §2. 지금 즉시 조치 권장</h2>"
+            "<div class='no-risk'>"
+            "✅ 위험도 룰 (severity ≥ MAJOR + 호출자 ≥ 5 + AI 신뢰도 ≥ medium) 을 "
+            "동시에 만족하는 이슈가 없습니다. §3 의 전체 목록에서 우선순위 재검토."
+            "</div></section>"
+        )
+    cards = []
+    for i, it in enumerate(items, 1):
+        gitlab_link_html = ""
+        if it.get("iid"):
+            gitlab_link_html = f"<a href='#iid-{it['iid']}'>→ Issue #{it['iid']} (§3 으로 이동)</a>"
+        callers_str = f"{it['callers_count']}개"
+        if it.get("callers_sample"):
+            callers_str += f" (예: {', '.join(it['callers_sample'])})"
+        line_part = f" (line {it['line']})" if it.get('line') else ""
+        cards.append(
+            "<div class='risk-card'>"
+            f"<div class='risk-head'>"
+            f"<span class='sev sev-{_esc(it['severity'])}'>{_esc(it['severity'])}</span>"
+            f"<span class='risk-num'>{i}.</span> "
+            f"<strong>{_esc(it['title'])}</strong>"
+            f"</div>"
+            f"<div class='risk-meta'>"
+            f"<div>📂 파일: <code>{_esc(it['path'])}</code>{line_part}</div>"
+            f"<div>📞 호출자: {callers_str}</div>"
+            f"<div>🤖 AI 판정: {_esc(it['classification'])} · confidence:{_esc(it['confidence'])}</div>"
+            f"<div>📜 요약: {_esc(it['summary'] or '(요약 없음)')}</div>"
+            f"</div>"
+            f"<div class='risk-foot'>{gitlab_link_html}</div>"
+            "</div>"
+        )
+    return (
+        "<section id='sec-2' class='sec'>"
+        f"<h2>🚨 §2. 지금 즉시 조치 권장 — {len(items)}건</h2>"
+        "<p class='note'>다음 조건 모두 만족: severity ≥ MAJOR · 호출자 ≥ 5명 · "
+        "AI 가 진짜 문제로 판정 (true_positive) · 신뢰도 ≥ medium</p>"
+        + "".join(cards)
+        + "</section>"
+    )
+
+
+def _render_section_3_groups(grouped: dict) -> str:
+    """§3 모듈별 GitLab Issue 표."""
+    if not grouped:
+        return (
+            "<section id='sec-3' class='sec'>"
+            "<h2>📋 §3. 생성된 GitLab Issue 전체</h2>"
+            "<p class='note'>등록된 Issue 가 없습니다 (모두 skip/failed/false-positive).</p>"
+            "</section>"
+        )
+    parts = [
+        "<section id='sec-3' class='sec'>"
+        f"<h2>📋 §3. 생성된 GitLab Issue 전체 — {sum(len(v) for v in grouped.values())}건</h2>"
+        "<p class='note'>모듈/패키지별 그룹화. 같은 영역에 몰린 이슈는 한 명에게 일괄 할당 자연스러움.</p>"
+    ]
+    for gk, items in grouped.items():
+        rows_html = []
+        for it in items:
+            iid_cell = f"#{it['iid']}" if it.get("iid") else "(no iid)"
+            anchor = f" id='iid-{it['iid']}'" if it.get("iid") else ""
+            sev_cls = f"sev-{(it.get('severity') or '').upper()}"
+            links = []
+            if it.get("gitlab_link"):
+                links.append(f"<a href='{_esc(it['gitlab_link'])}' target='_blank'>GitLab</a>")
+            if it.get("sonar_link"):
+                links.append(f"<a href='{_esc(it['sonar_link'])}' target='_blank'>Sonar</a>")
+            links_str = " · ".join(links) if links else "—"
+            line_part = f":{it['line']}" if it.get('line') else ""
+            file_basename = (it.get('path') or '').rsplit('/', 1)[-1]
+            rows_html.append(
+                f"<tr{anchor}>"
+                f"<td><strong>{iid_cell}</strong></td>"
+                f"<td><span class='sev {sev_cls}'>{_esc(it.get('severity') or '')}</span></td>"
+                f"<td><code>{_esc(it.get('rule_key') or '')}</code></td>"
+                f"<td><code>{_esc(file_basename)}</code>{line_part}</td>"
+                f"<td>{_esc(it.get('classification') or '')} · {_esc(it.get('confidence') or '')}</td>"
+                f"<td>{links_str}</td>"
+                f"<td class='preview'>{_esc(it.get('preview') or '')}</td>"
+                f"</tr>"
+            )
+        parts.append(
+            f"<details class='module-group' open>"
+            f"<summary><strong>📂 <code>{_esc(gk)}</code></strong> "
+            f"<span class='note'>({len(items)}건)</span></summary>"
+            "<table class='issue-table'>"
+            "<tr><th>iid</th><th>severity</th><th>rule</th><th>file:line</th>"
+            "<th>AI 판정</th><th>링크</th><th>요약</th></tr>"
+            + "".join(rows_html) +
+            "</table></details>"
+        )
+    parts.append("</section>")
+    return "".join(parts)
+
+
+def _render_section_4_distribution(dist: dict) -> str:
+    """§4 결함 종류 분포 — 막대그래프."""
+    def _bar_row(label: str, count: int, total: int, color: str = "#0366d6") -> str:
+        pct = (count * 100.0 / total) if total else 0
+        bar_w = max(int(pct * 3), 2)
+        return (
+            f"<tr><td>{_esc(label)}</td><td class='num'>{count}</td>"
+            f"<td><span class='bar' style='width:{bar_w}px;background:{color};'></span> "
+            f"{pct:.0f}%</td></tr>"
+        )
+
+    sev_total = sum(dist.get("severity", {}).values()) or 1
+    sev_color = {"BLOCKER": "#9e1828", "CRITICAL": "#d73a49", "MAJOR": "#d4a017",
+                 "MINOR": "#28a745", "INFO": "#0366d6"}
+    sev_rows = "".join(
+        _bar_row(k, v, sev_total, sev_color.get((k or "").upper(), "#0366d6"))
+        for k, v in sorted(dist["severity"].items(),
+                           key=lambda x: -x[1])
+    )
+
+    type_total = sum(dist.get("type", {}).values()) or 1
+    type_color = {"BUG": "#d73a49", "VULNERABILITY": "#9e1828",
+                  "CODE_SMELL": "#0366d6", "SECURITY_HOTSPOT": "#d4a017"}
+    type_rows = "".join(
+        _bar_row(k, v, type_total, type_color.get((k or "").upper(), "#586069"))
+        for k, v in sorted(dist["type"].items(), key=lambda x: -x[1])
+    )
+
+    proc = dist.get("processing", {})
+    proc_html = (
+        "<div class='proc-line'>"
+        f"<span class='proc-item green'>✅ 등록 {proc.get('created', 0)}</span>"
+        f"<span class='proc-item gray'>⚠️ skip {proc.get('skipped', 0)}</span>"
+        f"<span class='proc-item red'>❌ fail {proc.get('failed', 0)}</span>"
+        f"<span class='proc-item yellow'>🚫 false-positive {proc.get('fp_transitioned', 0)}</span>"
+        "</div>"
+    )
+
+    tags_html = ""
+    if dist.get("tags_top10"):
+        tags = " ".join(
+            f"<span class='tag'>{_esc(t)} <span class='tag-n'>{n}</span></span>"
+            for t, n in dist["tags_top10"]
+        )
+        tags_html = f"<h3>주요 태그</h3><div class='tags'>{tags}</div>"
+
+    return (
+        "<section id='sec-4' class='sec'>"
+        "<h2>📊 §4. 결함 종류 분포</h2>"
+        "<h3>Severity 분포</h3>"
+        "<table class='dist-table'>" + sev_rows + "</table>"
+        "<h3>Type 분포</h3>"
+        "<table class='dist-table'>" + type_rows + "</table>"
+        "<h3>처리 결과</h3>" + proc_html
+        + tags_html
+        + "</section>"
+    )
+
+
+def _render_section_5_signals(signals: dict) -> str:
+    """§5 AI 답변 신뢰 신호."""
+    cards = [
+        ("✅", "자신있게 답변", signals["high"], "green",
+         "confidence:high · 그대로 신뢰 OK"),
+        ("🟡", "보통 신뢰", signals["medium"], "yellow",
+         "confidence:medium · 위험 이슈만 직접 확인"),
+        ("⚠️", "자신감 낮은 답변", signals["low"], "red",
+         "confidence:low · RAG 부족 → 본문 재읽기 권장"),
+        ("🔬", "부분 활용 답변", signals["partial"], "yellow",
+         "RAG 자료 절반 미만 인용 → 누수 가능"),
+        ("🚫", "AI False-Positive 종결", signals["fp"], "gray",
+         "Sonar 자동 종결 시도 — 결과 확인"),
+    ]
+    if signals.get("fp_failed", 0):
+        cards.append(("⚠️", "FP 종결 실패", signals["fp_failed"], "red",
+                      "Sonar API 호출 실패 — GitLab Issue 생성됨"))
+    cards_html = "".join(
+        f"<div class='signal-card {color}'>"
+        f"<div class='sig-emoji'>{emoji}</div>"
+        f"<div class='sig-num'>{n}</div>"
+        f"<div class='sig-label'>{_esc(label)}</div>"
+        f"<div class='sig-note'>{_esc(note)}</div>"
+        "</div>"
+        for emoji, label, n, color, note in cards
+    )
+    return (
+        "<section id='sec-5' class='sec'>"
+        "<h2>🔬 §5. AI 답변 신뢰 신호</h2>"
+        "<p class='note'>각 카운트는 PM 이 직접 확인할 우선순위. "
+        "자신감 낮음 / 부분 활용 / FP 종결 은 §3 표에서 해당 issue 직접 검증 권장.</p>"
+        + f"<div class='signals-grid'>{cards_html}</div>"
+        + "</section>"
+    )
+
+
+def _render_section_6_dev_diag_collapsed(rows: list, kb_stats: dict) -> str:
+    """§6 (접힘) 개발자 진단 — 기존 RAG diagnostic 콘텐츠 재사용."""
+    agg = _aggregate(rows)
+    exec_summary = _render_executive_summary(agg)
+    failure_diag = _render_failure_diagnostic(rows)
+    issues_html = "".join(_render_issue(r) for r in rows[:30])  # cap 30 (분량 제한)
+    issues_more = ""
+    if len(rows) > 30:
+        issues_more = f"<p class='note'>(전체 {len(rows)}건 중 첫 30건만 표시 — 더 보려면 llm_analysis.jsonl artifact 확인)</p>"
+
+    # 4-stage 진단은 02 사전학습 리포트 링크만 안내 (중복 제거)
+    kb_link_note = (
+        "<div class='kb-link-note'>"
+        "<p>📚 <strong>4-stage 학습 진단 (AI 가 우리 프로젝트를 어떻게 이해했는가)</strong> 는 "
+        "02 사전학습 리포트로 이동: "
+        "<a href='../../../02-%EC%BD%94%EB%93%9C-%EC%82%AC%EC%A0%84%ED%95%99%EC%8A%B5/lastSuccessfulBuild/Pre-training_20Report/' "
+        "target='_blank'>Pre-training Report 보기</a>"
+        "</p>"
+        "</div>"
+    ) if kb_stats else ""
+
+    return (
+        "<details id='sec-6' class='sec dev-diag'>"
+        "<summary>🔧 §6. 개발자 진단 (RAG 검색 메트릭 / 이슈별 상세) — 클릭하여 펼치기</summary>"
+        "<div class='dev-diag-body'>"
+        + kb_link_note
+        + exec_summary
+        + failure_diag
+        + "<h3>📄 이슈별 상세</h3>"
+        + issues_html
+        + issues_more
+        + "</div></details>"
+    )
+
+
+# 새 PM 친화 CSS
+_CSS_PM = """
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       margin: 0; padding: 0; color: #24292e; background: #fafbfc; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+.nav { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #e1e4e8;
+       padding: 12px 24px; font-size: 13px; z-index: 100; }
+.nav a { color: #0366d6; text-decoration: none; margin-right: 16px; }
+.nav a:hover { text-decoration: underline; }
+h1 { border-bottom: 2px solid #0366d6; padding-bottom: 8px; margin-top: 0; }
+h2 { margin-top: 40px; padding-bottom: 6px; border-bottom: 1px solid #e1e4e8; }
+h3 { color: #586069; margin-top: 18px; }
+.sec { margin-bottom: 32px; }
+.note { color: #586069; font-size: 12px; margin: 6px 0 10px; }
+code { font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 12px;
+       background: #f6f8fa; padding: 1px 5px; border-radius: 3px; }
+
+/* §1 TL;DR */
+.tldr { background: linear-gradient(135deg, #f0f7ff 0%, #fff 100%);
+        border: 1px solid #c8e1ff; border-radius: 8px; padding: 24px; margin: 12px 0; }
+.build-meta { font-size: 14px; line-height: 1.7; margin-bottom: 16px;
+              padding-bottom: 12px; border-bottom: 1px dashed #d0d7de; }
+.funnel { display: flex; align-items: center; justify-content: center;
+          gap: 16px; padding: 20px 0; }
+.funnel-stage { background: #fff; border: 2px solid #c8e1ff; border-radius: 12px;
+                padding: 16px 32px; text-align: center; min-width: 130px; }
+.funnel-stage .n { font-size: 36px; font-weight: 700; color: #0366d6; }
+.funnel-stage .lbl { color: #586069; font-size: 13px; margin-top: 4px; }
+.funnel-arrow { font-size: 30px; color: #57606a; }
+.funnel-sub { text-align: center; color: #586069; font-size: 13px; margin-top: 8px; }
+.cta { text-align: center; margin: 20px 0 12px; }
+.btn-primary { display: inline-block; background: #0366d6; color: #fff !important;
+               padding: 14px 32px; border-radius: 8px; font-size: 16px;
+               font-weight: 600; text-decoration: none !important;
+               box-shadow: 0 2px 4px rgba(3,102,214,0.3); }
+.btn-primary:hover { background: #0256b3; }
+.verdict-row { padding: 12px 16px; border-radius: 6px; margin-top: 16px;
+               border-left: 4px solid #0366d6; background: #fff; }
+.verdict-row.green { border-left-color: #28a745; background: #f0fff4; }
+.verdict-row.yellow { border-left-color: #d4a017; background: #fffaf0; }
+.verdict-row.red { border-left-color: #d73a49; background: #fff5f5; }
+.verdict-label { color: #586069; font-size: 13px; }
+
+/* §2 위험 카드 */
+.no-risk { background: #f0fff4; border: 1px solid #34d058; border-radius: 6px;
+           padding: 16px; color: #176f2c; }
+.risk-card { background: #fff; border: 1px solid #e1e4e8; border-left: 4px solid #d73a49;
+             border-radius: 6px; padding: 16px; margin-bottom: 12px; }
+.risk-head { font-size: 16px; margin-bottom: 12px; }
+.risk-num { color: #586069; margin: 0 6px; }
+.risk-meta { font-size: 13px; line-height: 1.8; color: #24292e; }
+.risk-foot { margin-top: 10px; font-size: 13px; }
+.risk-foot a { color: #0366d6; text-decoration: none; }
+.risk-foot a:hover { text-decoration: underline; }
+.sev { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+       font-weight: 700; margin-right: 6px; vertical-align: middle; }
+.sev-BLOCKER { background: #9e1828; color: #fff; }
+.sev-CRITICAL { background: #d73a49; color: #fff; }
+.sev-MAJOR { background: #fff5b1; color: #735c0f; }
+.sev-MINOR { background: #dcffe4; color: #176f2c; }
+.sev-INFO { background: #ddf4ff; color: #0969da; }
+
+/* §3 모듈 그룹 */
+.module-group { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px;
+                padding: 12px 16px; margin-bottom: 8px; }
+.module-group summary { cursor: pointer; padding: 4px 0; }
+.issue-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.issue-table th, .issue-table td { border: 1px solid #e1e4e8; padding: 6px 10px;
+                                    text-align: left; vertical-align: top; }
+.issue-table th { background: #f6f8fa; font-weight: 600; font-size: 12px; }
+.issue-table td.preview { color: #586069; font-size: 12px; max-width: 350px; }
+
+/* §4 분포 */
+.dist-table { font-size: 13px; }
+.dist-table td { border: 1px solid #e1e4e8; padding: 4px 10px; }
+.dist-table .num { text-align: right; }
+.bar { display: inline-block; height: 12px; border-radius: 2px; vertical-align: middle;
+       margin-right: 6px; }
+.proc-line { padding: 12px; background: #f6f8fa; border-radius: 6px; font-size: 14px; }
+.proc-item { margin-right: 16px; padding: 4px 10px; border-radius: 4px; }
+.proc-item.green { background: #dcffe4; color: #176f2c; }
+.proc-item.gray { background: #e1e4e8; color: #57606a; }
+.proc-item.red { background: #ffeef0; color: #9e1828; }
+.proc-item.yellow { background: #fff5b1; color: #735c0f; }
+.tags { padding: 8px 0; }
+.tag { display: inline-block; background: #ddf4ff; color: #0969da;
+       padding: 4px 10px; border-radius: 14px; margin: 4px 6px 4px 0; font-size: 12px; }
+.tag-n { background: #fff; color: #0969da; padding: 1px 6px; border-radius: 8px;
+         margin-left: 4px; font-weight: 600; }
+
+/* §5 신뢰 신호 */
+.signals-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 12px; margin: 12px 0; }
+.signal-card { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px;
+               padding: 16px; text-align: center; border-top: 4px solid #586069; }
+.signal-card.green { border-top-color: #28a745; }
+.signal-card.yellow { border-top-color: #d4a017; }
+.signal-card.red { border-top-color: #d73a49; }
+.signal-card.gray { border-top-color: #586069; }
+.sig-emoji { font-size: 24px; }
+.sig-num { font-size: 32px; font-weight: 700; color: #0366d6; margin: 4px 0; }
+.sig-label { font-size: 13px; font-weight: 600; }
+.sig-note { color: #586069; font-size: 11px; margin-top: 4px; }
+
+/* §6 dev diag */
+.dev-diag { background: #fff; border: 1px solid #e1e4e8; border-radius: 6px;
+            padding: 12px 16px; }
+.dev-diag summary { cursor: pointer; font-weight: 600; color: #586069; }
+.dev-diag-body { margin-top: 16px; }
+.kb-link-note { background: #ddf4ff; border-left: 3px solid #0969da;
+                padding: 12px 16px; border-radius: 4px; margin-bottom: 16px; }
+</style>
+"""
+
+
+def render_pm_report(rows: list, sonar_count: int, created_data: dict,
+                     kb_stats: dict, meta: dict, gitlab_public_url: str,
+                     gitlab_project: str, title: str = "정적분석 결과리포트") -> str:
+    """v2 PM 친화 6 섹션 리포트.
+
+    rows: llm_analysis.jsonl 로드 결과
+    sonar_count: sonar_issues.json 의 issues 길이 (funnel 분모)
+    created_data: gitlab_issues_created.json 로드 결과
+    kb_stats: _kb_intelligence.json 로드 결과 (있으면)
+    meta: _fetch_build_meta() 결과
+    """
+    llm_count = len(rows)
+    dist = _compute_severity_distribution(rows, created_data)
+    high_risk = _extract_high_risk(rows, created_data)
+    grouped = _group_issues_by_module(rows, created_data, gitlab_public_url, gitlab_project)
+    signals = _compute_trust_signals(rows, created_data)
+    funnel = {
+        "sonar": sonar_count, "llm": llm_count,
+        "created": dist["processing"]["created"],
+    }
+    verdict = _compute_overall_verdict_v2(funnel, signals, dist)
+
+    nav_html = (
+        "<div class='nav'>"
+        "<a href='#sec-1'>§1 한눈에</a>"
+        "<a href='#sec-2'>§2 즉시 조치</a>"
+        "<a href='#sec-3'>§3 Issue 목록</a>"
+        "<a href='#sec-4'>§4 분포</a>"
+        "<a href='#sec-5'>§5 신뢰 신호</a>"
+        "<a href='#sec-6'>§6 (접힘) 개발자 진단</a>"
+        "</div>"
+    )
+
+    body = (
+        nav_html + "<div class='wrap'>"
+        f"<h1>{_esc(title)}</h1>"
+        + _render_section_1_tldr(meta, sonar_count, llm_count, created_data,
+                                 verdict, gitlab_public_url, gitlab_project)
+        + _render_section_2_high_risk(high_risk)
+        + _render_section_3_groups(grouped)
+        + _render_section_4_distribution(dist)
+        + _render_section_5_signals(signals)
+        + _render_section_6_dev_diag_collapsed(rows, kb_stats)
+        + "</div>"
+    )
+    return (
+        "<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
+        f"<title>{_esc(title)}</title>{_CSS_PM}</head><body>{body}</body></html>"
+    )
+
+
 def render(rows: list, title: str = "RAG Diagnostic Report", kb_stats: dict = None) -> str:
     agg = _aggregate(rows)
 
@@ -1399,21 +2156,67 @@ def render(rows: list, title: str = "RAG Diagnostic Report", kb_stats: dict = No
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="RAG Diagnostic Report (HTML) from llm_analysis.jsonl")
+    ap = argparse.ArgumentParser(
+        description="정적분석 결과리포트 (PM 친화 6 섹션) from llm_analysis.jsonl + gitlab_issues_created.json"
+    )
+    # 기존 인자 (backward compat)
     ap.add_argument("--input", required=True, help="llm_analysis.jsonl 경로")
     ap.add_argument("--output", required=True, help="HTML 출력 경로")
-    ap.add_argument("--title", default="RAG Diagnostic Report", help="리포트 제목")
+    ap.add_argument("--title", default="정적분석 결과리포트", help="리포트 제목")
     ap.add_argument("--kb-dir", default="",
-                    help="사전학습 KB 디렉터리 (JSONL 모음). 지정 시 코드 인텔리전스 카드 추가.")
+                    help="사전학습 KB 디렉터리 (JSONL 모음). 지정 시 §6 안 4-stage 진단 링크 표시.")
+    # v2 신규 인자 — 모두 optional. 부재 시 graceful degrade.
+    ap.add_argument("--gitlab-output", default="",
+                    help="gitlab_issues_created.json 경로. §1 funnel + §3 모듈별 표 source.")
+    ap.add_argument("--sonar-issues", default="",
+                    help="sonar_issues.json 경로. §1 funnel 의 'Sonar 발견' 카운트.")
+    ap.add_argument("--build-number", default="",
+                    help="Jenkins BUILD_NUMBER (env). §1 카드 표시.")
+    ap.add_argument("--commit-sha", default="",
+                    help="현 빌드 commit SHA. §1 표시 + git log 호출 키.")
+    ap.add_argument("--repo-root", default="",
+                    help="git log 호출용 repo 경로 (commit author/message 추출).")
+    ap.add_argument("--branch", default="main", help="branch 이름 (§1 표시).")
+    ap.add_argument("--gitlab-public-url", default="",
+                    help="GitLab 외부 URL (§1 큰 버튼 + §3 issue 직접 링크).")
+    ap.add_argument("--gitlab-project", default="",
+                    help="GitLab project path (예: root/realworld). §3 issue 링크 생성용.")
+    ap.add_argument("--legacy", action="store_true",
+                    help="구 'RAG Diagnostic Report' 형식 강제 (사이클 5 이전 동작).")
     args = ap.parse_args()
 
     rows = _load_rows(Path(args.input))
     kb_stats = _collect_kb_intelligence_stats(Path(args.kb_dir)) if args.kb_dir else None
-    html_doc = render(rows, title=args.title, kb_stats=kb_stats)
+
+    # legacy 모드: 구버전 그대로
+    if args.legacy:
+        html_doc = render(rows, title=args.title, kb_stats=kb_stats)
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html_doc, encoding="utf-8")
+        print(f"[diagnostic_report_builder:legacy] rows={len(rows)} → {out}")
+        return 0
+
+    # v2 — PM 친화 6 섹션
+    sonar_count = _load_sonar_count(args.sonar_issues)
+    created_data = _load_gitlab_created(args.gitlab_output)
+    meta = _fetch_build_meta(args.build_number, args.repo_root, args.commit_sha, args.branch)
+
+    html_doc = render_pm_report(
+        rows=rows,
+        sonar_count=sonar_count,
+        created_data=created_data,
+        kb_stats=kb_stats,
+        meta=meta,
+        gitlab_public_url=args.gitlab_public_url,
+        gitlab_project=args.gitlab_project,
+        title=args.title,
+    )
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html_doc, encoding="utf-8")
-    print(f"[diagnostic_report_builder] rows={len(rows)} → {out}")
+    print(f"[diagnostic_report_builder] v2 PM 리포트: rows={len(rows)} sonar={sonar_count} "
+          f"created={len(created_data.get('created') or [])} → {out}")
     return 0
 
 
