@@ -30,6 +30,7 @@
 | **P1.5 효과 증폭 (2026-04-25 저녁)** | **KB 품질**: vendor/minified 제외, trivial/dup 청크 필터 (nodegoat 실측 147→27 청크, vendor 오염 제거). **test heuristic 확장**: mocha/jest 스타일 파일명 기반 test_for 후보 + is_test 쿼리 라인. **retrieval**: weighted_score 재정렬 (semantic 0.7 / keyword 0.3) + score_threshold=0.35. **context filter**: 청크 score 표기 + has_context boolean. **confidence 가드**: RAG 빈 경우 `confidence=low` + `context:empty` 라벨 강제. **진단 리포트**: 04 Jenkinsfile `RAG Diagnostic Report` 탭 신설 (per-이슈 버킷 상태 + LLM citation rate) |
 | **P2 추가 액션 (2026-04-25 후속)** | **다언어 지원 확장**: Go/Rust/C#/Kotlin/C/C++ LANG_CONFIG 추가. **docstring 추출**: tree-sitter 로 함수 leading comment + Python docstring 을 청크 footer 의 `doc:` 라인에 추가 (의미 매칭 보강). **retry variation**: attempt 0/1/2 별로 다른 모양의 kb_query (구조화 / 자연어 / 식별자 중심). **HyDE (간소화)**: attempt=2 (마지막 retry) 에서만 호스트 Ollama 로 한 줄 자연어 변환 호출 → kb_query 보강. **임베딩 모델 환경변수 override** (운영자가 코드 특화 임베딩으로 교체 가능, §8.2.4.2). **자동 평가**: golden CSV vs llm_analysis.jsonl 비교 스크립트 `eval_rag_quality.py` (§8.4.2.2) — 변경 전후 metric 비교 |
 | **04 안정화 + GitLab UX 패치 (2026-04-25 심야)** | `gemma4:e4b` (thinking 모델) 이 원인이 된 04 파이프라인 "Dify succeeded but outputs empty" 대량 실패 해소. **(1) 진단**: workflow `json_parser` Code 노드에 `parse_status` / `llm_text_preview` / `parse_error_msg` 필드 노출, `dify_sonar_issue_analyzer.py` 가 empty 감지 시 stderr 에 LLM 원문 + 실패 유형 덤프 (`--print-first-errors N` 으로 샘플 수 제한). **(2) 근본 fix**: `<think>...</think>` reasoning block 제거 (종료·미종료 모두 대응), Workflow `max_tokens` 2048→16384, Ollama provider credential `max_tokens` 4096→16384 · `context_size` 8192→32768 (provision.sh 동시 반영), JSON string 내 raw `\n\r\t` + invalid `\escape` (regex 룰의 `\d\s\w` 등) 을 상태기계로 자동 fixup. **(3) UX**: analyzer stdout/stderr + `llm_analysis.jsonl` 을 line-buffered 로 전환 — Jenkins console 실시간 진행 로그 반영. **(4) GitLab 18.x Work Items UI**: description 기본 Truncate 가 본 스택 생성 이슈(3~5K자)에 불리 → webpack chunk 의 `truncationEnabled:!0 → !1` sed 패치 (`scripts/gitlab-truncate-patch.sh`, `run-mac.sh` · `run-wsl2.sh` 가 백그라운드 호출, 멱등). **(5) 로그 잡음**: `tree_sitter_languages` `FutureWarning` 60+ 줄 `warnings.filterwarnings` 로 억제. **결과**: MAX_ISSUES=10 실측 10/10 성공 (FAIL-EMPTY 0), Stage 3 까지 GitLab 이슈 자동 등록. 상세 트러블슈팅 §12.20. |
+| **RAG 효용 시리즈 (2026-04-25 새벽)** | 정적분석 이슈 분석에서 사전학습 KB 가 실질적 도움을 주는지 측정·정직화. **citation rate 2.1% → 75%, partial_citation 자동 강등 도입, KB 인텔리전스 PM 카드 신설**. 주요 fix: **(A) Dataset purge** (02 full mode 시 기존 청크 전수 삭제, 프로젝트 격리), **(B/B') segmentation 안정화** (청크 2200자 cap + footer 잘린 segment 의 document.name fallback), **(C/D) 3-tier citation 매칭** (path/symbol/basename) + (path,symbol) 단위 dedup, **(D) 인용 의무 prompt** + **(P5) line-range self-exclusion** (ProfileDAO 같은 동명 method 다중 케이스), **(P7) confidence calibration** (cited<50% → medium 강등 + `partial_citation` 라벨), **(+T1) test_for 다중 후보 + PascalCase prefix 매칭** (`Login` → `LoginHandler`), **(+T2) citation_depth 측정** (distinct backtick 식별자 수). **사이클 1 (D1+D3+B+A1+F1+F2)**: footer 에 `_context_summary` / 자연어 동의어 / e2e description 노출, score_threshold 0.35→0.25, RAG retrieve trace 로그, 실패 패턴 자동 진단 섹션. **사이클 2 (F+C+D+E+H tree-sitter 강화)**: import 기반 caller 그래프 (false-positive 차단), `@app.route` 데코레이터 → endpoint 추출, decorator 텍스트 footer 노출, TS interface/type/enum 청크화, JSDoc `@param/@returns/@throws` 구조 분리. **PM 친화 리포트**: RAG Diagnostic Report v2 — TL;DR + 3축 신호등 + 실무 액션 + **KB 인텔리전스 8 카드** (분석 파일 / 청크 / 호출 관계 / endpoint / 데코레이터 / 테스트 연결 / 도메인 모델 / 문서화). 측정 자가모순 4종 (라벨↔본문, 표본 부족, 임계 관대, 중복) 해소. 사용법 §11.2 참조. |
 | 빌드 방식 | `DOCKER_BUILDKIT=1 docker build` (legacy builder, buildx 미사용). export/load tarball 단계 제거로 같은 캐시 상태에서 14.9GB 이미지 빌드 ≈ 1 분 |
 | 최근 실측 검증 | Jenkins `28080`, Dify `28081`, SonarQube `29000`, GitLab `28090` 정상 응답 확인 |
 
@@ -2402,6 +2403,143 @@ docker exec ttc-allinone cat /data/.provision/sonar_token
 ```
 
 ---
+
+## 10.5 RAG Diagnostic Report 읽는 법 — PM 친화
+
+> 04 파이프라인 (`정적분석 결과분석 및 이슈등록`) 빌드 후 Jenkins 에서
+> **RAG Diagnostic Report** 탭으로 노출되는 HTML 리포트입니다. 이 리포트
+> 한 장으로 **"AI 가 우리 프로젝트에서 무엇을 배웠고, 그 학습 결과를 이번
+> 이슈 분석에 얼마나 정직하게 활용했는가"** 를 비개발자 / 스폰서 / 운영
+> 책임자도 즉시 판단할 수 있도록 설계됐습니다.
+
+### 1) 한 장에 보는 구성
+
+```
+┌─ 종합 판정 (TL;DR)              어느 축이 worst 인지 명시 ──────────────┐
+├─ 신호등 3 축                    근거충분도 / 참고자료 다양성 / 응답품질  ┤
+├─ 📋 실무 권장 액션              CRITICAL/MAJOR 재검토 등 구체 지시       ┤
+├─ 📚 사전학습 결과               KB 인텔리전스 8 카드 + endpoint 예시    ┤
+├─ 🔧 기술 상세 지표 (접기)       기존 카드 + 분포 + 실패 패턴 자동 진단   ┤
+└─ 📄 이슈별 상세                 ⚠️/✓ 한 줄 평가 + 인용 매칭 표         ┘
+```
+
+비개발자는 위 4 블록 (TL;DR → 신호등 → 액션 → KB 카드) 만 읽으면 충분.
+개발자는 🔧 접기 섹션 + 이슈별 상세까지 펼쳐 본다.
+
+### 2) 종합 판정 (TL;DR) — 어느 축이 worst 인가 정직 표기
+
+3 축의 worst-of-3 색상으로 종합 판정. **본문 메시지가 worst 축의 정체성을 명시**해 모순 없게:
+
+| worst 축 | 본문 메시지 (요약) |
+|----------|--------------------|
+| AI 분석 근거 충분도 (citation) | "AI 가 받은 RAG 자료를 답변에 거의 인용하지 않아 분석이 일반 원칙에 의존" |
+| 참고자료 다양성 (RAG 검색) | "인용 자체는 평균 X% 로 정상이지만 RAG 검색 단계에서 호출 관계·테스트 청크를 충분히 회수 못 함" |
+| AI 응답 기술적 품질 | "재시도 N% / 빈 컨텍스트 N% — RAG retrieval 또는 LLM 응답 파이프라인 점검" |
+
+전체 색상은 4 단계:
+
+- 🟢 충분/정상 — 신뢰 가능
+- 🟡 보통 — 일부 축 품질 저하
+- 🔴 부족 — worst 축의 명시적 문제
+- ⚪ 측정 불충분 — RAG 가 빈 결과 이슈가 많아 measurable n < 3
+
+### 3) 신호등 3 축 — 의미
+
+| 신호등 | 측정 | 임계 | 비개발자 해석 |
+|--------|------|------|---------------|
+| **AI 분석 근거 충분도** | citation rate (n 명시) | ≥60% 🟢 / ≥30% 🟡 / <30% 🔴 / n<3 ⚪ | AI 가 RAG 자료를 답변에 실제 backtick 인용한 비율 |
+| **참고자료 다양성** | callers + tests 평균 | ≥60% 🟢 / ≥30% 🟡 / <30% 🔴 | 호출 관계 / 테스트 청크가 이슈마다 제공된 비율 |
+| **AI 응답 기술적 품질** | retry / context:empty | retry≤5%·ctx≤25% 🟢 / ≤20%·≤50% 🟡 / 그 외 🔴 | LLM 호출 자체가 안정적인가 (Dify 응답 파이프라인) |
+
+### 4) 📚 사전학습 결과 — AI 가 우리 프로젝트에서 배운 코드 지식
+
+PM/스폰서가 **"AI 가 코드를 어떻게 이해했는가"** 를 한 눈에 검증:
+
+| 카드 | 의미 |
+|------|------|
+| 📂 **분석한 파일** | 프로젝트의 코드/테스트 파일 수 |
+| 🧩 **코드 자료(청크)** | 함수·클래스·타입 단위로 분할된 청크 수 + 언어 분포 |
+| 🔗 **호출 관계 링크** | "이 함수가 어디서 호출되는가" 자동 매핑 (tree-sitter import 검증) |
+| 🌐 **HTTP endpoint 매핑** | `@app.route('/x')`, `@app.get('/y')` 등 라우트 정의 자동 검출 |
+| 🛡️ **데코레이터 보유 청크** | `@require_role`, `@app.route` 등 정적 의도 정보 |
+| 🧪 **테스트↔본문 연결** | "이 함수는 어느 테스트가 검증하는가" 자동 연결 (PascalCase prefix 매칭) |
+| 📐 **도메인 모델·타입** | TS `interface` / `type` / `enum` (도메인 어휘) |
+| 📝 **문서화된 함수** | docstring/JSDoc 보유 청크 |
+
+**검출된 endpoint 예시 5 건** 도 표로 노출 — PM 가 "AI 가 진짜 우리 라우트를 알았는가" 즉시 검증 가능.
+
+### 5) 📋 실무 권장 액션
+
+worst 축에 따라 자동 분기되는 구체 지시:
+
+- **citation 🔴**: 중요 이슈(CRITICAL/MAJOR) 직접 재검토 + false_positive 신중 재평가
+- **citation ⚪ (측정 불충분)**: RAG 빈 결과 이슈 줄이기 우선 (threshold 완화 / kb_query 변형 / self-exclusion 정밀화)
+- **buckets 🔴/🟡**: 02 사전학습 단계 KB 메타데이터 확인 (callers/tests/symbol 필드)
+- **quality 🔴**: 빈 컨텍스트 비율 점검, self-exclusion 정밀화 검토 (§12.18)
+- 모두 🟢: 신뢰 가능 — 결과 활용 권장
+
+### 6) 🔧 기술 상세 (개발자용)
+
+기본 접힘. 펼치면:
+
+- 9 카드: total_issues / LLM calls / callers·tests·others bucket filled / **avg citation rate** / **avg citation depth (구체성)** / **partial_citation %** (자동 강등) / context:empty / retry exhausted
+- confidence 분포 + classification 분포
+- **🔬 RAG 검색 실패 패턴 자동 진단** — A(context:empty) / B(callers=0) / C(tests=0) / D(partial_citation) 4 카테고리 별 카운트 + 예시 path/line. 후속 fix 우선순위 결정용.
+
+### 7) 📄 이슈별 상세 — ⚠️/✓ 한 줄 평가
+
+각 이슈 카드 상단의 자동 평가 5 종:
+
+- **⚠️ skip_llm** — severity 자동 템플릿 (MINOR/INFO). LLM 미호출, 수동 리뷰 권장.
+- **⚠️ retry_exhausted** — 3 회 재시도 실패. 직접 리뷰 필수.
+- **⚠️ context:empty** — RAG 빈 결과. 답변이 일반 원칙만, 재검토 권장.
+- **⚠️ partial_citation** — cited/total < 50%. confidence medium 강등됨.
+- **✓ cited X/Y · 구체 인용 N 개** — 정상 인용 + citation_depth. 신뢰 가능.
+
+각 이슈는 retrieve / excl_self / kept / used / callers / tests / others / cited 표 + impact_md 접기 섹션 제공.
+
+### 8) 진단 메트릭 자동 강등 정책
+
+> "AI 가 자신감 있는 만큼 근거가 깊은가" 정직성 확보 장치
+
+- **partial_citation 라벨링**: 받은 RAG 청크 절반 미만만 답변에 인용했는데 confidence=high 면, **자동으로 medium 으로 강등하고 `partial_citation` 라벨 부착**. 검수자가 즉시 "근거 약한 자신감" 식별
+- **표본 부족 시 회색 신호**: measurable n < 3 (RAG 가 빈 결과 이슈가 다수) 인 경우 신호등 ⚪ "측정 불충분"
+- **(path,symbol) dedup**: Dify segmentation 으로 같은 청크가 여러 번 retrieve 되어도 인용 카운트가 부풀려지지 않음
+
+### 9) 새 CLI 옵션 / 환경변수
+
+```bash
+# 04 Jenkinsfile 가 자동 전달 — 수동 실행 시 참고
+python3 diagnostic_report_builder.py \
+  --input llm_analysis.jsonl \
+  --output report.html \
+  --kb-dir /var/knowledges/docs/result   # ← KB 인텔리전스 카드 활성
+
+# RAG retrieve 결과를 stderr 한 줄로 trace (사후 분석용)
+RAG_TRACE=1 python3 dify_sonar_issue_analyzer.py ... \
+  # → [RAG-TRACE] e6662232 retr=4 excl=2 kept=2 used=2 items=[[oth]Handler ...]
+
+# Dataset purge — 02 사전학습이 ANALYSIS_MODE=full 일 때 자동
+python3 doc_processor.py upload <KEY> <DSID> --purge   # 수동 실행 시
+```
+
+### 10) RAG 효용 측정 추적 (2026-04-25 새벽 시리즈)
+
+사이클 별 측정 변화:
+
+- 베이스라인 (KB 혼재) — citation 2.1%, callers fill 0%, tests fill 0%
+- Fix R + 4종 리포트 — citation 60%, callers 25%, tests 50%
+- P1+P3+P4 (검색 다양성) — citation 60%, callers 20%, tests 0%
+- P5+P7+T1+T2 (정직화) — citation 65%, depth 3.10, partial 2/10, callers 10%, tests 0%
+- 사이클 1 (D1+D3+B+A1+F1+F2) — citation 65%, depth 3.70, partial 1/10, callers 20%, tests 10%
+- **사이클 2 (F+C+D+E+H tree-sitter)** — **citation 75%, depth 4.20, partial 0/10**, callers 0%, tests 10%
+
+🎯 누적 효과:
+
+- citation rate **2.1% → 75%** (35배)
+- citation_depth (구체성) 신규 도입 **3.10 → 4.20**
+- partial_citation 자동 강등 **2 → 0** (모두 정직)
+- KB 메타데이터 `?::?` 비율 **79% → 0%**
 
 ## 11. 자동 프로비저닝 내부 동작
 
