@@ -33,14 +33,15 @@
 | **AI 가 추출한 정보 활용도 측정** (사이클 3) | "AI 가 풍부한 KB 를 정말 답변에 쓰고 있나?" 를 측정하는 메트릭 신설 + 누수 7개 발견 | 새 메트릭 도입, 누수 발견 |
 | **누수 봉쇄** (사이클 3+D) | 7개 누수 중 가장 영향 큰 3개 (tree-sitter 의 함수 인식 버그 등) 수정 | KB 청크 27 → 60, HTTP 라우트 검출 0 → 17, "AI 가 정적 메타를 답변에 인용한 비율" 0% → 30% |
 | **실질적 원인분석 강화 시도** (사이클 3+E) | "전체 저장소 + 프로젝트 정보 기반 분석" 을 지향해 5종 입력 (의존성 그래프 / git 이력 / 유사 패턴 / 프로젝트 개요 / 답변 검토범위 의무) 추가 | **회귀 발생** — 4B 모델이 입력 분산을 처리 못 함. 인용률 80%→70%, 메타 인용 30%→20% |
-| **회귀 회복 시도** (사이클 3+E') | 빈 섹션 헤더 제거 + 답변 검토범위 자동 후처리 + system prompt 압축 | 적용했으나 인프라 이슈 (Jenkins 실행자 부족) 로 측정 미완료 |
+| **회귀 회복 시도** (사이클 3+E') | 빈 섹션 헤더 제거 + 답변 검토범위 자동 후처리 + system prompt 압축 | **부분 회복** — 인용률 80% 회복 + 검토범위 자동표기 0/10 → 10/10. 그러나 정적 메타 인용은 20% 그대로 (3+D 의 30% 회복 못 함) |
 
 ### 현재 위치
 
-- ✅ 데이터 정확도 fix (tree-sitter 누수 봉쇄) 는 정량 효과 입증됨 — 사이클 3+D 가 마지막으로 검증된 안정 지점.
+- ✅ 데이터 정확도 fix (tree-sitter 누수 봉쇄) 는 정량 효과 입증됨 — 사이클 3+D 가 정적 메타 인용에서 가장 높은 안정 지점 (30%).
 - ⚠️ 데이터 풍부도 확장 (Phase E) 는 회귀를 일으킴. "더 많은 컨텍스트 → 더 좋은 답변" 가정이 깨짐.
-- 🔄 회복 처방 (사이클 3+E') 은 코드 적용 완료, 측정 대기.
-- 🔍 본질적 한계 — 현 LLM (gemma4:e4b 4B) 의 attention bandwidth 가 입력 토큰 증가 시 무너짐. 모델 업그레이드 검토 카드.
+- 🟡 Phase E' (회복 처방) 적용 후 인용률·검토범위 표기는 회복했으나 정적 메타 인용은 미회복.
+- 🔍 **새 핵심 발견**: KB 학습 (Stage 2) 와 답변 활용 (Stage 4) 사이의 비대칭 — 함수 호출 매핑 95% 인데 RAG retrieval 로 caller 청크 회수율은 20%. 학습 → 검색 단계에서 누수.
+- 🔍 본질적 한계 — 현 LLM (gemma4:e4b 4B) 의 attention bandwidth 가 입력 토큰 증가 시 무너지고, 정적 메타 (endpoint/decorator/매개변수명) 를 본문에 인용하지 못함.
 
 ### 이 문서의 내부 용어 표 (모르고 본문 읽으면 헷갈리므로 미리)
 
@@ -307,101 +308,214 @@
   - user 프롬프트에서 4개 정적 헤더 제거 (변수가 헤더 포함하므로)
   - system 프롬프트 의 Phase E 가이드 압축 (E4 의무 단락 삭제)
 
-#### 측정
+#### 측정 (Cycle 3+D / 3+E / 3+E' 비교)
 
-**미완료** — 빌드 도중 인프라 이슈 발생.
+| 메트릭 | 3+D | 3+E | **3+E'** | E' 의 변화 |
+|--------|-----|-----|----------|-----------|
+| empty impact | 0/10 | 0/10 | **0/10** | = |
+| retry_exhausted | 0/10 | 0/10 | **0/10** | = |
+| avg citation rate | 80% | 70% | **80%** | ✅ 회복 |
+| avg citation_depth | 4.2 | (미상) | **4.3** | ✅ 사상 최고 |
+| ts_any_hit_pct | 30% | 20% | **20%** | ❌ 미회복 |
+| avg ts_hits | 0.30 | 0.20 | **0.20** | ❌ 미회복 |
+| **E4 검토범위 표기** | — | 0/10 | **10/10** | ✅ deterministic 후처리 100% 작동 |
+| partial_citation | 0/10 | 0/10 | 1/10 | (정상 — P7 강등 작동) |
 
-#### 진행 중 발생한 이슈
+#### Phase E' 의 작동 / 미작동 분리
+
+**✅ 성공한 처방 (3가지 중 2가지)**
+
+- **(a) 빈 섹션 헤더 제거** — citation 70% → 80% 회복은 noise 감소가 기여한 것으로 추정.
+- **(b) E4 자동 후처리** — **10/10 채택률, 100% 작동**. 모든 답변에 `🔍 검토: callers N · tests M · others K · depth-2 D · git history H · 유사 위치 L` 자동 부착됨. 가설 검증: LLM 의 자발적 의무 (0/10 무시) → analyzer 가 deterministic 으로 보장 (10/10).
+- **(c) system prompt 압축** — citation_depth 4.3 (사상 최고) 은 압축이 LLM attention 회복에 도움 됐음을 시사.
+
+**❌ 회복 실패한 부분**
+
+- ts_any_hit 20% → 30% 회복 못 함.
+- **HTTP route 인용 0/10 / 데코레이터 인용 0/10 / 매개변수명 인용 0/10** — 이슈 함수 자체의 정적 메타가 답변에 1건도 인용되지 않음.
+- RAG 청크 메타 인용은 2/10 — Phase E 의 4개 신규 입력 중 RAG 청크의 endpoint 메타만 일부 흘러감.
+
+#### 가장 큰 발견 — Stage 2 vs Stage 4 의 비대칭
+
+| Stage 2 (KB 가 학습한 것) | Stage 4 (답변에 쓴 것) |
+|--------------------------|------------------------|
+| 함수 호출 매핑률 **95%** | callers bucket fill **20%** |
+| HTTP API 진입점 **17개 매핑** | HTTP route 인용 **0건** |
+
+→ KB 학습은 풍부한데 **RAG 검색 단계에서 caller/test 청크를 못 꺼냄**. 사이클 3+E' 자동 진단이 이를 명확히 지지:
+
+- B (callers=0): **8/10 (80%)** — 호출 관계 청크가 retrieve 안 됨
+- C (tests=0): **10/10 (100%)** — 테스트 청크 전부 retrieve 실패
+
+이는 **04 의 진짜 누수가 RAG retrieval 단계에 있다** 는 새 가설을 제공. KB 메타는 충실하니 Phase E 의 추가 입력이 아닌 **검색 자체의 임계치/쿼리 전략** 을 손봐야 한다는 방향.
+
+#### 진행 중 발생한 이슈 (1차 빌드)
 
 1. **Dify SQLAlchemy hit_count bug 재발** — 02 사전학습 단계에서 60청크 업로드 중 `RemoteDisconnected` → `Read timed out (300s)` 패턴. `dify-api supervisorctl restart` 로 회복.
 2. **Jenkins executor 부족** — provision.sh 가 Job 재생성 시 1차 build (parameter 등록용 빈 build) 가 default 파라미터로 cascade → 02/03/04 큐 점유. 동시에 2차 buildWithParameters 가 큐 추가 → executor 2개 한도로 03 가 "Still waiting to schedule task" 14분 대기.
 3. **사용자 발견** — "정적분석 전혀 돌고있지 않다" — 03 가 시작도 못 한 상태로 장시간 BUILDING 표시.
-4. 모든 빌드 강제 abort — 클린 상태 (executor busy 0, queue 0).
+4. 1차 빌드 강제 abort 후 클린 상태에서 재 trigger → 2차 빌드 정상 완료 (04 #1 SUCCESS, 7.3분).
 
 #### 현 상태
 
-- KB 는 사이클 3+D 결과 살아있음 (chunks=60, endpoints=17, parser_failed_files 사이드카 정상)
-- Phase E' 코드 (a+b+c) + 새 Workflow (240b4a3d...) 적용됨
-- 04 단독 실행 또는 01 chain 재실행으로 측정 가능
+- KB chunks=60, endpoints=17, parser_failed_files 사이드카 정상
+- Phase E' 코드 (a+b+c) 가 측정으로 검증됨
+- citation/citation_depth 회복했으나 ts_any_hit 미회복
+- 다음 처방 카드는 §4.5 의 (i)/(ii)/(iii) 옵션
 
 ---
 
 ## 4. 미해결 이슈 / 향후 검토
 
-### 4.1 Phase E' 의 효과 측정 미완료
+### 4.1 RAG retrieval 단계의 누수 (사이클 3+E' 측정으로 새로 명확해진 핵심 갭)
 
-- 빌드 abort 로 cycle 3+E' 의 ts_any_hit / citation / E4 표기율 미정.
-- 다음 액션: 04 단독 실행 (02 결과 재사용) 또는 01 chain 재실행 후 측정.
+**증상**:
+- 자동 진단 표 (사이클 3+E' 빌드의 §3.7) — B 카테고리 (callers=0) **80%**, C (tests=0) **100%**
+- callers bucket fill **20%**, tests bucket fill **0%**
+- 그러나 KB 자체는 callees 매핑률 95% / endpoints 17 / callers links 39 로 **풍부함**
 
-### 4.2 인프라 한계
+**의미**: KB 학습 단계 (Stage 2) 에서 잘 갖춰진 caller/test 정보가 **이슈 분석 시점 RAG 검색에서 회수되지 않음**. 학습 ↔ 검색 사이의 비대칭이 04 의 잔존 누수 중 가장 큰 것.
+
+**원인 후보 (가설)**:
+1. **score_threshold (0.25) 가 caller 청크에 너무 높음** — caller 코드 (예: route handler) 와 이슈 함수 (예: DAO method) 의 임베딩 거리가 멀다
+2. **kb_query 가 caller 의미 표현 약함** — 현재 `callers: <enclosing>` 라인을 추가하지만 이게 dense retrieval 에 약함 (이전 P1 사이클에서도 관찰)
+3. **self-exclusion 이 너무 공격적** — 같은 파일의 sibling 함수까지 가끔 제외되어 kept_total 작아짐
+4. **test 청크와 본문 코드의 임베딩 거리가 큼** — Cypress test 스타일 vs DAO 메서드 스타일 (이전 사이클 P4 도 같은 진단)
+
+**처방 후보**:
+- (i-1) score_threshold 0.25 → 0.15 완화
+- (i-2) kb_query 의 `callers: X` 라인을 자연어 ("이 함수 X 를 호출하는 controller / handler / 라우터") 로 강화
+- (i-3) test 청크 footer 에 동의어 강제 (이전 D3 와 같은 방향, 확장)
+- (i-4) self-exclusion 을 path 단위 → (path, line range) 정밀화 (이미 P5 적용 — 추가로 line range 너비 정책 검토)
+
+→ **다음 사이클의 1순위 처방 대상**.
+
+### 4.2 LLM 의 정적 메타 인용 한계 (4B 모델의 본질적 제약)
+
+**증상** (사이클 3+E' 측정):
+- HTTP route 인용 이슈: **0/10**
+- decorator 인용 이슈: 0/10 (JS 라 정상)
+- 매개변수명 인용 이슈: **0/10**
+- RAG 청크 메타 인용 이슈: 2/10
+
+**의미**: enclosing 함수의 정적 메타 (endpoint=`POST /benefits` 등) 가 LLM 프롬프트에 정확히 들어가도 답변 본문에 **단 한 번도 인용되지 않음**. RAG 청크의 meta 인용만 미미하게 (2/10) 흘러감.
+
+**가설**:
+- gemma4:e4b (4B thinking 모델) 가 system prompt 의 정적 메타 활용 가이드를 약하게 인식
+- thinking 모델 특성상 reasoning 토큰을 많이 쓰고 답변 본문이 짧아져 메타 인용이 자연스레 누락
+- 4B 모델의 attention bandwidth 가 프롬프트 길이 증가 시 무너짐 (Phase E 회귀에서 이미 관찰)
+
+**처방 후보**:
+- (ii-1) **모델 업그레이드** — Apple Silicon 32GB 환경이면 qwen2.5-coder:14b 또는 deepseek-coder-v2:16b-lite (MoE, active 2.4B 라 빠름) 시도
+- (ii-2) NVIDIA GPU VRAM 8GB 환경이면 qwen2.5-coder:7b / phi-4-mini:3.8b / qwen3 7B
+- (ii-3) **system prompt 의 메타 인용 강제** — "endpoint 가 있으면 본문에 1번 의무 언급" 룰 추가. 단 사이클 3+E 에서 LLM 의무 룰 채택률 0/10 이었으므로 deterministic 후처리 가 더 안정 가능성
+- (ii-4) **자동 후처리 확장** — analyzer 가 답변에 endpoint 가 있는지 검사 후, 없으면 "이 함수는 `POST /login` 라우트입니다" 같은 자동 prefix 부착. 단 LLM 답변과 자연스럽게 합쳐지지 않을 위험
+
+### 4.3 인프라 한계
 
 | 이슈 | 원인 | 처방 후보 |
 |------|------|----------|
 | Jenkins executor 2개 한도 | 기본 설정 | jenkins-init Groovy 에서 numExecutors 4~6 으로 증가 |
 | provision.sh Job 재생성 시 1차 빈 build cascade | parameter 등록 회로 | "is not parameterized" 첫 호출도 정상 실행되도록 Jenkinsfile 의 parameters 블록 정리 |
 | dify-api workers=1 | 단일 worker | gunicorn workers 2~3 + worker-connections 적절 조정 |
-
-### 4.3 LLM 모델 한계
-
-- gemma4:e4b (4B 클래스 thinking 모델) 가 입력 토큰 증가 시 attention 분산 → 답변 품질 regress.
-- system prompt 의 추가 룰을 LLM 이 약하게 인식 (E4 채택률 0/10).
-- **모델 업그레이드 검토** — 사용자가 NVIDIA GPU VRAM 8GB 한도 언급. 후보:
-  - qwen2.5-coder:7b (4.7GB)
-  - phi-4-mini:3.8b (3.5GB)
-  - qwen3 7B (4.5GB)
-  - deepseek-coder-v2:16b-lite (MoE, active 2.4B, 빠름)
+| Dify SQLAlchemy hit_count bug 산발 재발 | 1.13.3 의 알려진 bug | 이미 빌드 시 patch 적용 (build-mac.sh patches/) 됐으나 산발 재발 — dify-api restart 로 회복. 운영상 자동 회복 cron 또는 health-check 후 자동 재시작 검토 |
 
 ### 4.4 04 의 의도 대비 잔존 갭
 
-사이클 3+D 후에도 G3/G4 (실질적 원인분석 / 수정조치 방향) 는 부분 해소만 됨. Phase E 가 의도였지만 LLM 활용 측 regress 로 효과 미확인. Phase E' 의 (a+b+c) 가 이 갭을 메울지 측정 필요.
+| Gap | 의도 (§2) | 사이클 3+E' 후 상태 |
+|-----|-----------|-------------------|
+| G1 "전체 저장소" | 함수 dependency graph + 모든 호출 관계 | callers retrieval 누수 (§4.1) — KB 는 풍부한데 검색 단계에서 못 꺼냄 |
+| G2 "프로젝트 정보" | README + CONTRIBUTING + package.json | E2-lite 로 LLM 프롬프트에 첨부됨 — 단 LLM 답변 본문 인용 미관찰 |
+| G3 "실질적 원인분석" | "왜 이렇게 작성됐는가" + invariant | git history (E3) 첨부됐으나 답변 인용 거의 없음 — 모델 한계 (§4.2) |
+| G4 "수정 조치 방향" | convention-aware + impact 분석 | similar_locations (E5) 첨부됐으나 패턴 언급 답변 거의 없음 — 모델 한계 |
 
-### 4.5 Phase E rollback 옵션
+### 4.5 다음 사이클 처방 카드 (우선순위 정리)
 
-- (a)+(b)+(c) 처방 후에도 regress 면 Phase E 자체를 git revert 하고 사이클 3+D 수준에서 정착하는 것도 합리적 옵션.
-- 그 경우 04 의 의도 대비 갭은 G1/G2 부분 + G3/G4 미해소 상태로 유지됨. "E2-lite (project_overview 첨부) 만 살리고 E1/E3/E5 는 제거" 같은 부분 rollback 도 검토 가능.
+| 옵션 | 설명 | 예상 효과 | 비용 |
+|------|------|----------|------|
+| **(i) RAG retrieval 개선** | §4.1 — score_threshold 완화, kb_query 자연어 강화, test 청크 동의어 footer | callers fill 20%→50%+, ts_any_hit 일부 회복 | 작음 (workflow YAML + analyzer) |
+| **(ii) 모델 업그레이드** | §4.2 — qwen2.5-coder:14b / deepseek-coder-v2:16b-lite | ts_any_hit 30%+ 가능, 답변 품질 큰 도약 | 중간 (호스트 모델 추가 + provider 재등록 + 추론 시간 ↑) |
+| **(iii) Phase E 부분 rollback** | E1/E3/E5 (활용도 낮음) 제거. E4 자동표기 + E2-lite + Phase D 까지 유지 | 단순화, citation/depth 안정 | 작음 (코드 revert) |
+| **(iv) 인프라 안정화** | §4.3 — Jenkins executor / dify-api workers / 1차 빈 build 회로 | 운영 안정성 | 작음 |
+
+**개인 의견** — 우선순위:
+1. **(i) RAG retrieval 개선 먼저** — 비용 작고 측정 결과 (B 80%, C 100%) 가 명확한 누수를 가리킴.
+2. (i) 후에도 ts_any_hit 못 올라가면 **(ii) 모델 업그레이드** 검토.
+3. (iii) 은 (i)+(ii) 둘 다 효과 없을 때 마지막 카드.
+4. (iv) 는 다른 작업과 병행 가능.
 
 ---
 
 ## 5. 측정 메트릭 누적 추적 (참고용)
 
-| 사이클 | citation rate | ts_any_hit_pct | KB chunks | endpoints | partial_citation 강등 |
-|--------|---------------|-----------------|-----------|-----------|----------------------|
-| 베이스라인 | 2.1% | — | — | — | — |
-| Fix R + 4종 | 60% | — | — | — | — |
-| P1+P3+P4 | 60% | — | — | — | — |
-| P5+P7+T1+T2 | 65% | — | — | — | 2/10 |
-| 사이클 1 | 65% | — | — | — | 1/10 |
-| 사이클 2 | 75% | — | — | — | 0/10 |
-| 사이클 3 | 70% | 0% | 27 | 0 | 0/10 |
-| **사이클 3+D** | **80%** | **30%** | **60** | **17** | **0/10** |
-| 사이클 3+E | 70% | 20% | 60 | 17 | 0/10 |
-| 사이클 3+E' | (미측정) | (미측정) | 60 | 17 | (미측정) |
+| 사이클 | citation rate | citation_depth | ts_any_hit_pct | KB chunks | endpoints | E4 표기율 | partial_citation 강등 |
+|--------|---------------|-----------------|-----------------|-----------|-----------|-----------|----------------------|
+| 베이스라인 | 2.1% | — | — | — | — | — | — |
+| Fix R + 4종 | 60% | — | — | — | — | — | — |
+| P1+P3+P4 | 60% | — | — | — | — | — | — |
+| P5+P7+T1+T2 | 65% | 3.10 | — | — | — | — | 2/10 |
+| 사이클 1 | 65% | 3.70 | — | — | — | — | 1/10 |
+| 사이클 2 | 75% | 4.20 | — | — | — | — | 0/10 |
+| 사이클 3 | 70% | — | 0% | 27 | 0 | — | 0/10 |
+| **사이클 3+D** | **80%** | 4.20 | **30%** | **60** | **17** | — | **0/10** |
+| 사이클 3+E | 70% | (미상) | 20% | 60 | 17 | **0/10** | 0/10 |
+| **사이클 3+E'** | **80%** | **4.30** | 20% | 60 | 17 | **10/10** | 1/10 |
 
-🎯 누적 (사이클 3+D 기준):
+🎯 누적 (사이클 3+E' 기준):
 - citation rate **2.1% → 80%** (38배)
+- citation_depth **3.10 → 4.30** (사상 최고)
 - KB 청크 **0 → 60**
 - HTTP API 진입점 **0 → 17**
-- partial_citation 자동 강등 **2 → 0**
-- 답변에 정적 메타 등장 비율 (사이클 3 신규 메트릭) **0% → 30%**
-- per-issue enclosing_function 정확도 **부분 → 100%**
+- partial_citation 자동 강등 작동 (1건 강등으로 정직성 보존)
+- 답변에 정적 메타 등장 비율 **0% → 20%** (3+D 의 30% 미회복 — §4.1 누수 미해소)
+- per-issue enclosing_function 정확도 **부분 → 100%** (fn:err 버그 0)
+- **E4 검토범위 자동 표기 0/10 → 10/10** (deterministic 후처리의 가치 입증)
+
+🚧 잔존 갭 (사이클 3+E' 후):
+- ts_any_hit_pct **20%** — 3+D 의 30% 못 회복 → §4.1 (RAG retrieval 누수) + §4.2 (LLM 모델 한계) 가 다음 사이클 대상
+- callers bucket fill **20%** / tests bucket fill **0%** — KB 풍부함이 검색에 안 흐름
+- HTTP route / decorator / 매개변수명 인용 **각 0/10** — 4B 모델의 정적 메타 인용 능력 한계
 
 ---
 
 ## 6. 04 파이프라인의 본질 — 회고
 
-**Phase D 가 작동하고 Phase E 가 regress 한 이유**:
-- Phase D 는 **데이터 정확도 fix** — tree-sitter 가 더 정확하게 추출하니 모든 단계 (검색/프롬프트/측정) 가 동시에 개선됨.
-- Phase E 는 **데이터 풍부도 확장** — 더 많은 정보를 LLM 에 제공했지만, LLM 은 그 정보를 활용하지 않았고 오히려 distraction 으로 작용.
+### 6.1 사이클 3+E' 측정 후 검증된 / 부분 검증된 / 깨진 가설
 
-**04 의 정체성 재정의** (이번 사이클들로 명확해진 것):
+| # | 가설 | 결과 | 측정 근거 |
+|---|------|------|----------|
+| H1 | **데이터 정확도 fix > 데이터 풍부도 확장** | ✅ 검증됨 | Phase D (정확도) → ts_any_hit 0%→30%. Phase E (풍부도) → 30%→20% regress |
+| H2 | **LLM 의 자발적 의무 룰은 신뢰 불가, deterministic 후처리가 안정** | ✅ 검증됨 | E4 LLM 의무 채택률 0/10 → analyzer 자동 부착으로 10/10 |
+| H3 | **빈 섹션 헤더 noise 제거가 LLM attention 회복** | ✅ 부분 검증 | citation 70%→80% 회복 + citation_depth 4.3 (사상 최고) |
+| H4 | **system prompt 압축이 LLM attention 회복** | ✅ 부분 검증 | (H3 와 같은 결과 — 분리 측정 어려움) |
+| H5 | **더 많은 입력 → 더 좋은 답변** | ❌ 깨짐 | Phase E 의 4 신규 입력 → ts_any_hit regress |
+| H6 | **(a+b+c) 처방으로 Phase D 수준 회복** | 🟡 부분 | citation 회복 ✓ / ts_any_hit 미회복 ✗ |
+| H7 | **KB 학습 풍부도 → 답변 활용도** | ❌ 깨짐 | 새 발견. callees 매핑 95% 인데 callers fill 20%. 학습 ↔ 검색 사이 누수 |
+
+### 6.2 사이클 3+E' 가 새로 던진 질문
+
+**Q1**: "callees 매핑 95% / endpoints 17 같은 풍부한 KB 가 있는데 왜 RAG retrieval 이 caller 청크를 못 꺼내나?"
+- 가설: score_threshold 0.25 가 caller-callee 임베딩 거리에 너무 빡빡 / kb_query 의 caller 신호가 dense 매칭 약함 / self-exclusion 정책 영향
+- 검증 방법: §4.5 의 (i) RAG retrieval 개선 후 callers fill 변화 측정
+
+**Q2**: "LLM 프롬프트에 endpoint 가 분명히 들어갔는데 왜 답변 본문에 0번 등장하나?"
+- 가설: 4B thinking 모델 (gemma4:e4b) 이 reasoning 토큰을 많이 써 답변 본문이 짧아짐 / system prompt 의 메타 인용 가이드 약하게 인식
+- 검증 방법: §4.5 의 (ii) 모델 업그레이드 후 ts_any_hit 변화 측정. 또는 답변 본문에 자동 prefix 부착 (deterministic) 실험
+
+### 6.3 04 의 정체성 재정의 (3 사이클 누적)
+
 - 04 는 "AI 가 더 정확한 판단" 을 하는 곳이 아니라 "**AI 가 받은 정확한 데이터로 일관된 답변을 만드는**" 곳.
-- 정직성 메트릭 (E4 검토범위, partial_citation 강등) 이 04 의 핵심 가치.
-- 입력 데이터의 **정확도** 가 풍부도보다 우선 — Phase D 작동, Phase E regress 가 이를 입증.
+- 정직성 메트릭 (E4 검토범위 자동 표기, partial_citation 강등) 이 04 의 핵심 가치 — **사이클 3+E' 에서 E4 가 100% 작동하며 이 가치 확립**.
+- 입력 데이터의 **정확도** 가 풍부도보다 우선 (H1).
+- 그러나 정확도 / 풍부도 외에 **데이터 흐름 (KB 학습 → RAG 검색 → LLM 활용) 의 각 단계가 독립적 누수 지점** 임을 새로 인식 (H7).
 
-**다음 사이클의 가설**:
-- "더 많은 입력" 보다 "**더 정확한 입력 + LLM 부담 감소**" 가 ROI 높음.
-- (a)+(b)+(c) 가 그 방향이고, 측정으로 검증 필요.
-- 그 후에도 regress 면 모델 업그레이드 (qwen2.5-coder:14b 등) 를 다음 카드로.
+### 6.4 다음 사이클 의 핵심 가설 (검증 대상)
+
+1. **"RAG retrieval 임계치 + 쿼리 전략" 만 손봐도 ts_any_hit 30%+ 회복 가능** (§4.5 (i))
+2. **(i) 후에도 부족하면 모델 업그레이드 (gemma4:e4b → qwen2.5-coder:14b 또는 deepseek-coder-v2:16b-lite) 가 결정적** (§4.5 (ii))
+3. **Phase E 의 5 추가 입력 중 일부는 영구히 LLM 활용 안 됨** — 그 경우 (iii) 부분 rollback 으로 단순화 (§4.5 (iii))
+
+이 3 가설을 다음 사이클에서 순서대로 검증하면 04 의 의도 (§1.1) 에 가까워질 가능성. 각 가설의 비용/효과는 §4.5 표 참조.
 
 ---
 
@@ -440,6 +554,48 @@
 | `pipeline-scripts/dify_sonar_issue_analyzer.py` | (a) format_*() 헤더 포함 / format_project_overview / (b) _build_out_row 자동 후처리 |
 | `scripts/dify-assets/sonar-analyzer-workflow.yaml` | (a) user 프롬프트 헤더 제거 / (c) system 프롬프트 압축 + E4 의무 제거 |
 
+측정 결과 (검증 완료): citation 70%→80% 회복, citation_depth 4.3 (사상 최고), E4 자동 표기 0/10→10/10. 단 ts_any_hit 20% 미회복.
+
 ---
 
-_이 문서는 2026-04-25 기준 04 파이프라인 의 사이클 3 → 3+E' 까지의 진화 이력을 재구성한 회고이며, 후속 사이클이 진행되면 §3 에 추가 항목 / §5 메트릭 표 갱신이 필요._
+## 8. 운영 중 발생한 인프라 이슈 정리 (사이클 3 → 3+E' 누적)
+
+진행 중 발생한 운영 이슈와 그 처방을 한 곳에 정리. 이 중 일부는 §4.3 의 향후 검토 대상.
+
+### 8.1 Dify SQLAlchemy hit_count bug 산발 재발
+
+- **증상**: 02 사전학습의 60청크 업로드 중 갑자기 `RemoteDisconnected` → 다음 retry 에서 `Read timed out (300s)`. dify-api 가 응답은 살아있으나 단일 worker 가 wedged.
+- **원인**: Dify 1.13.3 의 알려진 SQLAlchemy session pool 버그. 빌드 시 `scripts/patches/dify_hit_count_bypass.py` 로 patch 적용 (build-mac.sh / Dockerfile) 됐으나 산발적으로 재발.
+- **즉시 처방**: `docker exec ttc-allinone supervisorctl restart dify-api` — 30초 내 새 worker. 다음 retry 가 즉시 succeed.
+- **항구 처방 (검토)**: gunicorn workers=1 → 2~3 으로 증가. health-check + auto-restart cron.
+
+### 8.2 Jenkins executor 부족 (2개 한도)
+
+- **증상**: 사이클 3+E' 1차 빌드에서 03 정적분석 #1 이 14분간 "Still waiting to schedule task" — 시작도 못 함. 사용자 지적: "정적분석 전혀 돌고있지 않다".
+- **원인 트리거**: provision.sh 가 Workflow 재import 시 Jenkins Job 도 재생성 → 그 직후 trigger 가 "is not parameterized" 400 → 1차로 빈 build (parameter 등록용) 호출 → 그 빈 build 가 default 파라미터로 02→03→04 cascade → executor 점유.
+- **부가 트리거**: 동시에 사용자가 2차 buildWithParameters 호출 → 01 chain #2 + 02 #2 큐 추가. executor 2개 한도라 03 #1 이 자리 못 받음.
+- **즉시 처방**: `curl -X POST .../job/{N}/stop` 으로 모든 진행 빌드 + 큐 항목 abort → executor busy=0 / queue=0 클린 → 새 buildWithParameters trigger.
+- **항구 처방 (검토)**:
+  - **(I)** Jenkins numExecutors 2 → 4~6 (`jenkins-init/basic-security.groovy` 또는 별도 Groovy init script)
+  - **(II)** Jenkinsfile 의 `parameters {}` 블록을 declarative 로 정리해 첫 호출 (`build` action) 도 정상 작동하도록 — "1차 빈 build 회로" 제거
+
+### 8.3 provision.sh Workflow 재import 시 부작용
+
+- **증상**: workflow YAML 수정 후 provision.sh 재실행 → Workflow App 재생성 (UUID 변경) + Jenkins Job 재생성 → §8.2 의 cascade 유발.
+- **현재 동작**: `dify_import_workflow()` 가 동일명 App 자동 삭제 후 fresh import — 멱등 보장 위해. 부작용으로 Job 도 영향.
+- **항구 처방 (검토)**: Job 재생성 회피. workflow App 만 재import 하고 credential 만 갱신. Job 자체는 보존.
+
+### 8.4 워크플로우 변경 반영 시 운영 비용
+
+- 매 사이클마다 코드 변경 → docker cp 로 컨테이너 동기 → workflow YAML 변경 시 provision.sh 재실행 → Jenkins 1차 빈 build → executor 정리 → buildWithParameters → 14~25분 대기.
+- 누적: 사이클 3+D (1회), 3+E (1회), 3+E' (2회 — 1차 abort 후 2차) = **총 4회 빌드** 의 인프라 부담.
+- **항구 처방 (검토)**: 코드 변경만 있으면 **이미지 재빌드 없이 docker cp + Jenkins kill-and-rerun** 만으로 대부분 검증 가능. workflow YAML 변경 시만 provision.sh 일부 호출.
+
+### 8.5 측정 시 알려진 함정
+
+- **regex 추출 오류 (저자 자가 발견)**: 사이클 3+D 측정 직후 "신호등 1축 라벨/색상 모순" 이라고 잘못 보고했으나 실제는 정상. 내가 만든 regex 가 HTML 의 lazy match 때문에 잘못된 텍스트를 추출. 이후 cycle 3+E' 측정에서는 mini-card 단위 분리 추출로 정정.
+- **교훈**: 자동 추출 결과를 **항상 1~2 case 수동 cross-check** 후 "회귀 발견" 같은 큰 결론 도출.
+
+---
+
+_이 문서는 2026-04-25 기준 04 파이프라인 의 베이스라인 → 사이클 3+E' 까지의 진화 이력 + 운영 인프라 이슈 누적 정리 회고. 후속 사이클이 진행되면 §3 에 추가 항목 / §5 메트릭 표 / §8 운영 이슈 갱신 필요._
