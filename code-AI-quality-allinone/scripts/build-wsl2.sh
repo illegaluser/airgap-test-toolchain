@@ -19,12 +19,33 @@
 #   1) 온라인 연결로 플러그인 다운로드: bash scripts/download-plugins.sh
 #      → jenkins-plugins/, dify-plugins/, jenkins-plugin-manager.jar 생성
 #   2) 이후 이 스크립트 실행
+#
+# 산출물:
+#   1) 로컬 daemon 의 ttc-allinone:wsl2-<tag> 이미지
+#   2) (기본) offline-assets/amd64/ 의 반출 tarball 3개 (all-in-one + GitLab + Dify Sandbox)
+#      — 외부망 작업의 자연스러운 종착지가 *반출 패키지* 이므로 빌드 직후 자동 생성.
+#      로컬에서 먼저 시험만 하고 싶으면 --no-tarball 플래그로 비활성화.
+#
+# 사용법:
+#   bash scripts/build-wsl2.sh                # build + tarball 추출
+#   bash scripts/build-wsl2.sh --no-tarball   # build 만 (로컬 시험용)
+#   bash scripts/build-wsl2.sh --no-cache     # 추가 인자는 docker build 로 전달
 # ============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # scripts/ → code-AI-quality-allinone/
 ALLINONE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 인자 파싱: --no-tarball 만 가로채고 나머지는 docker build 로 통과
+WITH_TARBALL=true
+DOCKER_BUILD_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-tarball) WITH_TARBALL=false; shift ;;
+        *)            DOCKER_BUILD_ARGS+=("$1"); shift ;;
+    esac
+done
 
 TAG="${TAG:-dev}"
 IMAGE="${IMAGE:-ttc-allinone:wsl2-${TAG}}"
@@ -77,8 +98,17 @@ echo "  GitLab    = $GITLAB_RUNTIME_IMAGE"
 DOCKER_BUILDKIT=1 docker build \
     -f "$ALLINONE_DIR/Dockerfile" \
     -t "$IMAGE" \
-    "$@" \
+    "${DOCKER_BUILD_ARGS[@]}" \
     "$ALLINONE_DIR"
 
 echo "[build-wsl2] 빌드 완료: $IMAGE"
-echo "[build-wsl2] 기동: bash scripts/run-wsl2.sh"
+
+if [[ "$WITH_TARBALL" == true ]]; then
+    echo "[build-wsl2] 반출 tarball 생성 단계로 진입 — bash scripts/offline-prefetch.sh --arch amd64"
+    bash "$SCRIPT_DIR/offline-prefetch.sh" --arch amd64 --tag "$TAG"
+    echo "[build-wsl2] 빌드 + 반출 패키지 생성 완료"
+else
+    echo "[build-wsl2] --no-tarball 지정 — 반출 단계 건너뜀"
+    echo "[build-wsl2] 기동: bash scripts/run-wsl2.sh"
+    echo "[build-wsl2] 추후 반출: bash scripts/offline-prefetch.sh --arch amd64 --tag $TAG"
+fi

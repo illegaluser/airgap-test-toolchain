@@ -14,11 +14,31 @@
 # 적재. legacy builder 제거 예고로 어차피 BuildKit 강제이므로 처음부터 정렬.
 #
 # 빌드 전 선행: bash scripts/download-plugins.sh
+#
+# 산출물:
+#   1) 로컬 daemon 의 ttc-allinone:mac-<tag> 이미지
+#   2) (기본) offline-assets/arm64/ 의 반출 tarball 3개 (all-in-one + GitLab + Dify Sandbox)
+#      — 외부망 작업의 자연스러운 종착지가 *반출 패키지* 이므로 빌드 직후 자동 생성.
+#      로컬에서 먼저 시험만 하고 싶으면 --no-tarball 플래그로 비활성화.
+#
+# 사용법:
+#   bash scripts/build-mac.sh                # build + tarball 추출
+#   bash scripts/build-mac.sh --no-tarball   # build 만 (로컬 시험용)
 # ============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLINONE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 인자 파싱: --no-tarball 만 가로채고 나머지는 docker build 로 통과
+WITH_TARBALL=true
+DOCKER_BUILD_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-tarball) WITH_TARBALL=false; shift ;;
+        *)            DOCKER_BUILD_ARGS+=("$1"); shift ;;
+    esac
+done
 
 TAG="${TAG:-dev}"
 IMAGE="${IMAGE:-ttc-allinone:mac-${TAG}}"
@@ -62,8 +82,17 @@ echo "  GitLab    = $GITLAB_RUNTIME_IMAGE"
 DOCKER_BUILDKIT=1 docker build \
     -f "$ALLINONE_DIR/Dockerfile" \
     -t "$IMAGE" \
-    "$@" \
+    "${DOCKER_BUILD_ARGS[@]}" \
     "$ALLINONE_DIR"
 
 echo "[build-mac] 빌드 완료: $IMAGE"
-echo "[build-mac] 기동: bash scripts/run-mac.sh"
+
+if [[ "$WITH_TARBALL" == true ]]; then
+    echo "[build-mac] 반출 tarball 생성 단계로 진입 — bash scripts/offline-prefetch.sh --arch arm64"
+    bash "$SCRIPT_DIR/offline-prefetch.sh" --arch arm64 --tag "$TAG"
+    echo "[build-mac] 빌드 + 반출 패키지 생성 완료"
+else
+    echo "[build-mac] --no-tarball 지정 — 반출 단계 건너뜀"
+    echo "[build-mac] 기동: bash scripts/run-mac.sh"
+    echo "[build-mac] 추후 반출: bash scripts/offline-prefetch.sh --arch arm64 --tag $TAG"
+fi

@@ -189,7 +189,9 @@ Usage:  docker buildx build [OPTIONS] PATH | URL | -
 
 ---
 
-## 7. 본 세션의 코드/문서 변경 — 5 파일
+## 7. 본 세션의 코드/문서 변경
+
+### 7.1 1차 변경 (커밋 c38ca66 / 3e632f5)
 
 | # | 파일 | 변경 분량 | 성격 |
 |---|---|---|---|
@@ -198,6 +200,24 @@ Usage:  docker buildx build [OPTIONS] PATH | URL | -
 | 3 | [scripts/build-wsl2.sh](../scripts/build-wsl2.sh) | +6/-3 (9 lines) | **주석만** — 코드 net-zero, BuildKit 정책 정렬 |
 | 4 | [scripts/build-mac.sh](../scripts/build-mac.sh) | +4/-2 (6 lines) | **주석만** — 동상 |
 | 5 | [README.md](../README.md) §2.3 / §3.1-b | +14/-6 (20 lines) | doc — stale 셸 함정 안내 / 0.x 호환 검증 명령 / Meilisearch URL |
+
+### 7.2 2차 변경 — 빌드 스크립트가 반출 tarball 까지 자동 처리
+
+**의사결정 배경**: 사용자 지적 — *"빌드 및 타르볼 추출이 빌드스크립트 내용 아니냐?"*
+A 머신 외부망 워크플로의 자연스러운 종착지는 *로컬 daemon 의 이미지* 가 아니라 *반출 가능한 tarball* 이므로,
+build → prefetch 분리는 *로컬에서 시험 운영하는 개발자* 의 niche 케이스에만 유효. 일반 사용자는 항상
+한 번에 끝내야 함.
+
+**구현 방안 — 옵션 A (스크립트 체이닝, 변경 작음)**:
+- build-wsl2.sh / build-mac.sh 가 빌드 후 `offline-prefetch.sh` 자동 호출
+- offline-prefetch.sh 내부 동작 (재빌드 + GitLab/Sandbox pull + 3 tarball) 그대로 유지
+- `--no-tarball` 플래그 신설 — 로컬 시험만 원하는 경우 반출 단계 비활성화
+
+| 파일 | 변경 |
+|---|---|
+| [scripts/build-wsl2.sh](../scripts/build-wsl2.sh) | 헤더에 산출물 2개 명시 + 사용법 / 인자 파싱(`--no-tarball` 가로채기, 나머지는 docker build 통과) / 빌드 후 자동 prefetch 호출 |
+| [scripts/build-mac.sh](../scripts/build-mac.sh) | 동상 (arch=arm64) |
+| [README.md](../README.md) §3.1 / §3.3 / §3.4 | 흐름도 갱신 (3-2 가 3-3 까지 자동) / build 명령에 `--no-tarball` 옵션 안내 / §3.4 prefetch 절을 *수동 분리 호출* 케이스로 재정의 / Docker 29.4 buildx alias 정확화 |
 
 ---
 
@@ -245,6 +265,7 @@ Usage:  docker buildx build [OPTIONS] PATH | URL | -
 | # | 시점 | 갱신 내용 |
 |---|---|---|
 | 1 | 2026-04-27 (초안) | 신설 — §0~§10 11 섹션. 본 세션 setup-host 패치 / WSL2 네트워킹 / 자산 다운로드 / 빌드 3차 시도 / Dify·GitLab 정책 재확인 / 5 파일 변경 / 시스템 변경 / 다음 단계 / 학습사항 통합 |
+| 2 | 2026-04-27 (2차) | §7 분리 — 7.1 (1차 커밋) / 7.2 신설: 빌드 스크립트가 반출 tarball 까지 자동 처리 (옵션 A: build-{wsl2,mac}.sh 가 offline-prefetch.sh 자동 호출, `--no-tarball` 플래그 신설). README §3.1/§3.3/§3.4 동기화. 구현 근거: *외부망 작업의 자연스러운 종착지는 반출 패키지* (사용자 지적) |
 
 ---
 
