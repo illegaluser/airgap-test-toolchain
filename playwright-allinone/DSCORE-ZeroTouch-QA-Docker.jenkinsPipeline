@@ -138,6 +138,48 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────────
+        // Stage 2.4: Sprint 2/3 회귀 테스트 (S3-13)
+        // 본 코드베이스의 14대 DSL 계약/실행/회귀 산출물 검증을 운영 빌드에서
+        // 자동 수행. fixture 기반 pytest + airgap 가드 + regression 산출물
+        // subprocess 실행까지 한 번에 회귀하므로 운영 출시 전 마지막 안전장치다.
+        //
+        // 두 sub-step 으로 나눈다 — pytest-playwright 의 page fixture (native)
+        // 와 executor 의 sync_playwright (integration) 가 같은 세션 안에서
+        // asyncio loop 충돌하므로 격리해 별도 호출.
+        // ──────────────────────────────────────────────────────────────────
+        stage('2.4. pytest 회귀 (Sprint 2/3)') {
+            steps {
+                sh """
+                    . '${AGENT_HOME}/venv/bin/activate'
+
+                    export PYTHONPATH="\${SCRIPTS_HOME}"
+                    export PYTHONDONTWRITEBYTECODE=1
+
+                    mkdir -p '${AGENT_HOME}/artifacts'
+
+                    # (1) Sprint 2/3 통합 회귀 — executor / 14대 DSL / mock UI / healing
+                    cd "\${SCRIPTS_HOME}"
+                    python3 -m pytest test --ignore=test/native \\
+                        --junitxml='${AGENT_HOME}/artifacts/pytest_integration.xml' \\
+                        -q --tb=short
+
+                    # (2) 9대 native 회귀 — pytest-playwright page fixture
+                    python3 -m pytest test/native \\
+                        --junitxml='${AGENT_HOME}/artifacts/pytest_native.xml' \\
+                        -q --tb=short
+                """
+            }
+            post {
+                always {
+                    junit(
+                        testResults: "${AGENT_HOME}/artifacts/pytest_*.xml",
+                        allowEmptyResults: false
+                    )
+                }
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────────
         // Stage 2.5: Dify API 준비 대기
         // /console/api/setup 이 HTTP 200 을 반환할 때까지 폴링한다.
         // Dify 컨테이너 기동 직후 DB 마이그레이션 완료에 1~3분이 소요될 수 있다.
