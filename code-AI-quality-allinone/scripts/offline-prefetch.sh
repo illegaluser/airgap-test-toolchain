@@ -2,10 +2,13 @@
 # ============================================================================
 # TTC 4-Pipeline All-in-One — 오프라인 이미지 export 헬퍼
 #
-# 폐쇄망 빌드 전략: 온라인 머신에서 이미지를 빌드한 뒤 docker save 로 tarball
-# 을 만들고, 오프라인 머신에서 docker load 로 복원한다.
+# 폐쇄망 빌드 전략: 온라인 머신에서 build-{wsl2,mac}.sh 로 이미지를 빌드한 뒤
+# docker save 로 tarball 을 만들고, 오프라인 머신에서 docker load 로 복원한다.
 #
-# 빌드 컨텍스트: 이 폴더 자체 (자체 완결).
+# 본 스크립트는 *재빌드하지 않음* — 이미 build-{wsl2,mac}.sh 가 만든
+# ttc-allinone:wsl2-<tag> (또는 mac-<tag>) 를 retag 후 그대로 docker save 한다.
+# 이전 구현은 별도 buildx builder (docker-container) 로 재빌드 + sending tarball
+# 로 ~5분 + 165초의 순수 낭비가 있었다.
 #
 # Usage:
 #   bash scripts/offline-prefetch.sh --arch amd64  (WSL2/Linux)
@@ -13,11 +16,13 @@
 #   bash scripts/offline-prefetch.sh --arch amd64 --gitlab-image gitlab/gitlab-ce:18.11.0-ce.0
 #
 # 선행:
-#   bash scripts/download-plugins.sh   # 플러그인 바이너리 준비 (온라인)
+#   bash scripts/build-wsl2.sh --no-tarball  (또는 --no-tarball 없이 자동 호출됨)
+#   bash scripts/build-mac.sh  --no-tarball
 #
 # 산출물:
 #   offline-assets/<arch>/ttc-allinone-<arch>-<tag>.tar.gz
 #   offline-assets/<arch>/gitlab-gitlab-ce-<version>-<arch>.tar.gz
+#   offline-assets/<arch>/langgenius-dify-sandbox-<version>-<arch>.tar.gz
 # ============================================================================
 set -euo pipefail
 
@@ -68,16 +73,27 @@ if [ ! -d "$ALLINONE_DIR/jenkins-plugins" ] || [ -z "$(ls -A "$ALLINONE_DIR/jenk
     exit 1
 fi
 
-docker buildx inspect ttc-allinone-builder >/dev/null 2>&1 || \
-    docker buildx create --name ttc-allinone-builder --use
+# build-{wsl2,mac}.sh 가 이미 native 이미지를 만들어 둔 상태를 전제로,
+# 별도 buildx builder 로 재빌드하지 않고 기존 이미지를 retag + save.
+# (이전 구현은 docker-container builder 로 재빌드 + sending tarball — ~5분 + 165초
+#  순수 낭비. cache 도 별도 builder 라 build-{wsl2,mac} 와 공유 안 됨.)
+case "$ARCH" in
+    amd64) SOURCE_TAG="ttc-allinone:wsl2-${TAG}" ;;
+    arm64) SOURCE_TAG="ttc-allinone:mac-${TAG}"  ;;
+esac
 
-docker buildx build \
-    --builder ttc-allinone-builder \
-    --platform "$PLATFORM" \
-    -f "$ALLINONE_DIR/Dockerfile" \
-    -t "$IMAGE" \
-    --load \
-    "$ALLINONE_DIR"
+if ! docker image inspect "$SOURCE_TAG" >/dev/null 2>&1; then
+    echo "[prefetch] 원본 이미지 $SOURCE_TAG 가 없습니다." >&2
+    case "$ARCH" in
+        amd64) echo "  → bash scripts/build-wsl2.sh --no-tarball  먼저 실행 후 재시도" >&2 ;;
+        arm64) echo "  → bash scripts/build-mac.sh --no-tarball   먼저 실행 후 재시도" >&2 ;;
+    esac
+    exit 1
+fi
+
+# tarball 안 이미지 이름을 arch-tag 정규형으로 통일하기 위해 alias 만 추가 (실 데이터 복사 없음)
+docker tag "$SOURCE_TAG" "$IMAGE"
+echo "[prefetch] 원본 이미지 재사용: $SOURCE_TAG → $IMAGE (tag alias)"
 
 echo "[prefetch] saving to $OUT_FILE"
 docker save "$IMAGE" | gzip > "$OUT_FILE"

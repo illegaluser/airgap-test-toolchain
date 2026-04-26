@@ -70,7 +70,14 @@ ENV TZ=Asia/Seoul
 # OS 패키지 — PostgreSQL 15 (pgdg), redis, nginx, supervisor, Python,
 # Playwright 런타임 의존성, SonarQube 런타임 (unzip/fonts 등)
 # ─────────────────────────────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# BuildKit cache mount: apt 캐시·인덱스를 layer 외부에 보관 → 재빌드 시 다운로드 생략.
+# /etc/apt/apt.conf.d/docker-clean 이 layer 사이에 cache 를 지우지 않도록 비우고,
+# Acquire::Check-Valid-Until=false 로 stale 인덱스 허용.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache && \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gnupg lsb-release && \
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
       | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg && \
@@ -89,8 +96,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       poppler-utils libreoffice-impress \
       fonts-noto-cjk fonts-dejavu \
       && (apt-get install -y --no-install-recommends libasound2t64 2>/dev/null \
-          || apt-get install -y --no-install-recommends libasound2) \
-      && rm -rf /var/lib/apt/lists/*
+          || apt-get install -y --no-install-recommends libasound2)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Qdrant (벡터 스토어)
@@ -153,17 +159,25 @@ RUN ln -sf python3.12 /usr/local/bin/python3 && \
 # ─────────────────────────────────────────────────────────────────────────────
 COPY requirements.txt /tmp/requirements.txt
 COPY scripts/requirements-pipelines.txt             /tmp/requirements-pipelines.txt
-RUN /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+# BuildKit cache mount: pip wheel cache. layer 무효화 시 재다운로드 생략.
+# --no-cache-dir 제거 (cache 사용해야 mount 효과 발생, mount 라 layer 크기 증가 없음).
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    /usr/local/bin/python3 -m pip install --break-system-packages --ignore-installed \
         -r /tmp/requirements.txt && \
-    /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+    /usr/local/bin/python3 -m pip install --break-system-packages --ignore-installed \
         -r /tmp/requirements-pipelines.txt && \
-    /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+    /usr/local/bin/python3 -m pip install --break-system-packages --ignore-installed \
         deepeval==3.9.7 && \
-    /usr/local/bin/python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+    /usr/local/bin/python3 -m pip install --break-system-packages --ignore-installed \
         "tree-sitter<0.22" "tree-sitter-languages==1.10.2" jedi
 
 # Playwright Chromium (python3.12 쪽 playwright 로 설치)
-RUN /usr/local/bin/python3 -m playwright install --with-deps chromium
+# cache mount: chromium binary (~150MB) + 의존성. apt cache 도 함께 (--with-deps 가
+# apt-get install 호출).
+RUN --mount=type=cache,target=/root/.cache/ms-playwright,sharing=locked \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    /usr/local/bin/python3 -m playwright install --with-deps chromium
 
 # eval_runner 용 venv (TARGET_TYPE=ui_chat 일 때 browser_adapter 가 참조 가능)
 RUN /usr/local/bin/python3 -m venv --system-site-packages /opt/qa-venv && \
@@ -256,9 +270,11 @@ COPY offline-assets/rerank-models/bge-reranker-v2-m3 /opt/rerank-models/bge-rera
 # torch 는 CPU 전용 wheel — VRAM 은 Ollama LLM 전담 (PLAN §6.5).
 # ─────────────────────────────────────────────────────────────────────────────
 COPY retrieve-svc /opt/retrieve-svc
-RUN /usr/local/bin/python3 -m venv /opt/retrieve-svc/.venv && \
-    /opt/retrieve-svc/.venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/retrieve-svc/.venv/bin/pip install --no-cache-dir \
+# BuildKit cache mount: pip wheel cache (torch ~190MB 등 큰 wheel 재다운로드 방지)
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    /usr/local/bin/python3 -m venv /opt/retrieve-svc/.venv && \
+    /opt/retrieve-svc/.venv/bin/pip install --upgrade pip && \
+    /opt/retrieve-svc/.venv/bin/pip install \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         -r /opt/retrieve-svc/requirements.txt && \
     /opt/retrieve-svc/.venv/bin/python -c "from sentence_transformers import CrossEncoder; print('CrossEncoder import OK')"

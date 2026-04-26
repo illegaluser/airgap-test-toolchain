@@ -218,6 +218,45 @@ build → prefetch 분리는 *로컬에서 시험 운영하는 개발자* 의 ni
 | [scripts/build-wsl2.sh](../scripts/build-wsl2.sh) | 헤더에 산출물 2개 명시 + 사용법 / 인자 파싱(`--no-tarball` 가로채기, 나머지는 docker build 통과) / 빌드 후 자동 prefetch 호출 |
 | [scripts/build-mac.sh](../scripts/build-mac.sh) | 동상 (arch=arm64) |
 | [README.md](../README.md) §3.1 / §3.3 / §3.4 | 흐름도 갱신 (3-2 가 3-3 까지 자동) / build 명령에 `--no-tarball` 옵션 안내 / §3.4 prefetch 절을 *수동 분리 호출* 케이스로 재정의 / Docker 29.4 buildx alias 정확화 |
+### 7.3 3차 변경 — 통합 빌드 1회차 실측에서 드러난 비효율 해소
+
+**의사결정 배경**: 7.2 통합 빌드를 처음 실행하며 두 가지 관찰됨:
+1. Dockerfile 의 무거운 RUN 단계 (apt / pip / playwright / retrieve-svc venv) 가 layer 무효화 시 *전체 재다운로드* — pip 가 `--no-cache-dir` 강제 + cache mount 미사용
+2. offline-prefetch.sh 가 별도 buildx builder (`ttc-allinone-builder`, docker-container) 로 *재빌드* — default builder cache 비공유로 stage-5 전체 재실행, 끝에 165초 sending tarball
+
+**구현**:
+
+| 파일 | 변경 |
+|---|---|
+| [Dockerfile](../Dockerfile) — apt RUN (L73) | `--mount=type=cache,target=/var/cache/apt,sharing=locked` + `/var/lib/apt`. `rm -rf /var/lib/apt/lists/*` 제거 (mount 라 layer 에 안 들어감). `Acquire::Keep-Downloaded-Packages "true"` 활성 |
+| [Dockerfile](../Dockerfile) — pip requirements RUN (L156→164) | `--mount=type=cache,target=/root/.cache/pip,sharing=locked`. `--no-cache-dir` 제거 (mount 사용해야 효과) |
+| [Dockerfile](../Dockerfile) — playwright RUN (L166→177) | `--mount=type=cache,target=/root/.cache/ms-playwright` + apt cache mount (—`--with-deps` 가 apt-get 호출하므로) |
+| [Dockerfile](../Dockerfile) — retrieve-svc venv pip RUN (L259→274) | `--mount=type=cache,target=/root/.cache/pip,sharing=locked`. `--no-cache-dir` 제거. torch ~190MB 등 재다운로드 방지 |
+| [scripts/offline-prefetch.sh](../scripts/offline-prefetch.sh) | `docker buildx create / build` 제거. 대신 `ttc-allinone:wsl2-${TAG}` (또는 `mac-${TAG}`) 가 존재하는지 확인 → `docker tag` 로 alias → `docker save`. 기존 5분 재빌드 + 165초 sending tarball 완전 제거 |
+
+**효과 (예상 — 다음 빌드부터 발생)**:
+- **재빌드 시**: layer 무효화돼도 cache mount 가 wheel/apt 재다운로드 차단 → 무거운 단계 5~10초로 단축
+- **prefetch 시**: 5~6분 소요 → ~1-2분 (docker save | gzip 만 남음)
+
+**1회차 실측 (개선 *전*)**:
+| 단계 | 시간 |
+|---|---|
+| build-wsl2 본체 (cache 부분 hit) | ~2분 (DONE 22 까지 캐시) + 4분 (재실행) + 130초 export |
+| prefetch buildx 재빌드 | 2분 (cache 일부 hit) + ~3분 RUN + 165초 sending tarball |
+| ttc-allinone-amd64 docker save \| gzip (6 GB) | ~25초 |
+| GitLab pull (1.8 GB) + save | ~30초 |
+| Sandbox pull + save | ~6초 |
+| **합계** | **약 13-15분** |
+
+**산출물 (실증)**:
+```
+offline-assets/amd64/
+├── ttc-allinone-amd64-dev.tar.gz                      6.0 GB
+├── gitlab-gitlab-ce-18.11.0-ce.0-amd64.tar.gz         1.7 GB
+├── langgenius-dify-sandbox-0.2.10-amd64.tar.gz        176 MB
+└── *.meta (3개, sha256 + 빌드시각 포함)
+```
+
 
 ---
 
@@ -266,6 +305,7 @@ build → prefetch 분리는 *로컬에서 시험 운영하는 개발자* 의 ni
 |---|---|---|
 | 1 | 2026-04-27 (초안) | 신설 — §0~§10 11 섹션. 본 세션 setup-host 패치 / WSL2 네트워킹 / 자산 다운로드 / 빌드 3차 시도 / Dify·GitLab 정책 재확인 / 5 파일 변경 / 시스템 변경 / 다음 단계 / 학습사항 통합 |
 | 2 | 2026-04-27 (2차) | §7 분리 — 7.1 (1차 커밋) / 7.2 신설: 빌드 스크립트가 반출 tarball 까지 자동 처리 (옵션 A: build-{wsl2,mac}.sh 가 offline-prefetch.sh 자동 호출, `--no-tarball` 플래그 신설). README §3.1/§3.3/§3.4 동기화. 구현 근거: *외부망 작업의 자연스러운 종착지는 반출 패키지* (사용자 지적) |
+| 3 | 2026-04-27 (3차) | §7.3 신설 — 통합 빌드 1회차 실측에서 드러난 비효율 해소: Dockerfile 4 RUN 단계에 `--mount=type=cache` 추가 (apt / pip requirements / playwright / retrieve-svc venv) + `--no-cache-dir` 제거 + `rm -rf /var/lib/apt/lists/*` 제거 / offline-prefetch.sh 의 `docker buildx build` 를 `docker tag` + `docker save` 로 대체 (재빌드·165초 sending tarball 완전 제거). 사용자 지시: *"빌드중 드러난 문제점 지금 모두 수정해"* |
 
 ---
 
