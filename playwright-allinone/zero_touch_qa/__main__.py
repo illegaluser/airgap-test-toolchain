@@ -71,10 +71,10 @@ def main():
         _generate_error_report(config.artifacts_dir, str(e))
         sys.exit(1)
     except ScenarioValidationError as e:
-        log.error("Dify 시나리오가 3 회 시도 후에도 유효하지 않음: %s", e)
+        log.error("시나리오 구조 검증 실패: %s", e)
         _generate_error_report(
             config.artifacts_dir,
-            f"시나리오 구조 검증 실패 (3 회 재시도 모두 실패): {e}",
+            f"시나리오 구조 검증 실패: {e}",
         )
         sys.exit(1)
     except FileNotFoundError as e:
@@ -157,6 +157,108 @@ _VALID_ACTIONS = frozenset(
     }
 )
 
+# verify.condition 화이트리스트 — executor._perform_action 의 분기와 1:1 동기.
+# "" (빈 문자열) 은 "값이 들어 있으면 contains, 아니면 visible" 로 해석됨 → 허용.
+_VALID_VERIFY_CONDITIONS = frozenset(
+    {
+        "",
+        "visible",
+        "hidden",
+        "disabled",
+        "enabled",
+        "checked",
+        "value",
+        "text",
+        "contains_text",
+        "contains",
+    }
+)
+
+
+_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press")
+_VALUE_REQUIRED_ACTIONS = frozenset({"fill", "press", "select", "upload", "drag"})
+_SCROLL_VALID_VALUES = frozenset({"into_view", "into-view", "into view"})
+
+
+def _check_mock_times(i: int, step: dict) -> None:
+    """mock_* 의 선택적 ``times`` 가 양의 정수인지 검증한다."""
+    if "times" not in step:
+        return
+    try:
+        n = int(step["times"])
+    except (TypeError, ValueError) as e:
+        raise ScenarioValidationError(
+            f"step[{i}] action={step['action']} 의 times 가 정수 아님: {step['times']!r}"
+        ) from e
+    if n < 1:
+        raise ScenarioValidationError(
+            f"step[{i}] action={step['action']} 의 times 는 1 이상이어야 함 (={n})"
+        )
+
+
+def _check_step_shape(i: int, step) -> dict:
+    """list[dict] 가정과 action 화이트리스트만 검사하고 step 을 반환한다."""
+    if not isinstance(step, dict):
+        raise ScenarioValidationError(
+            f"step[{i}] 가 dict 아님 (타입={type(step).__name__})"
+        )
+    action = step.get("action")
+    if action not in _VALID_ACTIONS:
+        raise ScenarioValidationError(f"step[{i}].action 이 유효하지 않음: {action!r}")
+    return step
+
+
+def _check_target_value_contract(i: int, step: dict) -> None:
+    """action 별 target/value 필수 여부를 검사한다."""
+    action = step["action"]
+    if action not in _TARGET_OPTIONAL_ACTIONS and not step.get("target"):
+        raise ScenarioValidationError(
+            f"step[{i}] action={action} 인데 target 이 비어 있음"
+        )
+    if action == "press" and not (step.get("target") or step.get("value")):
+        raise ScenarioValidationError(
+            f"step[{i}] action=press 인데 target/value 가 모두 비어 있음"
+        )
+    if action in _VALUE_REQUIRED_ACTIONS and not str(step.get("value", "")).strip():
+        raise ScenarioValidationError(
+            f"step[{i}] action={action} 인데 value 가 비어 있음"
+        )
+
+
+def _check_action_specific(i: int, step: dict) -> None:
+    """scroll/mock_*/verify 등 액션별 추가 계약을 검사한다."""
+    action = step["action"]
+    if action == "scroll":
+        scroll_value = str(step.get("value", "")).strip().lower()
+        if scroll_value not in _SCROLL_VALID_VALUES:
+            raise ScenarioValidationError(
+                f"step[{i}] action=scroll 인데 value 는 'into_view' 여야 함"
+            )
+        return
+    if action == "mock_status":
+        try:
+            int(str(step.get("value", "")).strip())
+        except ValueError as e:
+            raise ScenarioValidationError(
+                f"step[{i}] action=mock_status 인데 value 가 정수 아님"
+            ) from e
+        _check_mock_times(i, step)
+        return
+    if action == "mock_data":
+        if step.get("value") in ("", None):
+            raise ScenarioValidationError(
+                f"step[{i}] action=mock_data 인데 value 가 비어 있음"
+            )
+        _check_mock_times(i, step)
+        return
+    if action == "verify":
+        condition = str(step.get("condition", "")).strip().lower()
+        if condition not in _VALID_VERIFY_CONDITIONS:
+            raise ScenarioValidationError(
+                f"step[{i}] action=verify 의 condition={condition!r} 이 허용 목록 밖. "
+                f"허용: {sorted(c for c in _VALID_VERIFY_CONDITIONS if c)}"
+            )
+
 
 def _validate_scenario(scenario) -> None:
     """Dify 응답 scenario 의 구조적 유효성 검증. 실패 시 ScenarioValidationError.
@@ -173,47 +275,10 @@ def _validate_scenario(scenario) -> None:
     """
     if not isinstance(scenario, list) or not scenario:
         raise ScenarioValidationError("시나리오 배열이 비어 있음")
-    for i, step in enumerate(scenario):
-        if not isinstance(step, dict):
-            raise ScenarioValidationError(
-                f"step[{i}] 가 dict 아님 (타입={type(step).__name__})"
-            )
-        action = step.get("action")
-        if action not in _VALID_ACTIONS:
-            raise ScenarioValidationError(
-                f"step[{i}].action 이 유효하지 않음: {action!r}"
-            )
-        if action not in ("navigate", "wait", "press") and not step.get("target"):
-            raise ScenarioValidationError(
-                f"step[{i}] action={action} 인데 target 이 비어 있음"
-            )
-        if action == "press" and not (step.get("target") or step.get("value")):
-            raise ScenarioValidationError(
-                f"step[{i}] action=press 인데 target/value 가 모두 비어 있음"
-            )
-        if action in {"fill", "press", "select", "upload", "drag"} and not str(
-            step.get("value", "")
-        ).strip():
-            raise ScenarioValidationError(
-                f"step[{i}] action={action} 인데 value 가 비어 있음"
-            )
-        if action == "scroll":
-            scroll_value = str(step.get("value", "")).strip().lower()
-            if scroll_value not in {"into_view", "into-view", "into view"}:
-                raise ScenarioValidationError(
-                    f"step[{i}] action=scroll 인데 value 는 'into_view' 여야 함"
-                )
-        if action == "mock_status":
-            try:
-                int(str(step.get("value", "")).strip())
-            except ValueError as e:
-                raise ScenarioValidationError(
-                    f"step[{i}] action=mock_status 인데 value 가 정수 아님"
-                ) from e
-        if action == "mock_data" and step.get("value") in ("", None):
-            raise ScenarioValidationError(
-                f"step[{i}] action=mock_data 인데 value 가 비어 있음"
-            )
+    for i, raw_step in enumerate(scenario):
+        step = _check_step_shape(i, raw_step)
+        _check_target_value_contract(i, step)
+        _check_action_specific(i, step)
 
 
 def _prepare_scenario(
@@ -225,6 +290,10 @@ def _prepare_scenario(
             raise FileNotFoundError("execute 모드에는 --scenario 인자가 필요합니다.")
         with open(args.scenario, "r", encoding="utf-8") as f:
             scenario = json.load(f)
+        # 외부에서 들어온 시나리오도 chat/doc 과 동일한 14대 DSL 계약을 강제한다.
+        # 손으로 작성한 scenario.json 의 mock_status value 정수성 같은 계약 위반이
+        # 런타임 ValueError 로 흘러들어가 자가치유에 의해 가려지는 것을 막는다.
+        _validate_scenario(scenario)
         log.info("[Scenario] %s 로드 (%d스텝)", args.scenario, len(scenario))
         return scenario
 
