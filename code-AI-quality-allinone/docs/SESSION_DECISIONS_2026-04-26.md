@@ -23,6 +23,7 @@
 | **Joern CPG** | 정식 채택 — Phase 8 신설 (3~4주, Phase 7 와 병렬 가능). 02b 야간 batch + taint·data flow 질의. **현시점 미구현** |
 | **PM 가치** | 요구사항 구현율 (Implementation Rate) 자동 측정 — IMPLEMENTATION_RATE_PM_GUIDE.md 신설 |
 | **사용자 친화** | README 전면 재작성 (3,745 → 1,375 줄, 6 섹션 구조). 자동 설치 스크립트 2 개 (`setup-host.sh`, `download-rag-bundle.sh`) |
+| **Ollama 검증 — Windows + WSL2** | 호스트 GUI 설치 + WSL2 셸에서 daemon 응답만 보고 통과 처리 (CLI PATH 분리 케이스). 모델 pull 은 Windows PowerShell 에서 (선택 A 권장) |
 
 ---
 
@@ -409,6 +410,7 @@ N 개 atomic requirements
 | §4 PM 가치 | docs/IMPLEMENTATION_RATE_PM_GUIDE.md 신설 / PLAN TL;DR cross-link |
 | §5.1 자동 스크립트 | scripts/setup-host.sh 신규 / scripts/download-rag-bundle.sh 신규 |
 | §5.2 README 재작성 | README.md 전면 재작성 (3 차례) |
+| §6.1 Ollama 검증 — Windows + WSL2 (선택 A) | scripts/setup-host.sh `verify_ollama` 4 케이스 매트릭스 / scripts/download-rag-bundle.sh `--skip-models` 자동 전환 / README §2.1.6 / §3.2 / §3.4 |
 
 ---
 
@@ -457,7 +459,28 @@ N 개 atomic requirements
 
 ---
 
-## 10. 다음 단계 후보
+## 10. 세션 커밋 히스토리 (chronological)
+
+본 세션이 `feat/code-rag-hybrid-retrieve` 브랜치에 누적한 5 개 커밋 (`508e978..30a1959`):
+
+| # | 해시 | 제목 | 변경 |
+|---|---|---|---|
+| 1 | `72e14f5` | **feat(phase0)** — Hybrid RAG 인프라 + 02/04 동시 구동 차단 | Dockerfile (Stage 2.5 FalkorDB / Meilisearch / bge-reranker / retrieve-svc venv) · supervisord 11→14 program · entrypoint MEILI key + 헬스 대기 · download-plugins.sh 의 lockable-resources · 02/04 jenkinsfile lock(ttc-llm-bus) · retrieve-svc 스켈레톤 (15/15 PASS) — 21 files, +978/-11 |
+| 2 | `ea624bb` | **feat(scripts)** — 호스트 사전 설치 + 자산 일괄 다운로드 자동화 스크립트 | scripts/setup-host.sh (~250줄) + scripts/download-rag-bundle.sh (~190줄) — 2 files, +581 |
+| 3 | `70d78f5` | **docs** — 결정 정리 + README 전면 재작성 + PM 가이드 + 세션 통합 정리 | README 3,745 → 1,375 줄 (6 섹션) · IMPLEMENTATION_RATE_PM_GUIDE.md 신규 · SESSION_DECISIONS_2026-04-26.md 신규 · PLAN / EXECUTION / SPEC_TRACEABILITY 갱신 — 6 files, +2,744/-3,373 |
+| 4 | `f68749a` | **fix(scripts)** — Ollama 검증 로직 재설계: daemon 응답 우선, CLI 보조 | setup-host.sh + download-rag-bundle.sh 의 `verify_ollama` 4 케이스 매트릭스 (CLI/daemon 매트릭스) — 2 files, +132/-38 |
+| 5 | `30a1959` | **docs** — Windows + WSL2 의 Ollama 설치 정책 문서화 (선택 A 권장) | README §2.1.6 / §3.2 / §3.4 + SESSION_DECISIONS §6.1 — 2 files, +103/-14 |
+
+**커밋 분할 사유**:
+- 서로 다른 PR 로 쪼개기 쉽게 *논리 단위* 별 분리
+- bisect 시 회귀 원인 격리 가능 (Phase 0 인프라 vs 자동화 스크립트 vs 문서 vs 수정)
+- 코드 리뷰 시 reviewer 가 영역별로 검토 가능
+
+**원격 동기화**: 모든 커밋 `origin/feat/code-rag-hybrid-retrieve` 에 푸시 완료.
+
+---
+
+## 11. 다음 단계 후보
 
 본 세션 종료 시점에서 다음으로 진행 가능한 작업:
 
@@ -473,7 +496,18 @@ N 개 atomic requirements
 
 ---
 
-**문서 작성**: 2026-04-26 협업 세션 종료 시점
+## 12. 본 문서 자체의 갱신 이력
+
+| # | 시점 | 갱신 내용 |
+|---|---|---|
+| 1 | 2026-04-26 (1차) | 신설 — §0~§10 11 섹션. 커밋 `508e978..70d78f5` 까지 반영 |
+| 2 | 2026-04-26 (2차) | §6.1 후속 결정 (Windows + WSL2 의 Ollama 선택 A) 추가. 커밋 `f68749a` + `30a1959` 반영 |
+| 3 | 2026-04-26 (3차) | §0 TL;DR 에 Ollama 검증 행 추가 / §8 영향 매트릭스에 §6.1 행 추가 / **§10 세션 커밋 히스토리 신설 (5 커밋)** / §11 다음 단계 번호 시프트 / §12 본 문서 갱신 이력 신설 |
+
+---
+
+**문서 작성**: 2026-04-26 협업 세션
 **작성 컨텍스트**: 사용자 요청 — *"현재까지의 논의 및 의사결정 사항에 대해 모두 별도 문서로 정리해줘."*
-**갱신 방침**: 본 문서는 *2026-04-26 세션 한정 스냅샷*. 이후 결정은 PLAN §11 / EXECUTION §10 의
-변경 이력에 누적하고, 다음 세션 종료 시점에 별도 `SESSION_DECISIONS_<날짜>.md` 신설.
+**갱신 방침**: 본 문서는 *2026-04-26 세션의 누적 스냅샷*. 세션 중 의사결정이 추가되면 §12 갱신
+이력에 행을 추가하고 본문 해당 섹션을 *덮어쓰기* 가 아니라 *증분 추가*. 이후 다른 일자 세션은
+별도 `SESSION_DECISIONS_<날짜>.md` 신설.
