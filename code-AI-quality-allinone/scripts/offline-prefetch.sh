@@ -271,7 +271,204 @@ META
     fi
 fi
 
+# ─── B 머신 부트킷 정리 ────────────────────────────────────────────────────
+# 본 디렉터리(offline-assets/<arch>/) 가 그대로 USB 로 복사되어 폐쇄망에서
+# 자족 실행될 수 있도록 compose 파일 / 자체-실행 load.sh, run.sh / .env / README /
+# CHECKSUMS 를 함께 채운다.
 echo ""
-echo "[prefetch] 오프라인 머신 복원:"
-echo "    bash scripts/offline-load.sh --arch $ARCH"
-echo "  (이미지 3개 + 있으면 ollama-models 자동 처리)"
+echo "[prefetch] B 머신 부트킷 정리..."
+
+case "$ARCH" in
+    amd64) COMPOSE_SRC="$ALLINONE_DIR/docker-compose.wsl2.yaml" ;;
+    arm64) COMPOSE_SRC="$ALLINONE_DIR/docker-compose.mac.yaml"  ;;
+esac
+[ -f "$COMPOSE_SRC" ] || { echo "compose 원본 없음: $COMPOSE_SRC" >&2; exit 1; }
+cp "$COMPOSE_SRC" "$OUT_DIR/docker-compose.yaml"
+
+# gitlab-truncate-patch.sh — run.sh 에서 호출
+mkdir -p "$OUT_DIR/scripts"
+[ -f "$SCRIPT_DIR/gitlab-truncate-patch.sh" ] && \
+    cp "$SCRIPT_DIR/gitlab-truncate-patch.sh" "$OUT_DIR/scripts/gitlab-truncate-patch.sh"
+
+# .env — compose 의 ${IMAGE}, ${GITLAB_IMAGE} 등 정합화
+cat > "$OUT_DIR/.env" <<EOF
+# 본 .env 는 prefetch 시점에 자동 생성. compose 의 \${IMAGE} 와 tarball 안 image
+# tag 를 일치시킨다.
+IMAGE=$IMAGE
+GITLAB_IMAGE=$GITLAB_IMAGE
+EOF
+
+# 자체-실행 load.sh — 본 디렉터리 안 *.tar.gz 를 docker load + ollama 추출
+cat > "$OUT_DIR/load.sh" <<'BUNDLE_LOAD'
+#!/usr/bin/env bash
+# B 머신용 self-contained load 스크립트 — 본 폴더 통째로 복사된 상태에서 동작.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+
+OLLAMA_TARGET=""
+SKIP_OLLAMA=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --ollama-target) OLLAMA_TARGET="$2"; shift 2 ;;
+        --no-ollama)     SKIP_OLLAMA=1; shift ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+command -v docker >/dev/null || { echo "docker 명령 필요" >&2; exit 1; }
+
+shopt -s nullglob
+tarballs=("$HERE"/*.tar.gz)
+shopt -u nullglob
+
+ollama_tarball=""
+images=()
+for tb in "${tarballs[@]}"; do
+    case "$(basename "$tb")" in
+        ollama-models-*) ollama_tarball="$tb" ;;
+        *)               images+=("$tb") ;;
+    esac
+done
+
+[ ${#images[@]} -eq 0 ] && { echo "이미지 tarball 없음: $HERE" >&2; exit 1; }
+
+echo "[load] dir=$HERE"
+for tb in "${images[@]}"; do
+    echo "[load] docker load: $(basename "$tb")"
+    gunzip -c "$tb" | docker load
+done
+
+echo ""
+echo "[load] 설치된 이미지:"
+docker images --format '  {{.Repository}}:{{.Tag}}\t{{.Size}}' \
+    | grep -E 'ttc-allinone|gitlab/gitlab-ce|dify-sandbox' || true
+
+if [ "$SKIP_OLLAMA" -eq 0 ] && [ -n "$ollama_tarball" ]; then
+    if [ -z "$OLLAMA_TARGET" ]; then
+        if [ -f /proc/version ] && grep -qiE 'microsoft|wsl' /proc/version; then
+            OLLAMA_TARGET=""
+            for cand in /mnt/c/Users/*/.ollama; do
+                [ -d "$cand" ] && { OLLAMA_TARGET="$cand/models"; break; }
+            done
+            if [ -z "$OLLAMA_TARGET" ] && command -v powershell.exe >/dev/null 2>&1; then
+                WIN_USER="$(powershell.exe -NoProfile -Command '$env:USERNAME' 2>/dev/null | tr -d '\r\n' || true)"
+                [ -n "$WIN_USER" ] && OLLAMA_TARGET="/mnt/c/Users/${WIN_USER}/.ollama/models"
+            fi
+            [ -z "$OLLAMA_TARGET" ] && OLLAMA_TARGET="$HOME/.ollama/models"
+        else
+            OLLAMA_TARGET="$HOME/.ollama/models"
+        fi
+    fi
+    echo ""
+    echo "[load] Ollama 모델 추출"
+    echo "  source: $(basename "$ollama_tarball")"
+    echo "  target: $OLLAMA_TARGET"
+    mkdir -p "$OLLAMA_TARGET"
+    tar -xzf "$ollama_tarball" -C "$OLLAMA_TARGET" --keep-newer-files 2>/dev/null \
+        || tar -xzf "$ollama_tarball" -C "$OLLAMA_TARGET"
+
+    # 추출 직후 Ollama daemon 응답 + 모델 등록 확인
+    echo ""
+    echo "[load] Ollama daemon 응답 확인..."
+    OLLAMA_URL=""
+    for u in http://localhost:11434/api/tags http://host.docker.internal:11434/api/tags; do
+        if curl -sf --max-time 3 "$u" >/dev/null 2>&1; then
+            OLLAMA_URL="$u"; break
+        fi
+    done
+    if [ -z "$OLLAMA_URL" ]; then
+        echo "  WARN: Ollama daemon 미응답."
+        echo "  → 호스트에 Ollama 설치 + 시작 후 'ollama list' 로 검증:"
+        echo "       windows : OllamaSetup.exe 실행 후 Ollama GUI 시작"
+        echo "       macOS   : open -a Ollama (또는 brew install ollama && open -a Ollama)"
+        echo "       linux   : sudo systemctl start ollama (또는 ollama serve &)"
+    else
+        echo "  daemon=$OLLAMA_URL"
+        if command -v python3 >/dev/null 2>&1; then
+            registered=$(curl -sf "$OLLAMA_URL" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    names = [m.get('name','?') for m in d.get('models', [])]
+    print(' '.join(names) if names else '(없음)')
+except Exception as e:
+    print('(파싱 실패)')
+")
+            echo "  registered: $registered"
+        else
+            echo "  (python3 없음 — 'ollama list' 로 직접 확인)"
+        fi
+    fi
+fi
+
+echo ""
+echo "[load] 완료. 다음:"
+echo "    bash $HERE/run.sh"
+BUNDLE_LOAD
+chmod +x "$OUT_DIR/load.sh"
+
+# 자체-실행 run.sh — 본 디렉터리 docker-compose.yaml 으로 compose up
+cat > "$OUT_DIR/run.sh" <<'BUNDLE_RUN'
+#!/usr/bin/env bash
+# B 머신용 self-contained run 스크립트 — docker compose up -d + GitLab UI 패치.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+docker compose -f docker-compose.yaml "$@" up -d
+if [ -x "$HERE/scripts/gitlab-truncate-patch.sh" ]; then
+    "$HERE/scripts/gitlab-truncate-patch.sh" >&2 &
+    disown || true
+fi
+BUNDLE_RUN
+chmod +x "$OUT_DIR/run.sh"
+
+# CHECKSUMS — 무결성 검증 (B 머신 sha256sum -c CHECKSUMS.sha256)
+(cd "$OUT_DIR" && sha256sum *.tar.gz > CHECKSUMS.sha256)
+
+# README
+TARBALL_LIST=$(cd "$OUT_DIR" && ls -lh *.tar.gz | awk '{printf "- %s (%s)\n", $9, $5}')
+cat > "$OUT_DIR/README-B-MACHINE.md" <<EOF
+# TTC All-in-One — B 머신 반입 패키지 ($ARCH / tag=$TAG)
+
+생성: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+원본: $ALLINONE_DIR
+
+## 1) 무결성 검증 (선택)
+\`\`\`bash
+sha256sum -c CHECKSUMS.sha256
+\`\`\`
+
+## 2) 이미지 + Ollama 모델 로드
+\`\`\`bash
+bash load.sh                # 이미지 3개 docker load + ollama 모델 추출
+# 옵션: bash load.sh --no-ollama --ollama-target /path/to/.ollama/models
+\`\`\`
+
+## 3) 컨테이너 기동
+\`\`\`bash
+bash run.sh                 # docker compose up -d + GitLab UI 패치
+\`\`\`
+
+## 4) 접속 URL (provision.sh 자동 wiring 후 — 보통 5-10분 소요)
+- Jenkins    : http://localhost:28080  (admin / password)
+- Dify       : http://localhost:28081  (admin@ttc.local / TtcAdmin!2026)
+- SonarQube  : http://localhost:29000  (admin / TtcAdmin!2026)
+- GitLab     : http://localhost:28090  (root / ChangeMe!Pass)
+- Ollama     : http://host.docker.internal:11434  (B 머신 호스트 daemon)
+
+## 포함 산출물
+$TARBALL_LIST
+
+## 호스트 요구사항
+- Docker Desktop 24.0+ (Windows) 또는 Docker Engine 24+ (Linux)
+- 메모리 24GB+ 권장
+- 호스트에 Ollama 설치 + 본 패키지의 ollama-models 추출 후 daemon 재시작
+EOF
+
+echo "[prefetch] B 머신 부트킷 정리 완료:"
+echo "  docker-compose.yaml / .env / load.sh / run.sh / README-B-MACHINE.md / CHECKSUMS.sha256 / scripts/gitlab-truncate-patch.sh"
+echo ""
+echo "[prefetch] B 머신 절차:"
+echo "  1) USB 등에 ${OUT_DIR} 통째 복사"
+echo "  2) (B 머신) bash load.sh && bash run.sh"

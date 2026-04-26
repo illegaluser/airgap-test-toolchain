@@ -89,7 +89,36 @@ if [ "$SKIP_OLLAMA" -eq 0 ] && [ -n "$ollama_tarball" ]; then
     # --keep-newer-files: 호스트 측 더 최신 파일은 보존 (기존 모델 보호)
     tar -xzf "$ollama_tarball" -C "$OLLAMA_TARGET" --keep-newer-files 2>/dev/null \
         || tar -xzf "$ollama_tarball" -C "$OLLAMA_TARGET"
-    echo "  추출 완료. 호스트 Ollama daemon 재시작 시 모델 자동 인식."
+
+    # 추출 직후 Ollama daemon 응답 + 모델 등록 확인
+    echo ""
+    echo "[offline-load] Ollama daemon 응답 확인..."
+    OLLAMA_URL=""
+    for u in http://localhost:11434/api/tags http://host.docker.internal:11434/api/tags; do
+        if curl -sf --max-time 3 "$u" >/dev/null 2>&1; then
+            OLLAMA_URL="$u"; break
+        fi
+    done
+    if [ -z "$OLLAMA_URL" ]; then
+        echo "  WARN: Ollama daemon 미응답."
+        echo "  → 호스트에 Ollama 설치 + 시작 후 'ollama list' 로 검증."
+    else
+        echo "  daemon=$OLLAMA_URL"
+        if command -v python3 >/dev/null 2>&1; then
+            registered=$(curl -sf "$OLLAMA_URL" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    names = [m.get('name','?') for m in d.get('models', [])]
+    print(' '.join(names) if names else '(없음)')
+except Exception:
+    print('(파싱 실패)')
+")
+            echo "  registered: $registered"
+        else
+            echo "  (python3 없음 — 'ollama list' 로 직접 확인)"
+        fi
+    fi
 elif [ "$SKIP_OLLAMA" -eq 0 ] && [ -z "$ollama_tarball" ]; then
     echo ""
     echo "[offline-load] (ollama-models tarball 없음 — 호스트 측에서 별도 ollama pull 필요)"

@@ -320,6 +320,35 @@ docker compose -f docker-compose.wsl2.yaml up -d
 # → provision.sh 가 14 process + Dify import + Jenkins credential 자동 처리
 ```
 
+### 7.5 5차 변경 — B 머신 자족 부트킷 (offline-assets/<arch>/ 통째 복사로 동작)
+
+**의사결정 배경**: 사용자 지적 — *"bash scripts/offline-load.sh + docker compose up 정상 수행 위해서는 폴더구조가 명확해야할듯. 직전 반출 스크립트에 해당 구조를 사전에 정돈시켜주는 절차를 포함하는게 어떨까?"*
+
+기존: `offline-assets/<arch>/` 안에 tarball + meta 만 → B 머신이 별도로 compose / scripts 를 받아야 동작.
+신규: 같은 폴더 안에 **자족 실행 가능한 모든 파일** 포함 → 폴더 통째 USB 복사하면 그대로 부팅.
+
+**구현 — `offline-prefetch.sh` 끝에 "B 머신 부트킷 정리" 단계 추가**:
+
+| 신규 파일 (각 `offline-assets/<arch>/` 안) | 내용 |
+|---|---|
+| `docker-compose.yaml` | `docker-compose.{wsl2|mac}.yaml` 사본 (arch 자동 선택) |
+| `.env` | `IMAGE=ttc-allinone:<arch>-<tag>` + `GITLAB_IMAGE=...` — compose 의 변수 default 와 tarball 안 image tag 정합화 |
+| `load.sh` (exec) | self-contained: `HERE="$(cd $(dirname $0) && pwd)"` 로 자기 디렉터리 기준 동작. docker load 3 + ollama 추출 (WSL2 자동 감지). 플래그: `--no-ollama` / `--ollama-target` |
+| `run.sh` (exec) | self-contained: `cd $HERE && docker compose -f docker-compose.yaml up -d` + GitLab UI 패치 백그라운드 |
+| `scripts/gitlab-truncate-patch.sh` | run.sh 가 호출 |
+| `CHECKSUMS.sha256` | 4 tarball 의 sha256 — `sha256sum -c` 로 무결성 검증 |
+| `README-B-MACHINE.md` | 단계별 안내 (sha256sum → load.sh → run.sh), 접속 URL, 호스트 요구사항. 동적 정보 (생성시각, arch, tag, 산출물 list) 자동 포함 |
+
+**B 머신 절차 (확정 단순화)**:
+```bash
+cd /opt/ttc-bundle/amd64/
+sha256sum -c CHECKSUMS.sha256
+bash load.sh
+bash run.sh
+```
+
+**검증 (실제 산출 확인)**: `~/ttc-build/offline-assets/amd64/` 17GB — tarball 4 + .meta 4 + bundle kit 7 파일 모두 존재. `.env` 의 IMAGE 가 정확히 `ttc-allinone:amd64-dev` (tarball 안 image tag 와 매칭).
+
 
 ---
 
@@ -370,6 +399,8 @@ docker compose -f docker-compose.wsl2.yaml up -d
 | 2 | 2026-04-27 (2차) | §7 분리 — 7.1 (1차 커밋) / 7.2 신설: 빌드 스크립트가 반출 tarball 까지 자동 처리 (옵션 A: build-{wsl2,mac}.sh 가 offline-prefetch.sh 자동 호출, `--no-tarball` 플래그 신설). README §3.1/§3.3/§3.4 동기화. 구현 근거: *외부망 작업의 자연스러운 종착지는 반출 패키지* (사용자 지적) |
 | 3 | 2026-04-27 (3차) | §7.3 신설 — 통합 빌드 1회차 실측에서 드러난 비효율 해소: Dockerfile 4 RUN 단계에 `--mount=type=cache` 추가 (apt / pip requirements / playwright / retrieve-svc venv) + `--no-cache-dir` 제거 + `rm -rf /var/lib/apt/lists/*` 제거 / offline-prefetch.sh 의 `docker buildx build` 를 `docker tag` + `docker save` 로 대체 (재빌드·165초 sending tarball 완전 제거). 사용자 지시: *"빌드중 드러난 문제점 지금 모두 수정해"* |
 | 4 | 2026-04-27 (4차) | §7.4 신설 — 컨테이너 부팅 검증 (run-wsl2 + provision.sh 자동 wiring 14/14 + Dify import + Jenkins credential 5개 + 5 Pipeline Job 등록 모두 통과) + Ollama 모델 반출 자동화 (offline-prefetch 에 whitelist 기반 manifest+blobs 추출, Python3 파싱, WSL2 호스트 경로 자동 감지, ollama-models-amd64.tar.gz 8.8 GB 산출 검증). 사용자 지시: *"ollama 모델은 모두 다운로드 완료한 상태다. 해당 모델의 폐쇄망 반출에 대해서도 대책을 마련해야할텐데?"* |
+| 5 | 2026-04-27 (5차) | §7.5 신설 — B 머신 자족 부트킷: offline-prefetch.sh 끝에 `docker-compose.yaml` / `.env` (IMAGE+GITLAB_IMAGE 정합) / `load.sh` (self-contained, HERE 기준) / `run.sh` (compose up + GitLab UI 패치) / `scripts/gitlab-truncate-patch.sh` / `CHECKSUMS.sha256` / `README-B-MACHINE.md` 자동 생성 단계 추가. B 머신은 폴더 통째 USB 복사 → `sha256sum -c` → `bash load.sh` → `bash run.sh` 3 명령으로 끝. 사용자 지적: *"폴더구조가 명확해야할듯. 직전 반출 스크립트에 해당 구조를 사전에 정돈시켜주는 절차를 포함하는게 어떨까?"* |
+| 6 | 2026-04-27 (6차) | bundle `load.sh` 와 project `offline-load.sh` 양쪽에 **Ollama daemon probe + 등록 모델 검증** 단계 추가 — 추출 직후 `localhost:11434` → `host.docker.internal:11434` 순으로 daemon 응답 확인하고 `python3` 로 `/api/tags` 의 모델 list 출력. daemon 미응답이면 OS 별 Ollama 시작 안내. README §6.4 신설 — **스크립트 인벤토리 표** (✋ 사용자/🔁 자동 호출/📦 컨테이너 내부 분류, 13개 스크립트 호출 시점 명시), 기존 §6.4/§6.5 → §6.5/§6.6 시프트. 사용자 지적: *"폐쇄망에 ollama 모델까지 인식시키는 스크립트가 현재 작성되어 있나? load.sh 는 어디에 사용? 각 스크립트 안내가 모두 문서에 포함되어 있나?"* |
 
 ---
 

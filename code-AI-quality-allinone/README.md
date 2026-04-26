@@ -1508,7 +1508,29 @@ docker exec ttc-allinone bash /opt/provision.sh
 > retrieve-svc 가 사용되지 않는 동안에도 04 는 Dify 내장 dense retrieve 로 작동 — 사용자 시점에서
 > 차이는 *분석 정확도가 미래 Phase 4 적용 후보다 약간 낮을 수 있음* 정도.
 
-### 6.4 관련 문서
+### 6.4 스크립트 인벤토리 — 어느 것이 어디서 쓰이나
+
+> 어느 스크립트를 *언제·어디서* 호출하는지 한 페이지 요약. 사용자가 직접 부르는 스크립트(✋)와
+> 다른 스크립트가 자동 호출하는 것(🔁), 컨테이너 내부에서만 도는 것(📦) 을 표시.
+
+| 분류 | 스크립트 | 호출 시점 / 호출자 |
+|---|---|---|
+| **A 머신 (외부망 빌드)** | ✋ `setup-host.sh` | 1회 호스트 셋업 — apt 패키지 / Python venv / huggingface-cli |
+| | ✋ `download-rag-bundle.sh` | 자산 다운로드 (Meilisearch / bge-reranker / FalkorDB / 플러그인) |
+| | 🔁 `download-plugins.sh` | `download-rag-bundle.sh` 가 내부 호출 — Jenkins+Dify 플러그인 단독 |
+| | ✋ `build-wsl2.sh` / `build-mac.sh` | 통합 이미지 빌드. `--no-tarball` 미지정 시 `offline-prefetch.sh` 자동 호출 |
+| | 🔁 `offline-prefetch.sh` | `build-{wsl2,mac}.sh` 가 호출 (또는 직접). `docker save` + GitLab/Sandbox pull + Ollama whitelist 번들 + B 머신 부트킷 정리 |
+| | ✋ `run-wsl2.sh` / `run-mac.sh` | A 머신 로컬 시험 실행 — `docker compose up -d` |
+| | 🔁 `gitlab-truncate-patch.sh` | `run-{wsl2,mac}.sh` 와 bundle `run.sh` 가 백그라운드로 호출 — GitLab UI 패치 |
+| | ✋ `offline-load.sh` | 프로젝트 트리 보유 머신 — `docker load` + Ollama 추출. (B 머신은 bundle `load.sh` 사용) |
+| **B 머신 (폐쇄망)** | ✋ bundle `load.sh` | `offline-prefetch` 가 자동 생성. `offline-assets/<arch>/` 안에 위치. `docker load` 3개 + Ollama 추출 + daemon probe |
+| | ✋ bundle `run.sh` | 동상. `docker compose -f docker-compose.yaml up -d` + GitLab UI 패치 |
+| **컨테이너 내부 (자동)** | 📦 `entrypoint.sh` | tini → 컨테이너 PID 1. supervisor 띄우고 health-wait 후 provision.sh 호출 |
+| | 📦 `provision.sh` | `entrypoint.sh` 가 호출 — Dify import / Ollama provider 등록 / Jenkins credential 주입 / 5개 Pipeline Job 등록 |
+| | 📦 `pg-init.sh` | Dockerfile 빌드 시 1회 — Postgres 초기화 |
+| **patches** | 📦 `patches/dify_hit_count_bypass.py` | Dockerfile 빌드 시 1회 — Dify 1.13.4+ hit_count 우회 |
+
+### 6.5 관련 문서
 
 | 문서 | 무엇이 있나 |
 |---|---|
@@ -1520,7 +1542,7 @@ docker exec ttc-allinone bash /opt/provision.sh
 | [docs/PIPELINE_04_DESIGN_AND_EVOLUTION.md](docs/PIPELINE_04_DESIGN_AND_EVOLUTION.md) | 04 정적분석 결과분석 + 사이클별 회고 |
 | [docs/PLAN_AI_EVAL_PIPELINE.md](docs/PLAN_AI_EVAL_PIPELINE.md) | 05 AI 평가 파이프라인 설계 |
 
-### 6.5 라이선스 (주요 컴포넌트)
+### 6.6 라이선스 (주요 컴포넌트)
 
 | 컴포넌트 | 라이선스 |
 |---|---|
