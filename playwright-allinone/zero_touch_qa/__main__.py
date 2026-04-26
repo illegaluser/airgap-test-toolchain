@@ -137,9 +137,24 @@ class ScenarioValidationError(ValueError):
     """Dify 가 반환한 scenario 가 구조적으로 무효."""
 
 
-# [9대 표준 액션] — dify-chatflow.yaml Planner system prompt 와 동기화
+# [14대 표준 액션] — dify-chatflow.yaml Planner system prompt 와 동기화
 _VALID_ACTIONS = frozenset(
-    {"navigate", "click", "fill", "press", "select", "check", "hover", "wait", "verify"}
+    {
+        "navigate",
+        "click",
+        "fill",
+        "press",
+        "select",
+        "check",
+        "hover",
+        "wait",
+        "verify",
+        "upload",
+        "drag",
+        "scroll",
+        "mock_status",
+        "mock_data",
+    }
 )
 
 
@@ -149,8 +164,9 @@ def _validate_scenario(scenario) -> None:
     LLM 비결정성으로 인해 드물게 발생하는 다음 케이스를 조기에 탐지:
     - 빈 배열 / list 아닌 타입
     - step 요소가 dict 아님 (문자열 / null 혼입)
-    - action 이 9대 표준 밖이거나 누락
-    - navigate/wait 이외 action 에서 target 이 비어 있음 (실행 시 locator 실패 확정)
+    - action 이 14대 표준 밖이거나 누락
+    - navigate/wait/press 이외 action 에서 target 이 비어 있음 (실행 시 locator 실패 확정)
+    - 신규 액션의 최소 입력 계약(value/condition 등) 위반
 
     이 검증을 통과해도 시맨틱상 잘못된 시나리오 (예: SRS 와 무관한 작업) 는 막을 수
     없다. 그 경우는 executor 레벨의 Healer / Guard 가 후단에서 대응.
@@ -167,9 +183,36 @@ def _validate_scenario(scenario) -> None:
             raise ScenarioValidationError(
                 f"step[{i}].action 이 유효하지 않음: {action!r}"
             )
-        if action not in ("navigate", "wait") and not step.get("target"):
+        if action not in ("navigate", "wait", "press") and not step.get("target"):
             raise ScenarioValidationError(
                 f"step[{i}] action={action} 인데 target 이 비어 있음"
+            )
+        if action == "press" and not (step.get("target") or step.get("value")):
+            raise ScenarioValidationError(
+                f"step[{i}] action=press 인데 target/value 가 모두 비어 있음"
+            )
+        if action in {"fill", "press", "select", "upload", "drag"} and not str(
+            step.get("value", "")
+        ).strip():
+            raise ScenarioValidationError(
+                f"step[{i}] action={action} 인데 value 가 비어 있음"
+            )
+        if action == "scroll":
+            scroll_value = str(step.get("value", "")).strip().lower()
+            if scroll_value not in {"into_view", "into-view", "into view"}:
+                raise ScenarioValidationError(
+                    f"step[{i}] action=scroll 인데 value 는 'into_view' 여야 함"
+                )
+        if action == "mock_status":
+            try:
+                int(str(step.get("value", "")).strip())
+            except ValueError as e:
+                raise ScenarioValidationError(
+                    f"step[{i}] action=mock_status 인데 value 가 정수 아님"
+                ) from e
+        if action == "mock_data" and step.get("value") in ("", None):
+            raise ScenarioValidationError(
+                f"step[{i}] action=mock_data 인데 value 가 비어 있음"
             )
 
 
