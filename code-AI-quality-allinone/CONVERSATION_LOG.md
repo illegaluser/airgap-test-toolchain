@@ -7849,6 +7849,30 @@ auto-merge 직후 README §8.5 (04 AI평가 섹션) 가 main 쪽에서 작성된
 
 ---
 
+## Session 2026-04-26 — Zero-Touch QA Action DSL 14대 확장 계획 수립
+
+### 배경
+기존 Zero-Touch QA 시스템은 환각(Hallucination) 통제를 위해 Playwright의 액션을 9개(`navigate`, `click`, `fill`, `press`, `select`, `check`, `hover`, `wait`, `verify`)로 엄격하게 제한했으나, 복잡한 웹 애플리케이션 테스트(파일 업로드, 드래그 앤 드롭, 네트워크 예외 상황 등)를 지원하기 위한 DSL 확장 요구가 발생함.
+
+### 작업 요약
+- **확장 원칙 수립**: 무한정 API를 개방하지 않고 통제된 스키마 안에서 필수 상호작용 및 엣지 케이스 검증 액션 추가.
+- **신규 액션 5종 명세**:
+  - 상호작용 3종: `upload`, `drag`, `scroll`
+  - 네트워크 모킹 2종: `mock_status`, `mock_data` (프론트엔드 에러/빈 화면 UI 예외 처리 테스트용)
+- **검증 고도화**: `verify` 액션에 `condition` 속성을 추가하여 `visible`, `disabled` 등의 상태 기반 검증 지원.
+- **문서화**: 확장 계획을 `PLAN_DSL_ACTION_EXPANSION.md` 문서로 구체화하고 `architecture.md` 문서 내 DSL 명세 및 Planner 프롬프트 업데이트.
+- **브랜치 분리**: 해당 기능을 안전하게 구현하기 위해 `feat/playwright-action-expansion` 브랜치 생성 및 이동 완료.
+
+### 프롬프트 고도화 및 의사결정 (Dify 지능 계층 선행)
+- **Planner 프롬프트 통제력 강화**: 소형 모델(gemma4:e4b 4B)의 환각 방지를 위해 '엄격한 API 계약' 수준으로 명세화. 14대 액션별 파라미터(`target`, `value`) 매핑 규칙 지정, Playwright의 Auto-wait 특성 인지(wait 남용 금지), 네트워크 모킹 타이밍 규칙, 시맨틱 로케이터 추측 가이드(Blind Guessing 방지) 추가.
+- **Healer 프롬프트 논리 모순 해결**: `drag` 액션 치유 시 목적지(`value`)를 반환하지 않던 출력 스키마 모순 수정. 무분별한 DOM 기반 XPath 생성을 막고 시맨틱 탐색을 우선하도록 원칙 강제. JSON 포맷 이탈 방지를 위한 Few-shot 예시 주입.
+- **문서 및 설정 동기화**: `dify-chatflow.yaml` 시스템 프롬프트 및 `architecture.md` 반영 완료.
+
+### 다음 구현 대상 (Python Executor 행동 계층)
+- **Executor 로직 확장**: `executor.py` 내 분기를 통해 `upload`, `drag`, `scroll`, `mock_status`, `mock_data` 액션을 Playwright Sync API로 매핑 구현.
+- **검증 환경 구성**: `playwright-allinone/test/` 하위에 신규 액션과 예외 상황(500 에러 모킹 등)을 재현할 로컬 HTML 픽스처(`upload.html`, `drag.html`, `mocking.html`) 생성 및 Pytest 작성.
+---
+
 
 ## Session 2026-04-22 (continuation) — §1 전체 일관성: 04 를 일급 파이프라인으로 승격
 
@@ -8314,4 +8338,3 @@ curl -X POST -u admin:password -H "$CRUMB" "http://127.0.0.1:28080/job/${JOB_ENC
 - **gthread `--threads 8`** 은 안전한 default 지만, Dify workflow 의 실제 동시성 패턴 (1 워크플로우 = 1 thread + 다수 호출 직렬) 에 맞춰 4 또는 16 으로 튜닝 가능.
 
 ---
-
