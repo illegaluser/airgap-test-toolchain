@@ -144,6 +144,12 @@ workflow:
               required: false
               type: text-input
               variable: target_url
+            - label: api_docs
+              max_length: 4000
+              options: []
+              required: false
+              type: paragraph
+              variable: api_docs
             - label: error
               max_length: 2000
               options: []
@@ -162,7 +168,7 @@ workflow:
               required: false
               type: paragraph
               variable: failed_step
-        height: 310
+        height: 360
         id: start
         position:
           x: 80
@@ -257,6 +263,7 @@ workflow:
                 - `wait` 는 최소화하고 상태 확인은 `verify` 로 표현합니다.
                 - `press` 의 키 이름은 target 이 아니라 value 에 넣습니다.
                 - `verify` 에서 value 가 비어 있으면 condition 을 함께 넣습니다.
+                - `api_docs`가 제공되면 네트워크 모킹 대상 URL 패턴을 정할 때 참고하되, 장문 설명을 그대로 복사하지 말고 필요한 엔드포인트만 반영합니다.
                 - "첫 번째 검색결과 링크 클릭" 같은 동적 항목 클릭은
                   `target: "main a[href]:visible"` 와
                   `fallback_targets: ["article a[href]:visible", "[id*='result' i] a[href]:visible", "[class*='result' i] a[href]:visible"]`
@@ -273,7 +280,7 @@ workflow:
                 ]
             - id: planner-user
               role: user
-              text: "대상 URL: {{#start.target_url#}}\n요구사항: {{#start.srs_text#}}"
+              text: "대상 URL: {{#start.target_url#}}\n요구사항: {{#start.srs_text#}}\nAPI 문서(선택): {{#start.api_docs#}}"
           selected: false
           title: Planner
           type: llm

@@ -42,6 +42,7 @@ def main():
     parser.add_argument("--scenario", default=None, help="기존 scenario.json 경로 (execute 모드)")
     parser.add_argument("--target-url", default=None, help="테스트 시작 URL")
     parser.add_argument("--srs-text", default=None, help="자연어 요구사항 (chat 모드)")
+    parser.add_argument("--api-docs", default=None, help="API 엔드포인트 힌트 텍스트 (선택)")
     parser.add_argument("--headed", action="store_true", default=True, help="실제 브라우저 표시 (기본값)")
     parser.add_argument("--headless", action="store_true", help="헤드리스 모드")
     parser.add_argument("-v", "--verbose", action="store_true", help="상세 로그 출력")
@@ -61,9 +62,10 @@ def main():
     # 환경변수 폴백 (Jenkins에서 env로 전달하는 경우)
     target_url = args.target_url or os.getenv("TARGET_URL", "")
     srs_text = args.srs_text or os.getenv("SRS_TEXT", "")
+    api_docs = args.api_docs or os.getenv("API_DOCS", "")
 
     try:
-        scenario = _prepare_scenario(args, config, target_url, srs_text)
+        scenario = _prepare_scenario(args, config, target_url, srs_text, api_docs)
     except DifyConnectionError as e:
         log.error("Dify 연결 실패: %s", e)
         _generate_error_report(config.artifacts_dir, str(e))
@@ -172,7 +174,7 @@ def _validate_scenario(scenario) -> None:
 
 
 def _prepare_scenario(
-    args, config: Config, target_url: str, srs_text: str
+    args, config: Config, target_url: str, srs_text: str, api_docs: str
 ) -> list[dict]:
     """모드에 따라 시나리오를 준비한다."""
     if args.mode == "execute":
@@ -236,6 +238,7 @@ def _prepare_scenario(
                 run_mode=args.mode,
                 srs_text=srs_text,
                 target_url=target_url,
+                api_docs=api_docs,
                 file_id=file_id,
             )
             _validate_scenario(scenario)

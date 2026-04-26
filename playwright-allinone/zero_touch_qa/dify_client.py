@@ -201,6 +201,7 @@ class DifyClient:
         run_mode: str,
         srs_text: str,
         target_url: str,
+        api_docs: str = "",
         file_id: str | None = None,
     ) -> list[dict]:
         """Dify Chatflow 에 시나리오 생성을 요청하고 DSL 스텝 배열을 반환한다.
@@ -209,6 +210,7 @@ class DifyClient:
             run_mode: 실행 모드 (``"chat"`` 또는 ``"doc"``).
             srs_text: 자연어 요구사항 텍스트.
             target_url: 테스트 대상 URL.
+            api_docs: 네트워크 모킹 힌트용 API 엔드포인트 요약 텍스트.
             file_id: Doc 모드에서 ``upload_file()`` 이 반환한 파일 ID. 없으면 None.
 
         Returns:
@@ -222,6 +224,7 @@ class DifyClient:
                 "run_mode": run_mode,
                 "srs_text": srs_text,
                 "target_url": target_url,
+                "api_docs": api_docs,
             },
             "query": "실행을 요청합니다.",
             "response_mode": "blocking",

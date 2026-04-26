@@ -848,6 +848,24 @@ docker restart dscore.ttc.playwright
 
 > **Chatflow UI 에서 바꾸는 방법도 가능**: Dify `ZeroTouch QA Brain` 앱의 LLM 노드 (Planner / Healer) 에서 Model 드롭다운 → Publish. 하지만 이후 `.app_provisioned` 가 지워져 재프로비저닝이 돌면 yaml 의 값으로 되돌아간다. 영구 변경은 **yaml 을 수정해야 한다.**
 
+**`dify-chatflow.yaml` 자체를 수정한 뒤 반영하는 절차**:
+
+```bash
+# 1) 로컬 수정본을 컨테이너에 주입
+docker cp playwright-allinone/dify-chatflow.yaml dscore.ttc.playwright:/opt/dify-chatflow.yaml
+
+# 2) 자동 프로비저닝 완료 마커 제거
+docker exec dscore.ttc.playwright rm -f /data/.app_provisioned
+
+# 3) 컨테이너 재기동
+docker restart dscore.ttc.playwright
+
+# 4) 로그에서 재프로비저닝 확인
+docker logs -f dscore.ttc.playwright
+```
+
+로그에서 `ZeroTouch QA Brain` import/publish 관련 메시지와 `프로비저닝 완료`를 확인한다. 이후 Dify 콘솔에서 앱을 열어 Planner/Healer 프롬프트가 기대한 값으로 반영됐는지 다시 확인한다.
+
 **모델 선택 기준**:
 
 | 모델 | 크기 | 호스트 RAM | 용도 |

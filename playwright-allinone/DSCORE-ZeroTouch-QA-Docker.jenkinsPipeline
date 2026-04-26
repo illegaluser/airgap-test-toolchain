@@ -33,6 +33,11 @@ pipeline {
             defaultValue: '검색창에 DSCORE 입력 후 엔터',
             description: '[Chat] 자연어 요구사항'
         )
+        text(
+            name: 'API_DOCS',
+            defaultValue: '',
+            description: '[선택] 네트워크 모킹 힌트용 API 엔드포인트 목록'
+        )
         base64File(
             name: 'DOC_FILE',
             description: '[Doc/Convert] 기획서(PDF) 또는 Playwright 녹화 스크립트(.py) / [Execute] scenario.json'
@@ -187,6 +192,7 @@ pipeline {
                     export ARTIFACTS_DIR='${AGENT_HOME}/artifacts'
                     export TARGET_URL='${params.TARGET_URL}'
                     export SRS_TEXT='${params.SRS_TEXT}'
+                    export API_DOCS='${params.API_DOCS}'
                     # gemma4:e4b 가 <think> 블록 포함해 장문 heal 응답을 내느라
                     # 기본 60s timeout 안에 못 끝내는 사례 반복 → 180s 상향.
                     export HEAL_TIMEOUT_SEC=180
