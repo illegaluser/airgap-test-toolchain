@@ -247,34 +247,67 @@ install_packages_macos() {
 
 # ─── 4) WSL2 / Linux 패키지 (apt) ───────────────────────────────────────────
 install_packages_wsl2_linux() {
-    log "sudo apt update + install (관리자 비밀번호 요구될 수 있음)..."
+    local required=(python3 python3-pip python3-venv git curl bash unzip ca-certificates build-essential)
+    local missing=()
+    local p
+    for p in "${required[@]}"; do
+        if ! dpkg -s "$p" >/dev/null 2>&1; then
+            missing+=("$p")
+        fi
+    done
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        ok "apt 패키지 모두 설치됨 — sudo 단계 건너뜀 (${required[*]})"
+        PYTHON3="$(command -v python3)"
+        return
+    fi
+
+    log "누락된 apt 패키지: ${missing[*]}"
+    log "sudo apt install (관리자 비밀번호 요구될 수 있음)..."
     if ! command -v sudo >/dev/null 2>&1; then
         err "sudo 명령을 찾을 수 없습니다 — 본 스크립트는 sudo 가능한 일반 사용자로 실행"
         exit 1
     fi
 
     sudo apt update -qq
-    sudo apt install -y --no-install-recommends \
-        python3 python3-pip python3-venv \
-        git curl bash unzip ca-certificates \
-        build-essential
-    ok "apt 패키지 설치 확인"
+    sudo apt install -y --no-install-recommends "${missing[@]}"
+    ok "apt 패키지 설치 완료 (${missing[*]})"
 
     PYTHON3="$(command -v python3)"
 }
 
 # ─── 5) huggingface-cli 설치 + PATH ──────────────────────────────────────────
 install_hf_cli() {
-    log "huggingface_hub[cli] 설치 (--user)..."
+    local venv_dir="$HOME/.local/share/ttc-venv"
+    local user_bin="$HOME/.local/bin"
 
-    # pip 자체 업그레이드 (선택, 실패 무시)
-    "$PYTHON3" -m pip install --user --upgrade pip 2>&1 | tail -3 || true
+    # 이미 CLI 가 PATH 에 있으면 skip
+    if command -v huggingface-cli >/dev/null 2>&1; then
+        ok "huggingface-cli 이미 설치됨 ($(command -v huggingface-cli)) — pip 단계 건너뜀"
+    else
+        # PEP 668 (externally-managed-environment, Ubuntu 24.04+) 회피를 위해 venv 사용.
+        # macOS/구버전에서도 일관되게 동작.
+        if [[ ! -x "$venv_dir/bin/python" ]]; then
+            log "venv 생성: $venv_dir (PEP 668 호환)..."
+            "$PYTHON3" -m venv "$venv_dir"
+        else
+            log "기존 venv 재사용: $venv_dir"
+        fi
 
-    # huggingface_hub[cli] 설치
-    "$PYTHON3" -m pip install --user "huggingface_hub[cli]" 2>&1 | tail -5
+        log "huggingface_hub[cli] 설치 (venv)..."
+        "$venv_dir/bin/pip" install --upgrade pip 2>&1 | tail -3 || true
+        # huggingface_hub 1.x 부터 'huggingface-cli' 명령은 deprecated 되고
+        # 'hf' 로 교체됨. download-rag-bundle.sh 등 기존 스크립트가 'huggingface-cli'
+        # 를 사용하므로 0.x 마지막 버전으로 고정.
+        "$venv_dir/bin/pip" install "huggingface_hub[cli]<1.0" 2>&1 | tail -5
+
+        # CLI 를 ~/.local/bin 에 symlink 해 PATH 노출
+        mkdir -p "$user_bin"
+        ln -sf "$venv_dir/bin/huggingface-cli" "$user_bin/huggingface-cli"
+        ok "huggingface-cli symlink → $user_bin/huggingface-cli"
+    fi
 
     # PATH 추가
-    local user_bin="$HOME/.local/bin"
     local rcfile
     case "$OS" in
         macos) rcfile="$HOME/.zshrc" ;;
@@ -293,7 +326,9 @@ install_hf_cli() {
     export PATH="$user_bin:$PATH"
 
     if command -v huggingface-cli >/dev/null 2>&1; then
-        ok "huggingface-cli $(huggingface-cli --version 2>&1 | head -1)"
+        local hf_ver
+        hf_ver="$("$venv_dir/bin/python" -c 'import huggingface_hub; print(huggingface_hub.__version__)' 2>/dev/null || echo unknown)"
+        ok "huggingface-cli ready (huggingface_hub==$hf_ver)"
     else
         warn "huggingface-cli 명령을 PATH 에서 찾을 수 없습니다 — 새 셸을 열거나 'source $rcfile' 실행 후 재확인"
     fi
@@ -302,12 +337,26 @@ install_hf_cli() {
 # ─── 6) 검증 요약 ────────────────────────────────────────────────────────────
 verify_all() {
     log "─────────── 최종 검증 ───────────"
+    # ~/.local/bin 이 .bashrc 에 추가돼 있어도 비대화식 셸에서는 미반영 → 명시적으로 prepend
+    [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
     docker --version || warn "docker 누락"
-    ollama --version || warn "ollama 누락"
+    # Ollama: CLI 가 없어도 daemon 이 응답하면 OK (Case B — WSL2 셸에서 호스트 GUI 사용)
+    if command -v ollama >/dev/null 2>&1; then
+        ollama --version
+    elif curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+        ok "Ollama daemon 응답 (CLI 미설치 — Case B 정상)"
+    else
+        warn "ollama 누락 (CLI 와 daemon 모두 미응답)"
+    fi
     "$PYTHON3" --version || warn "python3 누락"
     "$PYTHON3" -m pip --version || warn "pip 누락"
     if command -v huggingface-cli >/dev/null 2>&1; then
-        huggingface-cli --version | head -1
+        local venv_py="$HOME/.local/share/ttc-venv/bin/python"
+        if [[ -x "$venv_py" ]]; then
+            echo "huggingface_hub $("$venv_py" -c 'import huggingface_hub; print(huggingface_hub.__version__)' 2>/dev/null || echo unknown)"
+        else
+            echo "huggingface-cli ready"
+        fi
     else
         warn "huggingface-cli 누락 — 새 셸 진입 후 재확인 필요"
     fi

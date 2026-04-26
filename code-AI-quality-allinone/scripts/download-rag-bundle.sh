@@ -24,6 +24,12 @@
 
 set -euo pipefail
 
+# setup-host.sh 가 ~/.local/bin/huggingface-cli 에 symlink 를 깔고 .bashrc 에 PATH 추가.
+# .bashrc 는 non-interactive 셸에서 early-return 하므로, 이 스크립트가 비대화식으로
+# 실행될 경우(예: 다른 스크립트에서 호출, 새 세션 직후) PATH 에 포함되지 않을 수 있어
+# 명시적으로 prepend.
+[[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()  { printf "${BLUE}[bundle]${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}[bundle] ✓${NC} %s\n" "$*"; }
@@ -156,7 +162,7 @@ download_meilisearch() {
         return
     fi
     curl -fL -o "$target" \
-        "https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-${MEILI_TAG}"
+        "https://github.com/meilisearch/meilisearch/releases/download/v1.42.1/meilisearch-linux-${MEILI_TAG}"
     chmod +x "$target"
     ok "Meilisearch binary: $(du -h "$target" | cut -f1)"
 }

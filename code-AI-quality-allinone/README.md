@@ -303,12 +303,24 @@ bash scripts/setup-host.sh --check
 
 수동으로 했다면 검증:
 
+> ⚠️ **setup-host.sh 직후 같은 셸에서는 `huggingface-cli` 가 안 보일 수 있음** —
+> setup-host.sh 가 `~/.bashrc` 에 PATH 를 추가하지만, 기존 셸은 자동 재로드가 안 됨.
+> 검증 전에 `source ~/.bashrc` 또는 새 터미널을 열 것.
+
 ```bash
-docker --version && ollama --version && python3 --version && \
-huggingface-cli --version && git --version && curl --version | head -1
+docker --version
+# Ollama: CLI 가 있으면 버전, 없으면 daemon 응답 확인 (Case B: 호스트 GUI + WSL2 셸)
+command -v ollama >/dev/null && ollama --version || \
+  curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null && echo "ollama daemon: OK"
+python3 --version
+# huggingface-cli 는 venv 안에 설치되며 0.x 라 --version 인자 없음
+command -v huggingface-cli && \
+  python3 -c "import sys; sys.path.insert(0, '$HOME/.local/share/ttc-venv/lib/python3.12/site-packages'); import huggingface_hub; print('huggingface_hub', huggingface_hub.__version__)"
+git --version
+curl --version | head -1
 ```
 
-✅ **정상**: 6 줄 모두 버전 출력.
+✅ **정상**: 모든 줄이 OK / 버전 출력. (참고: `huggingface-cli` 는 `~/.local/bin/` 에 symlink — `./` 접두사 없이 PATH 로 호출)
 
 ### 2.4 B 머신 (폐쇄망 운영용) — 호스트에 직접 설치할 도구
 
@@ -463,7 +475,7 @@ case "$(uname -m)" in
   x86_64)        MEILI_TAG=amd64   ;;
 esac
 curl -fL -o "offline-assets/meilisearch/meilisearch-linux-${MEILI_TAG}" \
-  "https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-${MEILI_TAG}"
+  "https://github.com/meilisearch/meilisearch/releases/download/v1.42.1/meilisearch-linux-${MEILI_TAG}"
 chmod +x offline-assets/meilisearch/meilisearch-linux-*
 ```
 

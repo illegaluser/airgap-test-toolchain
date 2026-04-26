@@ -8,9 +8,12 @@
 # Dockerfile 위치: 이 폴더의 Dockerfile
 # 결과 이미지: ttc-allinone:wsl2-<tag>
 #
-# WSL2 의 native arch (linux/amd64) 로 legacy builder 가 빌드한다.
-# buildx 는 사용하지 않는다 — 멀티플랫폼 manifest 운영이 없고 Mac/WSL2 각각
-# native 빌드만 하면 되므로 buildx export→load 오버헤드가 낭비였다.
+# WSL2 의 native arch (linux/amd64) 로 BuildKit 이 빌드한다.
+# 단, buildx (멀티플랫폼 manifest 플러그인) 는 사용하지 않는다 — Mac/WSL2 각각
+# native 빌드만 하면 되므로 buildx 의 export→load 오버헤드가 낭비였다.
+# `docker build` (BuildKit 백엔드) 만 사용 — 단일 native 이미지를 그대로 로컬
+# daemon 에 적재. Docker legacy builder 는 제거 예고된 상태라 BuildKit 사용이
+# 어차피 강제되므로 처음부터 BuildKit 으로 정렬.
 #
 # 빌드 전 선행 조건:
 #   1) 온라인 연결로 플러그인 다운로드: bash scripts/download-plugins.sh

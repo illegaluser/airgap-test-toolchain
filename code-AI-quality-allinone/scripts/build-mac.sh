@@ -6,10 +6,12 @@
 # Dockerfile 위치: 이 폴더의 Dockerfile
 # 결과 이미지: ttc-allinone:mac-<tag>
 #
-# Apple Silicon 의 native arch (linux/arm64) 로 legacy builder 가 빌드한다.
-# buildx 는 사용하지 않는다 — 멀티플랫폼 manifest 를 운영하지 않고, WSL2 는
+# Apple Silicon 의 native arch (linux/arm64) 로 BuildKit 이 빌드한다.
+# 단, buildx (멀티플랫폼 manifest 플러그인) 는 사용하지 않는다 — WSL2 는
 # build-wsl2.sh 에서 각자 native 로 빌드하므로 buildx 의 export→load 오버헤드
 # (14GB tarball 직렬화, 수십 분 소요) 가 순수 낭비였다.
+# `docker build` (BuildKit 백엔드) 만 사용 — 단일 native 이미지를 로컬 daemon 에
+# 적재. legacy builder 제거 예고로 어차피 BuildKit 강제이므로 처음부터 정렬.
 #
 # 빌드 전 선행: bash scripts/download-plugins.sh
 # ============================================================================
