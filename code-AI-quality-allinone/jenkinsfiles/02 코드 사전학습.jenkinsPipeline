@@ -1,6 +1,16 @@
 pipeline {
     agent any
-    
+
+    // 02 ↔ 04 (+ 향후 06 구현률 측정) 동시 구동 영구 차단.
+    // host Ollama 는 단일 LLM bus — 동시 호출 시 모델 swap·OOM·KV cache 경합 발생.
+    // disableConcurrentBuilds(): 02 자체 큐잉 직렬화.
+    // lock('ttc-llm-bus'): 02·04·06 간 cross-pipeline 직렬화 (lockable-resources plugin).
+    // PLAN §6.11 + EXECUTION §8 결정 (2026-04-26).
+    options {
+        disableConcurrentBuilds()
+        lock(resource: 'ttc-llm-bus')
+    }
+
     parameters {
         string(name: 'REPO_URL', defaultValue: 'http://gitlab:80/root/realworld.git', description: 'Git 레포지토리 URL (예: http://gitlab:80/root/realworld.git)')
         booleanParam(name: 'ENRICH_CONTEXT', defaultValue: true, description: 'Contextual Retrieval (gemma4 청크 요약 prepend) 적용 여부. false 시 skip.')

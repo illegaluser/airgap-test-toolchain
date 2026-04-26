@@ -37,6 +37,10 @@ JENKINS_PLUGINS=(
   sonar
   # pipeline 간 체인 트리거 (01 코드 분석 체인 Job 이 build job: 로 호출)
   pipeline-build-step
+  # 02 ↔ 04 (+ 향후 06 / 02b) 동시 구동 차단 — host Ollama 단일 LLM bus 보호.
+  # 02 / 04 jenkinsfile 의 options { lock(resource: 'ttc-llm-bus') } 가 의존.
+  # PLAN §6.11 / EXECUTION §8.1 T0 (2026-04-26 결정).
+  lockable-resources
 )
 JENKINS_PLUGIN_MANAGER_URL="https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.13.2/jenkins-plugin-manager-2.13.2.jar"
 JENKINS_VERSION_OVERRIDE="${JENKINS_VERSION:-}"

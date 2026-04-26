@@ -50,6 +50,14 @@ FROM langgenius/dify-plugin-daemon:0.5.3-local AS dify-plugin-src
 FROM sonarqube:26.4.0.121862-community AS sonarqube-src
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Stage 2.5: FalkorDB Redis module — 공식 이미지에서 .so 만 추출 (multi-stage).
+# GitHub releases 가 alpine/amazonlinux/arm64v8 binary 만 제공해 Debian glibc 와
+# ABI 불일치 → 공식 이미지 차용 패턴 (PLAN §11 2026-04-28 검증).
+# native arch 는 docker pull 이 자동 결정 (호스트 native).
+# ─────────────────────────────────────────────────────────────────────────────
+FROM falkordb/falkordb:latest AS falkordb-src
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Stage 3: 최종 런타임 — Jenkins LTS (JDK 21) 기반
 # ─────────────────────────────────────────────────────────────────────────────
 FROM jenkins/jenkins:2.555.1-lts-jdk21
@@ -77,6 +85,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential libssl-dev zlib1g-dev \
       jq tini sudo unzip \
       libgtk-3-0 libdbus-glib-1-2 libx11-xcb1 \
+      libgomp1 \
       poppler-utils libreoffice-impress \
       fonts-noto-cjk fonts-dejavu \
       && (apt-get install -y --no-install-recommends libasound2t64 2>/dev/null \
@@ -216,6 +225,43 @@ RUN set -eux; \
     rm /tmp/sonar-scanner.zip && \
     ln -sfn /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner && \
     sonar-scanner --version
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Meilisearch v1.42 — Sparse (BM25) 인덱스. 단일 binary.
+# 외부망에서 사전 다운로드: offline-assets/meilisearch/meilisearch-linux-{amd64,aarch64}
+# 각 머신은 자기 native arch 의 binary 한 개만 보유 → glob 으로 단일 매칭.
+# (EXECUTION §3.4.1 + scripts/download-rag-bundle.sh 참조)
+# ─────────────────────────────────────────────────────────────────────────────
+COPY offline-assets/meilisearch/meilisearch-linux-* /usr/local/bin/meilisearch
+RUN chmod +x /usr/local/bin/meilisearch && /usr/local/bin/meilisearch --version
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FalkorDB Redis module — Graph 인덱스. 공식 이미지에서 .so 추출 (Stage 2.5 multi-stage).
+# 별도 redis-server 인스턴스 (포트 6380) 로 운영 — supervisord.conf [program:falkordb].
+# Dify 의 Redis (6379) 와 데이터 격리.
+# ─────────────────────────────────────────────────────────────────────────────
+COPY --from=falkordb-src /var/lib/falkordb/bin/falkordb.so /usr/local/lib/falkordb.so
+
+# ─────────────────────────────────────────────────────────────────────────────
+# bge-reranker-v2-m3 모델 weight (568M, BAAI Apache 2.0) —
+# retrieve-svc 안 sentence-transformers `CrossEncoder` 가 in-process 로 import.
+# 폐쇄망에서도 HF API 호출 0 — supervisord env 의 HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1.
+# 외부망 P0.2: huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir offline-assets/...
+# ─────────────────────────────────────────────────────────────────────────────
+COPY offline-assets/rerank-models/bge-reranker-v2-m3 /opt/rerank-models/bge-reranker-v2-m3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# retrieve-svc (FastAPI) — Dify External Knowledge API 어댑터.
+# 별도 venv (/opt/retrieve-svc/.venv) — dify-api venv 와 의존성 격리 (dify-api 패턴 동일).
+# torch 는 CPU 전용 wheel — VRAM 은 Ollama LLM 전담 (PLAN §6.5).
+# ─────────────────────────────────────────────────────────────────────────────
+COPY retrieve-svc /opt/retrieve-svc
+RUN /usr/local/bin/python3 -m venv /opt/retrieve-svc/.venv && \
+    /opt/retrieve-svc/.venv/bin/pip install --no-cache-dir --upgrade pip && \
+    /opt/retrieve-svc/.venv/bin/pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r /opt/retrieve-svc/requirements.txt && \
+    /opt/retrieve-svc/.venv/bin/python -c "from sentence_transformers import CrossEncoder; print('CrossEncoder import OK')"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Jenkins 플러그인 seed + Dify 플러그인 seed (download-plugins.sh 로 준비)

@@ -1,0 +1,24 @@
+# retrieve-svc — Dify External Knowledge API adapter
+# 폐쇄망 빌드: Dockerfile 의 RUN pip install 이 외부망 빌드 머신에서 실행됨.
+# 향후 fully-offline 빌드 시 --no-index --find-links=/opt/python-wheels 패턴으로 전환.
+
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.33
+httpx>=0.27,<0.28
+
+# Storage clients
+redis>=5.0,<6.0
+qdrant-client>=1.12,<2.0
+meilisearch>=0.31,<0.32
+
+# In-process reranker — bge-reranker-v2-m3 은 이미지 안 /opt/rerank-models/ 에 사전 적재
+sentence-transformers>=3.3,<4.0
+# CPU 전용 torch — Dockerfile RUN pip install 시 --extra-index-url https://download.pytorch.org/whl/cpu 지정
+torch>=2.5,<3.0
+
+pydantic>=2.0,<3.0
+pydantic-settings>=2.0,<3.0
+
+# 단위 테스트
+pytest>=8.0,<9.0
+pytest-asyncio>=0.24,<0.25

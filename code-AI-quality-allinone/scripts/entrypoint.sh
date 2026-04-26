@@ -31,7 +31,26 @@ SONARQUBE_PORT="${SONARQUBE_PORT:-29000}"
 # ES 인덱스만 재생성하면 복구. 영속 필요 시 volume mount 로 별도 관리.
 SONAR_DATA_HOST="${SONAR_DATA_HOST:-$DATA/sonarqube/data}"
 
+# Meilisearch (sparse 인덱스) + FalkorDB (graph 인덱스) 데이터 경로.
+# /data 볼륨 안에 영속.
+MEILI_DATA="$DATA/meili"
+FALKOR_DATA="$DATA/falkor"
+SECRETS_DIR="$DATA/secrets"
+
 log "container time: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+# ────────────────────────────────────────────────────────────────────────────
+# 0. MEILI_MASTER_KEY generate-once (Dify SECRET_KEY 패턴과 동일).
+#    Meilisearch + retrieve-svc 양쪽 program 이 supervisord env 로 받는다.
+#    파일 삭제 시 재생성 (운영 중 키 회전).
+# ────────────────────────────────────────────────────────────────────────────
+mkdir -p "$SECRETS_DIR"
+if [ ! -s "$SECRETS_DIR/meili-key" ]; then
+    head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > "$SECRETS_DIR/meili-key"
+    chmod 0600 "$SECRETS_DIR/meili-key"
+    log "MEILI_MASTER_KEY generate-once → $SECRETS_DIR/meili-key"
+fi
+export MEILI_MASTER_KEY="$(cat "$SECRETS_DIR/meili-key")"
 
 # ────────────────────────────────────────────────────────────────────────────
 # 1. /data 최초 seed
@@ -40,6 +59,7 @@ if [ ! -f "$DATA/.initialized" ]; then
     log "최초 seed: /opt/seed → /data"
     mkdir -p \
       "$DATA/pg" "$DATA/redis" "$DATA/qdrant" \
+      "$MEILI_DATA" "$FALKOR_DATA" \
       "$DATA/jenkins/plugins" \
       "$DATA/dify/storage" "$DATA/dify/plugins/cwd" \
       "$DATA/sonarqube/logs" "$DATA/sonarqube/extensions" "$DATA/sonarqube/temp" \
@@ -61,6 +81,7 @@ if [ ! -f "$DATA/.initialized" ]; then
     chown -R postgres:postgres "$DATA/pg"            || true
     chown -R jenkins:jenkins   "$DATA/jenkins"       || true
     chown -R redis:redis       "$DATA/redis"         || true
+    chown -R redis:redis       "$FALKOR_DATA"        || true
     chown -R sonar:sonar       "$DATA/sonarqube"     || true
     chown -R sonar:sonar       "$SONAR_DATA_HOST"    || true
 
@@ -70,8 +91,9 @@ else
     log "기존 볼륨 감지 — seed 건너뜀."
     # SONAR_DATA_HOST 가 기본 /data 경로 밖이면 overlay 라 재기동 시 휘발.
     # 없으면 새로 만들고 소유권 부여 (Sonar ES 인덱스 rebuild 됨).
-    mkdir -p "$SONAR_DATA_HOST"
+    mkdir -p "$SONAR_DATA_HOST" "$MEILI_DATA" "$FALKOR_DATA"
     chown -R sonar:sonar "$SONAR_DATA_HOST" 2>/dev/null || true
+    chown -R redis:redis "$FALKOR_DATA"     2>/dev/null || true
 fi
 
 # 심볼릭은 매 기동마다 재적용 (이미지 내 /opt/sonarqube 는 실제 디렉토리).
@@ -171,6 +193,37 @@ log "  dify-plugin-daemon ready (${_w}s) — dify-api start"
 sleep 3
 supervisorctl -c /etc/supervisor/supervisord.conf start dify-api >/dev/null 2>&1 || \
     warn "supervisorctl start dify-api 실패"
+
+# ────────────────────────────────────────────────────────────────────────────
+# 4-b. Meilisearch + FalkorDB (priority 100, autostart=true) 헬스 확인 후
+#      retrieve-svc 명시 start. sentence-transformers 의 bge-reranker-v2-m3 모델
+#      로드는 ~10~20 초 소요 → autostart=false + 명시 start 패턴 (dify-api 와 동일).
+# ────────────────────────────────────────────────────────────────────────────
+log "Meilisearch 헬스 대기..."
+_w=0
+until curl -sf --max-time 2 -o /dev/null http://127.0.0.1:7700/health; do
+    sleep 2; _w=$((_w + 2))
+    [ $_w -ge 60 ] && { warn "Meilisearch 1분 내 미준비 — retrieve-svc start 시도는 진행."; break; }
+done
+[ $_w -lt 60 ] && log "  meilisearch ready (${_w}s)"
+
+log "FalkorDB 헬스 대기..."
+_w=0
+until redis-cli -p 6380 ping 2>/dev/null | grep -q PONG; do
+    sleep 2; _w=$((_w + 2))
+    [ $_w -ge 60 ] && { warn "FalkorDB 1분 내 미준비 — retrieve-svc start 시도는 진행."; break; }
+done
+[ $_w -lt 60 ] && log "  falkordb ready (${_w}s)"
+
+log "retrieve-svc start (sentence-transformers 모델 로드 ~10~20초)..."
+supervisorctl -c /etc/supervisor/supervisord.conf start retrieve-svc >/dev/null 2>&1 || \
+    warn "supervisorctl start retrieve-svc 실패 — 수동 확인: supervisorctl status"
+_w=0
+until curl -sf --max-time 2 -o /dev/null http://127.0.0.1:9100/health; do
+    sleep 2; _w=$((_w + 2))
+    [ $_w -ge 60 ] && { warn "retrieve-svc 1분 내 미준비 — /data/logs/retrieve-svc.err.log 확인."; break; }
+done
+[ $_w -lt 60 ] && log "  retrieve-svc ready (${_w}s)"
 
 # ────────────────────────────────────────────────────────────────────────────
 # 5. 최초 앱 프로비저닝 (볼륨 최초 생성 후 1회만)
