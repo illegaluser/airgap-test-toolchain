@@ -251,25 +251,8 @@ class QAExecutor:
                 "PASS", screenshot_path=ss,
             )
 
-        if action == "mock_status":
-            status_code = int(str(step.get("value", "")).strip())
-            self._install_mock_route(page, str(step.get("target", "")), status=status_code)
-            ss = self._screenshot(page, artifacts, step_id, "pass")
-            log.info("[Step %s] mock_status %s -> PASS", step_id, status_code)
-            return StepResult(
-                step_id, action, str(step.get("target", "")), str(status_code), desc,
-                "PASS", screenshot_path=ss,
-            )
-
-        if action == "mock_data":
-            mock_body = self._normalize_mock_body(step.get("value"))
-            self._install_mock_route(page, str(step.get("target", "")), body=mock_body)
-            ss = self._screenshot(page, artifacts, step_id, "pass")
-            log.info("[Step %s] mock_data -> PASS", step_id)
-            return StepResult(
-                step_id, action, str(step.get("target", "")), str(step.get("value", "")),
-                desc, "PASS", screenshot_path=ss,
-            )
+        if action in ("mock_status", "mock_data"):
+            return self._execute_mock_step(page, step, artifacts)
 
         # ── 타겟 필요 액션: 실행 + 다단계 자가 치유 ──
         log.info("[Step %s] %s: %s", step_id, action, desc)
@@ -301,6 +284,11 @@ class QAExecutor:
                     self._perform_action(page, fb_loc, step, resolver)
                     # A: 후속 스텝이 같은 target 을 만나면 즉시 fb_target 사용
                     resolver.record_alias(original_target, fb_target)
+                    # S2-12: scenario.healed.json 이 fallback 치유 결과까지
+                    # 기록하도록 step dict 자체를 갱신한다. step 은 scenario
+                    # 리스트 원소이므로 in-place 변경이 그대로 healed.json 으로
+                    # 직렬화된다.
+                    step["target"] = fb_target
                     ss = self._screenshot(page, artifacts, step_id, "healed")
                     log.info("[Step %s] fallback 복구 성공: %s", step_id, fb_target)
                     return StepResult(
@@ -831,9 +819,25 @@ class QAExecutor:
 
     @staticmethod
     def _install_mock_route(
-        page: Page, url_pattern: str, *, status: int | None = None, body: str | None = None
+        page: Page,
+        url_pattern: str,
+        *,
+        status: int | None = None,
+        body: str | None = None,
+        times: int = 1,
     ) -> None:
-        """API 모킹을 정확히 1회만 설치해 후속 스텝 전역 오염을 막는다."""
+        """API 모킹 라우트를 설치한다.
+
+        Args:
+            page: Playwright Page.
+            url_pattern: glob 또는 정규식 URL 패턴.
+            status: 응답 status code (mock_status 용).
+            body: 응답 JSON body 문자열 (mock_data 용).
+            times: 라우트가 몇 번 매칭될 때까지 가로챌지. **기본값 1** —
+                후속 스텝 전역 오염을 막기 위함. step.value 와 별도로 step
+                dict 에 ``"times"`` 키가 있으면 호출자가 이를 전달해 폴링/
+                재시도 시나리오를 모킹할 수 있다.
+        """
         pattern = str(url_pattern or "").strip()
         if not pattern:
             raise ValueError("mock_* action 에 target(URL 패턴)이 필요함")
@@ -845,7 +849,95 @@ class QAExecutor:
                 fulfill_args["content_type"] = "application/json"
             route.fulfill(**fulfill_args)
 
-        page.route(pattern, _handler, times=1)
+        page.route(pattern, _handler, times=max(1, int(times)))
+
+    def _execute_mock_step(
+        self, page: Page, step: dict, artifacts: str
+    ) -> StepResult:
+        """mock_status / mock_data 스텝을 실행한다.
+
+        DOM 이 아니라 URL 패턴이 입력이므로 LocalHealer 와 fallback_targets
+        DOM 매칭은 적용되지 않는다. 대신 다음 2단계 치유를 지원한다:
+
+        1. ``fallback_targets`` 가 대체 URL 패턴 문자열을 담고 있으면 순서대로 시도.
+        2. 위가 모두 실패하면 Dify LLM 치유 (yaml 의 healer 프롬프트가 mock_* 전용
+           가이드를 가진다 — 해당 분기를 활성화).
+
+        ``step["times"]`` 가 정수면 mock 라우트의 매칭 횟수를 제어한다 (기본 1).
+        """
+        action = step["action"]
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        original_target = str(step.get("target", ""))
+
+        try:
+            self._apply_mock_route(page, step)
+            ss = self._screenshot(page, artifacts, step_id, "pass")
+            log.info("[Step %s] %s -> PASS", step_id, action)
+            return StepResult(
+                step_id, action, original_target, str(step.get("value", "")), desc,
+                "PASS", screenshot_path=ss,
+            )
+        except ValueError as e:
+            log.warning("[Step %s] mock 설치 실패: %s — fallback 시도", step_id, e)
+
+        # 1단계: fallback_targets (대체 URL 패턴)
+        for fb_target in step.get("fallback_targets", []) or []:
+            try:
+                fb_step = {**step, "target": str(fb_target)}
+                self._apply_mock_route(page, fb_step)
+                step["target"] = str(fb_target)  # healed.json 반영
+                ss = self._screenshot(page, artifacts, step_id, "healed")
+                log.info("[Step %s] mock fallback 패턴 복구: %s", step_id, fb_target)
+                return StepResult(
+                    step_id, action, str(fb_target), str(step.get("value", "")), desc,
+                    "HEALED", heal_stage="fallback", screenshot_path=ss,
+                )
+            except ValueError:
+                continue
+
+        # 2단계: Dify LLM 치유 (URL 패턴/value 교정)
+        try:
+            new_target_info = self.dify.request_healing(
+                error_msg=f"mock 설치 실패: {original_target}",
+                dom_snapshot="",  # mock_* 는 DOM 무관 — 빈 컨텍스트로 호출
+                failed_step=step,
+            )
+        except DifyConnectionError as e:
+            log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
+            new_target_info = None
+
+        if new_target_info:
+            step.update(new_target_info)
+            try:
+                self._apply_mock_route(page, step)
+                ss = self._screenshot(page, artifacts, step_id, "healed")
+                log.info("[Step %s] mock LLM 치유 성공: %s", step_id, step.get("target"))
+                return StepResult(
+                    step_id, action, str(step.get("target", "")),
+                    str(step.get("value", "")), desc,
+                    "HEALED", heal_stage="dify", screenshot_path=ss,
+                )
+            except ValueError as e:
+                log.error("[Step %s] LLM 치유 후에도 mock 실패: %s", step_id, e)
+
+        ss = self._screenshot(page, artifacts, step_id, "fail")
+        return StepResult(
+            step_id, action, original_target, str(step.get("value", "")), desc,
+            "FAIL", screenshot_path=ss,
+        )
+
+    def _apply_mock_route(self, page: Page, step: dict) -> None:
+        """step dict 의 action/target/value/times 를 _install_mock_route 로 변환."""
+        action = step["action"]
+        pattern = str(step.get("target", ""))
+        times = int(step.get("times", 1))
+        if action == "mock_status":
+            status_code = int(str(step.get("value", "")).strip())
+            self._install_mock_route(page, pattern, status=status_code, times=times)
+        else:  # mock_data
+            body = self._normalize_mock_body(step.get("value"))
+            self._install_mock_route(page, pattern, body=body, times=times)
 
     @staticmethod
     def _assert_locator_contains_value(locator: Locator, expected: str) -> None:
