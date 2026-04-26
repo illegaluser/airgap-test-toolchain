@@ -7,6 +7,30 @@
 >
 > **운영 레벨 런북** — 일자별 작업·테스트 계획·GO/NO-GO 게이트·리스크는
 > [EXECUTION_PLAN.md](EXECUTION_PLAN.md) 참조 (본 문서가 *무엇* 이라면, EXECUTION 은 *언제·어떻게*).
+>
+> **PM·이해관계자 안내서** — 본 시스템이 PM 측면에 제공하는 핵심 가치 (요구사항 구현율 측정) 의
+> *원리·근거·한계* 를 비개발자도 이해할 수 있도록 정리:
+> [IMPLEMENTATION_RATE_PM_GUIDE.md](IMPLEMENTATION_RATE_PM_GUIDE.md).
+>
+> **세션 의사결정 통합** — 세션 전체의 결정·정정·산출물을 한 곳에 정리한 스냅샷:
+> [SESSION_DECISIONS_2026-04-26.md](SESSION_DECISIONS_2026-04-26.md). 새로 합류한 동료에게
+> 현재 상태를 한 페이지로 전달하기 위한 진입점.
+
+> ## ⚠️ 절대 전제 — 폐쇄망 (airgap) SI 환경
+>
+> 본 시스템 (airgap-test-toolchain) 은 **폐쇄망 SI 환경의 테스트자동화 + 코드 기반 측정 솔루션**
+> 이다. 다음을 *어떤 단계·어떤 컴포넌트·어떤 fallback 에서도* 깨지 않는다:
+>
+> 1. **외부 API 호출 0** — Codestral / Voyage / Claude API / Gemini API / OpenAI API / Jina API 등
+>    *원격 endpoint 에 의존하는 모델·서비스는 1순위/대안/fallback 어디에도 채택하지 않는다*.
+> 2. **모든 모델·binary·plugin 은 외부망 빌드 시점에 1 회 다운로드 → 이미지에 통합 → 폐쇄망에서는
+>    `docker load` + `~/.ollama` 복원만**.
+> 3. **런타임 인터넷 의존성 0** — `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` / Ollama host
+>    native serving / Dify External KB API → retrieve-svc 모두 internal endpoint.
+> 4. **고객사 NDA 격리** — L2b cross-project 영구 제외, dataset 명명·purge 정책 의무 (§6.4).
+>
+> 이 전제를 위반하는 도구는 **§4 도구 매트릭스의 "사용 불가" 컬럼** 에 명시한다 — 일순간이라도
+> 1순위에 둬선 안 된다.
 
 ## 한 페이지 요약 (TL;DR)
 
@@ -17,9 +41,15 @@
   구조 신호(graph) 가 별도 retrieve 경로로 필요하다.
 - **무엇이 바뀌나** — 04 의 **layer-별 citation rate** 가 분리 측정되고, 이후 PRD ↔ 코드 매핑으로
   확장돼 **Implementation Rate** (요구사항 구현률) 까지 자동 측정된다.
-- **운영 환경** — 폐쇄망 단일 머신 (M4 Pro 48GB unified / Intel 185H + RTX 4070 8GB). 외부 API 호출 0.
-- **모델 (2026-04 검증)** — LLM `gemma4` family (현행 `e4b` 유지 + M4 Pro 는 `26b` 추가),
-  임베딩 `qwen3-embedding`, 리랭커 `bge-reranker-v2-m3`.
+- **운영 환경** — 폐쇄망 단일 머신. **1차 검증 = Intel 185H + RTX 4070 8GB / WSL2**, 이후 동일
+  설치방법으로 M4 Pro 48GB 머신 이식. 외부 API 호출 0.
+- **양 머신 동일 원칙 (2026-04-26 강화)** — 구성 (모델·인덱스·서비스) 과 설치방법 (스크립트·시퀀스·
+  포트·볼륨) 모두 동일. 머신별 차이는 **arch (arm64/amd64) + 런타임 환경변수 1 개
+  (`OLLAMA_NUM_PARALLEL`)** 만 허용. 그 외 어떤 분기도 두지 않는다.
+- **모델 (2026-04 검증)** — LLM `gemma4:e4b` (Ollama 기본 quantization Q4. **on-disk ~9.6 GB**
+  = 멀티모달 manifest 합계 (text decoder + vision + audio); **VRAM 실사용은 ~3~5 GB**
+  — 텍스트 추론 시 text decoder weights + KV cache 만 로드), 임베딩 `qwen3-embedding:0.6b`,
+  리랭커 `bge-reranker-v2-m3`. 26b 등 *큰 모델 옵션은 영구 비채택* (양 머신 동일 원칙).
 - **언제 끝나나** — 1차 목표 (정적분석 보조 RAG) **3~4 주**, 최종 목표 (Spec↔Code 추적성) **약 3 개월**.
 
 ---
@@ -94,7 +124,7 @@
 
 | 축 | 현재 | 2026 SOTA | 격차가 만드는 결과 |
 |---|---|---|---|
-| **임베딩** | 범용 `bge-m3` | 코드 특화 (`qwen3-embedding`, Codestral Embed) | 코드 retrieval 정확도 ↓ |
+| **임베딩** | 범용 `bge-m3` | 코드 특화 오픈 모델 (`qwen3-embedding`, Qodo-Embed) — *폐쇄망 호환만 채택*. Codestral Embed / Voyage / Gemini Embedding 은 API 의존 → 본 시스템에서 사용 불가 | 코드 retrieval 정확도 ↓ |
 | **Retrieve 경로** | 단일 dense | Hybrid (BM25 + dense + rerank) | 심볼·고유식별자 정확 매칭 실패 |
 | **구조 신호** | 청크 footer 텍스트 | Code Property Graph / Cypher 쿼리 | "호출자·구현체·writer" 관계 질의 불가 |
 | **다중 프로젝트** | 없음 (purge 로 우회) | 다층 KB (project / cross / canonical) | "다른 서비스 패턴 인용" 불가 |
@@ -330,49 +360,47 @@ flowchart TB
 
 > 정본은 §6.5. 여기는 시각적 한 컷.
 
-> **양 머신 동일 구성** (2026-04-27 확정). 차이는 단 하나 — Ollama parallel 옵션.
+> **양 머신 동일 구성·동일 설치방법** (2026-04-27 확정 + 2026-04-26 재확인). 차이는 *런타임 환경변수
+> 1 개* (`OLLAMA_NUM_PARALLEL`) + *호스트 native arch* (arm64/amd64) **뿐**. 설치 스크립트·시퀀스·
+> 포트·볼륨·이미지 내용물 전부 동일.
 
-#### M4 Pro 48GB (macOS, Apple Silicon)
-
-```mermaid
-flowchart TB
-    subgraph Host["🍎 macOS host (Metal 가속)"]
-        Ollama["Ollama (host native)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>· gemma4:e4b 5GB (분석+enricher 공유)<br/>· qwen3-embedding:0.6b 0.6GB<br/>OLLAMA_NUM_PARALLEL=3 (동시 처리)"]
-    end
-
-    subgraph Docker["🐳 Docker Desktop (~12 GB 컨테이너)"]
-        subgraph Existing["기존 ttc-allinone (~8 GB)"]
-            Dify1["Dify · Postgres · Redis · Qdrant · Jenkins"]
-        end
-        subgraph New["신규 (~2.4 GB) — 모두 ttc-allinone 내부 program"]
-            Meili1[":7700 Meilisearch · 0.4GB"]
-            Falkor1[":6380 FalkorDB · 0.5GB"]
-            RSvc1[":9000 retrieve-svc · 1.5GB<br/>(sentence-transformers + bge-reranker 내장)"]
-        end
-    end
-
-    Ollama -.host.docker.internal:11434.-> Existing
-```
-
-> **합계**: macOS 8 + Docker VM 3 + 컨테이너 12 + Ollama 6 (KV cache 포함) ≈ **24 GB / 48 GB**.
-> **여유 24 GB** — Phase 7 야간 batch 에 `gemma4:26b` 옵션 활용 가능.
-
-#### Intel 185H · 64GB RAM · RTX 4070 8GB VRAM
+#### 1순위 — Intel 185H · 64GB RAM · RTX 4070 8GB VRAM (WSL2, 1차 검증 머신)
 
 ```mermaid
 flowchart TB
     subgraph VRAM["🎮 VRAM 8 GB"]
-        OllamaG["Ollama (CUDA)<br/>━━━━━━━━━━━━━━━━━━━━━<br/>· gemma4:e4b 5GB<br/>OLLAMA_NUM_PARALLEL=1 (직렬)"]
+        OllamaG["Ollama (host WSL2, CUDA)<br/>━━━━━━━━━━━━━━━━━━━━━<br/>· gemma4:e4b VRAM ~3~5GB Q4 (분석+enricher 공유)<br/>· qwen3-embedding:0.6b CPU<br/>OLLAMA_NUM_PARALLEL=1 (직렬)"]
     end
 
     subgraph RAM["💾 시스템 RAM 64 GB (사용 ~22 GB)"]
         OS["Linux + Docker · 7 GB"]
-        Existing2["ttc-allinone · ~8 GB"]
-        New2["신규 컨테이너 · ~3 GB<br/>+ qwen3-embedding:0.6b CPU · 0.6 GB"]
+        Existing2["ttc-allinone (단일 컨테이너, ~11 GB)<br/>Dify · PG · Redis · Qdrant · Jenkins<br/>+ Meili :7700 · Falkor :6380 · retrieve-svc :9100"]
+        Embed2["qwen3-embedding:0.6b CPU · 0.6 GB"]
     end
+
+    OllamaG -.host.docker.internal:11434.-> Existing2
 ```
 
-> **여유**: VRAM 3 GB · RAM 42 GB. 동일 모델로 결과 일관성 보장. Throughput 만 M4 Pro 보다 ~3배 느림.
+> **여유**: VRAM ~3~5 GB · RAM 42 GB. 1차 검증 머신 — 모든 Phase 0~7 의 GO/NO-GO 판정은 본 환경 기준.
+
+#### 2순위 — M4 Pro 48GB unified memory (macOS, Apple Silicon, 이식 머신)
+
+```mermaid
+flowchart TB
+    subgraph Host["🍎 macOS host (Metal 가속)"]
+        Ollama["Ollama (host native)<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>· gemma4:e4b VRAM ~3~5GB Q4 (분석+enricher 공유)<br/>· qwen3-embedding:0.6b<br/>OLLAMA_NUM_PARALLEL=3 (동시 처리)"]
+    end
+
+    subgraph Docker["🐳 Docker Desktop"]
+        Existing1["ttc-allinone (단일 컨테이너, ~11 GB)<br/>Dify · PG · Redis · Qdrant · Jenkins<br/>+ Meili · Falkor · retrieve-svc"]
+    end
+
+    Ollama -.host.docker.internal:11434.-> Existing1
+```
+
+> **합계**: macOS 8 + Docker VM 3 + 컨테이너 11 + Ollama 6 (KV cache 포함) ≈ **28 GB / 48 GB**.
+> **여유 ~20 GB** — `OLLAMA_NUM_PARALLEL=3` 으로 throughput 향상 (RTX 대비 ~3배). 결과 일관성은 동일
+> 모델·동일 quantization 으로 보장. *큰 모델 (26b 등) 옵션은 영구 비채택* — 양 머신 동일 원칙.
 
 ### 3.5.4 뷰 4 — 04 분석 1 사이클 시퀀스
 
@@ -411,14 +439,14 @@ sequenceDiagram
     D-->>J: GitLab 이슈 본문 + RAG Diagnostic Report
 ```
 
-**시간 분포** (RTX 4070 e4b 기준, abstention + quality gate 단일 호출):
+**시간 분포** (1차 검증 머신 RTX 4070 + gemma4:e4b 기준, abstention + quality gate 단일 호출):
 
 | 구간 | 소요 |
 |---|---|
 | retrieve 단계 | ~1~2 초 |
 | LLM 단일 판정 | ~5~10 초 |
 | auto_confidence 산출 + threshold | ~0.1 초 |
-| **합계** | **~7~12 초** (M4 Pro 26b 는 약 2배 — 15~25 초) |
+| **합계** | **~7~12 초** (M4 Pro `OLLAMA_NUM_PARALLEL=3` 시 throughput 3 배) |
 
 > 이중 Judge 였던 이전 설계 (15~25 초) 대비 약 2 배 빠름. 단일 머신 직렬 처리에서 시간 절감 효과 큼.
 
@@ -438,17 +466,31 @@ flowchart LR
 
 ## 4. 도구 매트릭스
 
-| 컴포넌트 | 1순위 | 대안 | 비고 |
-|---|---|---|---|
-| 코드 임베딩 | Codestral Embed (32K) | Qodo-Embed-1-1.5B | airgap 이면 Qodo 1순위 (오픈) |
-| 리랭커 | bge-reranker-v2-m3 | Jina Reranker v2 | 둘 다 오픈 cross-encoder |
-| Vector DB | Qdrant (현행 유지) | — | Dify 내장 |
-| Graph DB | Neo4j Community | FalkorDB | FalkorDB 가 RAG 워크로드에 가벼움 |
-| CPG 빌더 | tree-sitter (현행) → graph 정규화 | Joern (formal CPG) | Joern 은 리소스 부담 — 점진 도입 |
-| Sparse | OpenSearch BM25 | Elasticsearch | 사내 airgap 자산 점검 필요 |
-| Spec ingestion | 자체 LLM 파이프라인 | LangExtract / unstructured.io | PRD 포맷 다양성 대응 |
-| Trace LLM | TraceLLM 패턴 차용 | Claude / Gemini self-verification | 프레임워크보다 *패턴* 채택 |
-| 측정 | Implementation Rate + LLM-as-Judge | DeepEval | 자체 구현이 단순 |
+> **선정 기준 (절대)** — 폐쇄망 (airgap) 호환. 외부 API 호출이 발생하는 도구는 *어떤 컬럼에도*
+> 1순위/대안으로 두지 않는다. 본 매트릭스의 모든 "1순위 / 대안" 은 *폐쇄망에서 100% 자급 가능*
+> 하다. 참고용으로만 비교되는 외부 API 솔루션은 **"❌ 사용 불가 (airgap)"** 컬럼에 격리 표시.
+
+| 컴포넌트 | 1순위 (폐쇄망 채택) | 대안 (폐쇄망 호환) | ❌ 사용 불가 (airgap) | 비고 |
+|---|---|---|---|---|
+| **코드 임베딩** | `qwen3-embedding:0.6b` (Ollama, Apache 2.0) | `Qodo-Embed-1-1.5B` (오픈 weight) · `bge-m3` (현행, 범용) | Codestral Embed · Voyage code-3 · Gemini Embedding · OpenAI text-embedding-3 | 모두 *원격 API 의존* → airgap 불가. §6.4 결정. |
+| **리랭커** | `bge-reranker-v2-m3` (BAAI, Apache 2.0, 568M) | `bge-reranker-large` (오픈) · `Jina Reranker v2` *오픈 weight 만 사용 시* | Jina Reranker API (cloud) · Cohere Rerank API | sentence-transformers `CrossEncoder` 로 in-process 추론. weight 는 외부망 1 회 다운로드. |
+| **Vector DB** | Qdrant (현행 유지, Apache 2.0) | — | Pinecone · Weaviate Cloud · Vertex Vector Search | Dify 내장. 폐쇄망 self-hosted. |
+| **Graph DB** | FalkorDB (Redis module, Apache 2.0) | Neo4j Community (GPL) | Neo4j Aura · Memgraph Cloud · Amazon Neptune | FalkorDB 가 RAG 워크로드에 가벼움. 본 통합은 multi-stage 로 .so 만 추출. |
+| **CPG 빌더** | tree-sitter (Phase 0~5 한정, MIT) + **Joern (Phase 8 정식 채택, Apache 2.0)** | — (단일 트랙) | — | Phase 0~7 은 tree-sitter 기반 경량 호출그래프로 진행. Phase 8 부터 Joern CPG (AST + CFG + DDG + PDG + Call Graph 통합) 정식 도입 — taint·reaching-def·data flow 질의 활성화. *야간 batch 분리 + 02 와 시간 격리* (§10 Phase 8). |
+| **Sparse 인덱스** | Meilisearch (오픈 binary, MIT, v1.42) | OpenSearch BM25 (Apache 2.0, +2GB 메모리) · Elasticsearch (Elastic License v2) | Algolia · ElasticCloud · Pinecone Sparse | 한국어 토크나이저 한계 시 OpenSearch + nori. §6.11. |
+| **LLM (분석 + Judge)** | `gemma4:e4b` (Ollama 라이브러리, 양 머신 동일) | `qwen2.5-coder:7b` 또는 다른 오픈 GGUF | Claude API · Gemini API · OpenAI API · Anthropic Bedrock | 26b 등 큰 모델은 양 머신 동일 원칙으로 비채택 (§6.4 4.3). |
+| **Spec ingestion** | 자체 LLM 파이프라인 (host Ollama + 자체 prompt) | `unstructured-io/unstructured` *오픈 lib + offline 옵션 한정* (cloud SaaS 모드 금지) | LangExtract API · unstructured.io SaaS · LlamaParse API | 본 시스템은 자체 파이프라인 채택. PRD 포맷별 자체 파서 (Markdown / Confluence export). |
+| **Trace LLM 패턴** | TraceLLM *패턴 차용* (자체 구현, host Ollama) | — | Claude self-verification · Gemini self-verification · OpenAI o1 self-reflection | 프레임워크 의존 X — *패턴만* 채택. self-verification 도 host Ollama (gemma4:e4b ×2 prompts) 로 구현. |
+| **측정** | 자체 Implementation Rate + LLM-as-Judge (host Ollama) | — | DeepEval (cloud LLM 백엔드 시) · OpenAI Evals · Promptfoo cloud | DeepEval 은 *Ollama 백엔드 한정* 으로는 사용 가능하나, 본 시스템은 자체 구현이 단순하고 의존 0. |
+| **Reranker 라이선스** | bge-reranker-v2-m3 (Apache 2.0, 상용 자유) | bge-reranker-large (Apache 2.0) | jina-reranker-v3 (CC-BY-NC 4.0, 비상용 한정) | jina-v3 는 *비상용* 만 가능 — 사내 R&D 한정 사용 가능 여부는 §7 결정 항목. |
+
+> **검증 절차** — 본 매트릭스의 어떤 항목이라도 추가/변경 시 다음을 확인한다:
+> 1. Weight·binary 가 외부망 1 회 다운로드로 *완전히 자급* 되는가?
+> 2. 런타임에 인터넷 endpoint 호출이 필요한가? (있으면 부적격.)
+> 3. 라이선스가 *상용 SI 환경 사용* 을 허용하는가?
+> 4. 모델 manifest / weight 가 `~/.ollama` 또는 이미지 안 `/opt/` 경로에 사전 배치 가능한가?
+>
+> 위 4 가지 모두 ✅ 이어야 채택. 1 개라도 ❌ 이면 "사용 불가" 컬럼 격리.
 
 ---
 
@@ -456,7 +498,7 @@ flowchart LR
 
 | 단계 | 기간 | 작업 | 검증 KPI |
 |---|---|---|---|
-| **P1.6 (단기 임베딩)** | 1~2 주 | bge-m3 → Codestral 또는 Qodo 교체. bge-reranker-v2 도입. | 04 citation rate Δ, top-1 hit rate |
+| **P1.6 (단기 임베딩)** | 1~2 주 | bge-m3 → `qwen3-embedding:0.6b` 교체 (Ollama 정식, Apache 2.0). bge-reranker-v2-m3 도입 (CrossEncoder). *Codestral / Voyage 등 API 의존 모델은 영구 제외 — 폐쇄망 전제.* | 04 citation rate Δ, top-1 hit rate |
 | **P2 (Hybrid 도입)** | 2~3 주 | BM25 sparse 경로 추가. RRF/weighted fusion. Dify 외부 hybrid layer. | 심볼 정확 매칭 hit rate |
 | **P3 (Graph 도입)** | 3~4 주 | Neo4j 또는 FalkorDB 도입. tree-sitter 산출물을 정식 노드/엣지로 정규화. structural retrieve 경로 02→04 통합. | "callers of X" 류 쿼리 정확도 |
 | **P3.5 (Cross-project)** | 1~2 주 | L2b 1개 reference repo 추가. 가중치 mix 실험. | layer별 citation rate 분리 |
@@ -469,12 +511,12 @@ flowchart LR
 > **TL;DR** — 폐쇄망 + 단일 머신에서 §3 의 4-Layer 를 실제로 어떻게 띄울지 다룬다. 핵심은 **Dify 의
 > retrieve 단계를 자체 `retrieve-svc` 로 교체** 하는 것 (Dify Workflow / LLM 은 그대로 활용).
 
-### 대상 하드웨어 (둘 중 하나)
+### 대상 하드웨어 (양 머신 동일 구성·설치, 우선순위만 차등)
 
-| 머신 | 사양 | OS |
-|---|---|---|
-| **A** | MacBook Pro M4 Pro · 48GB unified memory | macOS, Apple Silicon |
-| **B** | Intel Core Ultra 9 185H · 64GB RAM · RTX 4070 Laptop 8GB VRAM | Linux 또는 WSL2 |
+| 우선순위 | 머신 | 사양 | OS |
+|---|---|---|---|
+| **1차 (검증 기준)** | Intel Core Ultra 9 185H · 64GB RAM · RTX 4070 Laptop 8GB VRAM | WSL2 (Ubuntu) on Windows 11 |
+| **2차 (이식)** | MacBook Pro M4 Pro · 48GB unified memory | macOS, Apple Silicon |
 
 ### 6.1 핵심 통합 전략 — Dify External Knowledge API
 
@@ -531,7 +573,7 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
                 │   └ layer mix L2a/L2c                │
                 └──────────────────────────────────────┘
                           ▲
-                          │ (같은 컨테이너 안 127.0.0.1:9000)
+                          │ (같은 컨테이너 안 127.0.0.1:9100)
                 ┌─────────────────┐
                 │ Dify (기존)     │
                 │ Workflow + LLM  │
@@ -541,11 +583,14 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
                           ▼
                 ┌─────────────────────────────────────┐
                 │ Ollama (host) — LLM + 임베딩 통합   │
-                │  • gemma4:e4b-it-q4_K_M             │
-                │      (분석 + enricher 공유, 양 머신 동일) │
+                │  • gemma4:e4b                       │
+                │      (Ollama 기본 quantization,     │
+                │       분석 + enricher 공유,          │
+                │       양 머신 동일)                  │
                 │  • qwen3-embedding:0.6b             │
-                │  • (옵션) gemma4:26b-it-q4_K_M      │
-                │      (M4 Pro 야간 batch 만)         │
+                │                                     │
+                │  ※ 26b 등 큰 모델은 영구 비채택      │
+                │    — 양 머신 동일 원칙 준수          │
                 └─────────────────────────────────────┘
 ```
 
@@ -553,7 +598,8 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
 
 - **단일 이미지 안 supervisor program** 으로 통합 — Meili / Falkor / retrieve-svc 4 개 (TEI 는
   retrieve-svc 안 sentence-transformers 로 흡수).
-- **Ollama 1개로 LLM + 임베딩 통합** 서빙. host native (Mac Metal / Linux CUDA).
+- **Ollama 1개로 LLM + 임베딩 통합** 서빙. host native — WSL2 환경은 CUDA, macOS 는 Metal.
+  설치 명령은 *공식 Linux installer 한 줄* (양 머신 동일 패턴 — §6.9 참조).
 - **현행 자산 존중**: 02 enricher 의 `gemma4:e4b` 그대로. 04 분석도 동일 모델 양 머신 공유.
 
 ### 6.3 컴포넌트 명세
@@ -567,7 +613,7 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
 | Jenkins | 기존 | 1 GB | 2 GB | 28080 | Pipeline runner |
 | **Meilisearch** | binary + supervisor | 0.4 GB | 1 GB | 7700 (내부) | BM25 sparse (L1·sparse) |
 | **FalkorDB** | redis module + supervisor | 0.5 GB | 2 GB | 6380 (내부) | Code KG (L1·graph) |
-| **retrieve-svc** | venv `/opt/retrieve-svc/.venv` + supervisor + 내장 sentence-transformers (bge-reranker-v2-m3) | 1.5 GB | 2 GB | 9000 (내부) | hybrid retrieve + Dify Ext KB API + rerank |
+| **retrieve-svc** | venv `/opt/retrieve-svc/.venv` + supervisor + 내장 sentence-transformers (bge-reranker-v2-m3) | 1.5 GB | 2 GB | 9100 (내부, SonarQube :9000 충돌 회피) | hybrid retrieve + Dify Ext KB API + rerank |
 | (임베딩) | host Ollama (`qwen3-embedding:0.6b`) | 0.6 GB | — | 11434 (host) | host Ollama 와 공유 |
 | Ollama | host native (Mac Metal) / container CUDA (RTX) | 1 GB | 1.5 GB | 11434 (host) | LLM + 임베딩 통합 serving |
 
@@ -576,49 +622,57 @@ sentence-transformers + bge-reranker-v2-m3 (568M) 모델 로드 포함.
 
 ### 6.4 모델 선정 — 양 머신 통일 (운영 표준화)
 
-> **TL;DR (2026-04-27 정정)** — M4 Pro 와 RTX 4070 머신은 **모든 컴포넌트를 동일하게** 가져간다.
-> 디버그 패턴 공유, 측정 비교 가능, 인력 학습 곡선 1 회의 운영 가치가 *큰 모델 활용* 보다 우선.
+> **TL;DR (2026-04-27 정정 + 2026-04-26 재확인)** — RTX 4070 (1차 검증) 와 M4 Pro (2차 이식) 는
+> **모든 컴포넌트를 동일하게** 가져간다. 디버그 패턴 공유, 측정 비교 가능, 인력 학습 곡선 1 회의
+> 운영 가치가 *큰 모델 활용* 보다 우선. **양 머신 동일 원칙은 절대 깨지 않는다.**
 
 **원칙**:
 
 1. **양 머신 동일 구성** — LLM·임베딩·리랭커·컨테이너 모두 동일.
-2. **2026-04 검증된 오픈 모델만** (API 의존 X).
-3. **현행 자산 (`gemma4:e4b`) 100% 재활용** — 재반입·재검증 비용 0.
-4. M4 Pro 의 여유 메모리는 *throughput 향상* 또는 *Phase 7 야간 batch 옵션* 으로만 활용 (인터랙티브
-   04 분석은 양쪽 동일).
+2. **양 머신 동일 설치방법** — 동일 스크립트 (`scripts/build-{wsl2,mac}.sh` 는 arch tag 외 동일),
+   동일 supervisord 설정, 동일 entrypoint 시퀀스, 동일 포트·볼륨.
+3. **2026-04 검증된 오픈 모델만** (API 의존 X).
+4. **현행 자산 (`gemma4:e4b`) 100% 재활용** — 재반입·재검증 비용 0.
+5. 머신별 차이는 **arch (arm64/amd64)** 와 **`OLLAMA_NUM_PARALLEL`** 1 개 환경변수에 한정.
 
 #### 4.1 통합 모델 라인업
 
 | 컴포넌트 | 모델 (양 머신 동일) | 메모리 | 비고 |
 |---|---|---|---|
-| **분석 LLM** (04 단계) | `gemma4:e4b-it-q4_K_M` | ~5 GB | 현행 enricher 와 동일 — 한 모델로 통합 |
-| **Enricher LLM** (02 단계) | `gemma4:e4b-it-q4_K_M` | (분석과 공유) | 현행 그대로 |
-| **임베딩** | `qwen3-embedding:0.6b-q4_K_M` | ~0.6 GB | MTEB Code 우위 + 가벼움 |
-| **리랭커** | `bge-reranker-v2-m3` (Apache 2.0) | ~1.2 GB | 또는 `jina-reranker-v3` (CC-BY-NC, 라이선스 결정 후) |
+| **분석 LLM** (04 단계) | `gemma4:e4b` (Ollama 기본 quantization Q4) | on-disk ~9.6 GB (멀티모달 manifest 합) · **VRAM 실사용 ~3~5 GB** (text decoder Q4 ~2.5~3 GB + KV cache @ num_ctx=4096) | 현행 enricher 와 통합. RTX 4070 8GB VRAM 에 여유 있게 fit |
+| **Enricher LLM** (02 단계) | `gemma4:e4b` | (분석과 공유) | `OLLAMA_MAX_LOADED_MODELS=1` 로 swap 방지 |
+| **임베딩** | `qwen3-embedding:0.6b` | ~0.6 GB | Ollama 라이브러리 정식 (`ollama.com/library/qwen3-embedding:0.6b`). MTEB Code 우위 |
+| **리랭커** | `bge-reranker-v2-m3` (Apache 2.0) | ~1.1 GB | `BAAI/bge-reranker-v2-m3` HF · retrieve-svc 안 sentence-transformers `CrossEncoder` 로 in-process |
 
-#### 4.2 양 머신 차이는 단 하나 — Throughput
+> **모델 태그 주의 (2026-04-26 확인)** — Ollama 표준 태그는 `gemma4:e4b` (suffix 없음). 과거
+> 본 문서가 사용했던 `gemma4:e4b-it-q4_K_M` 표기는 Ollama 라이브러리 공식 태그가 아니다 →
+> 모든 문서·스크립트에서 plain `gemma4:e4b` 로 통일 (2026-04-26 정정).
 
-| 환경변수 | M4 Pro 48GB | RTX 4070 8GB | 효과 |
+#### 4.2 양 머신 차이는 단 둘 — arch + Throughput 환경변수
+
+| 항목 | RTX 4070 8GB (1차) | M4 Pro 48GB (2차 이식) | 효과 |
 |---|---|---|---|
-| `OLLAMA_NUM_PARALLEL` | **3** | **1** | M4 Pro 는 동시 3 이슈, RTX 는 직렬 |
-| `OLLAMA_MAX_LOADED_MODELS` | 1 | 1 | swap 방지 |
-| KV cache (`num_ctx`) | 8192 | 8192 | 동일 — 결과 일관성 위해 |
+| 호스트 arch | `linux/amd64` | `linux/arm64` | 빌드 컨텍스트 동일, native 빌드만 다름 |
+| `OLLAMA_NUM_PARALLEL` | **1** | **3** | RTX 직렬, M4 Pro 동시 3 이슈 |
+| `OLLAMA_MAX_LOADED_MODELS` | 1 | 1 | swap 방지 (양 머신 동일) |
+| KV cache (`num_ctx`) | 4096 | 4096 | 동일 — 결과 일관성 위해 (8GB VRAM 에 맞춰 4096 으로 통일) |
+| 그 외 (모델·이미지·supervisord·entrypoint·포트·볼륨·스크립트 흐름) | 전부 동일 | — | — |
 
-> 즉 **결과는 같고 처리 속도만 다르다**. 100 이슈 처리: M4 Pro ~7 분, RTX ~20 분.
+> **결과는 같고 throughput 만 다르다**. 100 이슈 처리: RTX ~20 분, M4 Pro `parallel=3` 시 ~7 분.
 
-#### 4.3 왜 큰 모델 (gemma4:26b) 을 안 쓰는가
+#### 4.3 큰 모델 (gemma4:26b 등) 영구 비채택 — 양 머신 동일 원칙
 
-옵션 비교 (2026-04-27 검토):
+옵션 비교 (2026-04-27 검토 + 2026-04-26 재확인):
 
 | 옵션 | 양쪽 동일성 | RTX 4070 fit | M4 Pro 활용 | 채택? |
 |---|---|---|---|---|
-| **A. e4b 통일** | ✅ 완전 동일 | ✅ 안전 | ⚠️ 메모리 여유 → parallel=3 | **✅ 채택** |
-| B. 26b 통일 | ✅ 동일 | ❌ 8GB 에 안 들어감 (절반 CPU offload, 5~10 tok/s) | ✅ Metal 풀 활용 | ❌ RTX 사용 불가 |
+| **A. e4b 통일** | ✅ 완전 동일 | ✅ VRAM 실사용 ~3~5GB (8GB 여유 fit) | ✅ 메모리 여유 → parallel=3 | **✅ 채택** |
+| B. 26b 통일 | ✅ 동일 | ❌ Q4 weights ~10GB > 8GB → CPU offload 5~10 tok/s | ✅ Metal 풀 활용 | ❌ RTX 사용 불가 |
 | C. 중간 family 전환 (`qwen2.5-coder:7b`) | ✅ 동일 | ✅ fit | ⚠️ 여유 | ❌ gemma4 자산 폐기 비용 |
-| D. e4b 통일 + M4 Pro 야간 batch 만 26b | ✅ 인터랙티브는 동일 | ✅ | ✅ batch 만 활용 | **🔄 Phase 7 옵션** |
+| ~~D. e4b 통일 + M4 Pro 야간 batch 만 26b~~ | ❌ 양쪽 분기 발생 | ✅ | ✅ batch 만 활용 | **❌ 영구 비채택 (2026-04-26 정정)** |
 
-**채택**: A + D. 인터랙티브 04 는 양쪽 e4b. Phase 7 (Implementation Rate batch, 야간) 만 M4 Pro 에서
-26b 사용 옵션 — §10 Phase 7.4 참조.
+**채택**: A 단독. 인터랙티브 04 + Phase 7 batch 모두 양쪽 `gemma4:e4b`. 옵션 D 는 *양 머신 동일
+원칙* 을 깨뜨리므로 폐기 (이전 문서가 "M4 Pro 야간 batch 만 26b" 옵션을 열어뒀던 것을 정정).
 
 #### 4.4 검토 후 보류된 대안
 
@@ -631,90 +685,93 @@ sentence-transformers + bge-reranker-v2-m3 (568M) 모델 로드 포함.
 #### 4.5 한눈 요약
 
 ```text
-양 머신 동일:
-  LLM      : gemma4:e4b-it-q4_K_M       (분석 + enricher 공유)
+양 머신 동일 (구성 + 설치방법):
+  LLM      : gemma4:e4b              (분석 + enricher 공유, Ollama 기본 quantization)
   Embed    : qwen3-embedding:0.6b
-  Rerank   : bge-reranker-v2-m3
+  Rerank   : bge-reranker-v2-m3      (retrieve-svc 안 sentence-transformers in-process)
   Stores   : Qdrant + Meilisearch + FalkorDB
   Service  : retrieve-svc (FastAPI)
-  + sentence-transformers rerank (retrieve-svc 내장)
+  Image    : ttc-allinone (단일 이미지, supervisor 15+ program)
+  Scripts  : download-plugins.sh → build-{wsl2,mac}.sh → run-{wsl2,mac}.sh (arch 라벨 외 동일 흐름)
+  Ports    : 28080 / 28081 / 29000 / 50002 / 28090 / 28022 (양 머신 동일)
+  Volumes  : /data/{pg,redis,qdrant,jenkins,dify,meili,falkor,logs,knowledges,secrets} (동일)
 
-차이 (throughput 만):
-  M4 Pro      : OLLAMA_NUM_PARALLEL=3 (동시 처리)
-  RTX 4070    : OLLAMA_NUM_PARALLEL=1 (직렬)
+차이 (단 2 가지):
+  arch              : RTX 4070 = linux/amd64, M4 Pro = linux/arm64 (native 빌드 산물)
+  OLLAMA_NUM_PARALLEL : RTX 4070 = 1 (직렬), M4 Pro = 3 (동시 처리, throughput 만)
 
-옵션 (Phase 7 야간 batch 한정):
-  M4 Pro 만 gemma4:26b-it-q4_K_M 활용 가능 (Implementation Rate 정확도 ↑)
+영구 비채택:
+  gemma4:26b 등 큰 모델 옵션 — 양 머신 동일 원칙 보존을 위해 (2026-04-26 정정).
 ```
 
 ### 6.5 하드웨어별 메모리 배분
 
-#### A. M4 Pro / 48GB unified memory
+> **순서 주의 (2026-04-26 정정)** — 1차 검증 머신 = WSL2/RTX 4070 → 정본. M4 Pro 는 동일 설치방법
+> 으로 이식. 양 머신 메모리 배분 합계는 모두 안전 범위 안.
+
+#### A. (1차 검증 머신) Intel 185H + RTX 4070 Laptop 8GB / 64GB RAM (WSL2)
+
+**제약**: VRAM 8GB. gemma4:e4b 텍스트 추론 시 VRAM 실사용은 ~3~5GB (text decoder Q4 + KV cache)
+로 8GB 에 여유 있게 fit. on-disk 9.6GB 는 멀티모달 manifest (vision + audio 인코더 포함) 합계로,
+텍스트 전용 추론에서는 디스크에서만 차지하고 VRAM 에 올라가지 않는다. 임베딩·리랭커는 CPU.
+시스템 RAM 64GB 풍족.
+
+| 분류 | 항목 | 위치 | RAM | VRAM |
+|---|---|---|---|---|
+| OS | Windows + WSL2 + 백그라운드 | host | 6 GB | — |
+| Docker | Docker Desktop (WSL2 backend) 또는 dockerd in WSL2 | host | 1 GB | — |
+| 컨테이너 (ttc-allinone 단일 이미지) | Dify 스택 + PG + Redis + Qdrant + Jenkins + Meili + Falkor + retrieve-svc (rerank 내장) | 단일 컨테이너 | 11 GB | — |
+| 임베딩 | `qwen3-embedding:0.6b` (CPU, host Ollama) | WSL2 host | 0.6 GB | 0 |
+| LLM (분석 + enricher 공유) | `gemma4:e4b` text decoder Q4 + KV cache (CUDA) | WSL2 host (Ollama Linux installer) | 1 GB | ~3~5 GB |
+| 버퍼 | | — | 45 GB | 3~5 GB |
+| **합계** | | | **~19.6 / 64 GB · 44 GB 여유** | **~3~5 / 8 GB · 3~5 GB 여유** |
+
+핵심 결정:
+- **gemma4:e4b text decoder Q4 가 VRAM 에 여유 fit** — Ollama 기본 quantization 으로 weights ~2.5~3 GB,
+  KV cache @ `num_ctx=4096` 추가 ~0.5~1.5 GB → 합 ~3~5 GB. on-disk 9.6 GB 는 멀티모달 manifest 합
+  (vision + audio 인코더 등 포함) 이지만 텍스트 전용 추론 시 VRAM 미적재. `num_ctx=4096` 양 머신 통일.
+- **26b 등 큰 모델은 영구 비채택** — gemma4:26b 의 weights 자체가 Q4 ~10 GB 로 8GB VRAM 초과 →
+  CPU offload 발생 (5~10 tok/s). 분석·enricher 모두 `gemma4:e4b` 로 통합.
+  작은 모델의 약점은 RAG 컨텍스트 강화 (hybrid + graph + rerank) 로 보완.
+- **GPU 는 LLM 전담.** 임베딩 (0.6B) · 리랭커 (568M) 는 16-core CPU 로 충분 (각 100~200ms/요청).
+- **Ollama 는 WSL2 host native 설치** — 공식 Linux installer (`curl -fsSL https://ollama.com/install.sh | sh`).
+  Docker 안에 nvidia-docker 로 띄우는 옵션도 있으나 *양 머신 동일 패턴* (host native) 을 우선.
+- **`.wslconfig` 메모리 한도 최소 56GB** (`[wsl2] memory=56GB`). 미설정 시 WSL2 기본 50% 한도로
+  CPU 추론 OOM 가능.
+- 64GB 시스템 RAM 의 여유가 커, 향후 캔퍼니컬 KB (L2c) 적재 확장에 유리.
+
+#### B. (2차 이식 머신) M4 Pro 48GB unified memory (macOS)
 
 **제약**: macOS 의 Docker Desktop 은 Linux VM 안에서 동작. **컨테이너에서 Apple Silicon GPU(Metal)
-가속을 못 씀.** 따라서 GPU 가속이 중요한 서비스는 host native 로 띄워야 한다.
+가속을 못 씀.** GPU 가속이 중요한 서비스는 host native 로 띄워야 한다 (Ollama).
 
 | 분류 | 항목 | 위치 | RAM |
 |---|---|---|---|
 | OS | macOS + 백그라운드 | host | 8 GB |
 | Docker | Docker Desktop VM | host | 3 GB |
-| 컨테이너 그룹 1 (기존 + 신규, ttc-allinone 단일 이미지) | Dify api/worker/nginx + Postgres + Redis + Qdrant + Jenkins + Meili + Falkor + retrieve-svc (rerank 내장) | 단일 컨테이너 | 11 GB |
+| 컨테이너 (ttc-allinone 단일 이미지) | Dify api/worker/nginx + Postgres + Redis + Qdrant + Jenkins + Meili + Falkor + retrieve-svc (rerank 내장) | 단일 컨테이너 | 11 GB |
 | 임베딩 | `qwen3-embedding:0.6b` (Ollama 통합) | host native | 0.6 GB |
-| LLM (분석 + enricher 공유) | `gemma4:e4b-it-q4_K_M` (Metal) | **host native** | 5 GB |
-| 버퍼 (parallel=3 시 LLM ×3 컨텍스트) | KV cache 추가 | — | 6 GB |
-| 사용 합계 | | | **~22.6 / 48 GB** |
-| **여유** | (Phase 7 batch 또는 향후 확장용) | | **~25 GB** |
+| LLM (분석 + enricher 공유) | `gemma4:e4b` text decoder Q4 + KV cache (Metal) | **host native** | ~3~5 GB |
+| 버퍼 (parallel=3 시 KV cache ×3) | KV cache 추가 | — | ~3 GB |
+| 사용 합계 | | | **~28 / 48 GB** |
+| **여유** | | | **~20 GB** |
 
-핵심 결정:
+핵심 결정 (RTX 머신과 동일 — 차이는 *throughput 환경변수* 만):
 
 - **양 머신 동일 모델** — `gemma4:e4b` 한 개로 분석·enricher 통합. RTX 머신과 결과 일관성 보장.
-- **Ollama 는 host native** 설치 (`brew install ollama`). Docker 안에선 Metal 가속 불가. 컨테이너
-  에서는 `host.docker.internal:11434` 로 접근.
-- **임베딩은 Ollama 통합** — `qwen3-embedding:0.6b` 도 host Ollama 가 서빙.
-- **리랭커는 retrieve-svc 안 sentence-transformers** — Ollama 가 cross-encoder 미지원이지만 TEI
-  binary 도 prebuilt 없음. Python sentence-transformers 가 가장 깔끔.
+- **Ollama 는 host native** 설치 — 공식 가이드 (`brew install ollama` 또는 ollama.com 의 `.dmg`).
+  Docker 안에선 Metal 가속 불가. 컨테이너에서는 `host.docker.internal:11434` 로 접근 (RTX 머신과
+  동일 호출 패턴).
+- **임베딩은 Ollama 통합** — `qwen3-embedding:0.6b` 도 host Ollama 가 서빙 (RTX 와 동일).
+- **리랭커는 retrieve-svc 안 sentence-transformers** — RTX 와 동일 (in-process).
 - **`OLLAMA_NUM_PARALLEL=3`**: M4 Pro 의 여유 메모리를 활용해 동시 이슈 3 건 처리 (throughput ↑,
   결과는 RTX 와 동일).
 - **`OLLAMA_MAX_LOADED_MODELS=1`**: e4b 한 개만 로드 (분석·enricher 공유라 swap 없음).
 
-#### M4 Pro 의 여유 24 GB 활용 옵션
-
-| 옵션 | 효과 | 결과 일관성 |
-|---|---|---|
-| Throughput (`NUM_PARALLEL=3`) | 04 처리 속도 3배 | ✅ 동일 결과 |
-| Phase 7 batch 에 `gemma4:26b` 옵션 | Implementation Rate 정확도 ↑ | ⚠️ batch 한정, 인터랙티브는 동일 |
-| 향후 Phase 8+ 확장용 단순 여유 | 안정성 | — |
-
 **피크 시나리오** (04 인터랙티브, parallel=3):
 
-- 컨테이너 11 GB (rerank 내장) + LLM 5 GB + KV cache 6 GB + embed 0.6 GB ≈ **22.6 GB**
-- 48 GB 안에 큰 여유 (~25 GB) — 안전
-
-#### B. Intel 185H + RTX 4070 Laptop 8GB / 64GB RAM
-
-**제약**: VRAM 8GB 가 병목. LLM 5GB 를 GPU 에 올리면 임베딩은 CPU. 리랭커는 컨테이너 안 CPU 추론.
-시스템 RAM 64GB 풍족.
-
-| 분류 | 항목 | 위치 | RAM | VRAM |
-|---|---|---|---|---|
-| OS | Linux/WSL2 + 백그라운드 | host | 6 GB | — |
-| Docker | docker daemon | host | 1 GB | — |
-| 컨테이너 그룹 (ttc-allinone 단일 이미지) | Dify 스택 + PG + Redis + Qdrant + Jenkins + Meili + Falkor + retrieve-svc (rerank 내장) | 단일 컨테이너 | 11 GB | — |
-| 임베딩 | `qwen3-embedding:0.6b` (CPU, host Ollama) | host | 0.6 GB | 0 |
-| LLM (분석 + enricher 공유) | `gemma4:e4b-it-q4_K_M` (CUDA) | host (또는 컨테이너 + nvidia-docker) | 1 GB | 5 GB |
-| 버퍼 | | — | 51 GB | 3 GB |
-| **합계** | | | **~12.6 / 64 GB · 51 GB 여유** | **5 / 8 GB · 3 GB 여유** |
-
-핵심 결정:
-- **8GB VRAM 한계로 26b 못 돌림** (Q4 16GB > 8GB). 따라서 분석 LLM 과 enricher LLM 을 같은
-  `gemma4:e4b` 로 통합. 작은 모델의 약점은 RAG 컨텍스트 강화 (hybrid + graph + rerank) 로 보완하는
-  설계. 이게 폐쇄망 단일머신 8GB GPU 의 현실적 최선.
-- **GPU 는 LLM 전담.** 임베딩 (0.6B) · 리랭커 (568M) 는 16-core CPU 로 충분 (각 100~200ms/요청).
-- WSL2 사용 시 nvidia-docker (CUDA passthrough) 정상 동작. Hyper-V 메모리 한도 (`.wslconfig`) 를
-  최소 56GB 로 설정.
-- 64GB 시스템 RAM 의 여유가 크므로, 향후 **L2b (cross-project KB) 추가 적재** 시 메모리 압박이
-  M4 Pro 보다 적다.
-- 추론 속도 부족 시: 임베딩 GPU 로 (Ollama CUDA, +0.6GB VRAM) → VRAM 5.6GB. 여전히 안전.
+- 컨테이너 11 GB (rerank 내장) + LLM (text decoder + KV ×3) ~6 GB + embed 0.6 GB + OS/Docker 11 GB ≈ **~28 GB**
+- 48 GB 안에 ~20 GB 여유 — 안전
 
 ### 6.6 02 단계 (사전학습) 변경 사항
 
@@ -780,7 +837,8 @@ retrieve-svc 의 `POST /retrieval` 처리:
 > 결과: 신규 supervisor program **5 → 4 개** (Meili / Falkor / retrieve-svc / [Phase 7] spec-svc).
 
 **포트 정책**:
-- 신규 7700 / 6380 / 9000 / 9001 모두 **컨테이너 내부 전용** (`127.0.0.1`).
+- 신규 7700 / 6380 / 9100 / 9101 모두 **컨테이너 내부 전용** (`127.0.0.1`). 9100/9101 은
+  SonarQube 의 컨테이너 내부 :9000 점유 회피 + 향후 spec-svc (Phase 7) 까지 9100 대역 묶음.
 - 호스트 노출은 기존 28080 (Jenkins) / 28081 (Dify gateway) / 29000 (SonarQube) 만.
 
 #### 6.8.2 Dockerfile 추가 (발췌)
@@ -888,7 +946,7 @@ stderr_logfile=/data/logs/falkordb.err.log
 [program:retrieve-svc]
 command=/opt/retrieve-svc/.venv/bin/uvicorn app.main:app
     --host 127.0.0.1
-    --port 9000
+    --port 9100
     --workers 2
 directory=/opt/retrieve-svc
 priority=400
@@ -915,12 +973,12 @@ stderr_logfile=/data/logs/retrieve-svc.err.log
 
 ; (Phase 7 활성화 시) spec-svc — priority 500
 ; [program:spec-svc]
-; command=/opt/spec-svc/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9001
+; command=/opt/spec-svc/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9101
 ; directory=/opt/spec-svc
 ; autostart=false  ; entrypoint 명시 start
 ; environment=
 ;     PYTHONPATH="/opt/spec-svc",
-;     RETRIEVE_SVC_URL="http://127.0.0.1:9000",
+;     RETRIEVE_SVC_URL="http://127.0.0.1:9100",
 ;     OLLAMA_URL="http://host.docker.internal:11434",
 ;     ...
 ```
@@ -946,13 +1004,13 @@ redis-cli -p 6380 ping > /dev/null   # FalkorDB
 
 # (3) retrieve-svc 시작 (sentence-transformers 모델 로드 ~10~20 초)
 supervisorctl -c /etc/supervisor/supervisord.conf start retrieve-svc
-wait_for_url "http://127.0.0.1:9000/health" 60 "retrieve-svc"
+wait_for_url "http://127.0.0.1:9100/health" 60 "retrieve-svc"
 
 # (4) 이후 dify-plugin-daemon → dify-api 기존 시퀀스 진행
 
 # (Phase 7 활성화 시) spec-svc 시작
 # supervisorctl start spec-svc
-# wait_for_url "http://127.0.0.1:9001/health" 30 "spec-svc"
+# wait_for_url "http://127.0.0.1:9101/health" 30 "spec-svc"
 ```
 
 #### 6.8.5 데이터 디렉터리 (볼륨)
@@ -1013,11 +1071,10 @@ mkdir -p offline-assets/rerank-models
 huggingface-cli download BAAI/bge-reranker-v2-m3 \
   --local-dir offline-assets/rerank-models/bge-reranker-v2-m3
 
-# (3) Ollama 모델 — host 측. 빌드 컨텍스트와 무관, 별도 반입.
-ollama pull gemma4:e4b-it-q4_K_M
+# (3) Ollama 모델 — host 측. 빌드 컨텍스트와 무관, 별도 반입. 양 머신 동일 모델.
+ollama pull gemma4:e4b
 ollama pull qwen3-embedding:0.6b
-# (옵션) M4 Pro Phase 7 야간 batch 용
-# ollama pull gemma4:26b-it-q4_K_M
+# 26b 등 큰 모델은 영구 비채택 — 양 머신 동일 원칙 (§6.4 결정).
 
 # (4) Ollama 모델 export (호스트로 반입할 디렉터리)
 mkdir -p offline-assets/ollama-models
@@ -1028,20 +1085,23 @@ cp -r ~/.ollama/models/{blobs,manifests} offline-assets/ollama-models/
 > 가능한 외부망 PC 에서 빌드. 폐쇄망에선 *완성된 이미지* 만 사용. bge-reranker-v2-m3 모델 weight 는
 > P0.2 에서 다운로드한 디렉터리를 Dockerfile 이 `COPY`.
 
-#### 6.9.2 외부망 PC — 이미지 빌드
+#### 6.9.2 외부망 PC — 이미지 빌드 (양 머신 동일 흐름, arch 라벨만 다름)
 
 ```bash
-# 단일 이미지 빌드 (기존 절차 그대로)
-bash scripts/build-mac.sh        # macOS arm64
-# 또는
-bash scripts/build-wsl2.sh       # Linux/WSL2 amd64
+# (1차 검증 머신, WSL2/amd64)
+bash scripts/build-wsl2.sh       # 결과: ttc-allinone:wsl2-dev (linux/amd64)
+docker save ttc-allinone:wsl2-dev | gzip > offline-assets/amd64/ttc-allinone.tar.gz
 
-# tar 로 export
-docker save ttc-allinone:mac-dev | gzip > offline-assets/amd64/ttc-allinone.tar.gz
-# (또는 arm64 별도)
+# (2차 이식 머신, macOS/arm64) — 동일 절차, 스크립트 이름만 다름
+bash scripts/build-mac.sh        # 결과: ttc-allinone:mac-dev (linux/arm64)
+docker save ttc-allinone:mac-dev | gzip > offline-assets/arm64/ttc-allinone.tar.gz
 ```
 
-이미지 크기 예상: 7~9 GB → **8.5~10.5 GB** (bge-reranker weight 1.2GB + Meili/Falkor binary +
+> **두 빌드 스크립트는 arch tag 와 image tag 외 동일** ([build-wsl2.sh](../scripts/build-wsl2.sh) /
+> [build-mac.sh](../scripts/build-mac.sh) 비교). 사용 Dockerfile / requirements / pipeline-scripts /
+> jenkins-init 모두 단일 소스.
+
+이미지 크기 예상: 7~9 GB → **8.5~10.5 GB** (bge-reranker weight 1.1GB + Meili/Falkor binary +
 sentence-transformers + retrieve-svc venv 추가). TEI 별도 binary 제거로 ~150MB 절감.
 
 #### 6.9.3 사내 반입
@@ -1053,42 +1113,49 @@ sentence-transformers + retrieve-svc venv 추가). TEI 별도 binary 제거로 ~
 | `dify-sandbox-{arch}.tar.gz` | ~1 GB (기존) | 동일 |
 | `ollama-models/` | ~6~10 GB | 동일 (host 측 적용) |
 
-#### 6.9.4 폐쇄망 머신 — 적용 (양 머신 동일)
+#### 6.9.4 폐쇄망 머신 — 적용 (양 머신 동일 시퀀스, arch 만 다름)
 
 ```bash
 cd code-AI-quality-allinone/
 
-# (1) 이미지 로드 (기존 절차)
+# (1) 이미지 로드 (양 머신 동일 스크립트, --arch 인자만 다름)
+# 1차 검증 머신 (WSL2):
 bash scripts/offline-load.sh --arch amd64
+# 2차 이식 머신 (M4 Pro):  bash scripts/offline-load.sh --arch arm64
 
-# (2) Ollama 모델 적용 (host 측)
+# (2) Ollama 모델 적용 (host 측, 양 머신 동일)
 mkdir -p ~/.ollama
 cp -r offline-assets/ollama-models/* ~/.ollama/models/
-ollama list   # gemma4:e4b-it-q4_K_M, qwen3-embedding:0.6b 확인
+ollama list   # gemma4:e4b, qwen3-embedding:0.6b 확인
 
-# (3) Ollama 환경변수 — 머신별 차이 1 줄
-# 공통:
-export OLLAMA_MAX_LOADED_MODELS=1
-# M4 Pro :  export OLLAMA_NUM_PARALLEL=3
-# RTX    :  export OLLAMA_NUM_PARALLEL=1
+# (3) Ollama 환경변수 (양 머신 공통 1 + 차이 1)
+export OLLAMA_MAX_LOADED_MODELS=1   # 공통
+# 1차 (RTX 4070) :  export OLLAMA_NUM_PARALLEL=1
+# 2차 (M4 Pro)   :  export OLLAMA_NUM_PARALLEL=3
 
-# (4) 컨테이너 기동 (기존 절차)
-bash scripts/run-mac.sh       # 또는 run-wsl2.sh
+# (4) 컨테이너 기동 (양 머신 동일 흐름, 스크립트 이름만 다름)
+# 1차 (WSL2):
+bash scripts/run-wsl2.sh
+# 2차 (M4 Pro):    bash scripts/run-mac.sh
 ```
 
-#### 6.9.5 머신별 Ollama 기동 차이
+#### 6.9.5 Ollama 호스트 설치 — 양 머신 모두 *공식 가이드 그대로*
 
-| 머신 | 방식 | 비고 |
+| 머신 | 공식 설치 명령 | 검증 |
 |---|---|---|
-| **M4 Pro** | host native (`brew install ollama`, `ollama serve`) | Docker 안 Metal 가속 불가 |
-| **RTX 4070** | host native 또는 컨테이너 + nvidia-docker | 컨테이너 모드 시 `~/.ollama` 를 호스트에서 마운트하면 모델 공유 |
+| **1차 (WSL2 Ubuntu)** | `curl -fsSL https://ollama.com/install.sh \| sh` ([Ollama Linux](https://ollama.com/download/linux)) | `ollama --version`, `nvidia-smi` 가 RTX 4070 인식 |
+| **2차 (M4 Pro)** | `brew install ollama` 또는 [ollama.com 공식 .dmg](https://ollama.com/download/mac) | `ollama --version` |
+
+> **공통점**: 양쪽 다 *호스트 native* 로 띄움 (Docker 컨테이너 안에 두지 않음). 컨테이너 → 호스트
+> 호출은 `host.docker.internal:11434` 로 통일 (양 머신 동일 — compose `extra_hosts` 가 WSL2 에서
+> `host-gateway` 매핑을 자동 추가).
 
 #### 6.9.6 검증 (양 머신 동일 명령)
 
 ```bash
 # LLM 호출 (호스트 Ollama 직접)
 curl http://localhost:11434/api/generate -d '{
-  "model": "gemma4:e4b-it-q4_K_M",
+  "model": "gemma4:e4b",
   "prompt": "Explain Python decorators in 3 sentences."
 }'
 
@@ -1103,7 +1170,7 @@ curl http://localhost:11434/api/embeddings -d '{
 # (config.DEBUG=true 시만 노출).
 
 # retrieve-svc 검증 (컨테이너 안)
-docker exec ttc-allinone curl -X POST http://127.0.0.1:9000/retrieval \
+docker exec ttc-allinone curl -X POST http://127.0.0.1:9100/retrieval \
   -H "Content-Type: application/json" \
   -d '{"knowledge_id":"code-kb-test","query":"login","retrieval_setting":{"top_k":3}}'
 ```
@@ -1127,64 +1194,93 @@ docker exec ttc-allinone curl -X POST http://127.0.0.1:9000/retrieval \
 
 ### 6.11 운영 한계 — 정직한 평가
 
+- **02 ↔ 04 동시 구동 영구 차단 (2026-04-26 결정)**: host Ollama 는 *단일 LLM bus* —
+  `OLLAMA_MAX_LOADED_MODELS=1` 가정 하에 02 (enricher) 와 04 (분석 LLM) 가 동시 호출되면 모델 swap /
+  KV cache 경합 / OOM 위험 발생. **두 파이프라인은 어떤 경우에도 시간이 겹쳐선 안 된다.**
+  - **차단 메커니즘**: Lockable Resources 플러그인 (`lockable-resources:latest` in `.plugins.txt`).
+    02·04 jenkinsfile 의 `options` 블록에 `disableConcurrentBuilds()` + `lock(resource: 'ttc-llm-bus')`
+    을 명시. 양쪽 모두 동일 lock resource 를 잡으므로 OS 가 mutex 처럼 직렬화한다.
+  - **lock 적용 범위**: 02 / 04 / *향후* 06 (Phase 7 구현률 측정 batch) — LLM 을 호출하는 모든
+    파이프라인. 03 (Sonar 정적분석) 은 LLM 미호출이라 lock 미적용.
+  - **lock 미점유 케이스**: 01 (chain Job) 자체는 lock 없음 — 01 은 02→03→04 를 *순차* 호출만 하고,
+    각 단계가 자신의 lock 을 따로 잡는다 (01 이 lock 잡으면 03 이 LLM 미사용인데도 LLM bus 점유).
+  - **Phase 7 신규 Job 추가 시**: 06 (06-구현률-측정) jenkinsfile 에도 같은 `options` 블록 추가 의무
+    — §10 Phase 7 산출물 작성 단계에 잊지 말 것.
 - **다중 프로젝트 동시 분석 불가**: 단일 머신 메모리 한계로 04 가 동시에 두 레포 분석 시 LLM swap
-  발생. **직렬 처리 권장**. 동시 실행은 Jenkins 의 build queue 로 자연 직렬화.
-- **LLM 응답 속도** (양 머신 동일 모델 `gemma4:e4b` Q4 기준):
-  - M4 Pro Metal: 80~120 tok/s · 1 이슈 분석 (~1500 토큰) ≈ 12~18초 (직렬).
-  - M4 Pro Metal `OLLAMA_NUM_PARALLEL=3`: throughput 3 배 → 1 이슈 평균 4~6초.
-  - RTX 4070 CUDA: 70~100 tok/s · 1 이슈 ≈ 15~25초.
-  - 대량 이슈 (100+) 처리: **M4 Pro 7~10분 / RTX 25~40분** (모델 동일, 처리 속도만 차이).
-- **Phase 7 야간 batch 에 옵션으로 `gemma4:26b` 사용 시** (M4 Pro 한정):
-  - Metal `gemma4:26b` Q4: 20~35 tok/s · 1 PRD 항목 ≈ 45~75초.
-  - Implementation Rate 정확도가 측정에서 명확히 우위일 때만 활성화.
+  발생. **직렬 처리 권장**. 동시 실행은 위 `ttc-llm-bus` lock + Jenkins build queue 로 자연 직렬화.
+- **LLM 응답 속도** (양 머신 동일 모델 `gemma4:e4b` 기준):
+  - 1차 RTX 4070 CUDA: 70~100 tok/s · 1 이슈 분석 (~1500 토큰) ≈ 15~25초 (`OLLAMA_NUM_PARALLEL=1`).
+  - 2차 M4 Pro Metal: 80~120 tok/s · 직렬 12~18초 / `OLLAMA_NUM_PARALLEL=3` 시 평균 4~6초.
+  - 대량 이슈 (100+) 처리: RTX 25~40분 / M4 Pro `parallel=3` 7~10분 (모델 동일, throughput 만 차이).
+- **VRAM 사용 (1차 머신)**: gemma4:e4b 텍스트 추론 시 VRAM 실사용 ~3~5 GB (text decoder Q4 weights
+  ~2.5~3 GB + KV cache @ `num_ctx=4096` ~0.5~1.5 GB) — RTX 4070 8GB 에 여유 fit. on-disk 9.6 GB 는
+  멀티모달 manifest 합으로 VRAM 과 무관. `num_ctx=4096` 양 머신 통일로 결과 일관성 보장.
 - **graph DB 한계**: FalkorDB 는 Cypher subset (대부분의 OpenCypher 지원, 일부 고급 패턴 미지원).
   변수 길이 path (`*1..N`) 같은 패턴은 Neo4j Community 가 더 안정. 필요 시 마이그레이션 가능.
 - **Meilisearch 의 한계**: 한국어 형태소 분석 기본 미지원 (lang detect 만). 한글 청크 비중이 큰
   레포에서는 정확도 ↓. 대안: `kuromoji-ko` 플러그인 가능한 OpenSearch (단, 메모리 +2GB).
 - **PRD 큰 경우 (L4)**: spec ingestion 이 LLM 호출 다수 → 100+ requirements PRD 는 batch 시간이
-  길어짐. M4 Pro 26b 기준 100 reqs ≈ 75~125분. RTX e4b 기준 25~40분 (작은 모델이 오히려 빠름 —
-  단 판정 신뢰도는 26b 가 우위).
+  길어짐. RTX e4b 기준 25~40분 / M4 Pro `parallel=3` ~12~15분. 정확도 70% 미달 시는 *모델 업그레이드*
+  대신 *self-consistency 다수결* (e4b ×3 sampling) 으로 우회 — 양 머신 동일 원칙 보존.
 - **sentence-transformers 폐쇄망 첫 로드**: retrieve-svc 의 `HF_HUB_OFFLINE=1` /
   `TRANSFORMERS_OFFLINE=1` 환경변수가 supervisord.conf 에 명시되어 있어 metadata 조회 시도 차단.
   모델 weight 는 이미지 안 `/opt/rerank-models/bge-reranker-v2-m3` 에 사전 적재.
 
-### 6.12 즉시 점검 체크리스트 (P1.6 착수 전)
+### 6.12 즉시 점검 체크리스트 (Phase 0 착수 전)
 
-다음 항목들이 OK 여야 P1.6 (임베딩 교체) 착수 가능:
+> **순서 (2026-04-26 정정)** — 1차 검증 머신 (WSL2/RTX 4070) 기준. 2차 (M4 Pro) 도 동일 항목,
+> arch 라벨만 amd64 → arm64 로 치환.
 
-- [ ] **Docker memory limit**: Mac 은 Docker Desktop 설정에서 메모리 *최소 24GB* 할당 (`Settings →
-      Resources → Memory`). WSL2 는 `~/.wslconfig` 에 `memory=56GB`.
-**외부망 빌드 단계** (P1.6 빌드 머신):
+**1차 검증 머신 (WSL2/RTX 4070) 사전 점검**:
 
-- [ ] **`scripts/download-plugins.sh` 정상 동작** (Jenkins / Dify plugin — 기존)
-- [ ] **신규 binary 다운로드 검증** (Dockerfile 의 RUN curl 단계):
-      - Meilisearch v1.10.3 (`linux-amd64` / `linux-aarch64`)
-      - FalkorDB v4.0.10 (`falkordb.so`)
+- [ ] **WSL2 메모리 한도** — `%USERPROFILE%\.wslconfig` 에 `[wsl2]` 섹션 + `memory=56GB`,
+      `processors=12` (Intel 185H 의 P 코어 기준), `swap=0`. WSL 재시작 (`wsl --shutdown`) 후 적용.
+- [ ] **Docker Desktop**: WSL2 backend 활성 (`Settings → Resources → WSL Integration`). 또는
+      WSL2 안 dockerd 직접 실행.
+- [ ] **NVIDIA CUDA passthrough**: `nvidia-smi` 가 WSL2 셸에서 RTX 4070 인식 (드라이버 버전 ≥
+      535 권장).
+
+**2차 머신 (M4 Pro) 사전 점검** (이식 단계 진입 시):
+
+- [ ] **Docker Desktop memory**: `Settings → Resources → Memory` *최소 24GB* 할당.
+
+**외부망 빌드 단계 (양 머신 공통)**:
+
+- [ ] **`scripts/download-plugins.sh` 정상 동작** (Jenkins / Dify plugin — 기존).
+- [ ] **신규 binary 도달성** (외부망에서 한 번 확인):
+      - **Meilisearch v1.42** (2026-04-14 release) — `linux-amd64` (1차) / `linux-aarch64` (2차).
+      - **FalkorDB** — 공식 Docker 이미지 `falkordb/falkordb:latest` (Redis 7.4 기반, Browser 포함).
+        가벼운 변형 `falkordb/falkordb-server:latest` 도 사용 가능 — 본 통합은 multi-stage 로 .so
+        만 추출하므로 어느 쪽이든 OK.
 - [ ] **bge-reranker-v2-m3 weight 사전 다운로드**: `offline-assets/rerank-models/bge-reranker-v2-m3`
-      디렉터리 확보 (sentence-transformers 가 retrieve-svc 안에서 import)
-- [ ] **Ollama 모델 export**: `gemma4:e4b-it-q4_K_M`, `qwen3-embedding:0.6b` (host 측)
-      - (선택) `gemma4:26b-it-q4_K_M` — Phase 7 옵션, M4 Pro 만
-- [ ] **이미지 빌드**: `bash scripts/build-mac.sh` (또는 wsl2) — 결과 `ttc-allinone:<tag>` ~9~11 GB
-- [ ] **tar export**: `docker save | gzip > offline-assets/{arch}/ttc-allinone.tar.gz`
+      디렉터리 확보 (sentence-transformers 가 retrieve-svc 안에서 import).
+- [ ] **Ollama 모델 export**: `gemma4:e4b`, `qwen3-embedding:0.6b` (host 측). 26b 등 큰 모델은
+      받지 않음 (양 머신 동일 원칙).
+- [ ] **이미지 빌드 (양 머신 동일 흐름)**:
+      - 1차: `bash scripts/build-wsl2.sh` → `ttc-allinone:wsl2-dev` (~9~11 GB, linux/amd64).
+      - 2차: `bash scripts/build-mac.sh` → `ttc-allinone:mac-dev` (~9~11 GB, linux/arm64).
+- [ ] **tar export**: `docker save | gzip > offline-assets/{amd64|arm64}/ttc-allinone.tar.gz`
 
-**폐쇄망 적용 단계**:
+**폐쇄망 적용 단계 (양 머신 동일 흐름)**:
 
-- [ ] **Docker memory limit**: Mac 은 Docker Desktop 메모리 *최소 24GB*. WSL2 는 `~/.wslconfig` 에
-      `memory=56GB`.
 - [ ] **이미지 로드**: `bash scripts/offline-load.sh --arch {amd64|arm64}`
-- [ ] **Ollama 모델 적용** (host 측): `~/.ollama/models/` 에 복사 + `ollama list` 확인
-- [ ] **환경변수**:
-      - 공통: `OLLAMA_MAX_LOADED_MODELS=1` (host), `HF_HUB_OFFLINE=1` (이미 supervisord.conf 에)
-      - **M4 Pro**: `OLLAMA_NUM_PARALLEL=3`
-      - **RTX 4070**: `OLLAMA_NUM_PARALLEL=1`
-- [ ] **컨테이너 기동**: `bash scripts/run-{mac,wsl2}.sh`
-- [ ] **컨테이너 내부 healthcheck**:
-      - `docker exec ttc-allinone curl -s http://127.0.0.1:7700/health` (Meilisearch)
-      - `docker exec ttc-allinone redis-cli -p 6380 ping` (FalkorDB)
-      - `docker exec ttc-allinone curl -s http://127.0.0.1:9000/health` (retrieve-svc)
-      - `docker exec ttc-allinone supervisorctl status retrieve-svc` (RUNNING + rerank 모델 로드 OK)
-- [ ] **Ollama host 호출 (컨테이너 → 호스트)**: `docker exec ttc-allinone curl -s
-      http://host.docker.internal:11434/api/tags` 응답 확인
+- [ ] **Ollama host 설치 + 모델 적용**:
+      - 1차 (WSL2): `curl -fsSL https://ollama.com/install.sh | sh`
+      - 2차 (M4 Pro): `brew install ollama`
+      - 모델: `cp -r offline-assets/ollama-models/* ~/.ollama/models/` + `ollama list` 확인.
+- [ ] **환경변수** (공통 1 + 차이 1):
+      - 공통: `OLLAMA_MAX_LOADED_MODELS=1` (host).
+      - 1차 (RTX 4070): `OLLAMA_NUM_PARALLEL=1`.
+      - 2차 (M4 Pro): `OLLAMA_NUM_PARALLEL=3`.
+- [ ] **컨테이너 기동** (양 머신 동일 흐름, 스크립트 이름만 다름):
+      - 1차: `bash scripts/run-wsl2.sh`. 2차: `bash scripts/run-mac.sh`.
+- [ ] **컨테이너 내부 healthcheck** (양 머신 동일):
+      - `docker exec ttc-allinone curl -s http://127.0.0.1:7700/health` (Meilisearch).
+      - `docker exec ttc-allinone redis-cli -p 6380 ping` (FalkorDB).
+      - `docker exec ttc-allinone curl -s http://127.0.0.1:9100/health` (retrieve-svc).
+      - `docker exec ttc-allinone supervisorctl status retrieve-svc` (RUNNING + rerank 모델 로드 OK).
+- [ ] **Ollama host 호출 (컨테이너 → 호스트, 양 머신 동일)**:
+      `docker exec ttc-allinone curl -s http://host.docker.internal:11434/api/tags`.
 - [ ] **Dify 버전**: External Knowledge API 지원 0.15+ (현재 1.13.3 OK).
 - [ ] **리랭커 라이선스 결정** (§7): bge (Apache 2.0) vs jina-v3 (CC-BY-NC, 비상용).
 
@@ -1301,6 +1397,7 @@ docker exec ttc-allinone curl -X POST http://127.0.0.1:9000/retrieval \
 | 5 · 측정·튜닝 | 1~2주 | A/B 회귀 비교 리포트 |
 | 6 · Cross-project (선택) | 1~2주 | L2b/L2c layer mix 활성화 |
 | 7 · Spec↔Code 추적성 | 4~6주 | Implementation Rate 리포트 |
+| **8 · Joern CPG 정식 도입** | **3~4주** | **CPG batch (야간) + taint·reaching-def 질의 활성화** |
 
 ---
 
@@ -1339,9 +1436,9 @@ huggingface-cli download BAAI/bge-reranker-v2-m3 \
 **P0.3 Ollama 모델 export** (host 측, 이미지와 분리)
 
 ```bash
-ollama pull gemma4:e4b-it-q4_K_M
+ollama pull gemma4:e4b
 ollama pull qwen3-embedding:0.6b
-# (옵션) ollama pull gemma4:26b-it-q4_K_M    # M4 Pro Phase 7 야간 batch
+# 26b 등 큰 모델은 영구 비채택 — 양 머신 동일 원칙 (§6.4).
 
 mkdir -p offline-assets/ollama-models
 cp -r ~/.ollama/models/{blobs,manifests} offline-assets/ollama-models/
@@ -1356,51 +1453,62 @@ cp -r ~/.ollama/models/{blobs,manifests} offline-assets/ollama-models/
 
 §6.8.2 의 RUN curl 5개 + COPY 1개를 Dockerfile 에, §6.8.3 의 program 5개를 supervisord.conf 에 추가.
 
-**P0.6 단일 이미지 빌드 + tar export**
+**P0.6 단일 이미지 빌드 + tar export** (1차 검증 머신 = WSL2 부터)
 
 ```bash
-bash scripts/build-mac.sh              # 또는 build-wsl2.sh
+# 1차 검증 머신 (WSL2/amd64) — 이 흐름이 정본
+bash scripts/build-wsl2.sh
 
 # 외부망 검증 (1 회 기동 + 헬스체크)
-bash scripts/run-mac.sh
+bash scripts/run-wsl2.sh
 docker exec ttc-allinone supervisorctl status   # 16 프로세스 RUNNING
 docker exec ttc-allinone curl -s http://127.0.0.1:7700/health
-docker exec ttc-allinone curl -s http://127.0.0.1:9000/health
+docker exec ttc-allinone curl -s http://127.0.0.1:9100/health
 
 # tar export
-docker save ttc-allinone:mac-dev | gzip > offline-assets/arm64/ttc-allinone.tar.gz
+docker save ttc-allinone:wsl2-dev | gzip > offline-assets/amd64/ttc-allinone.tar.gz
+
+# 2차 머신 (M4 Pro/arm64) — 동일 절차, 스크립트 이름·tag·디렉터리만 치환
+# bash scripts/build-mac.sh
+# bash scripts/run-mac.sh
+# docker save ttc-allinone:mac-dev | gzip > offline-assets/arm64/ttc-allinone.tar.gz
 ```
 
-- **산출물**: `offline-assets/{arch}/ttc-allinone.tar.gz` (~9~11 GB) + `offline-assets/ollama-models/`.
+- **산출물**: `offline-assets/{amd64,arm64}/ttc-allinone.tar.gz` (~9~11 GB) + `offline-assets/ollama-models/`.
 - **검증**: 외부망 기동 시 supervisor 모든 program RUNNING + 신규 5 health 모두 200.
-- **롤백**: 외부망 작업이라 무영향. 빌드 실패 시 `docker rmi ttc-allinone:mac-dev`.
+- **롤백**: 외부망 작업이라 무영향. 빌드 실패 시 `docker rmi ttc-allinone:wsl2-dev` (또는 mac-dev).
 
 ---
 
 ### Phase 1 — 폐쇄망 반입 + 단일 컨테이너 기동 [0.5일]
 
 > tar 1 개 + ollama-models 디렉터리만 가져가서 기동. 신규 컨테이너 추가 0.
+> **양 머신 동일 시퀀스** — arch 라벨과 스크립트 이름만 다름 (1차 = WSL2, 2차 = M4 Pro).
 
-**P1.1 사내 반입 + 적용**
+**P1.1 사내 반입 + 적용 (1차 검증 머신 = WSL2 기준)**
 
 ```bash
 cd code-AI-quality-allinone/
 
-# (1) 이미지 로드 (기존 절차)
-bash scripts/offline-load.sh --arch amd64
+# (1) 이미지 로드 (양 머신 동일 스크립트, --arch 만 다름)
+bash scripts/offline-load.sh --arch amd64       # 1차 (WSL2). 2차는 --arch arm64.
 
-# (2) Ollama 모델 (host 측)
+# (2) Ollama host 설치 (한 번)
+# 1차 (WSL2):  curl -fsSL https://ollama.com/install.sh | sh
+# 2차 (M4 Pro): brew install ollama
+
+# (3) Ollama 모델 적용 (host 측, 양 머신 동일)
 mkdir -p ~/.ollama
 cp -r offline-assets/ollama-models/* ~/.ollama/models/
-ollama list   # gemma4:e4b-it-q4_K_M, qwen3-embedding:0.6b 확인
+ollama list   # gemma4:e4b, qwen3-embedding:0.6b 확인
 
-# (3) Ollama 환경변수 — 머신별 차이 1 줄
-export OLLAMA_MAX_LOADED_MODELS=1
-# M4 Pro :  export OLLAMA_NUM_PARALLEL=3
-# RTX    :  export OLLAMA_NUM_PARALLEL=1
+# (4) Ollama 환경변수 (공통 1 + 차이 1)
+export OLLAMA_MAX_LOADED_MODELS=1               # 양 머신 공통
+# 1차 (RTX 4070):  export OLLAMA_NUM_PARALLEL=1
+# 2차 (M4 Pro):    export OLLAMA_NUM_PARALLEL=3
 
-# (4) 단일 컨테이너 기동 (기존 절차)
-bash scripts/run-mac.sh         # 또는 run-wsl2.sh
+# (5) 단일 컨테이너 기동 (양 머신 동일 흐름, 스크립트 이름만 다름)
+bash scripts/run-wsl2.sh        # 1차. 2차: bash scripts/run-mac.sh
 ```
 
 **P1.2 컨테이너 내부 헬스체크**
@@ -1413,7 +1521,7 @@ docker exec ttc-allinone supervisorctl status
 docker exec ttc-allinone curl -s http://127.0.0.1:7700/health         # Meilisearch
 docker exec ttc-allinone redis-cli -p 6380 ping                        # FalkorDB
 docker exec ttc-allinone supervisorctl status retrieve-svc             # rerank 내장 RUNNING
-docker exec ttc-allinone curl -s http://127.0.0.1:9000/health          # retrieve-svc
+docker exec ttc-allinone curl -s http://127.0.0.1:9100/health          # retrieve-svc
 docker exec ttc-allinone curl -s http://host.docker.internal:11434/api/tags   # Ollama (host)
 ```
 
@@ -1536,13 +1644,13 @@ pytest tests/ -v
 
 ```bash
 # Dockerfile 의 COPY retrieve-svc /opt/retrieve-svc 가 반영된 이미지 빌드
-bash scripts/build-mac.sh        # 또는 build-wsl2.sh
+bash scripts/build-wsl2.sh       # 1차 검증. 2차는 build-mac.sh.
 
 # 외부망 1 회 기동 + 컨테이너 안 헬스체크
-bash scripts/run-mac.sh
+bash scripts/run-wsl2.sh         # 1차. 2차는 run-mac.sh.
 docker exec ttc-allinone supervisorctl status retrieve-svc   # RUNNING
 
-docker exec ttc-allinone curl -X POST http://127.0.0.1:9000/retrieval \
+docker exec ttc-allinone curl -X POST http://127.0.0.1:9100/retrieval \
   -H "Content-Type: application/json" \
   -d '{"knowledge_id":"code-kb-test","query":"login","retrieval_setting":{"top_k":3}}'
 ```
@@ -1680,7 +1788,7 @@ docker exec ttc-allinone redis-cli -p 6380 \
 **P4.1 Dify Studio 등록**
 
 1. Dify Studio → Knowledge → External Knowledge API → "Add API"
-2. URL: `http://127.0.0.1:9000/retrieval` (Dify 와 retrieve-svc 모두 같은 컨테이너 내부)
+2. URL: `http://127.0.0.1:9100/retrieval` (Dify 와 retrieve-svc 모두 같은 컨테이너 내부)
 3. API Key: 임시 토큰
 4. External Knowledge Base 1개 생성, knowledge_id (예: `code-kb-realworld`) 부여.
 
@@ -1860,13 +1968,9 @@ def judge_implementation(req, candidates, llm):
 L4 (Implementation Rate) 는 PRD 라는 *정답지* 가 있어 이중 Judge 가 의미 있음 — L3 와 다름.
 
 ```python
-# 양 머신에서 동일하게 e4b 두 번 (다른 prompt) 호출 — 기본
+# 양 머신 동일 — e4b 두 번 (다른 prompt) 호출
 verdict_a = judge_implementation(req, candidates, llm="gemma4:e4b", prompt=prompt_a)
 verdict_b = judge_implementation(req, candidates, llm="gemma4:e4b", prompt=prompt_b)
-
-# (옵션) M4 Pro 야간 batch 에 한해 26b 한 번 + e4b 한 번 — 정확도 ↑
-# verdict_a = judge_implementation(req, candidates, llm="gemma4:26b", prompt=prompt_a)
-# verdict_b = judge_implementation(req, candidates, llm="gemma4:e4b", prompt=prompt_b)
 
 if verdict_a.verdict == verdict_b.verdict and verdict_a.confidence >= 0.75:
     final = verdict_a
@@ -1874,18 +1978,20 @@ else:
     final = {"verdict": "needs-review", "needs_human": True}
 ```
 
-#### P7.4.옵션 — M4 Pro 의 26b 활용 가능 여부
+#### P7.4.정확도 부족 시 — 자체 sampling 으로 우회 (양 머신 동일 원칙 보존)
 
-> **대원칙**: 인터랙티브 04 분석은 양 머신 동일 (e4b). Phase 7 의 야간 batch 만 *옵션* 으로 차등.
+> **대원칙 (2026-04-26 강화)**: 인터랙티브 04 와 Phase 7 batch 모두 양 머신 *동일* `gemma4:e4b`.
+> 큰 모델 옵션 (26b 등) 은 *영구 비채택*. 정확도 부족이 측정되면 **모델 변경 대신 self-consistency
+> 다수결** 으로 풀어낸다.
 
-| 케이스 | LLM 구성 | 정확도 | 시간 (100 reqs) |
+| 케이스 | LLM 구성 | 정확도 | 시간 (100 reqs) — RTX 기준 |
 |---|---|---|---|
-| **기본** (양쪽 동일 e4b ×2) | e4b prompt_a + e4b prompt_b | baseline | M4 ~15분 / RTX ~50분 |
-| **M4 Pro 야간 옵션** (26b + e4b) | 26b prompt_a + e4b prompt_b | +5~10pp 추정 | M4 ~50분 (RTX 사용 불가) |
-| **양쪽 동일 + 더 많은 sampling** | e4b ×3 self-consistency 다수결 | +2~5pp 추정 | M4 ~22분 / RTX ~75분 |
+| **기본** (양쪽 동일 e4b ×2) | e4b prompt_a + e4b prompt_b | baseline | RTX ~50분 / M4 Pro ~15분 |
+| **e4b ×3 self-consistency 다수결** | e4b 다른 prompt × 3 회 sampling | +2~5pp 추정 | RTX ~75분 / M4 Pro ~22분 |
+| ~~큰 모델 (26b) 활용~~ | ~~26b prompt_a + e4b prompt_b~~ | ~~+5~10pp~~ | **❌ 양 머신 동일 원칙 위배 — 영구 비채택** |
 
-**추천 진행**: 기본(e4b ×2) 으로 ground truth 정확도 측정 → 70% 미달 시 (a) 26b 옵션 또는 (b)
-self-consistency 시도. 처음부터 26b 로 가지 않음 (운영 일관성 우선).
+**추천 진행**: 기본(e4b ×2) 으로 ground truth 정확도 측정 → 70% 미달 시 *e4b ×3 self-consistency*
+시도. 양 머신 동일 원칙은 깨지 않는다.
 
 **P7.5 Implementation Rate 리포트**
 
@@ -1918,6 +2024,167 @@ Category 분포
 
 ---
 
+### Phase 8 — Joern CPG 정식 도입 [3~4 주]
+
+> **결정 (2026-04-26)** — tree-sitter 기반 호출그래프 (Phase 0~5 채택) 는 *AST 만* 정규화하므로
+> *"이 SQL injection 후보가 진짜 사용자 입력 도달 경로인가"* 같은 **taint·reaching-def·data flow
+> 질의** 가 불가능. Joern 의 Code Property Graph (CPG = AST + CFG + DDG + PDG + Call Graph 통합)
+> 를 정식 도입해 L1·graph 의 표현력을 확장한다. *야간 batch + 02 와 시간 격리* 로 리소스 부담 우회.
+>
+> **선결 조건**: Phase 5 (측정·튜닝) 정착 후. Phase 6/7 과 병렬 진행 가능 (코드베이스 독립).
+
+#### P8.1 외부망 — Joern binary 사전 다운로드
+
+```bash
+# Joern 공식 release (https://github.com/joernio/joern/releases)
+# JVM 기반 Scala 애플리케이션. native installer 또는 standalone zip.
+mkdir -p offline-assets/joern
+curl -fL -o offline-assets/joern/joern-cli.zip \
+  https://github.com/joernio/joern/releases/latest/download/joern-cli.zip
+unzip -t offline-assets/joern/joern-cli.zip   # 무결성 확인
+```
+
+> **JVM 의존성**: Joern 은 JDK 21 필요. ttc-allinone 이미지에 *이미 Jenkins 용 JDK 21 포함*
+> ([build-wsl2.sh:28](../scripts/build-wsl2.sh#L28) `jenkins/jenkins:2.555.1-lts-jdk21` base image
+> stage 에서 차용 또는 supervisor program 의 환경변수 `JAVA_HOME` 공유).
+
+#### P8.2 Dockerfile + supervisord 보강
+
+기존 단일 이미지에 추가:
+
+```dockerfile
+# Joern CPG 빌더 — 야간 batch 전용
+COPY offline-assets/joern/joern-cli.zip /tmp/
+RUN mkdir -p /opt/joern && \
+    unzip /tmp/joern-cli.zip -d /opt/joern && \
+    rm /tmp/joern-cli.zip && \
+    ln -s /opt/joern/joern-cli/joern /usr/local/bin/joern && \
+    /usr/local/bin/joern --version
+```
+
+supervisord.conf 에는 *별도 program 없음* — Joern 은 *Jenkins Job 시점 batch 실행* 이지
+long-running daemon 이 아님. Jenkins 컨테이너 안에서 직접 호출.
+
+#### P8.3 신규 Jenkins Job — `02b 코드 CPG batch` (야간 cron)
+
+```text
+jenkinsfiles/
+└── 02b 코드 CPG batch.jenkinsPipeline   ← 신규
+```
+
+핵심 구조:
+
+```groovy
+pipeline {
+    agent any
+    options {
+        disableConcurrentBuilds()
+        // 02·04·06 와 동일 lock 으로 시간 격리 (LLM bus 와 별개로 CPU·디스크 경합 방지).
+        // CPG 빌드 자체는 LLM 미사용이지만, 02 와 동시 실행 시 디스크 I/O / RAM 경합.
+        lock(resource: 'ttc-llm-bus')
+    }
+    triggers {
+        // 매일 02:30 야간 (02 코드 사전학습 후, 04 분석 전).
+        cron('30 2 * * *')
+    }
+    parameters {
+        string(name: 'REPO_URL', defaultValue: 'http://gitlab:80/root/realworld.git', ...)
+        string(name: 'COMMIT_SHA', defaultValue: '', ...)   // 02 의 kb_manifest.commit_sha 와 일치
+    }
+    stages {
+        stage('1. Joern CPG 생성') {
+            steps {
+                sh '''
+                joern-parse /var/knowledges/codes/${REPO_NAME} \
+                  --output /data/cpg/${REPO_NAME}.bin
+                '''
+            }
+        }
+        stage('2. CPG → FalkorDB 정규화') {
+            steps {
+                sh '''
+                python3 ${SCRIPTS_DIR}/cpg_to_falkor.py \
+                  --cpg /data/cpg/${REPO_NAME}.bin \
+                  --falkor redis://127.0.0.1:6380 \
+                  --graph-name code-kb-${REPO_NAME}-cpg
+                '''
+            }
+        }
+    }
+}
+```
+
+#### P8.4 FalkorDB 그래프 스키마 확장
+
+기존 (Phase 3) 노드/엣지 + 추가:
+
+| 노드 | 의미 |
+|---|---|
+| `Variable(name, scope)` | 변수 인스턴스 |
+| `Literal(value, type)` | 리터럴 (소스/싱크 식별용) |
+| `Block(start_line, end_line)` | basic block (CFG) |
+
+| 엣지 | 의미 |
+|---|---|
+| `(:Block)-[:CFG]->(:Block)` | Control Flow — *if/while 분기* |
+| `(:Variable)-[:DDG]->(:Variable)` | Data Dependence — *값 흐름* |
+| `(:Function)-[:REACHING_DEF]->(:Variable)` | Reaching Definition |
+| `(:Source)-[:TAINTS]->(:Sink)` | Taint propagation (security analysis) |
+
+#### P8.5 retrieve-svc 의 Cypher 질의 확장
+
+**새 질의 예시** (04 의 SQL injection 후보 이슈 분석 시):
+
+```cypher
+// "이 함수의 인자가 사용자 입력 출처에서 도달하는가?"
+MATCH (sink:Function {symbol: $issue_symbol, path: $issue_path})
+MATCH (source:Source)-[:TAINTS*1..5]->(sink)
+WHERE source.kind IN ['http_request', 'cli_arg', 'env_var']
+RETURN source, sink
+```
+
+retrieve-svc 의 graph backend 가 이 질의를 받아 `source_layer = "graph_taint"` 로 표시 → 04 의
+LLM 판정 시 *"사용자 입력 도달 증거"* 로 인용.
+
+#### P8.6 02 ↔ 02b 시간 분리
+
+| 시각 | Job | 자원 |
+|---|---|---|
+| 빌드 트리거 (오전) | `02 코드 사전학습` | tree-sitter + Dify upload + Meili/Falkor sink 2 개 (호출그래프만) |
+| 02:30 야간 cron | `02b 코드 CPG batch` | Joern CPG 생성 (~수십 분, RAM 6~12GB) → FalkorDB 추가 적재 |
+| 빌드 트리거 (오전 다음 날) | `04 코드 정적분석` | retrieve-svc 가 호출그래프 + CPG 두 sink 모두 활용 |
+
+→ **02·02b·04 모두 같은 lock (`ttc-llm-bus`)** — 어떤 두 Job 도 시간 겹치지 않음. cron 은 Jenkins
+queue 에 들어가 lock 해제 대기.
+
+#### P8.7 측정 KPI (Phase 8 진입 시)
+
+| KPI | 정의 | 목표 |
+|---|---|---|
+| `source_layer = "graph_taint"` 인용률 | 04 응답 중 taint 경로 인용 비율 | 0% → 보안 룰 (CWE-89 / 79 / 78 등) 이슈에서 30%+ |
+| 보안 룰 false-positive 강등률 | LLM 이 "사용자 입력 미도달" 로 강등 | 기존 baseline 대비 +10pp |
+| CPG 빌드 시간 | 100k LOC repo 기준 | < 30 분 |
+| FalkorDB 디스크 증분 | 100k LOC repo 기준 | < 2 GB |
+
+#### P8.8 산출물 + 검증 + 롤백
+
+- **산출물**: `offline-assets/joern/joern-cli.zip` + Dockerfile/이미지 갱신 + `02b` jenkinsfile +
+  `cpg_to_falkor.py` + retrieve-svc 의 taint 질의 backend.
+- **검증**: 02b 야간 1 회 실행 후 `redis-cli -p 6380 GRAPH.QUERY code-kb-${REPO}-cpg "MATCH (s:Source)-[:TAINTS*1..3]->(:Function) RETURN count(*)"` 응답 > 0.
+- **롤백**: `02b` Job disable + retrieve-svc 의 `DISABLE_TAINT=1` env → graph backend 가 taint
+  질의 skip, 기존 호출그래프만 사용. **02·04 영향 0** (별도 Job + 별도 인덱스).
+
+#### P8.9 정직한 한계
+
+- **JVM RAM 6~12 GB** — 02b 진행 중에는 다른 LLM Job 절대 금지 (lock 으로 강제).
+- **CPG 정확도 한계** — Joern 의 Java/JS 파서는 100k LOC 까지 안정, 그 이상은 OOM 위험.
+- **Cypher subset 제약** — FalkorDB 가 Joern 의 native CPG 질의 (`Steps` API) 를 직접 지원 안 함
+  → Cypher 로 *변환* 필요. cpg_to_falkor.py 가 이 변환 담당. 일부 고급 질의 (`reachableBy` 등) 는
+  자체 traversal 로 재구현.
+- **다언어 지원 격차** — Joern 은 Java/Python/JS/C/C++/Go 안정. Kotlin/Rust/Swift 는 제한적.
+
+---
+
 ### Phase 별 의존성 / 병렬화
 
 ```text
@@ -1926,27 +2193,32 @@ Phase 0  ──┐
 Phase 1  ──▶ Phase 2  ──┐
                         ▼
 Phase 3 ────────────▶ Phase 4 ──▶ Phase 5 ──┐
-                                             ▼
-                                        Phase 6 (선택)
+                                             ├──▶ Phase 6 (선택)
                                              │
-                                             ▼
-                                        Phase 7 (최종 목표)
+                                             ├──▶ Phase 7 (최종 목표)
+                                             │
+                                             └──▶ Phase 8 (Joern CPG, 야간 batch)
 ```
 
 - Phase 2 (retrieve-svc) 와 Phase 3 (sink 추가) 는 **병렬 진행 가능** (독립 코드베이스).
-- Phase 6 은 Phase 5 의 측정 안정 후 진입.
-- Phase 7 은 Phase 5 까지 인프라 위에서 별도 Job 으로 분리 진행.
+- Phase 6 / 7 / 8 은 모두 Phase 5 위에서 *상호 독립* — 병렬 가능. 다만 단일 머신 자원 한계상 보통
+  Phase 7 까지 진행한 뒤 Phase 8 시작.
+- Phase 8 은 **Phase 7 (최종 목표) 진입 전후 병렬 가능** — 02b 가 야간 batch 라 인터랙티브
+  04 / Phase 7 batch 와 시간 분리됨.
 
 ### 단일 머신 자원 점유 시나리오
 
 | 시점 | 사용 자원 | 가능한 작업 |
 |---|---|---|
 | 평상시 | 컨테이너 11GB + Ollama idle 1GB = 12GB | 개발·문서 작업 |
-| 02 빌드 중 | + 청킹 4GB + Embed 일시 3GB = 19GB | 다른 빌드 무리 |
-| 04 빌드 중 | + LLM 16GB (M4) / 5GB (RTX) = 28GB / 17GB | 02 와 병렬 불가 (Jenkins queue 직렬화) |
-| Phase 7 batch 중 | + LLM judge 반복 = 28GB / 17GB 지속 | 다른 Job 미실행 권장 |
+| 02 빌드 중 | + 청킹 4GB + Embed 일시 3GB = 19GB | 다른 빌드 무리 (lock 으로 차단됨) |
+| 04 빌드 중 | + LLM ~5GB (RTX) / ~6.5GB (M4) = 17~18 GB | 02·02b·06 와 시간 겹치지 않음 (lock) |
+| Phase 7 batch (06) 중 | + LLM judge 반복 = 17~18 GB 지속 | 02·04·02b 와 lock 으로 차단 |
+| Phase 8 (02b) 야간 batch | + Joern JVM 6~12GB = 18~24GB | 02·04·06 와 lock 으로 차단 |
 
-→ **권장**: 운영 정착 후 Phase 7 의 배치 작업은 야간 cron 으로 분리.
+→ **권장**: 운영 정착 후 Phase 7 batch (06) 와 Phase 8 (02b) 모두 야간 cron 으로 분리, 시간대도
+서로 어긋나게 (예: 02b @ 02:30, 06 @ 04:00 — Joern 끝나고 LLM 시작). lock 이 자동 직렬화하므로
+*시간대 충돌 시* 자동 대기.
 
 ### Phase 별 예상 일정 합산
 
@@ -1960,13 +2232,179 @@ Phase 3 ────────────▶ Phase 4 ──▶ Phase 5 ──
 | 5. 측정·튜닝 | 1~2 주 | ~3.5 주 |
 | 6. Cross-project | 1~2 주 (선택) | ~5.5 주 |
 | 7. Spec 추적성 | 4~6 주 | ~11.5 주 |
+| 8. Joern CPG 정식 도입 | 3~4 주 (병렬 가능) | ~14 주 (Phase 7 과 병렬 시 ~12 주) |
 
 **1차 목표 완료 (Phase 5 끝)**: 약 **3~4 주**.
 **최종 목표 완료 (Phase 7 끝)**: 약 **3 개월**.
+**Joern 정식 도입 완료 (Phase 8 끝)**: 약 **3~3.5 개월** (Phase 7 과 병렬 진행 시).
 
 ---
 
 ## 11. 변경 이력
+
+### 2026-04-26 (밤, 4차) — 02 ↔ 04 동시 구동 영구 차단 + Joern CPG 정식 채택 (Phase 8)
+
+**컨텍스트** — 사용자 지시 두 가지 (Joern 채택 논의에서 이어짐):
+> "04, 02 파이프라인은 절대 겹치게 구동되어선 안된다. 차제에 막아야한다."
+> "joern 은 실제로 현재 프로젝트에 필요한 도구라 생각된다."
+
+#### 결정 1 — 02 ↔ 04 (+ 향후 06) 동시 구동 영구 차단
+
+**배경** — host Ollama 는 *단일 LLM bus* (`OLLAMA_MAX_LOADED_MODELS=1`). 02 의 enricher LLM 호출과
+04 의 분석 LLM 호출이 시간 겹치면 모델 swap / KV cache 경합 / OOM 위험. Jenkins build queue 의
+"자연 직렬화" 만으로는 manual trigger / cron 충돌을 막을 수 없음.
+
+**조치**:
+
+1. **`lockable-resources:latest` 플러그인 추가** (`.plugins.txt`).
+2. **02 / 04 jenkinsfile 의 `options` 블록**:
+   ```groovy
+   options {
+       disableConcurrentBuilds()
+       lock(resource: 'ttc-llm-bus')
+   }
+   ```
+3. **lock 적용 범위**:
+   - ✅ 02 (사전학습 — enricher LLM)
+   - ✅ 04 (정적분석 — 분석 LLM)
+   - ✅ *향후* 06 (Phase 7 구현률 측정 — Judge LLM ×2)
+   - ✅ *향후* 02b (Phase 8 Joern CPG batch — 디스크/RAM 경합 방지 위해)
+   - ❌ 03 (Sonar 정적분석 — LLM 미호출)
+   - ❌ 01 (chain Job — 02→03→04 순차 호출만, 각 child 가 자체 lock)
+
+**문서 갱신**:
+- PLAN §6.11 운영 한계: 차단 메커니즘·범위·미점유 케이스 명시.
+- EXECUTION §8.1 리스크 레지스터: T0 (최우선) 신규 항목 추가.
+
+#### 결정 2 — Joern CPG 정식 채택 (Phase 8 신설)
+
+**배경** — tree-sitter 기반 호출그래프 (Phase 0~5 채택) 는 *AST 만* 정규화. *taint·reaching-def·
+data flow* 질의 불가 → 보안 분석 (SQL injection / XSS / command injection 등) 이슈에서 *"사용자
+입력 도달 여부"* 를 정적으로 검증하지 못함. **Joern CPG (AST + CFG + DDG + PDG + Call Graph 통합)**
+가 필요하다고 사용자 판단.
+
+**채택 변화**:
+
+| 이전 (PLAN §4 매트릭스) | 이후 |
+|---|---|
+| "tree-sitter (현행) → graph 정규화" 1순위 / "Joern (formal CPG)" 대안 / "점진 도입" 비고 | **"tree-sitter (Phase 0~5 한정) + Joern (Phase 8 정식 채택)"** 단일 트랙 |
+
+**Phase 8 신설 요지**:
+
+| 항목 | 내용 |
+|---|---|
+| 기간 | 3~4 주 (Phase 7 과 병렬 가능 시 동일 ~15 주 시점) |
+| 신규 산출물 | `offline-assets/joern/joern-cli.zip` / `02b 코드 CPG batch.jenkinsPipeline` (야간 02:30 cron) / `cpg_to_falkor.py` / retrieve-svc 의 taint Cypher backend |
+| Dockerfile 추가 | Joern CLI 압축 해제 + `/usr/local/bin/joern` 심볼릭 링크. JDK 21 은 Jenkins base image 에 이미 포함 (재사용) |
+| FalkorDB 스키마 확장 | `Variable` / `Literal` / `Block` 노드 + `CFG` / `DDG` / `REACHING_DEF` / `TAINTS` 엣지 |
+| retrieve-svc 확장 | `source_layer = "graph_taint"` 라벨로 04 의 보안 룰 분석에 인용 |
+| 시간 격리 | 02b 도 동일 lock (`ttc-llm-bus`) — 02·04·06 와 cross-pipeline 직렬화 |
+| 측정 KPI | `graph_taint` 인용률 0% → 30%+ (보안 룰 한정), 보안 false-positive 강등률 +10pp |
+| 자원 부담 | JVM RAM 6~12 GB · 100k LOC 기준 CPG 빌드 ~30 분 · FalkorDB 디스크 증분 ~2 GB → **lock 으로 02·04 와 시간 격리** |
+
+**왜 점진 도입이 아니라 Phase 8 신설인가** — Phase 0~5 (1차 목표) 의 tree-sitter 만으로도 *호출자/
+구현체/엔드포인트 핸들러* 인용은 가능. Joern 의 *taint/reaching-def* 가 진짜 가치 발휘하는 시점은
+보안 룰 (Sonar BLOCKER/CRITICAL 의 SQL injection / XSS) 이슈에서 04 의 false-positive 강등 정확도가
+정체될 때. 이건 Phase 5 측정·튜닝 후에 명확히 보임 → Phase 7 (Spec 추적성) 과 병렬로 신설.
+
+**갱신 위치**: §4 매트릭스 (CPG 행) / §10 Phase 별 한눈에 + Phase 8 본문 / §10 Phase 의존성 다이어그램 +
+일정 합산 / §10 단일 머신 자원 점유 시나리오 / EXECUTION §5.2 일정 + §7.8 신규 게이트.
+
+---
+
+### 2026-04-26 (밤, 2차) — 도구 매트릭스 airgap 전수 점검 · API 의존 후보 1순위/대안에서 영구 제거
+
+**컨텍스트** — 사용자 지적: *"도구 매트릭스 확인하다 문제를 발견했다. 모든 소프트웨어는 폐쇄망
+기준으로 구동되어야 한다. 현재 구현중인 프레임워크 기본 전제가 폐쇄망 기반 SI 환경에서의
+테스트자동화 및 코드기반 측정 솔루션 구개발이다. 이걸 절대 간과해선 안된다."*
+
+**문제 진단** — §4 도구 매트릭스에 다음 API 의존 후보가 1순위/대안 컬럼에 그대로 남아 있었음:
+
+| 항목 | 이전 위치 | 문제 |
+|---|---|---|
+| Codestral Embed (32K) | **1순위** | Mistral API 전용 → 폐쇄망 호출 0 위배 |
+| Jina Reranker v2 | 대안 | API 모드 시 외부 호출. 오픈 weight 사용해도 *기본 후보 표현이 모호* |
+| LangExtract / unstructured.io | 대안 (Spec ingestion) | SaaS API 의존 (unstructured 는 오픈 lib 도 있으나 cloud 모드 default) |
+| Claude / Gemini self-verification | 대안 (Trace LLM) | Anthropic / Google API → 폐쇄망 절대 불가 |
+| DeepEval | 대안 (측정) | cloud LLM 백엔드 default — Ollama 백엔드 명시 없으면 외부 호출 |
+| §2.2 SOTA 표 "Codestral Embed" 언급 | 격차 비교 | airgap 호환 여부 미표기 |
+| §5 P1.6 "Codestral 또는 Qodo 교체" | 로드맵 | Codestral 자체가 부적격 |
+
+**조치** — TL;DR 직후 **"⚠️ 절대 전제 — 폐쇄망 (airgap) SI 환경"** 박스 신설 + §4 매트릭스 전면
+재작성:
+
+1. **"❌ 사용 불가 (airgap)"** 컬럼 신설. API 의존 도구 (Codestral / Voyage / Gemini Embedding /
+   OpenAI / Claude / Cohere Rerank / Jina API / Pinecone / Weaviate Cloud / Vertex / Aura /
+   Memgraph Cloud / Neptune / Algolia / ElasticCloud / Pinecone Sparse / LangExtract API /
+   unstructured.io SaaS / LlamaParse / DeepEval cloud / OpenAI Evals / Promptfoo cloud) 일괄
+   격리.
+2. **1순위 = 폐쇄망 채택** 으로 명명 정정. `qwen3-embedding:0.6b` (Ollama 정식) 가 임베딩 1순위
+   확정 (이전 §6.4 결정 + §1249 "임베딩 모델 라이선스·airgap 호환" 결정과 동기).
+3. **§4 말미에 검증 절차 4 항목** 추가 — 신규 도구 도입 시 *외부망 1 회 다운로드 자급 / 런타임
+   인터넷 endpoint 0 / 상용 SI 라이선스 / 사전 배치 가능* 모두 ✅ 이어야 채택.
+4. §2.2 SOTA 표의 "Codestral Embed" 언급에 *"Codestral / Voyage / Gemini Embedding 은 API 의존
+   → 본 시스템에서 사용 불가"* 명시.
+5. §5 P1.6 로드맵: "Codestral 또는 Qodo 교체" → *"qwen3-embedding:0.6b 교체"* 로 정정 + Codestral
+   영구 제외 명시.
+
+**불변 사항 (이미 airgap 호환이라 변경 0)**: §6.4 4.1 통합 모델 라인업 (gemma4:e4b /
+qwen3-embedding:0.6b / bge-reranker-v2-m3 모두 오픈 weight 폐쇄망 호환) / §6.8 단일 이미지 통합 /
+§6.9 외부망 빌드 → 폐쇄망 반입 절차 / supervisord.conf 의 `HF_HUB_OFFLINE=1` /
+`TRANSFORMERS_OFFLINE=1` 환경변수.
+
+**점검 결과** — `Codestral|Claude|Gemini|OpenAI|GPT-|Voyage|DeepEval|LangExtract|unstructured\.io|
+Jina|cloud` grep 으로 전수 조회. PLAN_CODE_RAG 활성 섹션 잔류 0. 잔여 언급은 모두 (a) §11 변경이력
+의 *"제외 결정"* 기록 / (b) §8 참고 문헌 / (c) 협업 세션 credit / (d) 다른 시스템 (PLAN_AI_EVAL_PIPELINE)
+이므로 본 시스템 운영에 무영향.
+
+---
+
+### 2026-04-26 (밤) — WSL2 우선 구현 + "양 머신 동일 설치방법" 강화 + 모델 태그 정정
+
+**컨텍스트** — 사용자 지시 두 가지: (1) *"wsl에서 해당 사항 먼저 구현하기로 한다"* — 1차 검증 머신을
+RTX 4070 / WSL2 로 전환. (2) *"양 머신 동일구성 및 동일 설치방법이 유지되어야 한다"* — 이전 문서가
+부분적으로 허용했던 분기 (M4 Pro 야간 batch 만 26b 옵션) 를 제거.
+
+**머신 우선순위 반전**:
+
+- **이전**: M4 Pro 1차 검증 → RTX 4070 이식 (EXECUTION 2026-04-26 결정).
+- **이후**: **RTX 4070 / WSL2 1차 검증** → M4 Pro 이식. 모든 GO/NO-GO 게이트는 1차 머신 기준.
+
+**양 머신 동일 원칙 강화**:
+
+| 항목 | 이전 | 이후 |
+|---|---|---|
+| 모델 (LLM·임베딩·리랭커) | 동일 | 동일 (불변) |
+| 컨테이너·이미지·포트·볼륨 | 동일 | 동일 (불변) |
+| 설치 스크립트 | `build-{mac,wsl2}.sh` 가 거의 동일 | 동일 흐름 명시 + 차이는 arch tag 1 라인 |
+| Ollama 설치 | mac=brew / RTX=container or native (혼재) | **양쪽 host native** — 공식 가이드 (Linux installer / brew) |
+| `OLLAMA_NUM_PARALLEL` | RTX=1 / M4 Pro=3 | 동일 (throughput 만 차이, 결과는 같음) |
+| `num_ctx` (KV cache) | M4=8192 / RTX=8192 | **양쪽 4096 통일** (8GB VRAM 안전 마진 + 결과 일관성) |
+| 큰 모델 (`gemma4:26b` 등) | M4 Pro 야간 batch 옵션 허용 | **영구 비채택** — 양 머신 동일 원칙 보존 |
+| Phase 7 정확도 부족 시 | 26b 옵션 활성화 | e4b ×3 self-consistency 다수결 (양쪽 동일) |
+
+**모델 태그 정정 (2026-04-26 검증)**:
+
+- 본 문서가 사용했던 `gemma4:e4b-it-q4_K_M` 표기는 **Ollama 라이브러리 공식 태그가 아님**. 실제
+  공식 태그는 plain `gemma4:e4b` (Ollama 의 기본 quantization 자동 적용). 모든 명령·체크리스트에서
+  치환 완료.
+- `gemma4:e4b` on-disk 9.6 GB (멀티모달 manifest 합 — vision + audio 인코더 포함). **VRAM 실사용은
+  ~3~5 GB** (text decoder Q4 + KV cache @ `num_ctx=4096`) — RTX 4070 8GB 에 여유 fit. on-disk 와
+  VRAM 의 차이 (멀티모달 컴포넌트는 텍스트 추론 시 VRAM 비적재) 를 명시 정정.
+
+**버전 재검증**:
+
+- **Meilisearch v1.42** (2026-04-14 release) — `linux-amd64` / `linux-aarch64` binary 제공. ✅
+- **FalkorDB** — 공식 Docker 이미지 (Redis 7.4 기반). multi-stage 로 `.so` 추출 패턴 유지. ✅
+- **`qwen3-embedding:0.6b`** — Ollama 라이브러리 정식 (`ollama.com/library/qwen3-embedding:0.6b`). ✅
+- **`bge-reranker-v2-m3`** (BAAI, Apache 2.0) — HuggingFace 정식. sentence-transformers `CrossEncoder`
+  로 in-process. ✅
+- **Dify 1.13.3** — External Knowledge API (`POST /retrieval`, metadata=`{}` 필수) 스펙 변동 없음. ✅
+
+**갱신 위치**: §1 TL;DR / §3.5.3 물리 배치 (RTX 1순위, M4 Pro 2순위) / §6.4 모델 선정 / §6.5 메모리
+배분 / §6.9 외부망 빌드·반입 / §6.12 체크리스트 / §10 Phase 0/1/2/7 / EXECUTION_PLAN 동시 갱신.
+
+---
 
 ### 2026-04-29 — 운영 레벨 런북 분리 ([EXECUTION_PLAN.md](EXECUTION_PLAN.md))
 
@@ -2178,7 +2616,7 @@ class Record(BaseModel):
 
 **포트 정책**:
 
-- 신규 7700 / 6380 / 8081 / 9000 / 9001 모두 **컨테이너 내부 전용** (`127.0.0.1`).
+- 신규 7700 / 6380 / 9100 / 9101 모두 **컨테이너 내부 전용** (`127.0.0.1`).
 - 호스트 노출은 기존 28080 / 28081 / 29000 만.
 - 컨테이너 내부 호출은 `127.0.0.1`, 호스트 호출은 `host.docker.internal:11434` (Ollama 만).
 

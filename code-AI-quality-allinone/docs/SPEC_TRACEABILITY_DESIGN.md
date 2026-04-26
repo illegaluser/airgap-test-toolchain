@@ -397,7 +397,7 @@ Implementation Rate Report — PRD-v2.3 vs main@a1b2c3
 | 통합 방식 | 적용 대상 |
 |---|---|
 | Dockerfile 의 `COPY spec-svc /opt/spec-svc` + `pip install -r requirements.txt` | spec-svc 코드 |
-| supervisord.conf 의 `[program:spec-svc]` (priority 500, port 9001 컨테이너 내부 전용) | spec-svc 기동 |
+| supervisord.conf 의 `[program:spec-svc]` (priority 500, port 9101 컨테이너 내부 전용) | spec-svc 기동 |
 
 ### 3.2 컴포넌트 배치
 
@@ -409,12 +409,12 @@ flowchart TB
             Qdrant[Qdrant]
             Meili[Meilisearch]
             Falkor[FalkorDB]
-            Retrieve["retrieve-svc :9000<br/>(rerank 내장:<br/>sentence-transformers<br/>+ bge-reranker-v2-m3)"]
+            Retrieve["retrieve-svc :9100<br/>(rerank 내장:<br/>sentence-transformers<br/>+ bge-reranker-v2-m3)"]
             Jenkins[Jenkins]
         end
 
         subgraph New["신규 (Phase 7)"]
-            SpecSvc["spec-svc :9001<br/>━━━━━━━━━━━━━━━━<br/>· spec-ingest<br/>· nfr-classifier<br/>· spec-normalizer<br/>· traceability-mapper<br/>· report-builder"]
+            SpecSvc["spec-svc :9101<br/>━━━━━━━━━━━━━━━━<br/>· spec-ingest<br/>· nfr-classifier<br/>· spec-normalizer<br/>· traceability-mapper<br/>· report-builder"]
         end
 
         SpecKB[(spec-kb-&lt;project&gt;<br/>Dify Dataset = Qdrant)]
@@ -576,7 +576,9 @@ flowchart TB
 | 7. Report build | verdicts + reverse-trace | report.html | ~1 분 |
 | **합계** | | | **~60~90 분** |
 
-(M4 Pro 의 26b 옵션 사용 시 5 단계가 ~90~120 분으로 증가)
+(양 머신 동일 모델 `gemma4:e4b`. 정확도 부족 시 *e4b ×3 self-consistency* 다수결로 우회 — 5 단계가
+~90~150 분으로 증가하지만 양 머신 동일 원칙 보존. 26b 등 큰 모델 옵션은 영구 비채택 — PLAN §11
+2026-04-26.)
 
 ---
 
@@ -737,7 +739,7 @@ code-AI-quality-allinone/
 |---|---|---|
 | PRD 포맷 다양성 | 높음 | Sprint 1 에서 4 포맷 모두 검증 |
 | atomic 분해 정확도 부족 | 중간 | INVEST 자체 평가 + 사람 1 차 검수 옵션 |
-| LLM Judge 정확도 부족 (e4b 한계) | 중간 | Ground truth 70% 미달 시 26b 옵션 활성화 (M4 Pro 야간) |
+| LLM Judge 정확도 부족 (e4b 한계) | 중간 | Ground truth 70% 미달 시 *e4b ×3 self-consistency 다수결* — 양 머신 동일 원칙 유지 (PLAN §11 2026-04-26 정정, 26b 활성화는 영구 비채택) |
 | Ground truth 확보 지연 | 높음 | Sprint 6 를 1 주 → 2 주로 여유 |
 | spec-svc 메모리 누수 | 낮음 | FastAPI lifespan + memory profile |
 | 04 인터랙티브와 LLM 충돌 | 중간 | 06 을 cron `0 2 * * *` 야간 분리 |
@@ -748,7 +750,7 @@ code-AI-quality-allinone/
 |---|---|---|
 | 사람 검수 일치율 | < 70% | 임계값 재튜닝 |
 | `n/a` 비율 | > 30% | PRD 작성 가이드 강화 (NFR 명확화) |
-| `needs_review` 비율 | > 25% | LLM 모델 업그레이드 검토 (26b 활성화) |
+| `needs_review` 비율 | > 25% | e4b ×3 self-consistency 활성화 (양 머신 동일 모델 유지 — 26b 등 큰 모델 활용 안 함) |
 | Over-implementation 후보 수 | 증가 추세 | 코드 리뷰 / 정리 작업 트리거 |
 | Drift 빈도 | (정보) | PM 빌드 회의 자료 |
 

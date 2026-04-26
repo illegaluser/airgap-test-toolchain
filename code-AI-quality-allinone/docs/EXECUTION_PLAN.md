@@ -7,15 +7,21 @@
 >
 > **PLAN 과 EXECUTION 의 분리** — PLAN 은 결정 로그 (왜, 무엇), EXECUTION 은 작업 캘린더 (언제, 어떻게).
 > 새로운 기술 결정은 PLAN §11 에, 진행 상황·테스트 결과·블로커는 본 문서 §10 변경 이력에 적는다.
+>
+> **세션 의사결정 통합** — 2026-04-26 세션의 결정·정정·산출물을 한 곳에 정리한 스냅샷:
+> [SESSION_DECISIONS_2026-04-26.md](SESSION_DECISIONS_2026-04-26.md).
 
 ## 한 페이지 요약 (TL;DR)
 
 - **범위** — Phase 0~7 전체 (1차 목표 RAG + 최종 목표 Spec↔Code 추적성).
-- **머신 우선순위** — **M4 Pro 먼저** 검증 끝낸 뒤 RTX 4070 으로 이식.
+- **머신 우선순위 (2026-04-26 정정)** — **WSL2 / Intel 185H + RTX 4070 먼저** 검증 끝낸 뒤 M4 Pro 로
+  이식. 양 머신은 동일 구성 + 동일 설치방법 — 차이는 *arch (amd64/arm64)* 와 *`OLLAMA_NUM_PARALLEL`*
+  환경변수 1 개 뿐 (PLAN §6.4).
 - **테스트 데이터** — `realworld` (baseline / 회귀 비교용) + `spring-petclinic-rest` (sanity / Phase 7
   ground truth 용).
 - **총 일정** — 1차 목표 (Phase 0~5) **3~4 주**, 최종 목표 (Phase 7) **약 3 개월**.
 - **GO/NO-GO 게이트** — 각 Phase 종료 시 정량 기준으로 합/불 판정 — 미달 시 다음 Phase 진입 금지.
+  모든 게이트는 1차 머신 (WSL2/RTX 4070) 기준.
 - **롤백** — 모든 변경은 try/except + 별도 supervisor program → 새 컴포넌트만 stop 하면 기존 흐름 복귀.
 - **다운로드 합계** — Meilisearch + FalkorDB + bge-reranker + Ollama 모델 + Python wheels = **약
   17~18 GB** (외부망에서 사전 다운로드, 폐쇄망 반입 대상). 절차는 §3 참조.
@@ -44,22 +50,25 @@
 | 구분 | 포함 | 제외 |
 |---|---|---|
 | Phase | 0 ~ 7 (전체) | 없음 |
-| 머신 | M4 Pro 48GB (1순위), RTX 4070 8GB (2순위 이식) | 클라우드 |
+| 머신 | **RTX 4070 8GB / WSL2 (1순위, 검증 기준)**, M4 Pro 48GB (2순위 이식) | 클라우드 |
 | 데이터 | realworld + spring-petclinic-rest | 고객사 실데이터 |
-| 모델 | gemma4:e4b, qwen3-embedding:0.6b, bge-reranker-v2-m3 | 외부 API |
+| 모델 | gemma4:e4b, qwen3-embedding:0.6b, bge-reranker-v2-m3 (양 머신 동일) | 외부 API · gemma4:26b 등 큰 모델 |
 | 통합 | ttc-allinone 단일 이미지 + supervisor + tar 배포 | 별도 docker compose 분리 |
 
 ### 1.2 핵심 가정
 
 - **운영 모델 보존** — 폐쇄망 단일 이미지 + tar 배포 패턴은 절대 깨지 않는다 (PLAN §6.8 보강분).
 - **SI NDA** — L2b cross-project KB 영구 제외, L2c 는 고객사-무관 자료만 (PLAN §6.4 / §11 2026-04-27).
-- **양 머신 동일 구성** — LLM·임베더·리랭커 모두 동일, `OLLAMA_NUM_PARALLEL` 만 차등.
+- **양 머신 동일 구성 + 동일 설치방법 (2026-04-26 강화)** — LLM·임베더·리랭커·이미지·supervisord·
+  entrypoint·포트·볼륨·스크립트 흐름 전부 동일. 차이는 *arch (amd64/arm64)* + *`OLLAMA_NUM_PARALLEL`*
+  1 개 뿐. *큰 모델 (26b 등) 분기 없음*.
 - **외부망 빌드 가능** — Day-0 점검에서 도달성 검증 후 외부망에서 단일 이미지 빌드.
 
 ### 1.3 작업 환경
 
 - **외부망 머신** — 빌드 + tar export 전용. 인터넷 도달.
-- **폐쇄망 머신** — tar 반입 → docker load → supervisor 기동. M4 Pro 가 1차 검증 머신.
+- **폐쇄망 머신** — tar 반입 → docker load → supervisor 기동. **WSL2 / RTX 4070 머신이 1차 검증
+  머신**, M4 Pro 는 동일 설치방법으로 이식.
 - **브랜치** — `feat/code-rag-hybrid-retrieve` (현재). Phase 별 PR 분리.
 
 ### 1.4 산출물 분류
@@ -78,52 +87,60 @@
 > **목적** — 본격 구현 시작 전 *환경 자체* 가 OK 임을 못 박는다. 점검 누락 시 Phase 0 중간에서
 > 수일을 잃는 패턴을 방지.
 
-### 2.1 하드웨어·런타임 점검
+### 2.1 하드웨어·런타임 점검 (1차 머신 = WSL2/RTX 4070 기준)
 
-PLAN §6.12 의 즉시 점검 체크리스트를 실행하고, 결과를 표로 기록.
+PLAN §6.12 의 즉시 점검 체크리스트를 실행하고, 결과를 표로 기록. 2차 (M4 Pro) 도 동일 항목·동일
+명령 (위치만 macOS 셸).
 
 ```bash
-# Docker
+# WSL2 셸 안에서 실행
+# .wslconfig (Windows %USERPROFILE%\.wslconfig 에 [wsl2] memory=56GB processors=12 swap=0)
+# 적용 후 wsl --shutdown 으로 재시작했는지 확인
+free -h | grep Mem                       # ≥ 56GB total
+
+# Docker (WSL2 backend)
 docker --version                         # 24.x+
 docker info | grep -i memory             # 메모리 limit
 docker system df                         # 디스크 여유
 
-# Ollama
+# CUDA passthrough (RTX 4070 인식)
+nvidia-smi                               # RTX 4070 / 드라이버 ≥ 535
+
+# Ollama (WSL2 host native — 공식 Linux installer)
 ollama --version                         # 0.4.x+
 ollama list                              # 기존 모델 목록
 
 # 디스크 — 단일 이미지가 ~11GB, ollama-models ~5GB → 최소 30GB 여유
-df -h ~/Developer ~/.ollama
-
-# 메모리 (M4 Pro)
-top -l 1 | head -10                      # 사용 가능 메모리
+df -h ~ ~/.ollama
 ```
 
-**기록 파일**: `measurements/day0-precheck-m4pro.md`
+**기록 파일**: `measurements/day0-precheck-wsl2.md` (1차) · `measurements/day0-precheck-m4pro.md` (2차)
 
-| 항목 | 기준 | 측정값 | 합/불 |
-|---|---|---|---|
-| Docker 메모리 limit | ≥ 32GB | _ | _ |
-| 디스크 여유 (~/Developer) | ≥ 30GB | _ | _ |
-| 디스크 여유 (~/.ollama) | ≥ 10GB | _ | _ |
-| Ollama 동작 | `ollama list` 응답 | _ | _ |
+| 항목 | 기준 | 1차 (WSL2) 측정값 | 2차 (M4 Pro) 측정값 | 합/불 |
+|---|---|---|---|---|
+| WSL2 메모리 한도 | ≥ 56GB (1차만) | _ | n/a | _ |
+| Docker 메모리 limit | ≥ 24GB | _ | _ | _ |
+| 디스크 여유 (HOME) | ≥ 30GB | _ | _ | _ |
+| 디스크 여유 (~/.ollama) | ≥ 10GB | _ | _ | _ |
+| Ollama 동작 | `ollama list` 응답 | _ | _ | _ |
+| GPU/Metal 인식 | 1차: `nvidia-smi` RTX 4070 / 2차: macOS Metal 자동 | _ | _ | _ |
 
 ### 2.2 외부망 도달성 검증
 
 PLAN P0.1 의 도달성 명령 일괄 실행 + 결과 기록.
 
 ```bash
-# Meilisearch v1.42 binary
+# Meilisearch v1.42 binary (1차 = amd64, 2차 = aarch64 — 각자 native 만 받음)
 curl -fIs https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-amd64
 
-# FalkorDB Docker image (multi-stage 차용)
+# FalkorDB Docker image (multi-stage 차용 — Redis 7.4 기반 공식 이미지)
 docker pull falkordb/falkordb:latest
 
 # bge-reranker-v2-m3 weight (~1.1GB)
 huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir /tmp/test-rerank-probe
 
-# Ollama 모델
-ollama pull gemma4:e4b-it-q4_K_M
+# Ollama 모델 (양 머신 동일 — 26b 등 큰 모델은 받지 않음)
+ollama pull gemma4:e4b
 ollama pull qwen3-embedding:0.6b
 ```
 
@@ -132,23 +149,26 @@ ollama pull qwen3-embedding:0.6b
 ### 2.3 작업 디렉터리 정렬
 
 ```bash
-cd /Users/luuuuunatic/Developer/airgap-test-toolchain
+# 1차 (WSL2): WSL2 native FS 안에서 (예: ~/dev/airgap-test-toolchain) — /mnt/c 는 I/O 느림
+# 2차 (M4 Pro): /Users/<user>/Developer/airgap-test-toolchain
+cd ~/dev/airgap-test-toolchain        # 1차 머신 예시
 git fetch origin
 git checkout feat/code-rag-hybrid-retrieve
 git status                               # working tree clean 확인
 
 # 작업용 하위 디렉터리 (이미 일부 존재)
-mkdir -p code-AI-quality-allinone/{retrieve-svc,test-fixtures/sample-repos,
+mkdir -p code-AI-quality-allinone/{retrieve-svc,test-fixtures/sample-repos,\
   test-fixtures/sample-prds,test-fixtures/golden,measurements}
 ```
 
 ### 2.4 Day-0 종료 기준
 
-- §2.1 표 4 항목 모두 합.
+- §2.1 표 항목 모두 합 (1차 머신 기준).
 - §2.2 4 개 도달성 모두 OK.
-- 문서 `measurements/day0-precheck-m4pro.md` 작성·커밋.
-- **NO-GO 시 대응** — Docker 메모리 부족이면 Docker Desktop 설정 → Resources → Memory 32GB+. HF 토큰
-  401 이면 `huggingface-cli login` 후 재시도.
+- 문서 `measurements/day0-precheck-wsl2.md` (1차) 작성·커밋. M4 Pro 이식 단계 진입 시
+  `measurements/day0-precheck-m4pro.md` 별도 작성.
+- **NO-GO 시 대응** — Docker 메모리 부족이면 Docker Desktop 설정 → Resources → Memory 24GB+ 또는
+  WSL2 `.wslconfig` 의 `memory=` 보강. HF 토큰 401 이면 `huggingface-cli login` 후 재시도.
 
 ---
 
@@ -160,29 +180,38 @@ mkdir -p code-AI-quality-allinone/{retrieve-svc,test-fixtures/sample-repos,
 > **소요 시간** — 다운로드 자체는 1~2시간 (네트워크 속도 의존), 설치·검증 합쳐 **0.5~1일**.
 > **총 다운로드 용량** — 약 **18~22 GB** (모델 + binary + wheels + base 이미지).
 
-### 3.1 작업 머신 요건
+### 3.1 작업 머신 요건 (1차 = WSL2 / 2차 = macOS, 양쪽 동일 흐름)
 
 | 항목 | 기준 | 비고 |
 |---|---|---|
-| OS | macOS (M-series) 또는 Linux x86_64 | M4 Pro 본인 머신에서 직접 빌드 권장 |
+| OS | **1차: Windows 11 + WSL2 Ubuntu 22.04+** / 2차: macOS (M-series) | 1차 머신 본인 머신에서 직접 빌드 권장 |
 | 인터넷 | HF / GitHub / Docker Hub / Ollama 도달 | 사내 프록시 시 환경변수 (`HTTPS_PROXY`) |
 | 디스크 여유 | ≥ **50 GB** | 다운로드 22GB + 빌드 중간 산출물 + tar export |
 | Docker | 24.x+ | `docker version` 확인 |
 | Python | 3.11+ | retrieve-svc requirements 빌드용 |
 | Git | 2.x | sample 레포 clone |
+| GPU (1차) | RTX 4070 + CUDA passthrough (`nvidia-smi` 인식) | 드라이버 ≥ 535 |
 
-### 3.2 사전 도구 설치 (한 번만)
+### 3.2 사전 도구 설치 (한 번만, 양 머신 동일 *역할* / 명령만 OS 표준)
 
-#### 3.2.1 Ollama (host 측 LLM 런타임)
+#### 3.2.1 Ollama (host 측 LLM 런타임) — 양쪽 모두 *공식 가이드 그대로*
 
 ```bash
-# macOS
-brew install ollama
+# 1차 머신 (WSL2 Ubuntu) — Ollama 공식 Linux installer
+curl -fsSL https://ollama.com/install.sh | sh
 ollama --version              # ≥ 0.4.x
 
-# 백그라운드 실행
+# 2차 머신 (macOS) — Homebrew 또는 공식 .dmg
+# brew install ollama
+# (또는 https://ollama.com/download/mac 의 .dmg)
+
+# 백그라운드 실행 (양 머신 공통)
 ollama serve &
 ```
+
+> **공통점**: 양 머신 모두 *호스트 native* 로 띄움. Docker 안에 두지 않는다 (PLAN §6.4 결정 —
+> macOS Metal / WSL2 CUDA 가속 경로). 컨테이너 → 호스트 호출은 `host.docker.internal:11434` 로
+> 동일 (compose `extra_hosts: ["host.docker.internal:host-gateway"]` 가 WSL2 측에 설정됨).
 
 #### 3.2.2 huggingface-cli (모델 weight 다운로드)
 
@@ -206,22 +235,23 @@ curl --version
 
 빌드 컨텍스트 안에서 통일된 위치에 배치 — Dockerfile 의 `COPY` 가 이 경로를 참조한다.
 
-**원칙** — 각 머신은 *자기 native arch* 의 산출물만 보유한다 (M4 Pro = arm64, WSL2 = amd64).
+**원칙** — 각 머신은 *자기 native arch* 의 산출물만 보유한다 (WSL2 = amd64, M4 Pro = arm64).
 별도 빌드 스크립트가 두 머신에서 따로 돌아 두 개의 tar 가 나온다. 멀티-아키 manifest 미운영.
 
 ```text
 code-AI-quality-allinone/
 ├── offline-assets/
-│   ├── arm64/                          # 기존 — ttc-allinone tar (M4 Pro)
-│   │   └── ttc-allinone-arm64-dev.tar.gz   (~9~11 GB, Phase 0 산출)
-│   ├── amd64/                          # 기존 — ttc-allinone tar (WSL2/Intel)
-│   ├── ollama-models/                  # 신규 — ollama 모델 (host 복원용, 이미지 안 X)
+│   ├── amd64/                          # 1차 — ttc-allinone tar (WSL2/RTX 4070)
+│   │   └── ttc-allinone-amd64-dev.tar.gz   (~9~11 GB, Phase 0 산출)
+│   ├── arm64/                          # 2차 — ttc-allinone tar (M4 Pro 이식)
+│   │   └── ttc-allinone-arm64-dev.tar.gz
+│   ├── ollama-models/                  # 신규 — ollama 모델 (host 복원용, 이미지 안 X, 양 머신 동일)
 │   │   ├── blobs/
 │   │   └── manifests/
-│   ├── rerank-models/                  # 신규 — bge-reranker (이미지 안 COPY)
+│   ├── rerank-models/                  # 신규 — bge-reranker (이미지 안 COPY, 양 머신 동일)
 │   │   └── bge-reranker-v2-m3/
-│   ├── meilisearch/                    # 신규 — Meilisearch binary (이미지 안 COPY)
-│   │   └── meilisearch-linux-arm64     #   (M4 Pro 의 경우 — WSL2 면 -amd64)
+│   ├── meilisearch/                    # 신규 — Meilisearch binary (이미지 안 COPY, native 만)
+│   │   └── meilisearch-linux-amd64     #   (1차의 경우 — 2차 면 -aarch64)
 │   └── python-wheels/                  # 신규 — retrieve-svc pip 의존성 (이미지 안 COPY)
 │       └── (호스트 arch 에 맞는 wheel 30~50 개)
 # FalkorDB 는 docker pull 결과가 로컬 daemon 에 잔존 → 별도 파일 X (multi-stage 자동 차용)
@@ -244,23 +274,23 @@ code-AI-quality-allinone/
 
 #### 3.4.1 Meilisearch v1.42 binary
 
-각 머신은 **자기 native arch 만** 받는다 (M4 Pro = arm64, WSL2 = amd64). `docker build` 가 native
+각 머신은 **자기 native arch 만** 받는다 (WSL2 = amd64, M4 Pro = arm64). `docker build` 가 native
 빌드 한 번이고 두 머신은 별개 빌드.
 
 ```bash
 cd code-AI-quality-allinone/
 mkdir -p offline-assets/meilisearch
 
-# M4 Pro 인 경우만:
-curl -fL -o offline-assets/meilisearch/meilisearch-linux-arm64 \
-  https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-aarch64
+# 1차 (WSL2 / Intel) — 정본:
+curl -fL -o offline-assets/meilisearch/meilisearch-linux-amd64 \
+  https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-amd64
 
-# WSL2 / Intel 인 경우만:
-# curl -fL -o offline-assets/meilisearch/meilisearch-linux-amd64 \
-#   https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-amd64
+# 2차 (M4 Pro / Apple Silicon) — 동일 절차, URL 만 -aarch64:
+# curl -fL -o offline-assets/meilisearch/meilisearch-linux-arm64 \
+#   https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-aarch64
 
 chmod +x offline-assets/meilisearch/meilisearch-linux-*
-file offline-assets/meilisearch/meilisearch-linux-arm64    # ELF 64-bit LSB executable, ARM aarch64
+file offline-assets/meilisearch/meilisearch-linux-amd64    # ELF 64-bit LSB executable, x86-64
 ```
 
 **Dockerfile 패턴** — glob 으로 단일 파일 매칭 (각 머신엔 자기 arch 한 개만 존재):
@@ -288,7 +318,15 @@ docker pull falkordb/falkordb:latest
 ```
 
 **검증** — `docker inspect falkordb/falkordb:latest --format '{{.Architecture}}'` 가 호스트 arch 와
-일치 (M4 Pro = arm64, WSL2 = amd64).
+일치 (1차 WSL2 = amd64, 2차 M4 Pro = arm64).
+
+> **이미지 변형 (2026-04-26 확인)** — 공식 레지스트리는 두 가지 제공:
+> - `falkordb/falkordb:latest` — Browser UI 포함 (개발/디버그 친화)
+> - `falkordb/falkordb-server:latest` — server-only (lighter, 프로덕션 권장)
+>
+> 본 통합은 **multi-stage `COPY --from=falkordb-src /var/lib/falkordb/bin/falkordb.so`** 로 .so 만
+> 추출하므로 어느 쪽 이미지든 동등하다. Browser 가 필요 없으면 `-server` 변형을 사용해 외부망
+> 다운로드 용량을 절감할 수 있다 (~150~200MB).
 
 #### 3.4.3 bge-reranker-v2-m3 weight (HuggingFace)
 
@@ -308,18 +346,18 @@ du -sh offline-assets/rerank-models/bge-reranker-v2-m3/
 # ≈ 1.1 GB
 ```
 
-#### 3.4.4 Ollama 모델 export (host 복원용)
+#### 3.4.4 Ollama 모델 export (host 복원용, 양 머신 동일)
 
 이미지 안에 들어가지 않고, **폐쇄망 host 의 `~/.ollama` 에 복원**. 단일 이미지 패턴 보존 — Ollama 는
 host 프로세스 (PLAN §6.4 결정).
 
 ```bash
-# 외부망 host 에서 pull
-ollama pull gemma4:e4b-it-q4_K_M           # ~ 4.2 GB
+# 외부망 host 에서 pull (양 머신 동일 모델)
+ollama pull gemma4:e4b                     # on-disk ~9.6 GB (멀티모달 manifest 합 — text+vision+audio).
+                                           #   텍스트 추론 시 VRAM 실사용은 ~3~5 GB (text decoder Q4 + KV cache).
 ollama pull qwen3-embedding:0.6b           # ~ 0.6 GB
 
-# (옵션 — M4 Pro Phase 7 야간 batch) 
-ollama pull gemma4:26b-it-q4_K_M           # ~ 16 GB
+# 26b 등 큰 모델은 영구 비채택 — 양 머신 동일 원칙 (PLAN §6.4 + 2026-04-26 정정).
 
 # export
 mkdir -p offline-assets/ollama-models
@@ -327,11 +365,16 @@ cp -r ~/.ollama/models/blobs offline-assets/ollama-models/
 cp -r ~/.ollama/models/manifests offline-assets/ollama-models/
 
 du -sh offline-assets/ollama-models/
-# ≈ 5 GB (e4b + qwen3-embedding)
-# ≈ 21 GB (+ 26b 옵션)
+# ≈ 10~11 GB (e4b 9.6GB + qwen3-embedding 0.6GB)
 ```
 
-**검증** — `manifests/registry.ollama.ai/library/gemma4/e4b-it-q4_K_M` 등의 매니페스트 파일 존재.
+**검증** — `manifests/registry.ollama.ai/library/gemma4/e4b` 와 `qwen3-embedding/0.6b` 매니페스트
+파일 존재.
+
+> **모델 태그 정정 (2026-04-26)** — 이전 문서가 사용한 `gemma4:e4b-it-q4_K_M` / `gemma4:26b-it-q4_K_M`
+> suffix 표기는 Ollama 라이브러리 공식 태그가 아니다. 실제 공식 태그는 plain `gemma4:e4b` (Ollama
+> 가 자동으로 적절한 quantization 선택). [공식 라이브러리](https://ollama.com/library/gemma4:e4b)
+> 참조.
 
 #### 3.4.5 Python wheels (retrieve-svc 의존성)
 
@@ -350,17 +393,17 @@ cat requirements.txt
 # torch==2.5.x        # CPU 휠 (--index-url https://download.pytorch.org/whl/cpu)
 # pydantic==2.x
 
-# 호스트 native arch 만 다운로드. M4 Pro 인 경우 (arm64):
+# 1차 (WSL2 / Intel, amd64) — 정본:
 mkdir -p ../offline-assets/python-wheels
 pip download \
   -r requirements.txt \
-  --platform manylinux2014_aarch64 \
+  --platform manylinux2014_x86_64 \
   --python-version 311 \
   --only-binary=:all: \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   -d ../offline-assets/python-wheels
 
-# WSL2 / Intel 인 경우만 (amd64) — `--platform manylinux2014_x86_64` 로 변경.
+# 2차 (M4 Pro, arm64) — 동일 절차, `--platform manylinux2014_aarch64` 로 변경.
 ```
 
 **검증** —
@@ -441,9 +484,9 @@ docker image inspect falkordb/falkordb:latest >/dev/null 2>&1 || \
     --local-dir offline-assets/rerank-models/bge-reranker-v2-m3 \
     --local-dir-use-symlinks=False
 
-# 4. Ollama 모델 (host 측)
-ollama list | grep -q gemma4:e4b-it-q4_K_M || ollama pull gemma4:e4b-it-q4_K_M
-ollama list | grep -q qwen3-embedding:0.6b || ollama pull qwen3-embedding:0.6b
+# 4. Ollama 모델 (host 측, 양 머신 동일)
+ollama list | grep -q '^gemma4:e4b ' || ollama pull gemma4:e4b
+ollama list | grep -q '^qwen3-embedding:0.6b ' || ollama pull qwen3-embedding:0.6b
 
 # export (idempotent — rsync 변경분만 갱신)
 mkdir -p offline-assets/ollama-models
@@ -489,50 +532,51 @@ bash scripts/verify-rag-bundle.sh    # (신규 작성 예정)
 빌드 결과물 (단일 이미지 tar) + Ollama 모델만 폐쇄망으로 가져간다. 그 외는 외부망 머신에서 *빌드용*
 으로만 쓰이고 반입 불필요.
 
-#### 3.7.1 반입 대상 (USB / 사내 파일전송)
+#### 3.7.1 반입 대상 (USB / 사내 파일전송) — 1차 = WSL2/amd64 기준
 
 ```text
 offline-assets/
-├── arm64/ttc-allinone-arm64-dev.tar.gz   ~ 9~11 GB   ← 단일 이미지
-├── arm64/yrzr-gitlab-ce-arm64v8-*.tar.gz ~ 2 GB      ← GitLab (기존)
-├── arm64/dify-sandbox-*.tar.gz           ~ 0.5 GB    ← Sandbox (기존)
-└── ollama-models/                         ~ 5 GB     ← gemma4 + qwen3-embedding
-                                          (~ 21 GB if 26b 옵션 포함)
+├── amd64/ttc-allinone-amd64-dev.tar.gz   ~ 9~11 GB   ← 단일 이미지 (1차 = WSL2/RTX 4070)
+├── amd64/yrzr-gitlab-ce-amd64-*.tar.gz   ~ 2 GB      ← GitLab (기존)
+├── amd64/dify-sandbox-*.tar.gz           ~ 0.5 GB    ← Sandbox (기존)
+└── ollama-models/                         ~ 10~11 GB ← gemma4:e4b + qwen3-embedding (양 머신 동일)
 
-총합:  ~ 17~18 GB (M4 Pro 기본)
-       ~ 33 GB    (M4 Pro 26b 옵션 포함)
+총합:  ~ 22~24 GB
+
+# 2차 머신 (M4 Pro) 이식 시: 위 amd64 → arm64 로 치환, ollama-models 는 동일 디렉터리 재사용.
 ```
 
-#### 3.7.2 USB 16GB 한계 시 분할
+#### 3.7.2 USB 16GB 한계 시 분할 (양 머신 동일 절차)
 
 ```bash
-# 분할 — 4GB 단위
-cd offline-assets/arm64/
-split -b 4G ttc-allinone-arm64-dev.tar.gz ttc-allinone-arm64-dev.tar.gz.part-
+# 분할 — 4GB 단위 (1차 amd64 예시)
+cd offline-assets/amd64/
+split -b 4G ttc-allinone-amd64-dev.tar.gz ttc-allinone-amd64-dev.tar.gz.part-
 
 # 폐쇄망 머신 측 재조립
-cat ttc-allinone-arm64-dev.tar.gz.part-* > ttc-allinone-arm64-dev.tar.gz
-sha256sum ttc-allinone-arm64-dev.tar.gz   # 외부망 측 hash 와 일치 확인
+cat ttc-allinone-amd64-dev.tar.gz.part-* > ttc-allinone-amd64-dev.tar.gz
+sha256sum ttc-allinone-amd64-dev.tar.gz   # 외부망 측 hash 와 일치 확인
 ```
 
-#### 3.7.3 폐쇄망 측 적용 절차
+#### 3.7.3 폐쇄망 측 적용 절차 (양 머신 동일 흐름, arch 만 다름)
 
 ```bash
-# (1) 단일 이미지 load — 기존 [scripts/offline-load.sh](../scripts/offline-load.sh) 그대로
-bash scripts/offline-load.sh --arch arm64
+# (1) 단일 이미지 load — 양 머신 동일 스크립트, --arch 만 다름
+bash scripts/offline-load.sh --arch amd64       # 1차 (WSL2). 2차: --arch arm64.
 
-# (2) Ollama 모델 복원 (host 측)
+# (2) Ollama 모델 복원 (host 측, 양 머신 동일)
 mkdir -p ~/.ollama
 rsync -a /media/usb/offline-assets/ollama-models/ ~/.ollama/models/
-ollama list   # gemma4:e4b-it-q4_K_M, qwen3-embedding:0.6b 확인
+ollama list   # gemma4:e4b, qwen3-embedding:0.6b 확인
 
-# (3) Ollama 환경변수 (M4 Pro)
-export OLLAMA_MAX_LOADED_MODELS=1
-export OLLAMA_NUM_PARALLEL=3
+# (3) Ollama 환경변수 (공통 1 + 차이 1)
+export OLLAMA_MAX_LOADED_MODELS=1               # 양 머신 공통
+# 1차 (RTX 4070): export OLLAMA_NUM_PARALLEL=1
+# 2차 (M4 Pro):   export OLLAMA_NUM_PARALLEL=3
 ollama serve &
 
-# (4) 컨테이너 기동
-bash scripts/run-mac.sh
+# (4) 컨테이너 기동 (양 머신 동일 흐름, 스크립트 이름만 다름)
+bash scripts/run-wsl2.sh                        # 1차. 2차: bash scripts/run-mac.sh
 ```
 
 ### 3.8 Day 종료 기준 (다운로드 완료)
@@ -648,7 +692,8 @@ test-fixtures/golden/
 
 ## 5. Phase 별 일자 캘린더
 
-> **전제** — 1 인 풀타임 기준. M4 Pro 1대에서 실행. 외부망 빌드 작업은 인터넷 가능 시점에 합쳐서.
+> **전제** — 1 인 풀타임 기준. **1차 = WSL2 / RTX 4070 머신 1 대** 에서 실행. 외부망 빌드 작업은
+> 인터넷 가능 시점에 합쳐서. 2차 (M4 Pro) 이식은 W15 분리.
 
 ### 5.1 1차 목표 일정 (Phase 0~5) — 약 3~4 주
 
@@ -661,7 +706,7 @@ test-fixtures/golden/
 | D4 | P0.5 | Dockerfile + supervisord.conf 보강 |
 | D5 | P0.6 | 단일 이미지 빌드 + 외부망 1 회 기동 헬스체크 |
 | **D6** | **GO/NO-GO 1** | §7.1 Phase 0 게이트 — 16 process RUNNING 확인 |
-| D7 | P1 | (M4 Pro 폐쇄망) tar 반입 + docker load + 헬스체크 |
+| D7 | P1 | (1차 WSL2/RTX 4070 폐쇄망) tar 반입 + docker load + 헬스체크 |
 | D8~D10 | P2.1~P2.3 | retrieve-svc 본체 (fusion, backends, schema) |
 | D11 | P2.4 | 단위 테스트 (외부망 머신) |
 | D12 | P2.5 | 이미지 재빌드 + 컨테이너 헬스체크 |
@@ -691,9 +736,12 @@ test-fixtures/golden/
 | W11 | P7.3~P7.4 | LLM-as-Judge (3-state) + self-verification (e4b ×2) |
 | W12 | P7.5 | Implementation Rate 리포트 (Jenkins publishHTML) |
 | W13~W14 | P7.6 | petclinic-rest 12 req ground truth 비교 → precision/recall 측정 → 임계 튜닝 |
-| W15 | RTX 이식 | M4 Pro 검증 끝난 단일 이미지 → RTX 머신 tar 반입 + `OLLAMA_NUM_PARALLEL=1` |
+| W15 | M4 Pro 이식 | 1차 (WSL2/RTX 4070) 검증 끝난 동일 빌드 컨텍스트 → `bash scripts/build-mac.sh` 로 arm64 빌드 → M4 Pro 폐쇄망 tar 반입 + `OLLAMA_NUM_PARALLEL=3` |
+| **W11~W14 (Phase 7 와 병렬)** | **Phase 8 (Joern CPG)** | **P8.1~P8.5: Joern binary 사전 다운로드 + Dockerfile/이미지 갱신 + 02b 야간 batch Job 추가 + cpg_to_falkor.py + retrieve-svc taint 질의 backend** |
+| **W14** | **Phase 8 게이트** | **P8.7: source_layer="graph_taint" 인용률 0% → 30%+ (보안 룰 한정), 보안 false-positive 강등률 +10pp** |
 
-**최종 목표 완료** — D0 부터 약 **15 주 (3.5 개월)**.
+**최종 목표 완료 (Phase 7)** — D0 부터 약 **15 주 (3.5 개월)**.
+**Joern 정식 도입 완료 (Phase 8)** — Phase 7 과 병렬 진행 시 동일 ~15 주 시점 (직렬 시 +3~4 주).
 
 ### 5.3 병렬화 가능 구간
 
@@ -910,7 +958,17 @@ python measurements/spec-traceability-eval.py \
 | 1 | verdict 일치율 | ≥ 50% | ≥ 70% |
 | 2 | cited_symbols precision | ≥ 0.6 | ≥ 0.75 |
 | 3 | needs-review 비율 | ≤ 30% | ≤ 15% |
-| 4 | RTX 이식 통과 | M4 결과와 동일 verdict ≥ 90% | — |
+| 4 | M4 Pro 이식 통과 (W15) | 1차 (WSL2/RTX) 결과와 동일 verdict ≥ 90% | — |
+
+### 7.8 Phase 8 게이트 (W14 종료, Phase 7 과 병렬 진행 시) — Joern CPG 정식 도입 판정
+
+| # | 항목 | 합 기준 |
+|---|---|---|
+| 1 | 02b 야간 batch (Joern CPG 빌드) | 100k LOC repo 기준 < 30 분 |
+| 2 | FalkorDB 디스크 증분 (CPG 적재) | 100k LOC repo 기준 < 2 GB |
+| 3 | `source_layer="graph_taint"` 인용률 (보안 룰 한정) | 보안 룰 (CWE-89/79/78 등) 응답에서 ≥ 30% |
+| 4 | 보안 룰 false-positive 강등률 | 기존 baseline 대비 +10pp 이상 |
+| 5 | 02 ↔ 02b ↔ 04 ↔ 06 lock 작동 | 동시 실행 시도 시 자동 대기 (Lockable Resources) |
 
 ---
 
@@ -922,6 +980,7 @@ python measurements/spec-traceability-eval.py \
 
 | # | 리스크 | 가능성 | 영향 | 트리거 | 대응 |
 |---|---|---|---|---|---|
+| T0 | **02 ↔ 04 동시 구동** (LLM bus 경합) | 고 (lock 미적용 시) | 고 (모델 swap·OOM·KV cache 경합) | 02 진행 중 04 manual 트리거 또는 cron 충돌 | **차단 (영구)**: Lockable Resources 플러그인 + 02/04 jenkinsfile `options { disableConcurrentBuilds(); lock(resource: 'ttc-llm-bus') }`. 향후 06 (Phase 7) 도 동일 lock. PLAN §6.11. |
 | T1 | bge-reranker-v2-m3 weight 다운로드 실패 (HF rate limit) | 중 | 중 | Phase 0 P0.2 timeout | HF 토큰 사용 + 재시도 / 사내 미러 (있으면) |
 | T2 | FalkorDB.so 가 Debian glibc 버전 호환 안됨 | 중 | 고 | 컨테이너 안 redis-server `loadmodule` 실패 | multi-stage `FROM falkordb/falkordb` 검증 / 폴백: Falkor 컨테이너 분리 (PLAN §6.10) |
 | T3 | Meilisearch v1.42 한국어 토크나이저 빈약 | 중 | 중 | sparse layer citation rate 0% | BM25 stopwords 한국어 추가 / `nori` 같은 한국어 analyzer 검토 |
@@ -937,7 +996,7 @@ python measurements/spec-traceability-eval.py \
 | O1 | petclinic-rest PRD 12 req 가 LLM 추출 결과와 차이 큼 | 고 | 중 | Phase 7 verdict 일치율 < 50% | 정답지 재검토 (사람 vs LLM 어느 쪽이 맞나) → 둘 다 합리적이면 룰 명세 보강 |
 | O2 | realworld 50 이슈 셋이 graph 신호에 둔감한 종류 (단순 코드 스타일 위주) | 중 | 중 | Phase 5 graph layer 비율 < 5% | 50 이슈 중 *구조성 이슈* (NPE / cycle / unused) 비율 점검 → 셋 재구성 |
 | O3 | 외부망 ↔ 폐쇄망 tar 반입 절차 (USB / scp) 가 11GB 에서 실패 | 저 | 중 | docker load 중간 실패 | tar 분할 (`split -b 4G`) + 폐쇄망 측 재조립 |
-| O4 | M4 Pro 검증 후 RTX 이식에서 verdict 차이 > 10% | 중 | 고 | Phase 7 W15 게이트 미달 | RTX 측 OLLAMA_NUM_PARALLEL=1 + temperature=0 강제 / 그래도 차이 크면 *재현성 한계* 로 명시 |
+| O4 | 1차 (WSL2/RTX) 검증 후 M4 Pro 이식에서 verdict 차이 > 10% | 중 | 고 | Phase 7 W15 게이트 미달 | 양쪽 `temperature=0` 강제 + `num_ctx` 동일 (4096) 재확인 / 그래도 차이 크면 *재현성 한계* 로 명시 (양자화 ε 또는 MPS↔CUDA 부동소수점 차이) |
 
 ### 8.3 일정·결정 리스크
 
@@ -975,8 +1034,8 @@ jenkins-cli build "02-코드-사전학습" -p REPO_URL=<new-repo>
 ### 9.2 모델 갱신 (gemma4 / qwen3 새 버전)
 
 ```bash
-# 외부망 머신
-ollama pull gemma4:e4b-it-q4_K_M-NEW
+# 외부망 머신 (예: 차후 gemma4:e4b 가 갱신되거나 다른 e4b 변형이 나올 때)
+ollama pull gemma4:e4b      # 양 머신 동일 모델 — 머신별 분기 없음
 cp -r ~/.ollama/models/* offline-assets/ollama-models/
 
 # 폐쇄망 머신
@@ -1015,7 +1074,7 @@ PLAN §6.9 외부망 빌드 절차 그대로. 신규 tar 가 폐쇄망에 반입
 ### 9.5 Phase 7 정기 실행 (월 1 회 권장)
 
 ```bash
-# cron — 매월 1 일 02:00 (M4 Pro 야간 batch)
+# cron — 매월 1 일 02:00 (1차 머신 야간 batch — 양 머신 동일 모델·동일 결과)
 0 2 1 * * jenkins-cli build "06-구현률-측정" -p REPO=<active-project>
 ```
 
@@ -1027,6 +1086,74 @@ PLAN §6.9 외부망 빌드 절차 그대로. 신규 tar 가 폐쇄망에 반입
 
 > 본 문서 (EXECUTION_PLAN) 의 변경만 기록. 기술 결정은 PLAN §11 에. 작업 진행·테스트 결과·블로커는
 > 여기에.
+
+### 2026-04-26 (밤, 4차) — 02 ↔ 04 동시 구동 차단 + Phase 8 (Joern CPG) 신설 반영
+
+**컨텍스트** — PLAN §11 동일 일자 결정 (4차) 과 짝.
+
+**EXECUTION 측 변경**:
+
+1. **§5.2 일정 표** — Phase 8 (Joern CPG) 신규 행 추가. W11~W14 에 Phase 7 과 병렬 진행. 직렬 시
+   +3~4 주.
+2. **§7.7 Phase 7 게이트 + §7.8 Phase 8 게이트 분리**. Phase 8 게이트 5 항목:
+   - 02b 야간 batch CPG 빌드 < 30 분 (100k LOC)
+   - FalkorDB 디스크 증분 < 2 GB
+   - `graph_taint` 인용률 ≥ 30% (보안 룰 한정)
+   - 보안 false-positive 강등률 +10pp
+   - 02 ↔ 02b ↔ 04 ↔ 06 lock 작동 (자동 직렬화)
+3. **§8.1 리스크 레지스터** — **T0 (최우선)** 신설: "02 ↔ 04 동시 구동 (LLM bus 경합)". Lockable
+   Resources 플러그인 + jenkinsfile `options { lock(...) }` 으로 영구 차단.
+
+**구현 영향 (실제 파일 변경)**:
+- [`.plugins.txt`](../.plugins.txt) — `lockable-resources:latest` 추가.
+- [`jenkinsfiles/02 코드 사전학습.jenkinsPipeline`](../jenkinsfiles/02%20코드%20사전학습.jenkinsPipeline) — `options { disableConcurrentBuilds(); lock(resource: 'ttc-llm-bus') }` 추가.
+- [`jenkinsfiles/04 코드 정적분석 결과분석 및 이슈등록.jenkinsPipeline`](../jenkinsfiles/04%20코드%20정적분석%20결과분석%20및%20이슈등록.jenkinsPipeline) — 동일 옵션 추가.
+
+---
+
+### 2026-04-26 (밤) — 1차 머신을 WSL2/RTX 4070 으로 전환 + 양 머신 동일 설치방법 강화
+
+**컨텍스트** — 사용자 지시: (1) *"wsl에서 해당 사항 먼저 구현하기로 한다"*, (2) *"양 머신 동일구성
+및 동일 설치방법이 유지되어야 한다"*. PLAN §11 동일 일자 결정과 짝.
+
+**범위 변경**:
+
+- §1.1 머신 1순위/2순위 반전: WSL2/RTX 4070 → M4 Pro.
+- §1.2 핵심 가정에 *"양 머신 동일 구성 + 동일 설치방법"* 명시. 차이는 arch + `OLLAMA_NUM_PARALLEL`
+  1 개로 한정. *큰 모델 (26b 등) 분기 영구 비채택*.
+- §1.3 1차 검증 머신 변경.
+- §2.1 점검표를 1차 (WSL2) 와 2차 (M4 Pro) 양쪽 컬럼으로 확장. WSL2 의 `.wslconfig memory=56GB`,
+  `nvidia-smi` 인식, Ollama Linux installer 항목 추가.
+- §3.2.1 Ollama 설치 — Linux installer 가 정본, brew 는 2차.
+- §3.3 디렉터리 레이아웃에서 amd64 가 1차 산출물.
+- §3.4.1 Meilisearch — amd64 binary 가 정본 명령.
+- §3.4.4 Ollama 모델 — `gemma4:e4b` (Ollama 공식 태그). 26b 옵션 제거.
+- §3.7.1~3.7.3 폐쇄망 적용 — 1차 (WSL2/amd64) 시퀀스가 정본, 2차 (M4 Pro/arm64) 는 동일 절차의
+  arch/스크립트 이름 치환으로 안내.
+- §5.1 D7 / §5.2 W15 / §7.7 4 항목 / §8 O4 / §9.5 cron — 머신 우선순위 일괄 반전.
+
+**모델 태그 정정 (PLAN §11 2026-04-26 과 동기)**:
+
+- `gemma4:e4b-it-q4_K_M` / `gemma4:26b-it-q4_K_M` 표기 → `gemma4:e4b` (공식 태그) 로 통일.
+- `gemma4:e4b` on-disk ~9.6 GB 는 멀티모달 manifest 합 (vision + audio 인코더 포함). **텍스트
+  추론 시 VRAM 실사용은 ~3~5 GB** (text decoder Q4 weights ~2.5~3 GB + KV cache @ `num_ctx=4096`)
+  로 RTX 4070 8GB 에 여유 fit. `num_ctx=4096` 양 머신 통일로 결과 일관성.
+
+**버전 재확인 (2026-04-26)**:
+
+| 컴포넌트 | 사용 버전 | 출처 |
+|---|---|---|
+| Meilisearch | v1.42 (2026-04-14) | [GitHub releases](https://github.com/meilisearch/meilisearch/releases) |
+| FalkorDB | `falkordb/falkordb:latest` (Redis 7.4) | [Docker Hub](https://hub.docker.com/r/falkordb/falkordb) — server-only 변형 (`-server`) 도 사용 가능 |
+| Ollama LLM | `gemma4:e4b` (Ollama 라이브러리 공식) | [ollama.com/library/gemma4](https://ollama.com/library/gemma4:e4b) |
+| Ollama Embed | `qwen3-embedding:0.6b` (Ollama 공식) | [ollama.com/library/qwen3-embedding](https://ollama.com/library/qwen3-embedding:0.6b) |
+| Reranker | `BAAI/bge-reranker-v2-m3` (Apache 2.0) | HuggingFace + sentence-transformers `CrossEncoder` |
+| Dify | 1.13.3 + External KB API | docs.dify.ai/en/guides/knowledge-base/external-knowledge-api (스펙 변동 없음) |
+
+**영향 받지 않는 부분** — Phase 0~7 의 *기술 로직* (RRF / hybrid retrieve / sink 패턴 / spec ingest /
+LLM-as-Judge / Implementation Rate) 은 머신 종류와 무관하므로 손대지 않음.
+
+---
 
 ### 2026-04-26 (저녁) — §3 다운로드 & 설치 절차 신설
 
