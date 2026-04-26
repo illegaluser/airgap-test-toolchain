@@ -64,7 +64,6 @@ require() {
 }
 require docker
 require curl
-require ollama
 require huggingface-cli
 
 # Docker daemon 응답
@@ -73,11 +72,60 @@ if ! docker version >/dev/null 2>&1; then
     exit 1
 fi
 
-# Ollama daemon 응답 (필요 시 백그라운드 기동)
-if ! curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+# ─── Ollama 검증 — daemon 우선, CLI 보조 ───────────────────────────────────
+# 시나리오:
+#   A. CLI + daemon → 정상 (모델 pull 가능)
+#   B. CLI 없음 + daemon 응답 → 호스트 GUI 설치 (Windows + WSL2 흔한 케이스).
+#                                Ollama 모델 다운로드 단계는 자동 skip — 호스트에서 직접 pull.
+#   C. CLI 있음 + daemon 미응답 → 백그라운드 기동
+#   D. 둘 다 없음 → 에러
+OLLAMA_CLI_AVAILABLE=false
+OLLAMA_DAEMON_REACHABLE=false
+
+if command -v ollama >/dev/null 2>&1; then
+    OLLAMA_CLI_AVAILABLE=true
+fi
+if curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    OLLAMA_DAEMON_REACHABLE=true
+fi
+
+# Case C: CLI 있음 + daemon 미응답 → 기동 시도
+if [[ "$OLLAMA_CLI_AVAILABLE" == true ]] && [[ "$OLLAMA_DAEMON_REACHABLE" == false ]]; then
     log "Ollama daemon 백그라운드 기동..."
     ollama serve >/dev/null 2>&1 &
     sleep 3
+    if curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+        OLLAMA_DAEMON_REACHABLE=true
+    fi
+fi
+
+# Case B: CLI 없지만 daemon 응답 → 모델 다운로드 단계 자동 skip
+if [[ "$OLLAMA_CLI_AVAILABLE" == false ]] && [[ "$OLLAMA_DAEMON_REACHABLE" == true ]]; then
+    if [[ "$SKIP_MODELS" != true ]]; then
+        warn "ollama CLI 가 본 셸에 없지만 daemon 은 응답합니다 (호스트 GUI 설치로 추정 — 예: Windows + WSL2)."
+        warn "Ollama 모델 다운로드 단계를 *자동으로 skip* 합니다."
+        warn ""
+        warn "📌 Ollama 모델은 호스트에서 직접 pull 하세요:"
+        warn "  Windows PowerShell / macOS Terminal:"
+        warn "    ollama pull gemma4:e4b"
+        warn "    ollama pull qwen3-embedding:0.6b"
+        warn "    ollama pull bge-m3"
+        warn ""
+        warn "📦 Windows GUI 설치 시 모델 위치: %USERPROFILE%\\.ollama\\models\\"
+        warn "    WSL2 에서 접근:  /mnt/c/Users/<Windows유저명>/.ollama/models/"
+        warn "    macOS 위치     :  ~/.ollama/models/"
+        warn ""
+        warn "이후 §3.4 (offline-prefetch.sh) 가 모델 export 시 위 경로를 참조하면 됩니다."
+        warn ""
+        SKIP_MODELS=true
+    fi
+fi
+
+# Case D: CLI + daemon 모두 미응답
+if [[ "$OLLAMA_CLI_AVAILABLE" == false ]] && [[ "$OLLAMA_DAEMON_REACHABLE" == false ]]; then
+    err "Ollama 가 설치되어 있지 않습니다 (CLI 와 daemon 모두 응답 X)."
+    err "  → bash scripts/setup-host.sh 먼저 실행 (또는 Ollama 호스트 설치 후 재시도)"
+    exit 1
 fi
 
 # ─── 1) Jenkins / Dify 플러그인 번들 ────────────────────────────────────────

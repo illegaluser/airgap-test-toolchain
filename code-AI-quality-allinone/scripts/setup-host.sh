@@ -110,7 +110,16 @@ verify_docker() {
     ok "Docker daemon ready (version: $ver)"
 }
 
-# ─── 2) Ollama 검증 (또는 Linux/WSL2 자동 설치) ──────────────────────────────
+# ─── 2) Ollama 검증 (daemon 우선, CLI 보조) ─────────────────────────────────
+# 시나리오 매트릭스:
+#   A. CLI 있음 + daemon 응답         → 정상 (Linux/WSL2 native 설치 또는 macOS .dmg)
+#   B. CLI 없음 + daemon 응답         → 호스트 GUI 설치 (예: Windows host 의 Ollama GUI,
+#                                       WSL2 셸에서는 CLI PATH 미인식이지만 daemon 은 호스트
+#                                       11434 에서 응답). 이 경우 정상 — 모델 pull 은 호스트
+#                                       에서 진행하거나 본 셸에 별도 CLI 설치 안내.
+#   C. CLI 있음 + daemon 미응답       → daemon 미기동 → 백그라운드 기동 시도
+#   D. CLI 없음 + daemon 미응답       → 진짜 미설치 → OS 별 설치 안내 또는 --install-ollama
+
 install_ollama_linux() {
     log "Ollama 자동 설치 (curl https://ollama.com/install.sh | sh)..."
     if curl -fsSL https://ollama.com/install.sh | sh; then
@@ -124,48 +133,85 @@ install_ollama_linux() {
 
 verify_ollama() {
     log "Ollama 검증..."
-    if ! command -v ollama >/dev/null 2>&1; then
-        case "$OS" in
-            wsl2|linux)
-                if [[ "$INSTALL_OLLAMA" == true ]]; then
-                    install_ollama_linux
-                else
-                    err "ollama 명령을 찾을 수 없습니다."
-                    err ""
-                    err "Linux/WSL2 자동 설치 옵션: bash scripts/setup-host.sh --install-ollama"
-                    err "또는 수동: curl -fsSL https://ollama.com/install.sh | sh"
-                    exit 1
-                fi
-                ;;
-            macos)
-                err "ollama 명령을 찾을 수 없습니다."
-                err ""
-                err "macOS Ollama 설치 옵션 (둘 중 하나):"
-                err "  (A) UI 설치  : https://ollama.com/download/mac → .dmg → Applications 드래그"
-                err "  (B) 명령행   : brew install ollama"
-                err ""
-                err "설치 후 본 스크립트 재실행"
-                exit 1
-                ;;
-        esac
-    fi
-    local ver
-    ver="$(ollama --version 2>&1 | head -1)"
-    ok "Ollama 설치 확인 ($ver)"
 
-    # daemon 기동 확인
-    if ! curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
-        warn "Ollama daemon 미응답 — 백그라운드 기동 시도"
+    # 1) daemon 응답성 (가장 신뢰할 수 있는 검사)
+    local daemon_reachable=false
+    if curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+        daemon_reachable=true
+    fi
+
+    # 2) CLI 존재 여부 (보조)
+    local cli_present=false
+    if command -v ollama >/dev/null 2>&1; then
+        cli_present=true
+    fi
+
+    # === Case A: CLI + daemon 모두 OK ===
+    if [[ "$cli_present" == true ]] && [[ "$daemon_reachable" == true ]]; then
+        ok "Ollama CLI + daemon ready ($(ollama --version 2>&1 | head -1))"
+        return
+    fi
+
+    # === Case B: daemon 응답하지만 CLI 미존재 (Windows host GUI + WSL2 셸 등) ===
+    if [[ "$cli_present" == false ]] && [[ "$daemon_reachable" == true ]]; then
+        ok "Ollama daemon 응답 (호스트 측에 이미 설치됨 — 예: Windows GUI / macOS .dmg)"
+        log ""
+        log "  ℹ 이 셸에는 ollama CLI 가 없지만 daemon 이 호스트 11434 에서 응답하므로 *문제 없음*."
+        log "    → 컨테이너는 host.docker.internal:11434 로 호스트 daemon 호출 (정상 흐름)"
+        log ""
+        log "  📌 Ollama 모델 다운로드 (gemma4:e4b 등) 는 다음 중 하나로 진행:"
+        log "    (A) 호스트에서 직접 — Windows PowerShell 또는 macOS Terminal 에서 'ollama pull gemma4:e4b'"
+        log "    (B) 본 셸에 ollama CLI 도 설치 후 호스트 daemon 공유:"
+        log "        curl -fsSL https://ollama.com/install.sh | sh"
+        log "        export OLLAMA_HOST=http://localhost:11434     # 본 셸 ollama CLI 가 호스트 daemon 호출"
+        log ""
+        return
+    fi
+
+    # === Case C: CLI 있지만 daemon 미응답 → 백그라운드 기동 ===
+    if [[ "$cli_present" == true ]] && [[ "$daemon_reachable" == false ]]; then
+        warn "Ollama CLI 발견했으나 daemon 미응답 — 백그라운드 기동 시도"
         ollama serve >/dev/null 2>&1 &
         sleep 3
         if curl -sf --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
-            ok "Ollama daemon ready"
+            ok "Ollama daemon 기동 완료"
         else
-            warn "Ollama daemon 응답 없음 — 수동 기동 필요: 'ollama serve &'"
+            err "ollama serve 실행했으나 daemon 응답 없음 — 수동 확인 필요:"
+            err "  ollama serve &"
+            err "  (또는 'ps aux | grep ollama' 로 기존 프로세스 확인)"
+            exit 1
         fi
-    else
-        ok "Ollama daemon ready"
+        return
     fi
+
+    # === Case D: CLI + daemon 모두 없음 → 진짜 미설치 ===
+    case "$OS" in
+        wsl2|linux)
+            if [[ "$INSTALL_OLLAMA" == true ]]; then
+                install_ollama_linux
+            else
+                err "Ollama 가 설치되어 있지 않습니다 (CLI 와 daemon 모두 응답 X)."
+                err ""
+                err "설치 옵션 (둘 중 하나):"
+                err "  (A) 호스트 (Windows) 에 GUI 설치"
+                err "      → https://ollama.com/download/windows → OllamaSetup.exe"
+                err "      → 설치 후 본 스크립트 재실행 (WSL2 에서 호스트 daemon 자동 감지)"
+                err "  (B) 본 셸에 자동 설치"
+                err "      → bash scripts/setup-host.sh --install-ollama"
+                exit 1
+            fi
+            ;;
+        macos)
+            err "Ollama 가 설치되어 있지 않습니다 (CLI 와 daemon 모두 응답 X)."
+            err ""
+            err "설치 옵션 (둘 중 하나):"
+            err "  (A) UI 설치  : https://ollama.com/download/mac → .dmg → Applications 드래그 → 실행"
+            err "  (B) 명령행   : brew install ollama && open -a Ollama"
+            err ""
+            err "설치 후 본 스크립트 재실행"
+            exit 1
+            ;;
+    esac
 }
 
 # ─── 3) macOS 패키지 (Homebrew + python@3.12 + git) ──────────────────────────
