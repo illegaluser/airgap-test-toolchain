@@ -4,7 +4,7 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 
 ## 현재 구현 상태
 
-2026-04-24 `main` 기준 현재 구현은 아래와 같다.
+2026-04-27 기준 현재 구현은 아래와 같다.
 
 | 항목 | 현재 상태 |
 |------|-----------|
@@ -13,11 +13,26 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 | 자동 프로비저닝 결과 | Dify 관리자 계정, Ollama plugin/provider, `ZeroTouch QA Brain` publish, Jenkins credential `dify-qa-api-token`, Job `DSCORE-ZeroTouch-QA-Docker`, Jenkins Node `mac-ui-tester`/`wsl-ui-tester` 자동 등록 |
 | 완료 마커 | `/data/.app_provisioned` 생성 시 재기동부터 provision 생략 |
 | 최근 실측 검증 | Jenkins `http://localhost:18080/login` → `200`, Dify `http://localhost:18081/` → `307` |
+| Action DSL 런타임 | 14대 DSL (`navigate`, `click`, `fill`, `press`, `select`, `check`, `hover`, `wait`, `verify`, `upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 실행기 구현 완료 |
+| 로컬 회귀 테스트 | Sprint 2 단위 16건 + Sprint 3 통합 31건 + 9대 native 회귀 30건 = 총 77건 PASS |
+| Jenkins 회귀 단계 | Stage `2.4. pytest 회귀 (Sprint 2/3)` 에서 integration/native pytest 를 분리 실행하고 JUnit XML 보존 |
 
 추가 메모:
-- `dify-chatflow.yaml` 과 `architecture.md` 는 v4.1 Action DSL 14대 확장 계약을 먼저 반영하고 있다.
-- 다만 2026-04-24 `main` 기준 런타임 실행기(`zero_touch_qa`)와 로컬 테스트셋은 아직 9대 DSL 기준이다.
-- 즉 현재 저장소 상태는 "Sprint 1 문서/프롬프트 정비 선행, Sprint 2 실행기 구현 대기" 로 이해해야 한다.
+- `dify-chatflow.yaml`, `architecture.md`, `zero_touch_qa` 런타임은 v4.1 Action DSL 14대 확장 계약을 반영한다.
+- 신규 5종 액션(`upload`, `drag`, `scroll`, `mock_status`, `mock_data`)은 fixture 기반 pytest 로 잠겨 있다.
+- Convert 경로(`zero_touch_qa/converter.py`)의 14대 확장은 아직 Sprint 4 범위다. 현재 Convert 문서/아키텍처의 9대 제한 설명은 의도된 잔여 작업이다.
+- 실 Dify Brain + 실 Mac/WSL agent + 운영 도메인 E2E 검증, 산출물 retention/추세 관리는 Sprint 4 범위다.
+
+로컬 회귀 확인:
+
+```bash
+cd playwright-allinone
+python3 -m pip install -r test/requirements.txt
+python3 -m playwright install chromium
+python3 -m pytest test/test_sprint2_runtime.py -q
+python3 -m pytest test --ignore=test/native -q
+python3 -m pytest test/native -q
+```
 
 운영 메모:
 - 이 환경에서는 `build.sh` 가 호출하는 `docker buildx build --load` 가 `sending tarball` 단계에서 오래 멈출 수 있다.
