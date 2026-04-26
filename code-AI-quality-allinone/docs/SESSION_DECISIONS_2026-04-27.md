@@ -257,6 +257,69 @@ offline-assets/amd64/
 └── *.meta (3개, sha256 + 빌드시각 포함)
 ```
 
+### 7.4 4차 변경 — 컨테이너 부팅 검증 + Ollama 모델 반출 자동화
+
+**의사결정 배경**:
+1. 빌드된 이미지가 실제로 부팅되어 provision.sh 가 자동 wiring 까지 완료하는지 *fresh state* 에서 검증 필요
+2. 호스트의 Ollama 모델 (gemma4:e4b / qwen3-embedding:0.6b / bge-m3) 을 폐쇄망 반출 패키지에 자동 포함 필요 — 사용자 지적
+
+**검증 (run-wsl2.sh + provision.sh)**:
+1차 부팅에서 GitLab 17.4.2→18.11.0 / SonarQube 25.x→26.4 major skip 으로 `Restarting (1)` + `FATAL Exited too quickly` 발생.
+원인: `~/ttc-allinone-data/` 에 이전 dev 테스트의 stale 데이터. **사용자 승인 후 wipe** → fresh state 재기동.
+
+Fresh 부팅 결과 (`docker logs ttc-allinone`):
+```
+✓ supervisor 14/14 RUNNING (FATAL 0)
+✓ Dify setup 완료 (admin@ttc.local)
+✓ Ollama 플러그인 설치 (offline pkg, 9s)
+✓ Ollama provider/embedding 등록 (gemma4:e4b / bge-m3)
+✓ Dataset 생성 (f677a210-cd4b-...) + Workflow import + publish + API key
+✓ GitLab Phase A/B/C 통과 → root PAT + 샘플 repo (root/realworld) push
+✓ SonarQube admin 비번/토큰 자동 발급
+✓ Jenkins Credentials 5개 자동 주입 (dify-dataset-id, dify-knowledge-key,
+   dify-workflow-key, gitlab-pat, sonarqube-token)
+✓ Jenkins Pipeline Job 5개 자동 등록 (01~05)
+✓ "자동 프로비저닝 완료"
+```
+
+**검증 도중 발견된 부수 사항** (보고 누락 방지용 기록):
+- Jenkins 는 :8080 이 아닌 **:28080** 에서 LISTEN (compose port 매핑 28080:28080). 모니터 가정 오류였으나 실제 동작 정상.
+- retrieve-svc 는 **:9100** (supervisor `--port 9100 --workers 2`). 모니터에서 :8800 으로 잘못 검사.
+- nginx 호스트 :28080 → 403 은 Jenkins anonymous 응답 (정상).
+- 일부 검사 명령에서 git-bash path mangling (`/data/...` → `C:/Program Files/Git/data/...`) 발생 — WSL bash 우회로 회피.
+
+**Ollama 반출 자동화 구현**:
+
+| 파일 | 변경 |
+|---|---|
+| [scripts/offline-prefetch.sh](../scripts/offline-prefetch.sh) | `bundle_ollama` 단계 추가 — whitelist (`gemma4:e4b,qwen3-embedding:0.6b,bge-m3`) 기반 manifest+종속 blobs 추출 후 `ollama-models-<arch>.tar.gz` 생성. Python3 로 manifest 파싱 (jq 의존성 없음). WSL2 에서 Windows 호스트 모델 경로 자동 감지 (`/mnt/c/Users/*/.ollama/models` 탐색 → powershell.exe USERNAME → fallback). 플래그: `--no-ollama` / `--ollama-models` / `--ollama-dir` |
+| [scripts/offline-load.sh](../scripts/offline-load.sh) | tarball 분리 처리 — docker 이미지는 `docker load`, ollama-models 는 `~/.ollama/models/` 로 `tar -xzf --keep-newer-files`. WSL2 에서 호스트 경로 자동 감지. 플래그: `--no-ollama` / `--ollama-target` |
+| [scripts/build-wsl2.sh](../scripts/build-wsl2.sh) / [build-mac.sh](../scripts/build-mac.sh) | `--no-ollama` / `--ollama-models` / `--ollama-dir` 플래그 패스스루 |
+
+**산출물 (실증)**:
+```
+offline-assets/amd64/
+├── ttc-allinone-amd64-dev.tar.gz                       5.8 GB  sha256=ae58c629...
+├── gitlab-gitlab-ce-18.11.0-ce.0-amd64.tar.gz          1.7 GB  sha256=cff449fd...
+├── langgenius-dify-sandbox-0.2.10-amd64.tar.gz         176 MB  sha256=33fe350d...
+├── ollama-models-amd64.tar.gz                          8.8 GB  sha256=a0a9a884...
+└── *.meta (4개)
+```
+호스트의 7개 모델 중 whitelist **3개만 정확히 추출** (`models: gemma4:e4b qwen3-embedding:0.6b bge-m3`). 다른 4개 (gemma4:e2b, llama3.2-vision, mxbai-embed-large, qwen3.5:4b) 는 의도대로 제외.
+
+**B 머신 워크플로 (확정)**:
+```bash
+# A 머신
+bash scripts/build-wsl2.sh                    # 4 tarball 자동 생성
+
+# 반출 매체에 offline-assets/amd64/ 복사
+
+# B 머신
+bash scripts/offline-load.sh --arch amd64     # docker load 3 + ~/.ollama 추출
+docker compose -f docker-compose.wsl2.yaml up -d
+# → provision.sh 가 14 process + Dify import + Jenkins credential 자동 처리
+```
+
 
 ---
 
@@ -306,6 +369,7 @@ offline-assets/amd64/
 | 1 | 2026-04-27 (초안) | 신설 — §0~§10 11 섹션. 본 세션 setup-host 패치 / WSL2 네트워킹 / 자산 다운로드 / 빌드 3차 시도 / Dify·GitLab 정책 재확인 / 5 파일 변경 / 시스템 변경 / 다음 단계 / 학습사항 통합 |
 | 2 | 2026-04-27 (2차) | §7 분리 — 7.1 (1차 커밋) / 7.2 신설: 빌드 스크립트가 반출 tarball 까지 자동 처리 (옵션 A: build-{wsl2,mac}.sh 가 offline-prefetch.sh 자동 호출, `--no-tarball` 플래그 신설). README §3.1/§3.3/§3.4 동기화. 구현 근거: *외부망 작업의 자연스러운 종착지는 반출 패키지* (사용자 지적) |
 | 3 | 2026-04-27 (3차) | §7.3 신설 — 통합 빌드 1회차 실측에서 드러난 비효율 해소: Dockerfile 4 RUN 단계에 `--mount=type=cache` 추가 (apt / pip requirements / playwright / retrieve-svc venv) + `--no-cache-dir` 제거 + `rm -rf /var/lib/apt/lists/*` 제거 / offline-prefetch.sh 의 `docker buildx build` 를 `docker tag` + `docker save` 로 대체 (재빌드·165초 sending tarball 완전 제거). 사용자 지시: *"빌드중 드러난 문제점 지금 모두 수정해"* |
+| 4 | 2026-04-27 (4차) | §7.4 신설 — 컨테이너 부팅 검증 (run-wsl2 + provision.sh 자동 wiring 14/14 + Dify import + Jenkins credential 5개 + 5 Pipeline Job 등록 모두 통과) + Ollama 모델 반출 자동화 (offline-prefetch 에 whitelist 기반 manifest+blobs 추출, Python3 파싱, WSL2 호스트 경로 자동 감지, ollama-models-amd64.tar.gz 8.8 GB 산출 검증). 사용자 지시: *"ollama 모델은 모두 다운로드 완료한 상태다. 해당 모델의 폐쇄망 반출에 대해서도 대책을 마련해야할텐데?"* |
 
 ---
 

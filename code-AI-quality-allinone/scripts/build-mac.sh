@@ -30,12 +30,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLINONE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 인자 파싱: --no-tarball 만 가로채고 나머지는 docker build 로 통과
+# 인자 파싱: --no-tarball / --no-ollama 가로채기, 나머지는 docker build 로 통과
 WITH_TARBALL=true
+PREFETCH_ARGS=()
 DOCKER_BUILD_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-tarball) WITH_TARBALL=false; shift ;;
+        --no-ollama)  PREFETCH_ARGS+=("$1"); shift ;;
+        --ollama-models|--ollama-dir) PREFETCH_ARGS+=("$1" "$2"); shift 2 ;;
         *)            DOCKER_BUILD_ARGS+=("$1"); shift ;;
     esac
 done
@@ -88,8 +91,8 @@ DOCKER_BUILDKIT=1 docker build \
 echo "[build-mac] 빌드 완료: $IMAGE"
 
 if [[ "$WITH_TARBALL" == true ]]; then
-    echo "[build-mac] 반출 tarball 생성 단계로 진입 — bash scripts/offline-prefetch.sh --arch arm64"
-    bash "$SCRIPT_DIR/offline-prefetch.sh" --arch arm64 --tag "$TAG"
+    echo "[build-mac] 반출 tarball 생성 단계로 진입 — bash scripts/offline-prefetch.sh --arch arm64 ${PREFETCH_ARGS[*]:-}"
+    bash "$SCRIPT_DIR/offline-prefetch.sh" --arch arm64 --tag "$TAG" "${PREFETCH_ARGS[@]}"
     echo "[build-mac] 빌드 + 반출 패키지 생성 완료"
 else
     echo "[build-mac] --no-tarball 지정 — 반출 단계 건너뜀"

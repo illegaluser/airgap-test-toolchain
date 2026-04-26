@@ -41,6 +41,9 @@ while [[ $# -gt 0 ]]; do
         --tag)           TAG="$2";  shift 2 ;;
         --gitlab-image)  GITLAB_IMAGE="$2"; shift 2 ;;
         --sandbox-image) SANDBOX_IMAGE="$2"; shift 2 ;;
+        --no-ollama)     OLLAMA_BUNDLE=0; shift ;;
+        --ollama-models) OLLAMA_MODELS="$2"; shift 2 ;;
+        --ollama-dir)    OLLAMA_MODELS_DIR="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -158,9 +161,117 @@ built_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 META
 
 echo "  sandbox      : $SANDBOX_OUT_FILE ($SANDBOX_SIZE, sha256=$SANDBOX_SHA)"
+
+# ─── Ollama 모델 번들링 ──────────────────────────────────────────────────────
+# 호스트의 ~/.ollama/models/ 에서 *whitelist* 에 해당하는 모델만 추출 (manifest +
+# 그 manifest 가 참조하는 blobs). 폐쇄망에서 ~/.ollama/models/ 로 풀어 그대로 사용.
+#
+# whitelist override : OLLAMA_MODELS="gemma4:e4b,qwen3-embedding:0.6b,bge-m3"
+# models dir override: OLLAMA_MODELS_DIR=/path/to/models
+# 비활성화           : --no-ollama 또는 OLLAMA_BUNDLE=0
+OLLAMA_BUNDLE="${OLLAMA_BUNDLE:-1}"
+OLLAMA_MODELS="${OLLAMA_MODELS:-gemma4:e4b,qwen3-embedding:0.6b,bge-m3}"
+
+if [[ "$OLLAMA_BUNDLE" == "1" ]]; then
+    # 모델 디렉터리 자동 감지
+    if [[ -z "${OLLAMA_MODELS_DIR:-}" ]]; then
+        if [[ -f /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version; then
+            # WSL2 — Windows 호스트의 사용자 홈 검색.
+            # cmd.exe %USERNAME% 가 WSL 사용자명을 반환하는 경우가 있어 신뢰 불가 →
+            # /mnt/c/Users/*/.ollama/models 탐색으로 실재 경로 찾기.
+            OLLAMA_MODELS_DIR=""
+            for cand in /mnt/c/Users/*/.ollama/models; do
+                [[ -d "$cand" ]] && { OLLAMA_MODELS_DIR="$cand"; break; }
+            done
+            # fallback: powershell 로 Windows USERPROFILE 직접 조회
+            if [[ -z "$OLLAMA_MODELS_DIR" ]] && command -v powershell.exe >/dev/null 2>&1; then
+                WIN_USER="$(powershell.exe -NoProfile -Command '$env:USERNAME' 2>/dev/null | tr -d '\r\n' || true)"
+                [[ -n "$WIN_USER" ]] && OLLAMA_MODELS_DIR="/mnt/c/Users/${WIN_USER}/.ollama/models"
+            fi
+        else
+            OLLAMA_MODELS_DIR="$HOME/.ollama/models"
+        fi
+    fi
+
+    OLLAMA_OUT_FILE="${OUT_DIR}/ollama-models-${ARCH}.tar.gz"
+
+    if [[ ! -d "$OLLAMA_MODELS_DIR" ]]; then
+        echo "[prefetch] WARN: Ollama 모델 디렉터리 없음 — skip ($OLLAMA_MODELS_DIR)"
+    elif ! command -v python3 >/dev/null 2>&1; then
+        echo "[prefetch] WARN: python3 필요 (manifest 파싱) — Ollama 번들 skip" >&2
+    else
+        echo ""
+        echo "[prefetch] Ollama 모델 번들링: $OLLAMA_MODELS_DIR"
+        echo "  whitelist: $OLLAMA_MODELS"
+
+        STAGE="$(mktemp -d)"
+        mkdir -p "$STAGE/manifests" "$STAGE/blobs"
+        BUNDLED_OK=()
+        BUNDLED_MISS=()
+
+        IFS=',' read -ra _MODELS <<< "$OLLAMA_MODELS"
+        for spec in "${_MODELS[@]}"; do
+            # 'gemma4:e4b' → name=gemma4 tag=e4b. ':' 없으면 tag=latest
+            name="${spec%%:*}"
+            tag="${spec#*:}"
+            [[ "$name" == "$tag" ]] && tag="latest"
+            manifest_path="$OLLAMA_MODELS_DIR/manifests/registry.ollama.ai/library/$name/$tag"
+            if [[ ! -f "$manifest_path" ]]; then
+                BUNDLED_MISS+=("$spec")
+                continue
+            fi
+            # manifest 복사
+            mkdir -p "$STAGE/manifests/registry.ollama.ai/library/$name"
+            cp "$manifest_path" "$STAGE/manifests/registry.ollama.ai/library/$name/$tag"
+            # 종속 blobs 추출 (config + layers) — python3 로 파싱 (jq 불필요)
+            digests=$(python3 -c "
+import json, sys
+m = json.load(open(sys.argv[1]))
+out = []
+cfg = (m.get('config') or {}).get('digest')
+if cfg: out.append(cfg)
+for L in (m.get('layers') or []):
+    d = L.get('digest')
+    if d: out.append(d)
+print('\n'.join(out))
+" "$manifest_path" | sed 's/^sha256://')
+            for d in $digests; do
+                src="$OLLAMA_MODELS_DIR/blobs/sha256-$d"
+                if [[ -f "$src" ]]; then
+                    cp -n "$src" "$STAGE/blobs/" 2>/dev/null || true
+                fi
+            done
+            BUNDLED_OK+=("$spec")
+        done
+
+        if [[ ${#BUNDLED_OK[@]} -eq 0 ]]; then
+            echo "[prefetch] WARN: whitelist 어느 것도 호스트에 없음 — skip"
+            rm -rf "$STAGE"
+        else
+            echo "  포함: ${BUNDLED_OK[*]}"
+            [[ ${#BUNDLED_MISS[@]} -gt 0 ]] && echo "  누락: ${BUNDLED_MISS[*]} (호스트에서 ollama pull 후 재시도)"
+
+            (cd "$STAGE" && tar czf "$OLLAMA_OUT_FILE" manifests blobs)
+            rm -rf "$STAGE"
+
+            OLLAMA_SIZE=$(du -h "$OLLAMA_OUT_FILE" | cut -f1)
+            OLLAMA_SHA=$(sha256sum "$OLLAMA_OUT_FILE" | cut -d' ' -f1)
+            cat > "${OUT_DIR}/ollama-models-${ARCH}.meta" <<META
+type: ollama-models-bundle
+arch: $ARCH
+models: ${BUNDLED_OK[*]}
+source_dir: $OLLAMA_MODELS_DIR
+tarball: $(basename "$OLLAMA_OUT_FILE")
+size: $OLLAMA_SIZE
+sha256: $OLLAMA_SHA
+built_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+META
+            echo "  ollama-models: $OLLAMA_OUT_FILE ($OLLAMA_SIZE, sha256=$OLLAMA_SHA)"
+        fi
+    fi
+fi
+
 echo ""
-echo "[prefetch] 오프라인 머신 복원 (세 tarball 모두 load 필요):"
-echo "    docker load -i $OUT_FILE"
-echo "    docker load -i $GITLAB_OUT_FILE"
-echo "    docker load -i $SANDBOX_OUT_FILE"
-echo "  또는 일괄: bash scripts/offline-load.sh --arch $ARCH"
+echo "[prefetch] 오프라인 머신 복원:"
+echo "    bash scripts/offline-load.sh --arch $ARCH"
+echo "  (이미지 3개 + 있으면 ollama-models 자동 처리)"
