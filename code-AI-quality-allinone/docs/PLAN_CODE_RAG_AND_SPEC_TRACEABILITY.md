@@ -4,6 +4,9 @@
 > 02 코드 사전학습 파이프라인의 진화 방향에 대한 **살아있는 결정 로그** 다.
 > 새 의사결정·실험·구현 변경은 모두 [§11 변경 이력](#11-변경-이력) 에 누적한다.
 > 코드 변경은 git log 가 추적하므로, 여기에는 *왜* 와 *어떻게 결정했는가* 만 남긴다.
+>
+> **운영 레벨 런북** — 일자별 작업·테스트 계획·GO/NO-GO 게이트·리스크는
+> [EXECUTION_PLAN.md](EXECUTION_PLAN.md) 참조 (본 문서가 *무엇* 이라면, EXECUTION 은 *언제·어떻게*).
 
 ## 한 페이지 요약 (TL;DR)
 
@@ -35,6 +38,9 @@
 10. [용어집](#9-용어집)
 11. [구축 절차 (step-by-step)](#10-구축-절차-step-by-step) — **실제로 짓는 순서**
 12. [변경 이력](#11-변경-이력)
+
+> 운영 레벨 런북 — [EXECUTION_PLAN.md](EXECUTION_PLAN.md) (Day-0 점검 / 일자 캘린더 / 4-레이어 테스트 /
+> GO·NO-GO 게이트 / 리스크 레지스터).
 
 ---
 
@@ -139,7 +145,7 @@ flowchart TB
 | Dense vector | Qdrant (Dify 내장) + `qwen3-embedding` | "이 함수와 의미상 비슷한 함수" |
 | Sparse BM25 | Meilisearch | "이 심볼명·고유 식별자가 등장하는 청크" |
 | Graph | FalkorDB (Cypher) | "이 함수의 호출자·구현체·테스트" |
-| Rerank | TEI + `bge-reranker-v2-m3` | top-100 후보 중 진짜 관련 top-5 골라내기 |
+| Rerank | retrieve-svc 내장 sentence-transformers + `bge-reranker-v2-m3` | top-100 후보 중 진짜 관련 top-5 골라내기 |
 
 ### L2 · Project-Local KB + Canonical Reference — 2 층 (SI 제약)
 
@@ -283,7 +289,7 @@ flowchart TB
         Embed["🧠 Embed<br/>qwen3-embedding"]
     end
 
-    TEI["⚖️ TEI-rerank<br/>bge-reranker-v2-m3"]
+    Rerank["⚖️ rerank (sentence-transformers)<br/>bge-reranker-v2-m3<br/>※ retrieve-svc 내장"]
 
     GitLab -->|① clone| Jenkins
     Jenkins -->|② trigger| P02
@@ -297,7 +303,7 @@ flowchart TB
     Retrieve -->|⑨ sparse| Meili
     Retrieve -->|⑨ graph| Falkor
     Retrieve -->|⑩ embed| Embed
-    Retrieve -->|⑪ rerank| TEI
+    Retrieve -->|⑪ rerank in-process| Rerank
     Dify -->|judge| LLM
 ```
 
@@ -338,11 +344,10 @@ flowchart TB
         subgraph Existing["기존 ttc-allinone (~8 GB)"]
             Dify1["Dify · Postgres · Redis · Qdrant · Jenkins"]
         end
-        subgraph New["신규 (~3 GB)"]
+        subgraph New["신규 (~2.4 GB) — 모두 ttc-allinone 내부 program"]
             Meili1[":7700 Meilisearch · 0.4GB"]
             Falkor1[":6380 FalkorDB · 0.5GB"]
-            TEI1[":8081 TEI-rerank · 1.2GB"]
-            RSvc1[":9000 retrieve-svc · 0.3GB"]
+            RSvc1[":9000 retrieve-svc · 1.5GB<br/>(sentence-transformers + bge-reranker 내장)"]
         end
     end
 
@@ -378,10 +383,9 @@ sequenceDiagram
     autonumber
     participant J as Jenkins(04)
     participant D as Dify Workflow
-    participant R as retrieve-svc
+    participant R as retrieve-svc<br/>(rerank 내장)
     participant S as L1 stores<br/>(Qdrant·Meili·Falkor)
     participant O as Ollama (gemma4)
-    participant T as TEI-rerank
 
     J->>D: trigger (Sonar 이슈 1건)
     D->>O: 쿼리 임베딩 요청
@@ -396,8 +400,7 @@ sequenceDiagram
     S-->>R: 후보 청크들
 
     R->>R: RRF fusion → 100<br/>layer mix L2a (0.85) + L2c (0.15)
-    R->>T: rerank 100
-    T-->>R: 점수
+    R->>R: rerank 100 (sentence-transformers in-process)
     R->>R: top-5 압축 + retrieve quality 메트릭
     R-->>D: records[5] (source_layer 포함)
 
@@ -426,7 +429,7 @@ flowchart LR
     Job04["04 Job"] --> Dify --> ExtKB["External KB API"] --> RSvc["retrieve-svc"]
     RSvc --> Stores["{Qdrant · Meili · Falkor}"]
     RSvc --> Ollama2["Ollama (embed)"]
-    RSvc --> TEI2["TEI (rerank)"]
+    RSvc -.in-process.- Rerank2["sentence-transformers<br/>bge-reranker-v2-m3"]
     Dify --> LLM2["LLM (gemma4)"]
     Job02["02 Job"] -.적재.-> Stores
 ```
@@ -516,65 +519,60 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
                 └─────────┬───────┴────────┬─────────┘
                           │ (hybrid retrieve)
                           ▼
-                ┌──────────────────────────────┐
-                │  retrieve-svc (FastAPI)      │
-                │   POST /retrieval            │  ← Dify External KB API
-                │   ├ dense   (Qdrant)         │
-                │   ├ sparse  (Meilisearch)    │
-                │   ├ graph   (FalkorDB)       │
-                │   ├ RRF fusion → top-100     │
-                │   ├ rerank (TEI)  → top-5    │
-                │   └ layer mix L2a/L2b/L2c    │
-                └──────────────────────────────┘
-                          ▲                 │
-                          │                 ▼
-                ┌─────────────────┐   ┌──────────────────────┐
-                │ Dify (기존)     │   │ TEI (HF Text Embed   │
-                │ Workflow + LLM  │   │ Inference) 1 인스턴스│
-                │ orchestration   │──▶│  bge-reranker-v2-m3  │
-                │                 │   │  (또는 jina-rerank-v3)│
-                └─────────────────┘   └──────────────────────┘
+                ┌──────────────────────────────────────┐
+                │  retrieve-svc (FastAPI, supervisor)  │
+                │   POST /retrieval                    │  ← Dify External KB API
+                │   ├ dense   (Qdrant)                 │
+                │   ├ sparse  (Meilisearch)            │
+                │   ├ graph   (FalkorDB)               │
+                │   ├ RRF fusion → top-100             │
+                │   ├ rerank (in-process)              │ ← sentence-transformers
+                │   │   bge-reranker-v2-m3 → top-5     │   CrossEncoder
+                │   └ layer mix L2a/L2c                │
+                └──────────────────────────────────────┘
+                          ▲
+                          │ (같은 컨테이너 안 127.0.0.1:9000)
+                ┌─────────────────┐
+                │ Dify (기존)     │
+                │ Workflow + LLM  │
+                │ orchestration   │
+                └─────────────────┘
                           │
                           ▼
                 ┌─────────────────────────────────────┐
                 │ Ollama (host) — LLM + 임베딩 통합   │
-                │  • gemma4:26b-it-q4_K_M  (분석 LLM, M4 Pro) │
-                │     또는 gemma4:e4b      (분석 + enricher, RTX) │
-                │  • gemma4:e4b            (enricher 현행 유지) │
-                │  • qwen3-embedding:4b    (M4 Pro)   │
-                │     또는 qwen3-embedding:0.6b (RTX) │
+                │  • gemma4:e4b-it-q4_K_M             │
+                │      (분석 + enricher 공유, 양 머신 동일) │
+                │  • qwen3-embedding:0.6b             │
+                │  • (옵션) gemma4:26b-it-q4_K_M      │
+                │      (M4 Pro 야간 batch 만)         │
                 └─────────────────────────────────────┘
 ```
 
 핵심 포인트:
 
-- **Ollama 1개로 LLM + 임베딩 통합** 서빙. 별도 TEI-embed 컨테이너 불필요. Ollama 가 임베딩 모델
-  (`qwen3-embedding`) 도 정식 서빙하므로 운영 단순화.
-- **TEI 는 리랭커 전담** — Ollama 는 cross-encoder reranker 를 1급으로 다루지 못함. TEI 컨테이너 1개
-  로 충분 (~1.2GB).
-- **현행 자산 존중**: 02 enricher 의 `gemma4:e4b` 그대로 유지. 04 분석은 동일 family 안에서 메모리에
-  맞는 변형 (M4 Pro `gemma4:26b`, RTX `gemma4:e4b` 공유).
-- Ollama 는 M4 Pro 는 host native (Metal), RTX 4070 머신은 컨테이너 + nvidia-docker.
+- **단일 이미지 안 supervisor program** 으로 통합 — Meili / Falkor / retrieve-svc 4 개 (TEI 는
+  retrieve-svc 안 sentence-transformers 로 흡수).
+- **Ollama 1개로 LLM + 임베딩 통합** 서빙. host native (Mac Metal / Linux CUDA).
+- **현행 자산 존중**: 02 enricher 의 `gemma4:e4b` 그대로. 04 분석도 동일 모델 양 머신 공유.
 
 ### 6.3 컴포넌트 명세
 
-| 컴포넌트 | 이미지/바이너리 | 평상시 RAM | 피크 RAM | VRAM (옵션) | 포트 | 역할 |
-|---|---|---|---|---|---|---|
-| Dify (api+worker+nginx) | 기존 all-in-one | 4 GB | 6 GB | — | 5001 | Workflow + LLM orch |
-| Postgres | 기존 | 0.5 GB | 1 GB | — | 5432 | Dify metadata |
-| Redis | 기존 | 0.3 GB | 0.5 GB | — | 6379 | Dify queue |
-| Qdrant | 기존 | 1 GB | 2 GB | — | 6333 | Dense vectors (L1·dense) |
-| Jenkins | 기존 | 1 GB | 2 GB | — | 28080 | Pipeline runner |
-| **Meilisearch** | `getmeili/meilisearch:v1.10` | 0.4 GB | 1 GB | — | 7700 | BM25 sparse (L1·sparse) |
-| **FalkorDB** | `falkordb/falkordb:latest` | 0.5 GB | 2 GB | — | 6380 | Code KG (L1·graph) |
-| **TEI-rerank** | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.7` (또는 `cuda-1.7`) | 1 GB | 1.5 GB | 0.7 GB | 8081 | `bge-reranker-v2-m3` 또는 `jina-reranker-v3` |
-| (임베딩) | Ollama 통합 (`qwen3-embedding:4b` / `:0.6b`) | 0.6~3 GB | — | 옵션 | 11434 | host Ollama 와 공유 |
-| **retrieve-svc** | 자체 FastAPI (python:slim) | 0.3 GB | 0.5 GB | — | 9000 | hybrid retrieve + Dify Ext KB API |
-| Ollama | host native (Mac) / container (Linux) | 1 GB | 1.5 GB (host) | LLM + Embed 사이즈 | 11434 | LLM + 임베딩 통합 serving |
+| 컴포넌트 | 통합 방식 | 평상시 RAM | 피크 RAM | 포트 | 역할 |
+|---|---|---|---|---|---|
+| Dify (api+worker+nginx) | 기존 all-in-one | 4 GB | 6 GB | 5001 | Workflow + LLM orch |
+| Postgres | 기존 | 0.5 GB | 1 GB | 5432 | Dify metadata |
+| Redis | 기존 | 0.3 GB | 0.5 GB | 6379 | Dify queue |
+| Qdrant | 기존 | 1 GB | 2 GB | 6333 | Dense vectors (L1·dense) |
+| Jenkins | 기존 | 1 GB | 2 GB | 28080 | Pipeline runner |
+| **Meilisearch** | binary + supervisor | 0.4 GB | 1 GB | 7700 (내부) | BM25 sparse (L1·sparse) |
+| **FalkorDB** | redis module + supervisor | 0.5 GB | 2 GB | 6380 (내부) | Code KG (L1·graph) |
+| **retrieve-svc** | venv `/opt/retrieve-svc/.venv` + supervisor + 내장 sentence-transformers (bge-reranker-v2-m3) | 1.5 GB | 2 GB | 9000 (내부) | hybrid retrieve + Dify Ext KB API + rerank |
+| (임베딩) | host Ollama (`qwen3-embedding:0.6b`) | 0.6 GB | — | 11434 (host) | host Ollama 와 공유 |
+| Ollama | host native (Mac Metal) / container CUDA (RTX) | 1 GB | 1.5 GB | 11434 (host) | LLM + 임베딩 통합 serving |
 
-**굵게** 표시한 4개가 신규 추가 컴포넌트 (TEI-embed 는 Ollama 통합으로 제거됨). 기존 컴포넌트는 그대로
-유지. **임베딩은 Ollama 통합** — `qwen3-embedding:4b` (M4 Pro) 또는 `:0.6b` (RTX) 모델을 host Ollama
-가 LLM 과 함께 서빙. TEI 컨테이너는 리랭커 1개만 운영.
+**굵게** 표시한 3개가 신규 supervisor program (TEI 별도 program 제거). retrieve-svc 의 RAM 1.5 GB 는
+sentence-transformers + bge-reranker-v2-m3 (568M) 모델 로드 포함.
 
 ### 6.4 모델 선정 — 양 머신 통일 (운영 표준화)
 
@@ -639,7 +637,7 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
   Rerank   : bge-reranker-v2-m3
   Stores   : Qdrant + Meilisearch + FalkorDB
   Service  : retrieve-svc (FastAPI)
-  + TEI rerank
+  + sentence-transformers rerank (retrieve-svc 내장)
 
 차이 (throughput 만):
   M4 Pro      : OLLAMA_NUM_PARALLEL=3 (동시 처리)
@@ -660,23 +658,21 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
 |---|---|---|---|
 | OS | macOS + 백그라운드 | host | 8 GB |
 | Docker | Docker Desktop VM | host | 3 GB |
-| 컨테이너 그룹 1 | Dify api/worker/nginx + Postgres + Redis + Qdrant + Jenkins | container | 8 GB |
-| 컨테이너 그룹 2 | Meilisearch + FalkorDB + retrieve-svc | container | 3 GB |
+| 컨테이너 그룹 1 (기존 + 신규, ttc-allinone 단일 이미지) | Dify api/worker/nginx + Postgres + Redis + Qdrant + Jenkins + Meili + Falkor + retrieve-svc (rerank 내장) | 단일 컨테이너 | 11 GB |
 | 임베딩 | `qwen3-embedding:0.6b` (Ollama 통합) | host native | 0.6 GB |
-| 리랭커 | `bge-reranker-v2-m3` (TEI CPU) | container | 1.2 GB |
 | LLM (분석 + enricher 공유) | `gemma4:e4b-it-q4_K_M` (Metal) | **host native** | 5 GB |
 | 버퍼 (parallel=3 시 LLM ×3 컨텍스트) | KV cache 추가 | — | 6 GB |
-| 사용 합계 | | | **~24 / 48 GB** |
-| **여유** | (Phase 7 batch 또는 향후 확장용) | | **~24 GB** |
+| 사용 합계 | | | **~22.6 / 48 GB** |
+| **여유** | (Phase 7 batch 또는 향후 확장용) | | **~25 GB** |
 
 핵심 결정:
 
 - **양 머신 동일 모델** — `gemma4:e4b` 한 개로 분석·enricher 통합. RTX 머신과 결과 일관성 보장.
 - **Ollama 는 host native** 설치 (`brew install ollama`). Docker 안에선 Metal 가속 불가. 컨테이너
   에서는 `host.docker.internal:11434` 로 접근.
-- **임베딩은 Ollama 통합** — `qwen3-embedding:0.6b` 도 동일 Ollama 인스턴스가 서빙. TEI-embed
-  컨테이너 불필요.
-- **리랭커는 TEI 컨테이너** (Ollama 가 cross-encoder 미지원).
+- **임베딩은 Ollama 통합** — `qwen3-embedding:0.6b` 도 host Ollama 가 서빙.
+- **리랭커는 retrieve-svc 안 sentence-transformers** — Ollama 가 cross-encoder 미지원이지만 TEI
+  binary 도 prebuilt 없음. Python sentence-transformers 가 가장 깔끔.
 - **`OLLAMA_NUM_PARALLEL=3`**: M4 Pro 의 여유 메모리를 활용해 동시 이슈 3 건 처리 (throughput ↑,
   결과는 RTX 와 동일).
 - **`OLLAMA_MAX_LOADED_MODELS=1`**: e4b 한 개만 로드 (분석·enricher 공유라 swap 없음).
@@ -691,25 +687,23 @@ FalkorDB 를 hybrid 호출 → 리랭크 → 결과 반환을 처리한다. Dify
 
 **피크 시나리오** (04 인터랙티브, parallel=3):
 
-- 배경 11 GB + LLM 5 GB + KV cache 추가 6 GB + embed 0.6 GB + rerank 1.2 GB ≈ **24 GB**
-- 48 GB 안에 큰 여유 (24 GB) — 안전
+- 컨테이너 11 GB (rerank 내장) + LLM 5 GB + KV cache 6 GB + embed 0.6 GB ≈ **22.6 GB**
+- 48 GB 안에 큰 여유 (~25 GB) — 안전
 
 #### B. Intel 185H + RTX 4070 Laptop 8GB / 64GB RAM
 
-**제약**: VRAM 8GB 가 병목. LLM 5.5GB 를 GPU 에 올리면 임베딩/리랭커는 GPU 에 함께 못 올림 (불안정).
-시스템 RAM 은 64GB 로 풍족.
+**제약**: VRAM 8GB 가 병목. LLM 5GB 를 GPU 에 올리면 임베딩은 CPU. 리랭커는 컨테이너 안 CPU 추론.
+시스템 RAM 64GB 풍족.
 
 | 분류 | 항목 | 위치 | RAM | VRAM |
 |---|---|---|---|---|
 | OS | Linux/WSL2 + 백그라운드 | host | 6 GB | — |
 | Docker | docker daemon | host | 1 GB | — |
-| 컨테이너 그룹 1 | Dify 스택 + Postgres + Redis + Qdrant + Jenkins | container | 8 GB | — |
-| 컨테이너 그룹 2 | Meilisearch + FalkorDB + retrieve-svc | container | 3 GB | — |
-| 임베딩 | `qwen3-embedding:0.6b` (CPU, Ollama 또는 TEI) | container | 0.6 GB | 0 |
-| 리랭커 | `bge-reranker-v2-m3` (CPU, TEI) | container | 1.2 GB | 0 |
-| LLM (분석 + enricher 공유) | `gemma4:e4b-it-q4_K_M` (CUDA) — 분석/enricher 모두 같은 모델 | container | 1 GB | 5 GB |
-| 버퍼 | | — | 42 GB | 3 GB |
-| **합계** | | | **~22 / 64 GB · 42 GB 여유** | **5 / 8 GB · 3 GB 여유** |
+| 컨테이너 그룹 (ttc-allinone 단일 이미지) | Dify 스택 + PG + Redis + Qdrant + Jenkins + Meili + Falkor + retrieve-svc (rerank 내장) | 단일 컨테이너 | 11 GB | — |
+| 임베딩 | `qwen3-embedding:0.6b` (CPU, host Ollama) | host | 0.6 GB | 0 |
+| LLM (분석 + enricher 공유) | `gemma4:e4b-it-q4_K_M` (CUDA) | host (또는 컨테이너 + nvidia-docker) | 1 GB | 5 GB |
+| 버퍼 | | — | 51 GB | 3 GB |
+| **합계** | | | **~12.6 / 64 GB · 51 GB 여유** | **5 / 8 GB · 3 GB 여유** |
 
 핵심 결정:
 - **8GB VRAM 한계로 26b 못 돌림** (Q4 16GB > 8GB). 따라서 분석 LLM 과 enricher LLM 을 같은
@@ -759,144 +753,340 @@ retrieve-svc 의 `POST /retrieval` 처리:
    - Meilisearch (sparse top-50)
    - FalkorDB Cypher (이슈 함수의 N-hop callers/callees/test_for, top-30)
 4. **RRF fusion** (Reciprocal Rank Fusion, k=60) → 후보 ~100개로 합침.
-5. **TEI-rerank** 호출 (cross-encoder) → top-5 압축.
+5. **rerank** (retrieve-svc 안 sentence-transformers CrossEncoder + bge-reranker-v2-m3) → top-5 압축.
 6. Dify External KB API 응답 형식 (`records: [{content, score, title, metadata}]`) 으로 반환.
 7. 각 record 의 `metadata.source_layer` 에 `dense | sparse | graph | l2b | l2c` 표시 →
    04 의 citation 측정 시 layer 분리 가능.
 
-### 6.8 배포 — docker-compose 확장 예시
+### 6.8 배포 — 단일 이미지 통합 (ttc-allinone)
 
-기존 `docker-compose.mac.yaml` / `docker-compose.wsl2.yaml` 에 추가 서비스만 발췌.
+> **운영 모델 (절대 보존, 2026-04-27 정정)** — 본 시스템은 **단일 이미지 `ttc-allinone:<tag>`** +
+> supervisor 11+ 프로세스 + `docker save` → `.tar.gz` → 폐쇄망 `offline-load.sh` 패턴으로 운영된다.
+> 신규 컴포넌트는 *별도 컨테이너* 가 아니라 **이 단일 이미지 안의 supervisor program 으로 통합**.
 
-```yaml
-services:
-  meilisearch:
-    image: getmeili/meilisearch:v1.10
-    environment:
-      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
-      - MEILI_NO_ANALYTICS=true
-      - MEILI_ENV=production
-    volumes:
-      - ./data/meili:/meili_data
-    ports: ["7700:7700"]
-    deploy:
-      resources:
-        limits: { memory: 1g }
-    restart: unless-stopped
+#### 6.8.1 신규 컴포넌트 통합 매트릭스 (2026-04-27 밤 검증 후 보강)
 
-  falkordb:
-    image: falkordb/falkordb:latest
-    ports: ["6380:6379"]   # 기존 Dify Redis(6379) 와 충돌 회피
-    volumes:
-      - ./data/falkor:/var/lib/falkordb/data
-    deploy:
-      resources:
-        limits: { memory: 2g }
-    restart: unless-stopped
+| 컴포넌트 | 통합 방식 | 위치 | autostart |
+|---|---|---|---|
+| **Meilisearch** | 단일 Rust binary 다운로드 후 `/usr/local/bin/meilisearch` | supervisor `[program:meilisearch]` (priority 100, storage 그룹) | `true` (storage) |
+| **FalkorDB** | Redis module (`falkordb.so`) — *별도 redis 인스턴스* (포트 6380) | supervisor `[program:falkordb]` (priority 100) | `true` (storage) |
+| **retrieve-svc** | 별도 venv (`/opt/retrieve-svc/.venv`) + uvicorn. **bge-reranker-v2-m3 를 sentence-transformers 로 내장** (TEI 별도 program 불필요) | supervisor `[program:retrieve-svc]` (priority 400) | `false` (entrypoint 명시 start) |
+| **spec-svc** (Phase 7) | 별도 venv (`/opt/spec-svc/.venv`) + uvicorn | supervisor `[program:spec-svc]` (priority 500) | `false` |
 
-  # 임베딩: Ollama 통합 옵션 (권장)
-  #   ollama pull qwen3-embedding:4b   # M4 Pro
-  #   ollama pull qwen3-embedding:0.6b # RTX 4070
-  #   별도 컨테이너 불필요 — Ollama 1개가 LLM + Embed 모두 서빙.
-  #   Dify / retrieve-svc 는 http://host.docker.internal:11434/api/embeddings 호출.
+> **변경 (2026-04-27 검증)**: TEI 별도 program 제거. TEI 는 prebuilt binary 미제공 + arm64 multi-arch
+> 보장 X 라 통합 불안정. bge-reranker-v2-m3 (568M) 를 **retrieve-svc 안에서 sentence-transformers
+> CrossEncoder 로 직접 import**. Python 추론 ~100~200 ms/배치 — 본 워크로드에 충분.
+>
+> 결과: 신규 supervisor program **5 → 4 개** (Meili / Falkor / retrieve-svc / [Phase 7] spec-svc).
 
-  # 리랭커: Ollama 미지원이므로 TEI 필수
-  tei-rerank:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7   # RTX 4070: cuda-1.7 가능 (선택)
-    command:
-      - --model-id=BAAI/bge-reranker-v2-m3   # 또는 jinaai/jina-reranker-v3 (라이선스 결정 후)
-      - --port=80
-      - --max-client-batch-size=32
-    ports: ["8081:80"]
-    volumes:
-      - ./data/tei-cache:/data
-    environment:
-      - HF_HUB_OFFLINE=1   # 폐쇄망 — 모델 metadata 조회 시도 차단
-    deploy:
-      resources:
-        limits: { memory: 1500m }
-    restart: unless-stopped
+**포트 정책**:
+- 신규 7700 / 6380 / 9000 / 9001 모두 **컨테이너 내부 전용** (`127.0.0.1`).
+- 호스트 노출은 기존 28080 (Jenkins) / 28081 (Dify gateway) / 29000 (SonarQube) 만.
 
-  retrieve-svc:
-    build: ./retrieve-svc
-    environment:
-      - QDRANT_URL=http://qdrant:6333
-      - DIFY_DATASET_ID=${DIFY_DATASET_ID}
-      - MEILI_URL=http://meilisearch:7700
-      - MEILI_KEY=${MEILI_MASTER_KEY}
-      - FALKOR_URL=redis://falkordb:6379
-      - OLLAMA_URL=http://host.docker.internal:11434     # 임베딩 호출 (Ollama 통합 시)
-      - OLLAMA_EMBED_MODEL=qwen3-embedding:4b            # RTX: qwen3-embedding:0.6b
-      - TEI_RERANK_URL=http://tei-rerank/rerank
-      - LAYER_WEIGHTS=l2a=0.85,l2c=0.15   # SI 격리: l2b 항목 없음 (cross-project 금지)
-      - RRF_K=60
-      - TOP_N_PER_PATH=50
-      - TOP_K_FINAL=5
-    ports: ["9000:9000"]
-    depends_on: [meilisearch, falkordb, tei-rerank]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # Linux 에서 host Ollama 접근
-    deploy:
-      resources:
-        limits: { memory: 512m }
-    restart: unless-stopped
+#### 6.8.2 Dockerfile 추가 (발췌)
+
+기존 [Dockerfile](../Dockerfile) 의 Stage 3 (런타임) 안에 추가:
+
+```dockerfile
+# ─────────────────────────────────────────────────────────────
+# Meilisearch (단일 binary, BM25 sparse 인덱스) — 폐쇄망 패턴
+# 외부망에서 사전 다운로드한 binary 를 COPY (curl-during-build X).
+# 각 머신은 자기 native arch 의 binary 한 개만 보유 → glob 으로 단일 매칭.
+# ─────────────────────────────────────────────────────────────
+COPY offline-assets/meilisearch/meilisearch-linux-* /usr/local/bin/meilisearch
+RUN chmod +x /usr/local/bin/meilisearch && /usr/local/bin/meilisearch --version
+
+# ─────────────────────────────────────────────────────────────
+# FalkorDB (Redis module) — multi-stage COPY (Debian 호환 binary 보장)
+# GitHub releases 는 alpine/amazonlinux/arm64v8 binary 만 제공 → Debian 호환 X.
+# 따라서 Dify/SonarQube 와 동일 패턴으로 공식 Docker 이미지에서 .so 추출.
+# 별도 redis 인스턴스 (포트 6380) 로 운영하여 Dify redis(6379) 와 데이터 격리.
+# ─────────────────────────────────────────────────────────────
+# (Stage 1 영역에 추가 — dify-api-src 등과 같은 위치)
+# FROM falkordb/falkordb:latest AS falkordb-src
+
+# (Stage 3 런타임 안에서)
+COPY --from=falkordb-src /var/lib/falkordb/bin/falkordb.so /usr/local/lib/falkordb.so
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# ─────────────────────────────────────────────────────────────
+# bge-reranker-v2-m3 모델 weight (sentence-transformers 가 retrieve-svc 안에서 로드)
+# 빌드 컨텍스트의 offline-assets/rerank-models/ 에 사전 다운로드된 weight 필요
+# ─────────────────────────────────────────────────────────────
+COPY offline-assets/rerank-models/bge-reranker-v2-m3 /opt/rerank-models/bge-reranker-v2-m3
+
+# ─────────────────────────────────────────────────────────────
+# retrieve-svc (FastAPI) — Dify External KB API 어댑터 + 내장 rerank
+# 별도 venv 로 dify-api 와 의존성 격리 (dify-api 가 /opt/dify-api/api/.venv 쓰는 패턴 동일)
+# ─────────────────────────────────────────────────────────────
+COPY retrieve-svc /opt/retrieve-svc
+RUN /usr/local/bin/python3 -m venv /opt/retrieve-svc/.venv && \
+    /opt/retrieve-svc/.venv/bin/pip install --no-cache-dir \
+        -r /opt/retrieve-svc/requirements.txt
+
+# (Phase 7 활성화 시) spec-svc — Spec ↔ Code Traceability (별도 venv)
+# COPY spec-svc /opt/spec-svc
+# RUN /usr/local/bin/python3 -m venv /opt/spec-svc/.venv && \
+#     /opt/spec-svc/.venv/bin/pip install --no-cache-dir \
+#         -r /opt/spec-svc/requirements.txt
 ```
 
-### 6.9 폐쇄망 모델 weight 반입 절차
+> **TEI 제거 사유** (2026-04-27 검증) — HuggingFace TEI 는 prebuilt standalone binary 를 제공하지
+> 않는다 ([GitHub Issue #769](https://github.com/huggingface/text-embeddings-inference/issues/769)).
+> Docker 이미지 또는 source build (Rust toolchain) 만 가능. arm64 multi-arch 정식 보장도 없음.
+> bge-reranker-v2-m3 (568M) 는 sentence-transformers `CrossEncoder` 로 100~200 ms/배치 추론
+> 가능 — retrieve-svc 안에 내장하는 게 깔끔하다.
 
-> **양 머신 동일** — 한 번 다운받은 bundle 을 두 머신에 똑같이 적용. 분기 없음.
+#### 6.8.3 supervisord.conf 추가 (발췌)
 
-#### 외부망 PC (한 번만)
+기존 [supervisord.conf](../scripts/supervisord.conf) 의 priority 100 그룹과 priority 400 (nginx)
+사이에 program 4 개 추가 (TEI 별도 program 없음 — retrieve-svc 안에 내장):
+
+```ini
+; ────────────────────────────────────────────────────────────
+; Meilisearch (priority 100 — storage 그룹)
+; ────────────────────────────────────────────────────────────
+[program:meilisearch]
+; MEILI_MASTER_KEY 는 entrypoint 가 /data/secrets/meili-key 에 generate-once
+; (Dify SECRET_KEY 패턴과 동일) 후 export. supervisord 가 그 값을 받는다.
+command=/usr/local/bin/meilisearch
+    --db-path /data/meili
+    --http-addr 127.0.0.1:7700
+    --env production
+    --no-analytics
+    --master-key %(ENV_MEILI_MASTER_KEY)s
+priority=100
+autostart=true
+autorestart=unexpected
+stdout_logfile=/data/logs/meilisearch.log
+stderr_logfile=/data/logs/meilisearch.err.log
+
+; ────────────────────────────────────────────────────────────
+; FalkorDB — 별도 redis 인스턴스 (6380) + falkordb.so 모듈
+; ────────────────────────────────────────────────────────────
+[program:falkordb]
+command=/usr/bin/redis-server
+    --dir /data/falkor
+    --bind 127.0.0.1
+    --port 6380
+    --loadmodule /usr/local/lib/falkordb.so
+    --appendonly yes
+    --dbfilename falkor.rdb
+user=redis
+priority=100
+autostart=true
+autorestart=unexpected
+stdout_logfile=/data/logs/falkordb.log
+stderr_logfile=/data/logs/falkordb.err.log
+
+; ────────────────────────────────────────────────────────────
+; retrieve-svc (priority 400) — Dify External KB API 어댑터 + 내장 rerank
+; bge-reranker-v2-m3 를 sentence-transformers 로 import (별도 program 없음)
+; entrypoint 가 storage 헬스체크 후 명시 start (dify-api 패턴 동일)
+; ────────────────────────────────────────────────────────────
+[program:retrieve-svc]
+command=/opt/retrieve-svc/.venv/bin/uvicorn app.main:app
+    --host 127.0.0.1
+    --port 9000
+    --workers 2
+directory=/opt/retrieve-svc
+priority=400
+autostart=false
+autorestart=unexpected
+startsecs=15
+environment=
+    PYTHONPATH="/opt/retrieve-svc",
+    QDRANT_URL="http://127.0.0.1:6333",
+    MEILI_URL="http://127.0.0.1:7700",
+    MEILI_KEY="%(ENV_MEILI_MASTER_KEY)s",
+    FALKOR_URL="redis://127.0.0.1:6380",
+    OLLAMA_URL="http://host.docker.internal:11434",
+    OLLAMA_EMBED_MODEL="qwen3-embedding:0.6b",
+    RERANK_MODEL_PATH="/opt/rerank-models/bge-reranker-v2-m3",
+    LAYER_WEIGHTS="l2a=0.85,l2c=0.15",
+    RRF_K="60",
+    TOP_N_PER_PATH="50",
+    TOP_K_FINAL="5",
+    HF_HUB_OFFLINE="1",
+    TRANSFORMERS_OFFLINE="1"
+stdout_logfile=/data/logs/retrieve-svc.log
+stderr_logfile=/data/logs/retrieve-svc.err.log
+
+; (Phase 7 활성화 시) spec-svc — priority 500
+; [program:spec-svc]
+; command=/opt/spec-svc/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9001
+; directory=/opt/spec-svc
+; autostart=false  ; entrypoint 명시 start
+; environment=
+;     PYTHONPATH="/opt/spec-svc",
+;     RETRIEVE_SVC_URL="http://127.0.0.1:9000",
+;     OLLAMA_URL="http://host.docker.internal:11434",
+;     ...
+```
+
+#### 6.8.4 entrypoint.sh 보강
+
+기존 [entrypoint.sh](../scripts/entrypoint.sh) 가 storage 헬스체크 후 dify-api 를 명시 start 하는
+패턴에, **MEILI 키 generate-once + retrieve-svc 명시 start** 추가:
 
 ```bash
-# Ollama 모델 (LLM + 임베딩 통합)
-ollama pull gemma4:e4b-it-q4_K_M         # 분석 + enricher 공유 (현행이면 skip)
-ollama pull qwen3-embedding:0.6b         # 임베딩
+# entrypoint.sh 추가 부분 (발췌)
 
-# TEI 리랭커 (HF 직접)
+# (1) MEILI_MASTER_KEY generate-once (Dify SECRET_KEY 패턴 동일)
+mkdir -p /data/secrets
+if [ ! -s /data/secrets/meili-key ]; then
+    head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > /data/secrets/meili-key
+fi
+export MEILI_MASTER_KEY="$(cat /data/secrets/meili-key)"
+
+# (2) Storage 헬스체크 (priority=100 autostart 됐음)
+wait_for_url "http://127.0.0.1:7700/health" 60 "meilisearch"
+redis-cli -p 6380 ping > /dev/null   # FalkorDB
+
+# (3) retrieve-svc 시작 (sentence-transformers 모델 로드 ~10~20 초)
+supervisorctl -c /etc/supervisor/supervisord.conf start retrieve-svc
+wait_for_url "http://127.0.0.1:9000/health" 60 "retrieve-svc"
+
+# (4) 이후 dify-plugin-daemon → dify-api 기존 시퀀스 진행
+
+# (Phase 7 활성화 시) spec-svc 시작
+# supervisorctl start spec-svc
+# wait_for_url "http://127.0.0.1:9001/health" 30 "spec-svc"
+```
+
+#### 6.8.5 데이터 디렉터리 (볼륨)
+
+기존 `/data` 볼륨에 신규 디렉터리만 추가:
+
+```text
+/data/
+├── pg/                  (기존)
+├── redis/               (기존)
+├── qdrant/              (기존)
+├── jenkins/, dify/      (기존)
+├── logs/                (기존, supervisor 로그 + 신규 5 개 추가)
+├── meili/               ← 신규 (Meilisearch DB)
+├── falkor/              ← 신규 (FalkorDB AOF/RDB)
+└── knowledges/          (기존)
+```
+
+**bge-reranker-v2-m3 weight (`/opt/rerank-models/`) 는 이미지에 포함** → 컨테이너 재시작 후에도
+그대로. retrieve-svc 가 sentence-transformers 로 직접 import. 별도 볼륨 불필요.
+
+**MEILI_MASTER_KEY 는 `/data/secrets/meili-key`** 에 entrypoint 가 generate-once. 첫 빌드 후 첫
+부팅에서 자동 생성, 이후 빌드는 그대로 재사용. 운영 중 변경 시 파일 삭제 → 재기동.
+
+#### 6.8.6 빌드 → tar → 반입 흐름 (변경 없음)
+
+```text
+[외부망]
+  scripts/download-plugins.sh           ← Jenkins / Dify plugin (기존)
+  scripts/offline-prefetch.sh (보강)     ← bge-reranker-v2-m3 weight 다운로드 (Meili/Falkor binary 는 Dockerfile RUN curl 이 받음)
+  scripts/build-{mac,wsl2}.sh            ← 단일 이미지 빌드
+  docker save ttc-allinone:<tag> | gzip > ttc-allinone.tar.gz
+        ↓ 사내 보안 절차로 반입
+[폐쇄망]
+  scripts/offline-load.sh                ← docker load
+  scripts/run-{mac,wsl2}.sh              ← 단일 컨테이너 기동
+        ↓
+  ttc-allinone 컨테이너 1 개 — 15 프로세스 (기존 11 + 신규 4) 가 supervisor 로 운영
+```
+
+추가 컨테이너 0. 추가 docker-compose 서비스 0.
+
+### 6.9 외부망 빌드 + 폐쇄망 반입 절차
+
+> **운영 모델** — *모든 binary·모델·코드는 이미지 빌드 시점에 통합* 된다. 폐쇄망에서는 `docker load`
+> + 컨테이너 기동만. 별도 마운트·다운로드 0.
+
+#### 6.9.1 외부망 PC — 빌드 컨텍스트 준비
+
+```bash
+cd code-AI-quality-allinone/
+
+# (1) Jenkins / Dify plugin (기존)
+bash scripts/download-plugins.sh
+
+# (2) 신규 — bge-reranker-v2-m3 weight 사전 다운로드 (retrieve-svc 안 sentence-transformers 가 로드)
+mkdir -p offline-assets/rerank-models
 huggingface-cli download BAAI/bge-reranker-v2-m3 \
-  --local-dir ./bundle/models/bge-reranker-v2-m3
+  --local-dir offline-assets/rerank-models/bge-reranker-v2-m3
 
-# (옵션) Phase 7 야간 batch 에서 M4 Pro 가 활용할 수 있는 큰 LLM
-# ollama pull gemma4:26b-it-q4_K_M       # 약 16GB 추가 — 필수 아님
+# (3) Ollama 모델 — host 측. 빌드 컨텍스트와 무관, 별도 반입.
+ollama pull gemma4:e4b-it-q4_K_M
+ollama pull qwen3-embedding:0.6b
+# (옵션) M4 Pro Phase 7 야간 batch 용
+# ollama pull gemma4:26b-it-q4_K_M
+
+# (4) Ollama 모델 export (호스트로 반입할 디렉터리)
+mkdir -p offline-assets/ollama-models
+cp -r ~/.ollama/models/{blobs,manifests} offline-assets/ollama-models/
 ```
 
-#### 반입
+> Meilisearch / FalkorDB 의 *binary* 는 Dockerfile 의 `RUN curl` 이 빌드 시점에 받음. 인터넷 접근
+> 가능한 외부망 PC 에서 빌드. 폐쇄망에선 *완성된 이미지* 만 사용. bge-reranker-v2-m3 모델 weight 는
+> P0.2 에서 다운로드한 디렉터리를 Dockerfile 이 `COPY`.
 
-사내 보안 절차 (USB / 사내 파일 서버) 로 `bundle/` 디렉터리 이전.
-
-#### 양 머신 공통 적용
+#### 6.9.2 외부망 PC — 이미지 빌드
 
 ```bash
-# Ollama 모델
+# 단일 이미지 빌드 (기존 절차 그대로)
+bash scripts/build-mac.sh        # macOS arm64
+# 또는
+bash scripts/build-wsl2.sh       # Linux/WSL2 amd64
+
+# tar 로 export
+docker save ttc-allinone:mac-dev | gzip > offline-assets/amd64/ttc-allinone.tar.gz
+# (또는 arm64 별도)
+```
+
+이미지 크기 예상: 7~9 GB → **8.5~10.5 GB** (bge-reranker weight 1.2GB + Meili/Falkor binary +
+sentence-transformers + retrieve-svc venv 추가). TEI 별도 binary 제거로 ~150MB 절감.
+
+#### 6.9.3 사내 반입
+
+| 산출물 | 크기 | 반입 방법 |
+|---|---|---|
+| `ttc-allinone-{arch}.tar.gz` | ~9~11 GB | USB / 사내 파일 서버 |
+| `gitlab-ce-{arch}.tar.gz` | ~5 GB (기존) | 동일 |
+| `dify-sandbox-{arch}.tar.gz` | ~1 GB (기존) | 동일 |
+| `ollama-models/` | ~6~10 GB | 동일 (host 측 적용) |
+
+#### 6.9.4 폐쇄망 머신 — 적용 (양 머신 동일)
+
+```bash
+cd code-AI-quality-allinone/
+
+# (1) 이미지 로드 (기존 절차)
+bash scripts/offline-load.sh --arch amd64
+
+# (2) Ollama 모델 적용 (host 측)
 mkdir -p ~/.ollama
-cp -r bundle/ollama-models/{blobs,manifests} ~/.ollama/models/
-ollama list   # gemma4:e4b, qwen3-embedding:0.6b 확인
+cp -r offline-assets/ollama-models/* ~/.ollama/models/
+ollama list   # gemma4:e4b-it-q4_K_M, qwen3-embedding:0.6b 확인
 
-# TEI 캐시
-mkdir -p ./data/tei-cache
-cp -r bundle/models/bge-reranker-v2-m3 ./data/tei-cache/
-
-# 환경변수 (양 머신 공통)
+# (3) Ollama 환경변수 — 머신별 차이 1 줄
+# 공통:
 export OLLAMA_MAX_LOADED_MODELS=1
-export HF_HUB_OFFLINE=1
-
-# 머신별 차이 (단 1 줄)
 # M4 Pro :  export OLLAMA_NUM_PARALLEL=3
 # RTX    :  export OLLAMA_NUM_PARALLEL=1
+
+# (4) 컨테이너 기동 (기존 절차)
+bash scripts/run-mac.sh       # 또는 run-wsl2.sh
 ```
 
-#### 머신별 Ollama 기동 차이
+#### 6.9.5 머신별 Ollama 기동 차이
 
 | 머신 | 방식 | 비고 |
 |---|---|---|
 | **M4 Pro** | host native (`brew install ollama`, `ollama serve`) | Docker 안 Metal 가속 불가 |
 | **RTX 4070** | host native 또는 컨테이너 + nvidia-docker | 컨테이너 모드 시 `~/.ollama` 를 호스트에서 마운트하면 모델 공유 |
 
-#### 검증 (양 머신 동일 명령)
+#### 6.9.6 검증 (양 머신 동일 명령)
 
 ```bash
-# LLM 호출
+# LLM 호출 (호스트 Ollama 직접)
 curl http://localhost:11434/api/generate -d '{
   "model": "gemma4:e4b-it-q4_K_M",
   "prompt": "Explain Python decorators in 3 sentences."
@@ -908,15 +1098,17 @@ curl http://localhost:11434/api/embeddings -d '{
   "prompt": "def authenticate(user, password):"
 }'
 
-# 리랭커 호출 (TEI)
-curl http://localhost:8081/rerank -X POST -H "Content-Type: application/json" -d '{
-  "query": "user authentication",
-  "texts": ["def login(user, pw):", "def calculate_tax(amount):"]
-}'
+# 리랭커는 retrieve-svc 안에 in-process 라 별도 endpoint 없음. retrieve-svc /retrieval 호출 시
+# 자동으로 rerank 가 적용된다. 단독 검증은 retrieve-svc 의 디버그 endpoint /rerank-debug 로
+# (config.DEBUG=true 시만 노출).
+
+# retrieve-svc 검증 (컨테이너 안)
+docker exec ttc-allinone curl -X POST http://127.0.0.1:9000/retrieval \
+  -H "Content-Type: application/json" \
+  -d '{"knowledge_id":"code-kb-test","query":"login","retrieval_setting":{"top_k":3}}'
 ```
 
-> 양 머신에서 **위 3개 응답이 동일 형식 + 같은 차원/스키마** 여야 함. 결과 값 자체는 양자화 미세
-> 차이로 ε 수준 다를 수 있으나 의미상 동일.
+> 양 머신에서 **3 개 응답이 동일 스키마** 여야 함. 결과 값 자체는 양자화 ε 수준 차이만.
 
 ### 6.10 폴백·축소 시나리오 (degradation)
 
@@ -924,12 +1116,12 @@ curl http://localhost:8081/rerank -X POST -H "Content-Type: application/json" -d
 
 | 레벨 | 조치 | 효과 |
 |---|---|---|
-| L1 | `LAYER_WEIGHTS=l2a=1.0` (canonical off) | L2c 무시. 초기 단계 기본값. ※ L2b 는 SI 격리로 *항상* off. |
-| L2 | `DISABLE_GRAPH=1` (FalkorDB 호출 skip) | 구조 신호 손실. dense+sparse 만. |
-| L3 | `DISABLE_RERANK=1` (TEI-rerank skip) | RRF top-K 직접 사용. 정밀도 ↓. |
-| L4 | LLM 모델 다운그레이드 (Modelfile 교체) | 14B → 7B → 3B. 추론 속도 ↑, 품질 ↓. |
-| L5 | `DISABLE_SPARSE=1` (Meilisearch skip) | dense only. 현재 구조와 동급. |
-| L6 | retrieve-svc 자체 down → Dify Workflow 가 기존 내장 retrieve 로 fallback | "최후의 보루". 청크 인덱싱은 Dify Dataset 에 그대로 있음. |
+| L1 | `LAYER_WEIGHTS=l2a=1.0` (canonical off) | L2c 무시. 초기 단계 기본값. ※ L2b 는 SI 격리로 *항상* off. (`supervisorctl restart retrieve-svc`) |
+| L2 | `DISABLE_GRAPH=1` retrieve-svc env + `supervisorctl stop falkordb` | 구조 신호 손실. dense+sparse 만. |
+| L3 | `DISABLE_RERANK=1` retrieve-svc env (in-process rerank skip) | RRF top-K 직접 사용. 정밀도 ↓. |
+| L4 | LLM 모델 다운그레이드 (host Ollama Modelfile 교체) | e4b → 더 작은 모델. 추론 속도 ↑, 품질 ↓. |
+| L5 | `DISABLE_SPARSE=1` retrieve-svc env + `supervisorctl stop meilisearch` | dense only. 현재 구조와 동급. |
+| L6 | `supervisorctl stop retrieve-svc` → Dify Workflow 가 기존 내장 retrieve 로 fallback | "최후의 보루". 청크 인덱싱은 Dify Dataset 에 그대로 있음. |
 
 각 레벨은 *독립적 ON/OFF*. 즉 L3 만 끄고 L2 는 살릴 수 있음.
 
@@ -952,8 +1144,9 @@ curl http://localhost:8081/rerank -X POST -H "Content-Type: application/json" -d
 - **PRD 큰 경우 (L4)**: spec ingestion 이 LLM 호출 다수 → 100+ requirements PRD 는 batch 시간이
   길어짐. M4 Pro 26b 기준 100 reqs ≈ 75~125분. RTX e4b 기준 25~40분 (작은 모델이 오히려 빠름 —
   단 판정 신뢰도는 26b 가 우위).
-- **HF TEI 의 폐쇄망 첫 부팅**: `HF_HUB_OFFLINE=1` 미설정 시 metadata 조회 시도로 30~60초 멈춤
-  → timeout 후 정상 진행. 환경변수 설정으로 회피.
+- **sentence-transformers 폐쇄망 첫 로드**: retrieve-svc 의 `HF_HUB_OFFLINE=1` /
+  `TRANSFORMERS_OFFLINE=1` 환경변수가 supervisord.conf 에 명시되어 있어 metadata 조회 시도 차단.
+  모델 weight 는 이미지 안 `/opt/rerank-models/bge-reranker-v2-m3` 에 사전 적재.
 
 ### 6.12 즉시 점검 체크리스트 (P1.6 착수 전)
 
@@ -961,23 +1154,39 @@ curl http://localhost:8081/rerank -X POST -H "Content-Type: application/json" -d
 
 - [ ] **Docker memory limit**: Mac 은 Docker Desktop 설정에서 메모리 *최소 24GB* 할당 (`Settings →
       Resources → Memory`). WSL2 는 `~/.wslconfig` 에 `memory=56GB`.
-- [ ] **외부망 모델 다운로드 + 반입** (§6.9 참조, **양 머신 동일**):
-      - `gemma4:e4b-it-q4_K_M` (현행이면 skip)
-      - `qwen3-embedding:0.6b`
-      - `bge-reranker-v2-m3` (또는 라이선스 OK 시 `jina-reranker-v3`)
-      - (선택) `gemma4:26b-it-q4_K_M` — Phase 7 야간 batch 옵션. M4 Pro 만 활용 가능, 16GB 추가.
-- [ ] **포트 충돌 확인**: 7700 (Meili), 6380 (Falkor — 기존 6379 와 충돌 회피), 8081 (TEI rerank),
-      9000 (retrieve-svc), 11434 (Ollama 기존) 사용 가능.
-- [ ] **Ollama host 설치 (Mac)** 또는 **nvidia-docker 동작 (RTX 4070)**.
-- [ ] **Ollama 임베딩 모델 동작 확인**: `ollama pull qwen3-embedding:0.6b` + `/api/embeddings` 호출
-      테스트 (§6.9 검증 스크립트).
-- [ ] **환경변수 설정** (양 머신 공통 + 차이 1 줄):
-      - 공통: `OLLAMA_MAX_LOADED_MODELS=1`, `HF_HUB_OFFLINE=1`
-      - **M4 Pro**: `OLLAMA_NUM_PARALLEL=3` (여유 메모리 활용)
-      - **RTX 4070**: `OLLAMA_NUM_PARALLEL=1` (VRAM 한계로 직렬)
-- [ ] **Dify 버전 확인**: External Knowledge API 지원은 0.15+. 현재 사용 중 1.13.3 은 OK.
-- [ ] **리랭커 라이선스 결정** (§7 미해결 항목): bge (Apache 2.0, default) vs jina-v3 (CC-BY-NC,
-      비상용 한정). 본 시스템의 사용 범위 (사내 R&D / 상용 제품 임베드) 에 따라 확정.
+**외부망 빌드 단계** (P1.6 빌드 머신):
+
+- [ ] **`scripts/download-plugins.sh` 정상 동작** (Jenkins / Dify plugin — 기존)
+- [ ] **신규 binary 다운로드 검증** (Dockerfile 의 RUN curl 단계):
+      - Meilisearch v1.10.3 (`linux-amd64` / `linux-aarch64`)
+      - FalkorDB v4.0.10 (`falkordb.so`)
+- [ ] **bge-reranker-v2-m3 weight 사전 다운로드**: `offline-assets/rerank-models/bge-reranker-v2-m3`
+      디렉터리 확보 (sentence-transformers 가 retrieve-svc 안에서 import)
+- [ ] **Ollama 모델 export**: `gemma4:e4b-it-q4_K_M`, `qwen3-embedding:0.6b` (host 측)
+      - (선택) `gemma4:26b-it-q4_K_M` — Phase 7 옵션, M4 Pro 만
+- [ ] **이미지 빌드**: `bash scripts/build-mac.sh` (또는 wsl2) — 결과 `ttc-allinone:<tag>` ~9~11 GB
+- [ ] **tar export**: `docker save | gzip > offline-assets/{arch}/ttc-allinone.tar.gz`
+
+**폐쇄망 적용 단계**:
+
+- [ ] **Docker memory limit**: Mac 은 Docker Desktop 메모리 *최소 24GB*. WSL2 는 `~/.wslconfig` 에
+      `memory=56GB`.
+- [ ] **이미지 로드**: `bash scripts/offline-load.sh --arch {amd64|arm64}`
+- [ ] **Ollama 모델 적용** (host 측): `~/.ollama/models/` 에 복사 + `ollama list` 확인
+- [ ] **환경변수**:
+      - 공통: `OLLAMA_MAX_LOADED_MODELS=1` (host), `HF_HUB_OFFLINE=1` (이미 supervisord.conf 에)
+      - **M4 Pro**: `OLLAMA_NUM_PARALLEL=3`
+      - **RTX 4070**: `OLLAMA_NUM_PARALLEL=1`
+- [ ] **컨테이너 기동**: `bash scripts/run-{mac,wsl2}.sh`
+- [ ] **컨테이너 내부 healthcheck**:
+      - `docker exec ttc-allinone curl -s http://127.0.0.1:7700/health` (Meilisearch)
+      - `docker exec ttc-allinone redis-cli -p 6380 ping` (FalkorDB)
+      - `docker exec ttc-allinone curl -s http://127.0.0.1:9000/health` (retrieve-svc)
+      - `docker exec ttc-allinone supervisorctl status retrieve-svc` (RUNNING + rerank 모델 로드 OK)
+- [ ] **Ollama host 호출 (컨테이너 → 호스트)**: `docker exec ttc-allinone curl -s
+      http://host.docker.internal:11434/api/tags` 응답 확인
+- [ ] **Dify 버전**: External Knowledge API 지원 0.15+ (현재 1.13.3 OK).
+- [ ] **리랭커 라이선스 결정** (§7): bge (Apache 2.0) vs jina-v3 (CC-BY-NC, 비상용).
 
 ---
 
@@ -1085,7 +1294,7 @@ curl http://localhost:8081/rerank -X POST -H "Content-Type: application/json" -d
 | Phase | 기간 | 핵심 산출물 |
 |---|---|---|
 | 0 · 사전 준비 (외부망) | 0.5~1일 | `bundle/` (모델·이미지·wheels) |
-| 1 · 인프라 기동 | 0.5일 | Meili + Falkor + TEI-rerank healthy |
+| 1 · 인프라 기동 | 0.5일 | Meili + Falkor + retrieve-svc (rerank 내장) healthy |
 | 2 · retrieve-svc 구현 | 3~5일 | FastAPI `/retrieval` + RRF + rerank |
 | 3 · 02 파이프라인 확장 | 2~3일 | Meili / Falkor sink 2 개 |
 | 4 · Dify Workflow 전환 | 1~2일 | External KB 등록 + datasource 교체 |
@@ -1095,116 +1304,122 @@ curl http://localhost:8081/rerank -X POST -H "Content-Type: application/json" -d
 
 ---
 
-### Phase 0 — 사전 준비 (외부망 작업) [0.5~1일]
+### Phase 0 — 외부망 빌드 컨텍스트 + 단일 이미지 빌드 [1~2일]
 
-> 폐쇄망 반입은 **한 번에 모아서**. 이후 Phase 들이 모두 이 bundle 에 의존.
+> **단일 이미지 패턴** — 모든 binary·모델·코드는 *이미지 빌드 시점에 통합*. 폐쇄망에선 `docker load`
+> 하나로 끝. 별도 컨테이너 / 마운트 / 다운로드 0.
 
-폐쇄망 반입은 한 번에 모아서 진행. 외부망에서:
+**P0.1 신규 컴포넌트 도달성 검증**
 
-**P0.1 모델 weight 다운로드** (양 머신 동일)
-
-```bash
-# Ollama 모델 (LLM + 임베딩 통합)
-ollama pull gemma4:e4b-it-q4_K_M           # 분석 + enricher 공유 (현행이면 skip)
-ollama pull qwen3-embedding:0.6b           # 임베딩
-
-# TEI 리랭커 (HF 직접)
-huggingface-cli download BAAI/bge-reranker-v2-m3 \
-  --local-dir ./bundle/models/bge-reranker-v2-m3
-
-# (옵션) Phase 7 야간 batch 에 M4 Pro 가 활용할 큰 LLM
-# ollama pull gemma4:26b-it-q4_K_M         # +16GB. RTX 4070 은 사용 불가, M4 Pro 만.
-```
-
-**P0.2 Docker 이미지 export**
+Meilisearch 는 GitHub releases 의 binary 직접 다운로드, FalkorDB 는 공식 Docker 이미지에서 .so 추출
+(multi-stage). 두 가지 모두 외부망에서 도달 가능한지:
 
 ```bash
-docker pull getmeili/meilisearch:v1.10
+# Meilisearch (직접 binary)
+curl -fIs https://github.com/meilisearch/meilisearch/releases/download/v1.42/meilisearch-linux-amd64
+
+# FalkorDB Docker 이미지 (multi-stage 차용)
 docker pull falkordb/falkordb:latest
-docker pull ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
-docker save -o ./bundle/images/airgap-extras.tar \
-  getmeili/meilisearch:v1.10 \
-  falkordb/falkordb:latest \
-  ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
+
+# bge-reranker-v2-m3 (HuggingFace)
+huggingface-cli login    # 토큰 필요할 경우
+huggingface-cli download BAAI/bge-reranker-v2-m3 --revision main --local-dir /tmp/test-rerank
 ```
 
-**P0.3 retrieve-svc 의존성 wheel 화**
+**P0.2 bge-reranker-v2-m3 weight 사전 다운로드** (retrieve-svc 안 sentence-transformers 가 import,
+이미지에 COPY)
 
 ```bash
-mkdir -p ./bundle/wheels
-pip download \
-  fastapi uvicorn httpx redis qdrant-client meilisearch \
-  -d ./bundle/wheels --platform manylinux2014_x86_64 --only-binary=:all:
+cd code-AI-quality-allinone/
+mkdir -p offline-assets/rerank-models
+huggingface-cli download BAAI/bge-reranker-v2-m3 \
+  --local-dir offline-assets/rerank-models/bge-reranker-v2-m3
 ```
 
-**P0.4 반입 패키지 구성**
+**P0.3 Ollama 모델 export** (host 측, 이미지와 분리)
 
-```text
-bundle/
-├── models/                       # TEI 모델 (HF 캐시 형식)
-├── ollama-models/                # ~/.ollama/models 통째 복사
-├── images/airgap-extras.tar      # 신규 Docker 이미지 3개
-├── wheels/                       # Python wheels
-└── retrieve-svc/                 # 자체 FastAPI 소스 (Phase 2 산출물)
+```bash
+ollama pull gemma4:e4b-it-q4_K_M
+ollama pull qwen3-embedding:0.6b
+# (옵션) ollama pull gemma4:26b-it-q4_K_M    # M4 Pro Phase 7 야간 batch
+
+mkdir -p offline-assets/ollama-models
+cp -r ~/.ollama/models/{blobs,manifests} offline-assets/ollama-models/
 ```
 
-- **산출물**: 위 `bundle/` 디렉터리.
-- **검증**: 외부망에서 모든 `docker run` / `ollama run` 정상 동작.
-- **롤백**: 없음 (read-only 작업).
+**P0.4 retrieve-svc 코드 작성** (Phase 2 와 병렬)
+
+빌드 컨텍스트의 `retrieve-svc/` 디렉터리에 FastAPI 소스 추가. Dockerfile 이 이를 `/opt/retrieve-svc/`
+에 COPY 한다.
+
+**P0.5 Dockerfile + supervisord.conf 보강**
+
+§6.8.2 의 RUN curl 5개 + COPY 1개를 Dockerfile 에, §6.8.3 의 program 5개를 supervisord.conf 에 추가.
+
+**P0.6 단일 이미지 빌드 + tar export**
+
+```bash
+bash scripts/build-mac.sh              # 또는 build-wsl2.sh
+
+# 외부망 검증 (1 회 기동 + 헬스체크)
+bash scripts/run-mac.sh
+docker exec ttc-allinone supervisorctl status   # 16 프로세스 RUNNING
+docker exec ttc-allinone curl -s http://127.0.0.1:7700/health
+docker exec ttc-allinone curl -s http://127.0.0.1:9000/health
+
+# tar export
+docker save ttc-allinone:mac-dev | gzip > offline-assets/arm64/ttc-allinone.tar.gz
+```
+
+- **산출물**: `offline-assets/{arch}/ttc-allinone.tar.gz` (~9~11 GB) + `offline-assets/ollama-models/`.
+- **검증**: 외부망 기동 시 supervisor 모든 program RUNNING + 신규 5 health 모두 200.
+- **롤백**: 외부망 작업이라 무영향. 빌드 실패 시 `docker rmi ttc-allinone:mac-dev`.
 
 ---
 
-### Phase 1 — 인프라 기동 (단일 머신) [0.5일]
+### Phase 1 — 폐쇄망 반입 + 단일 컨테이너 기동 [0.5일]
 
-> retrieve-svc 없이 백엔드 4 개 (Meili · Falkor · TEI-rerank · Ollama 임베딩) 만 먼저 띄워 health
-> 확인. 각 backend 가 단독으로 살아있어야 Phase 2 에서 통합 가능.
+> tar 1 개 + ollama-models 디렉터리만 가져가서 기동. 신규 컨테이너 추가 0.
 
-**P1.1 모델 반입 적용**
+**P1.1 사내 반입 + 적용**
 
 ```bash
+cd code-AI-quality-allinone/
+
+# (1) 이미지 로드 (기존 절차)
+bash scripts/offline-load.sh --arch amd64
+
+# (2) Ollama 모델 (host 측)
 mkdir -p ~/.ollama
-cp -r bundle/ollama-models/* ~/.ollama/
-ollama list   # gemma4:26b, gemma4:e4b, qwen3-embedding:4b 확인
+cp -r offline-assets/ollama-models/* ~/.ollama/models/
+ollama list   # gemma4:e4b-it-q4_K_M, qwen3-embedding:0.6b 확인
 
-docker load -i bundle/images/airgap-extras.tar
+# (3) Ollama 환경변수 — 머신별 차이 1 줄
+export OLLAMA_MAX_LOADED_MODELS=1
+# M4 Pro :  export OLLAMA_NUM_PARALLEL=3
+# RTX    :  export OLLAMA_NUM_PARALLEL=1
 
-mkdir -p ./data/tei-cache
-cp -r bundle/models/bge-reranker-v2-m3 ./data/tei-cache/
+# (4) 단일 컨테이너 기동 (기존 절차)
+bash scripts/run-mac.sh         # 또는 run-wsl2.sh
 ```
 
-**P1.2 docker-compose.yaml 확장**
-
-기존 `docker-compose.mac.yaml` (또는 `wsl2.yaml`) 에 §6.8 의 4개 서비스 (Meilisearch / FalkorDB /
-TEI-rerank, retrieve-svc 는 Phase 2 까지 placeholder) 추가. `.env` 에 `MEILI_MASTER_KEY` 추가.
-
-**P1.3 부분 기동 + 헬스체크**
+**P1.2 컨테이너 내부 헬스체크**
 
 ```bash
-docker compose up -d meilisearch falkordb tei-rerank
-docker compose ps     # 모두 healthy 확인
+# supervisor 16 프로세스 모두 RUNNING 확인
+docker exec ttc-allinone supervisorctl status
 
-# Meilisearch
-curl -s http://localhost:7700/health | grep -q "available"
-
-# FalkorDB
-docker exec -it $(docker compose ps -q falkordb) \
-  redis-cli GRAPH.QUERY test "RETURN 1"
-
-# TEI rerank
-curl -X POST http://localhost:8081/rerank \
-  -H "Content-Type: application/json" \
-  -d '{"query":"login","texts":["def authenticate(u,p)","def calc_tax(a)"]}'
-
-# Ollama embed
-curl -s http://localhost:11434/api/embeddings \
-  -d '{"model":"qwen3-embedding:4b-q4_K_M","prompt":"def login()"}' \
-  | python3 -c "import sys,json; print(len(json.load(sys.stdin)['embedding']))"
-# → 임베딩 차원 (예: 2560) 출력
+# 신규 5 program 헬스
+docker exec ttc-allinone curl -s http://127.0.0.1:7700/health         # Meilisearch
+docker exec ttc-allinone redis-cli -p 6380 ping                        # FalkorDB
+docker exec ttc-allinone supervisorctl status retrieve-svc             # rerank 내장 RUNNING
+docker exec ttc-allinone curl -s http://127.0.0.1:9000/health          # retrieve-svc
+docker exec ttc-allinone curl -s http://host.docker.internal:11434/api/tags   # Ollama (host)
 ```
 
-- **산출물**: 4개 서비스 healthy. `OLLAMA_MAX_LOADED_MODELS=1` 적용.
-- **검증**: 위 4개 curl 모두 200/유효 응답.
-- **롤백**: `docker compose down meilisearch falkordb tei-rerank`. 기존 02/03/04 영향 없음.
+- **산출물**: ttc-allinone 컨테이너 1 개 healthy + supervisor 16 프로세스 RUNNING.
+- **검증**: 위 5 개 curl 모두 정상 응답.
+- **롤백**: `docker stop ttc-allinone && docker run -d <이전-tag>` (이전 이미지로 즉시 복귀).
 
 ---
 
@@ -1213,27 +1428,32 @@ curl -s http://localhost:11434/api/embeddings \
 > Dify External Knowledge API 호환 FastAPI 서비스 (~400 LOC). 4 backend 호출 → RRF → rerank 의
 > 단일 책임. Phase 3 과 **병렬 진행 가능** (독립 코드베이스).
 
-**P2.1 디렉터리 구조**
+**P2.1 디렉터리 구조** (빌드 컨텍스트 안에 배치 — Dockerfile 이 `/opt/retrieve-svc/` 로 COPY)
 
 ```text
 code-AI-quality-allinone/retrieve-svc/
-├── Dockerfile
-├── requirements.txt          # fastapi, uvicorn, httpx, redis, qdrant-client, meilisearch
+├── requirements.txt          # fastapi, uvicorn, httpx, redis, qdrant-client,
+│                             # meilisearch, sentence-transformers, torch (cpu)
 ├── app/
 │   ├── main.py               # FastAPI app + /retrieval 엔드포인트
-│   ├── config.py             # 환경변수 파싱
+│   ├── config.py             # 환경변수 파싱 (supervisord 가 주입)
 │   ├── backends/
 │   │   ├── qdrant.py         # dense retrieve
 │   │   ├── meilisearch.py    # sparse retrieve
 │   │   ├── falkor.py         # graph cypher retrieve
-│   │   ├── ollama_embed.py   # 쿼리 임베딩 호출
-│   │   └── tei_rerank.py     # 리랭커 호출
-│   ├── fusion.py             # RRF + layer weighting
+│   │   ├── ollama_embed.py   # 쿼리 임베딩 호출 (host.docker.internal:11434)
+│   │   └── rerank.py         # sentence-transformers CrossEncoder
+│   │                         # (bge-reranker-v2-m3 in-process)
+│   ├── fusion.py             # RRF + layer weighting + rerank
 │   └── schema.py             # Dify External KB API 응답 모델
 └── tests/
     ├── test_fusion.py
     └── test_dify_api.py
 ```
+
+> **운영 모델 — 단일 이미지 통합**: 별도 Dockerfile 없음. 본 디렉터리는 빌드 컨텍스트의 일부로
+> ttc-allinone 이미지 안 `/opt/retrieve-svc/` 에 COPY 되고, supervisor 의 `[program:retrieve-svc]`
+> 가 uvicorn 기동.
 
 **P2.2 Dify External KB API 스키마 (schema.py)**
 
@@ -1269,6 +1489,12 @@ POST /retrieval
 }
 ```
 
+> **Dify 응답 schema 제약 (2026-04-27 검증)**:
+> - 각 record 의 `content` 와 `score` 필드는 **반드시 존재** 해야 한다.
+> - `metadata` 필드는 **반드시 object** 여야 한다 (`null` 금지). 메타가 없으면 빈 object `{}` 로
+>   반환. pydantic schema 정의 시 `metadata: dict = Field(default_factory=dict)`.
+> - 인용 정보가 없는 단순 키워드 매칭이라도 `metadata` 필드 자체는 항상 dict 로 직렬화.
+
 **P2.3 hybrid retrieve 핵심 로직 (fusion.py)**
 
 ```python
@@ -1290,25 +1516,41 @@ async def hybrid_retrieve(query, metadata, top_k_final=5):
     fused = apply_layer_weights(fused, LAYER_WEIGHTS)
 
     top_100 = fused[:100]
-    rerank_scores = await tei_rerank(query, [h["content"] for h in top_100])
+    # in-process: sentence-transformers CrossEncoder.predict (~100~200ms/100쌍)
+    rerank_scores = rerank_in_process(query, [h["content"] for h in top_100])
     reranked = sorted(zip(top_100, rerank_scores), key=lambda x: -x[1])[:top_k_final]
 
     return [to_dify_record(h, score) for h, score in reranked]
 ```
 
-**P2.4 단위 테스트 + 컨테이너 기동**
+**P2.4 단위 테스트** (외부망 빌드 머신에서)
 
 ```bash
-docker compose up -d --build retrieve-svc
-curl -X POST http://localhost:9000/retrieval \
+cd retrieve-svc/
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pytest tests/ -v
+```
+
+**P2.5 이미지 빌드 + 컨테이너 내부 헬스체크**
+
+```bash
+# Dockerfile 의 COPY retrieve-svc /opt/retrieve-svc 가 반영된 이미지 빌드
+bash scripts/build-mac.sh        # 또는 build-wsl2.sh
+
+# 외부망 1 회 기동 + 컨테이너 안 헬스체크
+bash scripts/run-mac.sh
+docker exec ttc-allinone supervisorctl status retrieve-svc   # RUNNING
+
+docker exec ttc-allinone curl -X POST http://127.0.0.1:9000/retrieval \
   -H "Content-Type: application/json" \
   -d '{"knowledge_id":"code-kb-test","query":"login","retrieval_setting":{"top_k":3}}'
 ```
 
-- **산출물**: `retrieve-svc` 컨테이너 healthy + 단위 테스트 통과.
+- **산출물**: 단일 이미지 안에 retrieve-svc 통합 + supervisor 관리 + 단위 테스트 통과.
 - **검증**: 위 curl 이 200 + 스키마 valid (인덱스 비어있어 records 빈 배열인 게 정상; Phase 3 에서
   데이터 채워짐).
-- **롤백**: `docker compose stop retrieve-svc`. 기존 02/03/04 무영향.
+- **롤백**: `supervisorctl stop retrieve-svc` (런타임) 또는 이전 이미지로 복귀 (빌드 단위).
 
 ---
 
@@ -1332,7 +1574,8 @@ pipeline-scripts/
 
 ```python
 def write_meilisearch(chunks: list[dict], index_name: str, master_key: str):
-    client = meilisearch.Client("http://meilisearch:7700", master_key)
+    # 단일 이미지 안에서 호출 — 모두 127.0.0.1 (컨테이너 내부 전용 포트)
+    client = meilisearch.Client("http://127.0.0.1:7700", master_key)
     idx = client.index(index_name)
     idx.update_searchable_attributes(["content", "symbol", "path", "endpoint"])
     idx.update_filterable_attributes(["lang", "kind", "is_test", "path"])
@@ -1361,7 +1604,8 @@ tree-sitter 산출물을 노드/엣지로 정규화. `_kb_intelligence.json` 사
 ```python
 def write_falkordb_graph(chunks: list[dict], graph_name: str):
     import redis
-    r = redis.Redis(host="falkordb", port=6379)
+    # FalkorDB 는 별도 redis 인스턴스 (포트 6380, 컨테이너 내부 전용)
+    r = redis.Redis(host="127.0.0.1", port=6380)
 
     # 1. Module 노드
     for p in {c["path"] for c in chunks}:
@@ -1400,8 +1644,9 @@ def write_falkordb_graph(chunks: list[dict], graph_name: str):
 
 ```groovy
 environment {
-    MEILI_URL = 'http://meilisearch:7700'
-    FALKOR_URL = 'redis://falkordb:6379'
+    // 단일 이미지 — Jenkins 도 같은 컨테이너 내부, 127.0.0.1 로 호출
+    MEILI_URL  = 'http://127.0.0.1:7700'
+    FALKOR_URL = 'redis://127.0.0.1:6380'
     // MEILI_MASTER_KEY 는 Jenkins credentials 로 주입
 }
 ```
@@ -1409,13 +1654,16 @@ environment {
 **P3.5 검증 (작은 레포 1개)**
 
 ```bash
-# Jenkins 02 빌드 (예: realworld-tiny — 100 청크) 종료 후:
-curl -s "http://localhost:7700/indexes/code-kb-realworld-tiny/stats" \
+# Jenkins 02 빌드 (예: realworld-tiny — 100 청크) 종료 후
+# 모든 검증은 ttc-allinone 컨테이너 안에서 (포트 호스트 미노출)
+
+docker exec ttc-allinone curl -s \
+  "http://127.0.0.1:7700/indexes/code-kb-realworld-tiny/stats" \
   -H "Authorization: Bearer $MEILI_MASTER_KEY"
 # → numberOfDocuments == 청크 수
 
-docker exec falkordb redis-cli GRAPH.QUERY code-kb-realworld-tiny \
-  "MATCH (f:Function) RETURN count(f)"
+docker exec ttc-allinone redis-cli -p 6380 \
+  GRAPH.QUERY code-kb-realworld-tiny "MATCH (f:Function) RETURN count(f)"
 ```
 
 - **산출물**: 02 빌드 1회 후 Meili / Falkor 데이터 적재 확인.
@@ -1432,7 +1680,7 @@ docker exec falkordb redis-cli GRAPH.QUERY code-kb-realworld-tiny \
 **P4.1 Dify Studio 등록**
 
 1. Dify Studio → Knowledge → External Knowledge API → "Add API"
-2. URL: `http://retrieve-svc:9000/retrieval`
+2. URL: `http://127.0.0.1:9000/retrieval` (Dify 와 retrieve-svc 모두 같은 컨테이너 내부)
 3. API Key: 임시 토큰
 4. External Knowledge Base 1개 생성, knowledge_id (예: `code-kb-realworld`) 부여.
 
@@ -1554,6 +1802,10 @@ Phase 5 에서 도입한 retrieve quality gate 를 더 정밀하게:
 
 > Phase 5 의 hybrid 인프라 위에서 PRD ↔ 코드 매핑 + LLM-as-Judge 로 **Implementation Rate** 자동
 > 측정. 별도 Jenkins Job (`06-구현률-측정` 가칭) 으로 분리 — 기존 02/03/04 영향 0.
+>
+> **상세 설계 별도 문서**: [SPEC_TRACEABILITY_DESIGN.md](SPEC_TRACEABILITY_DESIGN.md)
+> (원리 / 구조·솔루션 / 시스템 아키텍처 / 유저·데이터 플로우 / 상세 구현 계획).
+> 본 §10 Phase 7 은 *작업 순서 요약*, 본문 설계는 위 문서 참조.
 
 **P7.1 PRD ingestion 파이프라인**
 
@@ -1715,6 +1967,284 @@ Phase 3 ────────────▶ Phase 4 ──▶ Phase 5 ──
 ---
 
 ## 11. 변경 이력
+
+### 2026-04-29 — 운영 레벨 런북 분리 ([EXECUTION_PLAN.md](EXECUTION_PLAN.md))
+
+**컨텍스트**: 사용자 요청 — *"사전준비부터 테스트에 이르기까지 구체적인 수행계획을 작성해보자"*. PLAN
+§10 의 Phase 0~7 위에 *일자 캘린더 / GO·NO-GO 게이트 / 4-레이어 테스트 / 리스크 레지스터* 를 분리
+작성.
+
+**범위 결정** (사용자 합의):
+
+- Phase 0~7 전체 (1차 + 최종 목표).
+- M4 Pro 먼저 검증 → RTX 4070 이식.
+- 테스트 데이터 — `realworld` (baseline) + `spring-petclinic-rest` (sanity + Phase 7 ground truth).
+
+**spring-petclinic-rest 선정**: Apache 2.0 / v4.0.2 (2026-02 활성) / REST 엔드포인트 ~40 개로
+atomic requirement 1:1 매핑 가능 → Phase 7 정답지 12 req 수동 작성 현실적.
+
+**문서 분리 근거**: PLAN 이 2,479 줄로 비대해 가독성 저하. 결정 로그 (PLAN) ↔ 실행 런북 (EXECUTION)
+분리.
+
+---
+
+### 2026-04-28 — 모든 컴포넌트 공식 리소스·최신 버전 재검증
+
+**컨텍스트**: 사용자 요청 — *"지금 네가 제시한 솔루션이 모두 현재 시점 최신버전이고 공식적인 설치
+리소스 및 가이드를 제공하는지 웹검색을 통해 정확히 확인해."*
+
+**7-point 공식 검증 결과**:
+
+| # | 컴포넌트 | 검증 결과 | 상태 |
+|---|---|---|---|
+| 1 | **Meilisearch** | 내가 적은 v1.10.3 은 2024 년 버전. 2026-04-13 최신은 **v1.42**. binary URL 패턴 동일 | ❌ → 정정 |
+| 2 | **FalkorDB binary** | GitHub releases 가 alpine/amazonlinux/arm64v8 binary 만 제공. **Debian x64 binary 없음**. RUN curl URL 자체가 존재하지 않음 | ❌ → 큰 정정 |
+| 3 | bge-reranker-v2-m3 | HuggingFace 공식, 568M params, google/gemma-2b 기반, sentence-transformers `CrossEncoder` 정식 호환 | ✅ |
+| 4 | Dify External Knowledge API | POST /retrieval, Bearer auth, knowledge_id/query/retrieval_setting 정확. **응답 metadata 필드는 null 금지, 빈 object {} 필수** (제약) | ⚠️ → schema 보강 |
+| 5 | gemma4:e4b | Ollama 공식 라이브러리 등록 (`https://ollama.com/library/gemma4:e4b`) | ✅ |
+| 6 | qwen3-embedding:0.6b | Ollama 공식 등록 (`https://ollama.com/library/qwen3-embedding:0.6b`) | ✅ |
+| 7 | sentence-transformers | 공식 PyPI + [공식 docs CrossEncoder 가이드](https://sbert.net/docs/cross_encoder/pretrained_models.html) | ✅ |
+
+**3 가지 정정 적용**:
+
+#### Fix 1 — Meilisearch v1.10.3 → v1.42
+
+ARG 값 + 도달성 검증 명령에서 버전 문자열 일괄 교체. binary 명명 패턴은 동일하므로 다른 변경 없음.
+
+#### Fix 2 — FalkorDB integration 패턴 변경
+
+내가 적은 `RUN curl ... falkordb-linux-x64.so` URL 은 **존재하지 않는다**. GitHub releases 가
+제공하는 건:
+
+- `falkordb-alpine-x64.so` / `falkordb-alpine-arm64v8.so` (musl libc — Debian glibc 와 ABI 불일치)
+- `falkordb-amazonlinux2023-x64.so` (Amazon Linux 전용)
+- `falkordb-arm64v8.so` (Linux arm64)
+
+ttc-allinone base 는 `jenkins/jenkins:2.555.1-lts-jdk21` (Debian) → alpine binary 호환 불가.
+**기존 Dockerfile 의 multi-stage 패턴** (Dify, SonarQube 가 이미 사용) 차용:
+
+```dockerfile
+# Stage 1 영역
+FROM falkordb/falkordb:latest AS falkordb-src
+
+# Stage 3 런타임
+COPY --from=falkordb-src /var/lib/falkordb/bin/falkordb.so /usr/local/lib/falkordb.so
+RUN apt-get install -y libgomp1   # OpenMP runtime (FalkorDB 의존)
+```
+
+이 방법이 *기존 Dockerfile 패턴과 일관* + *Debian 호환 보장* + *공식 이미지 사용으로 검증된 binary*.
+
+#### Fix 3 — Dify 응답 schema 제약 명시
+
+[공식 docs](https://docs.dify.ai/en/use-dify/knowledge/connect-external-knowledge-base) +
+[Dify Issue #11422](https://github.com/langgenius/dify/issues/11422) 확인 결과:
+
+- 각 record 의 `content`, `score` 필드 **필수**.
+- `metadata` 필드 **반드시 object** (`null` 금지). 메타 없으면 `{}`.
+
+retrieve-svc 의 pydantic schema:
+```python
+class Record(BaseModel):
+    content: str
+    score: float
+    title: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)   # null 금지
+```
+
+**Phase 0 도달성 검증 명령 갱신**:
+
+- 기존: `curl -fIs <FalkorDB binary URL>` (존재하지 않는 URL)
+- 신규: `docker pull falkordb/falkordb:latest` + `huggingface-cli download BAAI/bge-reranker-v2-m3`
+
+**갱신 위치**:
+
+- §6.8.2 (Dockerfile) — Meilisearch ARG `v1.42`, FalkorDB multi-stage `FROM falkordb/falkordb:latest
+  AS falkordb-src` + `COPY --from` + `apt-get libgomp1`
+- §10 Phase 0.1 (도달성 검증) — `docker pull` 패턴으로 변경
+
+**검증 sources**:
+
+- [Meilisearch GitHub Releases](https://github.com/meilisearch/meilisearch/releases)
+- [Meilisearch v1.42 release (2026-04-13)](https://github.com/meilisearch/meilisearch/releases/tag/v1.42)
+- [FalkorDB GitHub Releases](https://github.com/FalkorDB/FalkorDB/releases)
+- [FalkorDB Docker Hub](https://hub.docker.com/r/falkordb/falkordb)
+- [FalkorDB Debian Build Guide](https://docs.falkordb.com/operations/building-docker.html)
+- [BAAI/bge-reranker-v2-m3 HuggingFace](https://huggingface.co/BAAI/bge-reranker-v2-m3)
+- [sentence-transformers CrossEncoder docs](https://sbert.net/docs/cross_encoder/pretrained_models.html)
+- [Dify External Knowledge API docs](https://docs.dify.ai/en/use-dify/knowledge/connect-external-knowledge-base)
+- [Dify metadata schema constraint Issue #11422](https://github.com/langgenius/dify/issues/11422)
+- [Ollama gemma4:e4b](https://ollama.com/library/gemma4:e4b)
+- [Ollama qwen3-embedding:0.6b](https://ollama.com/library/qwen3-embedding:0.6b)
+
+**교훈**:
+
+- 외부 도구 통합 시 *binary 파일명·URL 정확성* 을 GitHub releases 에서 직접 확인. 짐작으로 적으면
+  빌드가 처음부터 깨진다 (FalkorDB 사례).
+- *최신 버전* 은 검색 시점에서 다시 확인. 모델 학습 컷오프 기준의 버전 번호는 outdated 될 수 있음
+  (Meilisearch v1.10.3 사례 — 2024 년 → 2026 년 v1.42).
+- API spec 의 *세부 제약* (metadata null 금지) 은 공식 docs + GitHub issues 까지 봐야 발견됨.
+  prototype 단계에선 무시하기 쉽지만 운영 진입 시 호환성 깨진다.
+
+---
+
+### 2026-04-27 (자정) — 단일 이미지 통합 패턴 22-point 검증 + 4 가지 안전성 보강
+
+**컨텍스트**: 사용자 요청 — *"기존 아키텍처 구조를 무너뜨리면 안 돼. 다시 한번 검증하자."*
+
+**검증 결과 (22-point 체크)**:
+
+✅ **18 개 보존 확인**: 단일 이미지 패턴 / 빌드·배포 흐름 / docker-compose 변경 0 / 호스트 노출 포트
+기존만 / 데이터 디렉터리 패턴 / 호스트 의존 (Ollama, GitLab) / supervisor priority / 컨테이너 내부
+호출 / Jenkins credentials / 02·03·04 영향 0 / arm64·amd64 호환 / 이미지 크기 / GitLab 통합.
+
+⚠️ **4 가지 보강 필요 발견 → 적용**:
+
+| # | 발견 | 보강 |
+|---|---|---|
+| **A** | retrieve-svc / spec-svc 가 `autostart=true` 인데 의존하는 TEI 가 `autostart=false`. 부팅 시 race condition | retrieve-svc / spec-svc 도 `autostart=false` + entrypoint 가 storage 헬스체크 후 명시 start (기존 dify-api 패턴) |
+| **B** | `MEILI_MASTER_KEY` 환경변수 주입 방법 미명확 | entrypoint 에서 `/data/secrets/meili-key` generate-once (Dify SECRET_KEY 패턴 동일) |
+| **C** | retrieve-svc / spec-svc 가 시스템 python3.12 site-packages 직접 사용 → dify-api 와 패키지 충돌 위험 | 각자 별도 venv (`/opt/retrieve-svc/.venv`, `/opt/spec-svc/.venv`) — dify-api 가 `/opt/dify-api/api/.venv` 쓰는 패턴과 동일 |
+| **D** | **TEI 가 prebuilt standalone binary 미제공** ([Issue #769](https://github.com/huggingface/text-embeddings-inference/issues/769)). Docker 이미지 또는 Rust source build 만 지원. arm64 multi-arch 보장도 없음 | **TEI 별도 program 제거**. bge-reranker-v2-m3 (568M) 를 retrieve-svc 안에 sentence-transformers `CrossEncoder` 로 직접 import. supervisor program 5 → 4 개로 감소 |
+
+**TEI 제거의 부수 효과 (긍정적)**:
+
+- supervisor program 1 개 감소 (운영 복잡도 ↓)
+- 별도 binary / port / healthcheck 제거 (어태치 surface ↓)
+- 이미지 크기 ~150 MB 감소 (TEI Rust binary 제거 — sentence-transformers Python 으로 대체)
+- arm64/amd64 자동 호환 (Python 패키지)
+- retrieve-svc 안에서 직접 import 라 HTTP overhead 없음
+
+**TEI 제거의 트레이드오프**:
+
+- Python 추론이 Rust 보다 느림 (~100~200 ms/배치 vs ~30~50 ms/배치)
+- 그러나 bge-reranker-v2-m3 (568M) 은 CPU 추론도 충분히 빠름. 100 청크 리랭크 시 영향 < 0.2 초.
+
+**갱신 위치**:
+
+- §3.5.1 (뷰 1 데이터 흐름) — TEI 노드를 retrieve-svc 안 rerank in-process 로 흡수
+- §3.5.4 (뷰 4 시퀀스) — TEI participant 제거, R 자체 액션으로 표시
+- §3.5.5 (의존성 한 줄) — TEI 노드 제거 + sentence-transformers 표기
+- §6.3 (컴포넌트 명세) — TEI-rerank 행 제거, retrieve-svc 의 RAM 1.5 GB 로 갱신 (모델 로드 포함)
+- §6.5 (메모리 배분) — 두 머신 모두 TEI 항목 제거, 컨테이너 그룹 통합
+- §6.8.1 (통합 매트릭스) — 5 → 4 program
+- §6.8.2 (Dockerfile) — TEI binary RUN curl 제거, `/opt/rerank-models/` COPY, retrieve-svc venv 추가
+- §6.8.3 (supervisord.conf) — TEI program 제거, retrieve-svc autostart=false + venv 경로 + 환경변수
+  보강 (`HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `RERANK_MODEL_PATH`)
+- §6.8.4 (entrypoint.sh) — MEILI_MASTER_KEY generate-once 추가, retrieve-svc 명시 start
+- §6.8.5 (데이터 디렉터리) — `/opt/tei-cache/` → `/opt/rerank-models/`, `/data/secrets/` 신규 명시
+- §6.9.1, §6.9.6 (빌드/검증) — TEI 다운로드/curl 제거, rerank 모델 디렉터리 명명 갱신
+- §6.10 (폴백) — `supervisorctl stop tei-rerank` 제거, in-process rerank skip 환경변수
+- §6.11 (운영 한계) — HF TEI 첫 부팅 항목을 sentence-transformers 표기로
+- §6.12 (체크리스트) — TEI 항목 제거, retrieve-svc rerank 통합 검증 항목 추가
+- §10 Phase 0/1/2/3 — `offline-assets/tei-cache/` → `offline-assets/rerank-models/`, healthcheck
+  포트 8081 제거, 디렉터리 구조 갱신
+- SPEC_TRACEABILITY_DESIGN.md §3.2 다이어그램 — TEI 노드 제거, retrieve-svc 표기 갱신, 16→15 →
+  17→16 프로세스로 정정
+
+**교훈**:
+
+- 외부 도구 통합 시 *prebuilt binary 존재 검증* 을 첫 단계로. GitHub releases 페이지 도달성 + 양 아키
+  지원 확인 없이 RUN curl 작성하면 빌드가 처음부터 깨진다.
+- 운영 복잡도 vs 성능 tradeoff 에서, 본 워크로드 (568M cross-encoder, batch 100) 는 Python 추론도
+  충분. *"가장 빠른 도구"* 보다 *"가장 단순한 도구"* 가 운영 가치 큼. 폐쇄망에선 더더욱.
+
+---
+
+### 2026-04-27 (밤) — 단일 이미지 + tar 배포 운영 모델 보존 (정정)
+
+**컨텍스트**: 사용자 지적 — 본 시스템의 운영 모델은 **단일 이미지 `ttc-allinone:<tag>`** + supervisor
++ `docker save` → `.tar.gz` → 폐쇄망 `offline-load.sh` 패턴이 근간. 그동안 §6.8 / §10 Phase 1 에서
+*별도 컨테이너 5~6 개를 docker-compose 로 추가* 하는 형태로 잡은 건 운영 모델을 깬다.
+
+**검증 (Dockerfile + supervisord.conf 조사)**:
+
+- `code-AI-quality-allinone/Dockerfile` — 4-pipeline all-in-one 단일 이미지로 명시 ("오프라인/폐쇄망
+  전제, 단일 컨테이너에서 4 파이프라인 실행").
+- `scripts/supervisord.conf` — 11 프로세스 (postgres / redis / qdrant / sonarqube / dify-plugin-
+  daemon / dify-api,worker,worker-beat,web / nginx / jenkins) 가 단일 supervisor 로 운영.
+- `scripts/build-mac.sh` / `build-wsl2.sh` — 단일 이미지 빌드 후 `docker save` → tar 반입.
+- `scripts/offline-load.sh` — 폐쇄망에서 tar 로드만으로 끝.
+- 호스트 의존: Ollama (host.docker.internal), GitLab (외부 컨테이너, 별도 tar).
+
+**결정 — 신규 컴포넌트 5 개 통합 방식 변경**:
+
+| 컴포넌트 | 이전 (잘못) | 이후 (정정) |
+|---|---|---|
+| Meilisearch | docker-compose 별도 컨테이너 (`getmeili/meilisearch:v1.10`) | Dockerfile RUN curl → `/usr/local/bin/meilisearch` + supervisor program (priority 100) |
+| FalkorDB | docker-compose 별도 컨테이너 (`falkordb/falkordb:latest`) | Redis module (`falkordb.so`) + 별도 redis 인스턴스 (포트 6380) + supervisor program |
+| TEI rerank | docker-compose 별도 컨테이너 (`ghcr.io/huggingface/...`) | Rust binary 다운로드 + 모델 weight `COPY` + supervisor program (priority 200) |
+| retrieve-svc | docker-compose `build: ./retrieve-svc` | Dockerfile `COPY retrieve-svc /opt/retrieve-svc` + pip install + supervisor program (priority 400) |
+| spec-svc (Phase 7) | 별도 컨테이너 | 동일 패턴 — supervisor program (priority 500) |
+
+**포트 정책**:
+
+- 신규 7700 / 6380 / 8081 / 9000 / 9001 모두 **컨테이너 내부 전용** (`127.0.0.1`).
+- 호스트 노출은 기존 28080 / 28081 / 29000 만.
+- 컨테이너 내부 호출은 `127.0.0.1`, 호스트 호출은 `host.docker.internal:11434` (Ollama 만).
+
+**빌드 → 배포 흐름 (변경 없음, 보존)**:
+
+```text
+[외부망]
+  download-plugins.sh → offline-prefetch.sh (보강) → build-{mac,wsl2}.sh
+    → docker save | gzip > offline-assets/{arch}/ttc-allinone.tar.gz
+    + offline-assets/ollama-models/ + offline-assets/tei-cache/
+
+[폐쇄망]
+  offline-load.sh → run-{mac,wsl2}.sh
+    → ttc-allinone 단일 컨테이너 — supervisor 15 프로세스 (기존 11 + 신규 4)
+```
+
+**갱신 위치**: §6.8 (단일 이미지 통합 패턴 5 개 sub-section) / §6.9 (외부망 빌드 + 폐쇄망 반입
+절차) / §6.10 (폴백 — supervisorctl) / §6.12 (체크리스트 — 빌드 단계 + 폐쇄망 적용 단계 분리) /
+§10 Phase 0 (외부망 이미지 빌드) / §10 Phase 1 (폐쇄망 단일 컨테이너 기동) / §10 Phase 2~4 (모든
+호출 127.0.0.1 로 정렬) / SPEC_TRACEABILITY_DESIGN.md §3 (spec-svc 도 supervisor program 으로 통합).
+
+**교훈 (자기 비판)**:
+
+- 운영 모델 (단일 이미지 + tar 배포) 이 architecture.md / Dockerfile / supervisord.conf 에 *명시적으로*
+  적혀 있었는데도, 첫 §6.8 작성 시 일반 docker-compose 패턴으로 갔다. 폐쇄망 운영의 핵심은 *반입
+  단순성* 이고, 컨테이너 N 개로 분산하면 N 개의 tar / N 개의 의존성 / N 번의 검증이 필요해진다.
+- 다음번 인프라 설계 시 첫 질문 — *"이 시스템은 어떻게 빌드되고, 어떻게 배포되며, 어디서 실행되나?"*
+  운영 모델을 명시 확인하지 않은 채 *모범 패턴* 을 그대로 가져오면 깨진다.
+
+---
+
+### 2026-04-27 (저녁) — Phase 7 상세 설계 문서 분리
+
+**컨텍스트**: 사용자 요청 — Phase 7 (Spec↔Code Traceability) 의 5 측면 (원리 / 구조 / 시스템 /
+유저·데이터 플로우 / 구현 계획) 을 개념정의 수준으로 정리. 메인 PLAN 의 §10 Phase 7 에 다 넣기엔
+범위가 커서 별도 문서로 분리.
+
+**산출물**: [SPEC_TRACEABILITY_DESIGN.md](SPEC_TRACEABILITY_DESIGN.md) 신설 (~700 줄).
+
+**핵심 설계 결정**:
+- **4 가지 신호 합의** — semantic / structural / behavioral / cross-validation. 단일 신호로는
+  over-implementation, partial, false match 를 못 거름.
+- **양방향 매핑** — req→code (정방향) + code→req (역방향) — 역방향이 over-implementation 과
+  coverage gap 동시에 잡음.
+- **5-state 판정** — `implemented / partial / not_implemented / n/a / needs_review`. 신뢰도 임계
+  0.85 미만은 무조건 needs_review.
+- **NFR 별도 처리** — ISO/IEC 25010:2023 8 attribute 분류 + testable 여부에 따라 Gherkin 변환
+  또는 `n/a`.
+- **Gherkin 을 intermediate representation 으로** — Phoenix 패턴 차용. 자연어 모호성을 1 회만 해소.
+- **신규 컴포넌트는 `spec-svc` 1 개** — 기존 retrieve-svc + Ollama + Dify 인프라 100% 재사용.
+- **6 sprint × 4~6 주 일정** — Spec Ingestion / Classification & Normalization / Forward Mapping /
+  Reverse + Report / Jenkins Job / Ground Truth + Tuning.
+- **Ground truth 확보 전략** — 작은 사내 프로젝트 1 개 (10~20 req) 사람 매핑으로 시작 → 70%+
+  도달 후 확대.
+
+**연구 근거**:
+- Atomic requirement: INVEST (Bill Wake 2003), 1 req = 1 verification method.
+- Code↔Req mapping: ClarifyGPT (ACM 2024), Phoenix (Gherkin IR).
+- NFR: LLM 자동 분류 80%+ accuracy (2025-26).
+- TLR: TraceLLM (2026 Feb), Claude 3.5 Sonnet Macro-F1 58.75%, ProReFiCIA recall 93.3%.
+
+**다음 행동**:
+- Sprint 1 (Spec Ingestion) 착수 시점 협의.
+- 1 차 ground truth 확보용 사내 프로젝트 1 개 선정.
+
+---
 
 ### 2026-04-27 (오후) — 양 머신 (M4 Pro / RTX 4070) 구성 통일
 
