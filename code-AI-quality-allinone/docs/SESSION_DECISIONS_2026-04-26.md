@@ -339,6 +339,47 @@ N 개 atomic requirements
 
 ---
 
+## 6.1 후속 결정 — Windows + WSL2 의 Ollama 설치 정책
+
+**컨텍스트**: 사용자가 `setup-host.sh` 를 WSL2 셸에서 실행했더니 호스트(Windows) 에 GUI 로 이미
+설치된 Ollama 를 인식 못 하고 재설치 시도 → 본 세션 후반 fix.
+
+**진단**: 기존 `verify_ollama` 가 `command -v ollama` 만 체크 → Windows GUI 설치는 ollama CLI 를
+*Windows host PATH 에만* 등록하므로 WSL2 Ubuntu 셸의 PATH 에는 없음 → 오판.
+
+**선택지 정리**:
+
+| 선택 | 절차 | 모델 저장 위치 | 권장도 |
+|---|---|---|---|
+| **A** | Windows GUI + Windows PowerShell 에서 `ollama pull` | `C:\Users\<Win>\.ollama\models\` (WSL2 에서 `/mnt/c/Users/<Win>/.ollama/models/`) | **⭐ 권장** |
+| B | WSL2 안에 별도 CLI + daemon 설치 (`curl install.sh`) | WSL2 home `~/.ollama/models/` (Windows 와 별개) | 모델 두 번 받음 |
+| C | WSL2 CLI + `OLLAMA_HOST=http://localhost:11434` 로 Windows daemon 공유 | Windows 측 (path 표시 헷갈림) | 비추 |
+
+**결정**: **선택 A 가 정본**. 이유:
+- Windows 사용자의 자연스러운 흐름 (시작 시 자동 기동)
+- 단일 모델 저장소 (디스크 22 GB+ 절약)
+- Windows GUI 의 모델 관리 UI 그대로 활용
+
+**구현 (커밋 `f68749a`)**:
+
+`verify_ollama` 4 케이스 매트릭스 도입:
+- A: CLI + daemon → 정상
+- **B: CLI 없음 + daemon 응답 → 호스트 GUI 설치 인식, *통과*** (Windows + WSL2 케이스)
+- C: CLI 있음 + daemon 미응답 → 백그라운드 기동
+- D: 둘 다 없음 → 진짜 미설치 → 설치 안내
+
+`download-rag-bundle.sh` 도 동일 매트릭스:
+- B 케이스에서 Ollama 모델 다운로드 단계 자동 skip
+- 사용자에게 Windows PowerShell `ollama pull` 안내 + `/mnt/c/Users/<Win>/.ollama/models/` 경로 명시
+
+**문서 갱신**:
+- README §2.1.6 — Windows + WSL2 의 ⭐ 선택 A 권장 명시 + 선택 B 단점 명시
+- README §3.2 — `download-rag-bundle.sh` 가 자동 skip 하는 케이스 안내 박스
+- README §3.4 — Ollama 모델 export 시 OS 별 분기 (macOS/Linux/WSL2-native vs Windows-GUI+WSL2)
+  + Windows 사용자명 자동 감지 명령 (`cmd.exe /c 'echo %USERNAME%'`)
+
+---
+
 ## 7. 미해결 / 진행 중
 
 | 영역 | 상태 | 대응 |
