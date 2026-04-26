@@ -1,4 +1,4 @@
-# Zero-Touch QA — Action DSL 확장 계획서 (9 ➔ 12+)
+# Zero-Touch QA — Action DSL 확장 계획서 (9 ➔ 14)
 
 > **문서 목적**
 > 현재 Zero-Touch QA 파이프라인의 브라우저 제어 자유도를 높이기 위해, 기존 9개로 제한되었던 표준 Action DSL을 복잡한 웹 UI(Drag & Drop, 무한 스크롤, 파일 업로드 등)까지 제어할 수 있도록 확장하는 구체적인 설계와 수행 계획입니다.
@@ -18,10 +18,27 @@
 - **네트워크 엣지 케이스 커버**: 프론트엔드의 예외 처리(Error, Empty state)를 검증하기 위해 네트워크 모킹(Mocking)을 제한적으로 허용합니다.
 
 ### 1.3 로컬/에어갭 환경(소형 LLM) 한계 극복 전략 [NEW]
-로컬 구동 모델(gemma4:e4b 등 8B~30B)의 인지 과부하(Attention Bandwidth 한계)와 DOM이 없는 상태에서의 맹목적 추측(Blind Guessing)을 보완하기 위해 다음 원칙을 추가합니다.
-- **지능 계층(LLM)**: 복잡한 부정 지시어("~하지 마라")보다 다면적 Few-Shot 예시를 통한 패턴 복제를 강하게 유도합니다.
+본 스프린트의 기준 하드웨어는 **단일 로컬 머신, 16GB RAM급, 호스트 Ollama, `gemma4:e4b` 기본 모델**입니다. 따라서 문서와 프롬프트는 "최고 성능 모델이 있으면 더 좋다"가 아니라, **4B~7B 로컬 모델에서 timeout 없이 버티는가**를 우선 기준으로 삼아야 합니다.
+- **지능 계층(LLM)**: 복잡한 부정 지시어를 늘어놓는 대신, 짧은 규칙 + 1~2개의 대표 예시로 패턴 복제를 유도합니다.
 - **파이프라인 방어(Dify)**: LLM의 출력 스키마 붕괴(`<think>` 블록, Markdown 백틱 등)를 방어하기 위해 순수 파이썬 JSON 파서 노드를 추가합니다.
 - **실행 계층(Python)**: LLM이 놓치기 쉬운 엣지 케이스(예: 프레임워크에 의해 숨겨진 `input[type="file"]`)는 Healer 호출 전 Python Executor 단계에서 Zero-Cost로 자동 탐색/복구(Fallback)합니다.
+
+### 1.4 Sprint 1 하드웨어 기준선
+
+- **기본 타깃 머신**: 16GB RAM, Docker Desktop, 호스트 Ollama, headed Playwright agent 동시 실행 환경
+- **기본 모델**: `gemma4:e4b`
+- **허용 대안**: 7B급 로컬 모델 (`llama3.1:8b`, `qwen2.5:7b` 등)
+- **비기본/비범위**: 30B급 Ollama 모델, 외부 SaaS 모델(`GPT-4o`, `Claude Sonnet`) 의존 설계
+- **CPU-only 실행**: 기술적으로는 가능하지만 Sprint 1의 목표 성능 기준은 아니다. CPU-only는 smoke/debug 용도로만 본다.
+
+### 1.5 Sprint 1 프롬프트/입력 예산
+
+- **Planner System Prompt**: 길고 자세한 설명보다 짧은 계약 중심. 장문 규칙 나열보다 우선순위가 높은 규칙만 남긴다.
+- **Planner 출력 예산**: `max_tokens` 는 1024 이내를 기준으로 잡는다.
+- **Healer 출력 예산**: `max_tokens` 는 768~1024 범위, 기본은 768을 기준으로 잡는다.
+- **Healer DOM 입력 예산**: DOM 스냅샷은 **권장 4,000자 이하**, 운영 상한은 **6,000자 이하**로 본다.
+- **`api_docs` 입력 예산**: 네트워크 모킹 힌트가 꼭 필요할 때만 짧은 엔드포인트 목록 형태로 넣고, 장문 문서를 그대로 넣지 않는다.
+- **성공 기준**: gemma4:e4b 단독 기준에서도 `<think>` 누출, Markdown 포맷 이탈, timeout 빈도가 과도하지 않아야 한다.
 
 ---
 
@@ -63,14 +80,19 @@
   Dify의 프롬프트는 단순 지시를 넘어 파이썬 실행기와의 '엄격한 API 계약(Contract)' 역할을 해야 합니다. 
 
   #### 3.1.1 Planner 프롬프트 상세 가이드 (Draft)
-  기존 9개에서 14개로 액션이 늘어나면 4B 모델(gemma4:e4b)의 환각 확률이 급증합니다. 이를 막기 위해 **"액션의 범주화", "파라미터의 변칙 사용 명시", "Few-shot 예시"** 세 가지를 System Prompt에 강하게 주입합니다.
+  기존 9개에서 14개로 액션이 늘어나면 4B 모델(gemma4:e4b)의 환각 확률이 급증합니다. 이를 막기 위해 Sprint 1에서는 **규칙 수를 무한정 늘리지 않고**, **우선순위 높은 계약 + 짧은 예시 + 출력 금지 규칙**만 남기는 방향으로 프롬프트를 압축합니다.
 
   **[Planner System Prompt 초안]**
   ```text
   당신은 Playwright 기반의 E2E 테스트 자동화 아키텍트입니다. 
   사용자의 자연어 요구사항(SRS)을 분석하여, 브라우저를 제어할 수 있는 [14대 표준 액션] 기반의 JSON 시나리오 배열을 작성하십시오.
   
-  [14대 표준 액션 및 파라미터 매핑 가이드]
+  [핵심 계약]
+  - step 1 은 항상 navigate 입니다.
+  - 반드시 유효한 JSON 배열([...])만 출력합니다.
+  - 마크다운 코드블록, `<think>` 같은 내부 추론 텍스트는 절대 출력하지 않습니다.
+
+  [14대 표준 액션 및 파라미터 매핑]
   1. 기본 제어
   - navigate: target="", value="이동할 URL"
   - click: target="클릭할 요소", value=""
@@ -95,11 +117,12 @@
   - mock_status: target="가로챌 API URL 패턴 (예: **/api/v1/users)", value="강제 반환할 HTTP 상태 코드 (예: 500)"
   - mock_data: target="가로챌 API URL 패턴", value="강제 반환할 JSON 본문 문자열 (반드시 쌍따옴표를 이스케이프 처리할 것)"
   
-  [로케이터(Target) 작성 원칙]
+  [로케이터 작성 원칙]
   - Playwright의 시맨틱 로케이터를 최우선으로 사용하십시오. (예: "role=button, name=로그인", "text=검색", "label=이메일")
   - CSS 선택자나 XPath는 시맨틱 로케이터로 특정하기 어려운 경우에만 보조적으로 사용하십시오.
+  - name 없는 단독 role (`role=button`, `role=link`) 은 금지합니다.
   
-  [JSON 스키마 필수 필드]
+  [JSON 스키마]
   출력할 JSON 배열 내의 각 객체는 다음 필드를 모두 포함해야 합니다:
   - "step": 실행 순서 (1부터 시작하는 정수)
   - "action": 위 14대 표준 액션 중 하나 (절대 임의의 액션을 지어내지 말 것)
@@ -109,7 +132,12 @@
   - "description": 이 스텝이 무엇을 하는지 설명하는 한국어 문장
   - "fallback_targets": target 탐색 실패 시도할 대체 로케이터 문자열 배열 (최소 2개 작성 필수. 예: ["text=로그인", ".login-btn"])
   
-  [✅ 복합 시나리오 예시 (네트워크 모킹 및 검증)]
+  [주의]
+  - `mock_status`, `mock_data` 는 반드시 API 호출을 유발하는 액션보다 먼저 배치합니다.
+  - `wait` 는 최소화하고, 상태 확인은 `verify` 로 표현합니다.
+  - `press` 의 키 이름은 target 이 아니라 value 에 들어갑니다.
+
+  [✅ 복합 시나리오 예시]
   입력: "프로필 저장 API에서 500 에러 발생 시 에러 팝업 노출 확인"
   출력:
   [
@@ -134,6 +162,7 @@
   - 에러 메시지를 바탕으로 기존 요소를 찾지 못한 이유를 파악하십시오.
   - DOM 스냅샷 내에서 의도에 가장 부합하는 대체 셀렉터를 찾으십시오.
   - ⚠️ 무조건 DOM에 실제로 존재하는 요소만 제안하십시오. 가상의 셀렉터는 절대 금지합니다.
+  - DOM 스냅샷은 잘린 일부일 수 있으므로, 긴 구조 대신 짧고 안정적인 시맨틱 셀렉터를 우선 제안하십시오.
   
   [신규 액션별 치유 전략]:
   - action이 "drag"인 경우: 소스(target)와 목적지(value) 중 어느 것을 못 찾았는지 에러에서 파악하십시오. 목적지 오류라면 새 로케이터를 "value" 키에 담아 반환하십시오.
@@ -145,17 +174,19 @@
   
   [출력 형식]:
   - 순수 JSON 객체({...}) 형식으로만 출력하십시오. 부연 설명 금지.
-  - 필수 키: "target" (새 로케이터 문자열), "fallback_targets" (대체 로케이터 문자열 배열 2~3개)
-  - 선택 키: "value" (drag 등에서 목적지 로케이터나 입력값이 변경되어야 할 경우에만 포함)
+  - 필수 키: "target" (새 로케이터 문자열), "value" (기본은 빈 문자열 ""), "fallback_targets" (대체 로케이터 문자열 배열 2~3개)
+  - `value` 는 drag 등에서 목적지 로케이터나 입력값이 변경되어야 할 경우 실제 값을 넣고, 그 외에는 빈 문자열("")을 넣습니다.
   
   [✅ 예시 (click 액션 실패 치유)]
-  {"target": "role=button, name=Submit", "fallback_targets": ["text=Submit", "#submit-btn"]}
+  {"target": "role=button, name=Submit", "value": "", "fallback_targets": ["text=Submit", "#submit-btn"]}
   ```
 
   #### 3.1.3 Dify 내부 테스트 및 검증 (Prompt Evaluation)
   Python 실행 코드를 짜기 전, Dify 캔버스의 `미리보기(Preview)` 기능에서 아래 엣지 케이스들을 입력하여 환각 없이 스키마를 출력하는지 검증합니다.
   - **Edge Case 1**: "A영역의 카드를 B영역으로 드래그 앤 드롭해줘." (drag의 value 필드를 올바르게 쓰는지 확인)
   - **Edge Case 2**: "결제 API가 응답 지연될 때 버튼이 disabled 처리되는지 확인." (verify의 condition 속성을 사용하는지 확인)
+  - **Edge Case 3**: 16GB RAM + `gemma4:e4b` 기준에서 Planner 응답이 timeout 없이 JSON 배열만 반환되는지 확인
+  - **Edge Case 4**: Heal 입력 DOM 이 길어졌을 때도 `<think>` 누출 없이 60초 안에 JSON 객체를 반환하는지 확인
 
 ### 3.2 Python Executor 로직 확장
 - **파일**: `zero_touch_qa/__main__.py`, `executor.py`
@@ -208,12 +239,68 @@
 | **LLM 혼란 (Hallucination)** | 액션 수가 늘어나 4B 모델(gemma4:e4b)이 지시를 잊거나 매개변수를 헷갈릴 위험 | 프롬프트의 텍스트 길이를 최대한 압축하여 유지하고, `drag` 의 `value`가 target selector로 쓰인다는 것을 [✅ 예시] 에 강하게 못 박음. |
 | **Healer(복구) 실패** | `drag` 수행 중 소스 요소는 찾았으나 타겟 요소(value)가 변경되어 실패할 경우 | `LocalHealer` 에 에러 덤프 전송 시, 타겟 셀렉터 오류인지 소스 오류인지 구분하여 DOM 스냅샷 질의 프롬프트 분기. |
 | **JSON Escape 오류** | `mock_data` 사용 시 LLM이 JSON 안의 JSON 이스케이프 문자(`\"`)를 잘못 생성하여 JSONDecodeError 발생 | Dify LLM 노드의 출력물을 파싱하는 파이썬 실행기(`executor.py`) 단에서 JSON Escape 예외를 유연하게 잡아주는 보정 로직(Fixup) 추가. |
+| **프롬프트 과비대화** | 4B 모델이 규칙을 잊거나 timeout 발생 | Planner/Healer 프롬프트를 짧은 계약형으로 유지하고, 출력 토큰 상한을 낮춘다. |
+| **저사양 머신 응답 지연** | 16GB 단일 머신에서 Heal 경로가 60초 안에 끝나지 않을 위험 | DOM 입력량을 제한하고, `gemma4:e4b` 기준 budget 을 문서에 먼저 고정한다. |
 
 ---
 
-## 5. 단계별 실행 일정 (Milestones)
+## 5. Sprint 1 상세 작업목록
 
-- **Sprint 1 (완료)**: Dify Workflow(Planner/Healer) 프롬프트 고도화, 논리 모순 해결 및 `dify-chatflow.yaml`, `architecture.md` 업데이트 완료.
+Sprint 1은 기능 구현 스프린트가 아니라, **LLM 계약과 문서 기준선을 먼저 고정하는 정비 스프린트**로 정의한다. 즉 Python Executor 구현 전에, Planner/Healer/DOC 간의 용어와 스키마가 서로 어긋나지 않도록 먼저 잠그는 단계다.
+
+### 5.1 목표
+
+- Planner가 14대 DSL만 출력하도록 계약을 명시한다.
+- Healer가 신규 액션(`upload`, `drag`, `scroll`, `mock_status`, `mock_data`)까지 복구 가능한 JSON 계약을 갖도록 정리한다.
+- `architecture.md`, `dify-chatflow.yaml`, 본 계획서 사이의 표기와 용어를 동기화한다.
+- Sprint 2 구현팀이 더 이상 "문서에는 14대, 실행기는 9대" 같은 해석 충돌 없이 착수할 수 있도록 기준선을 만든다.
+- 16GB 단일 머신 + `gemma4:e4b` 기준에서 과도한 모델 권장과 장문 프롬프트를 제거한다.
+
+### 5.2 세부 체크리스트
+
+| ID | 작업 | 산출물 | 완료 기준 | 상태 |
+| --- | --- | --- | --- | --- |
+| S1-01 | Sprint 1의 범위를 "프롬프트/문서 계약 정비"로 명시 | 본 계획서 | Sprint 1이 실행 코드 구현을 포함하지 않는다고 명확히 적시 | 완료 |
+| S1-02 | 14대 DSL 확장 범위 확정 | 본 계획서, `architecture.md` | 9개 기존 액션 + 신규 5개 액션 목록이 동일하게 기재 | 완료 |
+| S1-03 | `verify.condition` 확장 스키마 정의 | 본 계획서, `architecture.md`, `dify-chatflow.yaml` | visible/hidden/disabled/enabled/checked/value 등 허용 의미가 문서화 | 완료 |
+| S1-04 | Planner 프롬프트에 14대 액션 계약 반영 | `dify-chatflow.yaml` | 액션 목록, `target`/`value` 매핑, 금지 규칙 포함 | 완료 |
+| S1-05 | Planner 프롬프트에 step 1 `navigate` 강제 규칙 반영 | `dify-chatflow.yaml` | 모든 시나리오 첫 step 규칙이 명시 | 완료 |
+| S1-06 | Planner 프롬프트에 소형 LLM 방어 규칙 반영 | `dify-chatflow.yaml` | `<think>` 금지, wait 남용 금지, blind guessing 억제 규칙 포함 | 완료 |
+| S1-07 | Planner few-shot 예시 추가 | `dify-chatflow.yaml` | 최소 1개 이상의 복합 예시가 JSON 형태로 포함 | 완료 |
+| S1-08 | Healer 프롬프트에 신규 액션별 복구 전략 반영 | `dify-chatflow.yaml` | `drag`/`upload`/`mock_*` 전략이 분리 명시 | 완료 |
+| S1-09 | Healer 출력 JSON 계약 정리 | `dify-chatflow.yaml`, 본 계획서 | 필수 키와 선택 키 규칙이 모순 없이 문서화 | 완료 |
+| S1-10 | Healer few-shot 예시를 출력 계약과 일치시킴 | `dify-chatflow.yaml` | 예시 JSON이 실제 요구 키셋과 충돌하지 않음 | 완료 |
+| S1-11 | `architecture.md` 상위 요약에 v4.1 확장 반영 | `architecture.md` | Phase 4/최종 산출물 요약이 14대 DSL 기준 | 완료 |
+| S1-12 | `architecture.md` 본문 내 9대 DSL 잔존 표현 정리 | `architecture.md` | Flow 설명, 데이터 흐름, 유저 워크플로우가 14대 DSL 기준으로 정리 | 완료 |
+| S1-13 | 제거된 컴포넌트 설명 반영 | `architecture.md` | 제거된 Vision Refactor 노드가 더 이상 활성 구성요소처럼 보이지 않음 | 완료 |
+| S1-14 | README와 현재 구현 상태의 경계 명시 | `README.md` 또는 본 계획서 | "문서 계약 선행, 실행기 구현은 Sprint 2" 경계가 독자가 이해 가능 | 완료 |
+| S1-15 | Dify Preview용 프롬프트 평가 케이스 정의 | 본 계획서 | drag / disabled / mocking 등 대표 입력 사례 문서화 | 완료 |
+| S1-16 | Sprint 2 착수 전 잔여 리스크 목록화 | 본 계획서 | executor/test 미구현 항목이 남은 일로 분리됨 | 완료 |
+| S1-17 | Sprint 1 하드웨어 기준선 명시 | 본 계획서, `architecture.md`, `README.md` | 기본 타깃이 16GB + `gemma4:e4b` 임이 명시 | 완료 |
+| S1-18 | Planner/Healer prompt budget 정의 | 본 계획서, `dify-chatflow.yaml`, `architecture.md` | 토큰 상한과 DOM 입력 상한이 문서화 | 완료 |
+| S1-19 | 30B/클라우드 모델 권장 제거 | `architecture.md` | Sprint 1 본문에서 30B/외부 모델이 기본 권장으로 남지 않음 | 완료 |
+| S1-20 | CPU-only 경로의 위치 정리 | 본 계획서, `README.md` | CPU-only는 가능하지만 목표 성능 기준은 아님을 명시 | 완료 |
+
+### 5.3 Sprint 1 종료 조건 (Definition of Done)
+
+- Planner/Healer 프롬프트가 모두 14대 DSL 계약 기준으로 정렬되어 있다.
+- 본 계획서와 `architecture.md`가 동일한 액션 수와 동일한 개념 모델을 설명한다.
+- 문서 안에서 제거된 노드나 구버전 9대 DSL 표현이 독자를 오도하지 않는다.
+- "실행 가능"과 "설계 완료"를 구분하는 문장이 존재한다.
+- Sprint 2에서 구현해야 할 남은 작업이 별도 항목으로 분리되어 있다.
+- 기본 운영 하드웨어와 기본 모델이 `16GB + gemma4:e4b` 로 일관되게 설명된다.
+- Planner/Healer prompt budget 과 DOM 입력 budget 이 명시되어 있다.
+
+### 5.4 Sprint 1 비범위 (Out of Scope)
+
+- `zero_touch_qa/__main__.py` 의 허용 액션 목록 변경
+- `executor.py` 의 신규 액션 실행 로직 추가
+- 로컬 fixture / pytest 추가
+- 실제 Dify Preview 실행 결과 캡처
+
+## 6. 단계별 실행 일정 (Milestones)
+
+- **Sprint 1 (진행 중)**: Dify Workflow(Planner/Healer) 프롬프트 고도화, 하드웨어 기준선 정리, prompt budget 축소, `dify-chatflow.yaml` / `architecture.md` / 계획서 기준선 동기화.
 - **Sprint 2 (진행 예정)**: Python Executor(`executor.py`)에 신규 5종 DSL(`upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 매핑 로직 구현.
 - **Sprint 3 (진행 예정)**: 기능 검증을 위한 로컬 Fixture HTML 준비 및 Pytest 단위 테스트 수행.
 - **Sprint 4 (최종)**: End-to-End 파이프라인 통합 테스트 (API 에러 모킹 및 UI 예외처리 검증 포함).
