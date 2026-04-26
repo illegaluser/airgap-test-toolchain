@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import re
@@ -5,7 +6,7 @@ import time
 import logging
 from dataclasses import dataclass, field
 
-from playwright.sync_api import sync_playwright, Page, Locator
+from playwright.sync_api import sync_playwright, Page, Locator, expect
 
 from .config import Config
 from .dify_client import DifyClient, DifyConnectionError
@@ -13,6 +14,10 @@ from .locator_resolver import LocatorResolver
 from .local_healer import LocalHealer
 
 log = logging.getLogger(__name__)
+
+
+class VerificationAssertionError(AssertionError):
+    """요소 탐색은 성공했지만 verify 조건이 맞지 않을 때 사용한다."""
 
 
 @dataclass
@@ -246,21 +251,45 @@ class QAExecutor:
                 "PASS", screenshot_path=ss,
             )
 
+        if action == "mock_status":
+            status_code = int(str(step.get("value", "")).strip())
+            self._install_mock_route(page, str(step.get("target", "")), status=status_code)
+            ss = self._screenshot(page, artifacts, step_id, "pass")
+            log.info("[Step %s] mock_status %s -> PASS", step_id, status_code)
+            return StepResult(
+                step_id, action, str(step.get("target", "")), str(status_code), desc,
+                "PASS", screenshot_path=ss,
+            )
+
+        if action == "mock_data":
+            mock_body = self._normalize_mock_body(step.get("value"))
+            self._install_mock_route(page, str(step.get("target", "")), body=mock_body)
+            ss = self._screenshot(page, artifacts, step_id, "pass")
+            log.info("[Step %s] mock_data -> PASS", step_id)
+            return StepResult(
+                step_id, action, str(step.get("target", "")), str(step.get("value", "")),
+                desc, "PASS", screenshot_path=ss,
+            )
+
         # ── 타겟 필요 액션: 실행 + 다단계 자가 치유 ──
         log.info("[Step %s] %s: %s", step_id, action, desc)
         original_target = step.get("target")
+        verification_error: VerificationAssertionError | None = None
 
         # 1차 시도: 기본 타겟 (Resolver 가 healed_aliases 를 자동 적용)
         locator = resolver.resolve(original_target)
         if locator:
             try:
-                self._perform_action(page, locator, step)
+                self._perform_action(page, locator, step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "pass")
                 return StepResult(
                     step_id, action, str(original_target or ""),
                     str(step.get("value", "")), desc,
                     "PASS", screenshot_path=ss,
                 )
+            except VerificationAssertionError as e:
+                verification_error = e
+                log.warning("[Step %s] verify 조건 실패: %s", step_id, e)
             except Exception as e:
                 log.warning("[Step %s] 기본 타겟 실패: %s", step_id, e)
 
@@ -269,7 +298,7 @@ class QAExecutor:
             fb_loc = resolver.resolve(fb_target)
             if fb_loc:
                 try:
-                    self._perform_action(page, fb_loc, step)
+                    self._perform_action(page, fb_loc, step, resolver)
                     # A: 후속 스텝이 같은 target 을 만나면 즉시 fb_target 사용
                     resolver.record_alias(original_target, fb_target)
                     ss = self._screenshot(page, artifacts, step_id, "healed")
@@ -279,6 +308,9 @@ class QAExecutor:
                         str(step.get("value", "")), desc,
                         "HEALED", heal_stage="fallback", screenshot_path=ss,
                     )
+                except VerificationAssertionError as e:
+                    verification_error = e
+                    log.warning("[Step %s] fallback verify 조건 실패: %s", step_id, e)
                 except Exception:
                     continue
 
@@ -294,7 +326,7 @@ class QAExecutor:
             if not alt_loc:
                 continue
             try:
-                self._perform_action(page, alt_loc, alt_step)
+                self._perform_action(page, alt_loc, alt_step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
                 log.info(
                     "[Step %s] action_alternatives 복구 성공: %s %s",
@@ -306,14 +338,28 @@ class QAExecutor:
                     str(alt_step.get("value", "")), desc,
                     "HEALED", heal_stage="alternative", screenshot_path=ss,
                 )
+            except VerificationAssertionError as e:
+                verification_error = e
+                log.warning(
+                    "[Step %s] action_alternatives verify 조건 실패: %s", step_id, e
+                )
             except Exception:
                 continue
+
+        if verification_error:
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            log.error("[Step %s] FAIL — verify 조건 불일치", step_id)
+            return StepResult(
+                step_id, action, str(original_target or ""),
+                str(step.get("value", "")), desc,
+                "FAIL", screenshot_path=ss,
+            )
 
         # ── [치유 3단계] 로컬 DOM 유사도 매칭 ──
         healed_loc = healer.try_heal(step)
         if healed_loc:
             try:
-                self._perform_action(page, healed_loc, step)
+                self._perform_action(page, healed_loc, step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
                 log.info("[Step %s] LocalHealer DOM 유사도 복구 성공", step_id)
                 return StepResult(
@@ -343,7 +389,7 @@ class QAExecutor:
             healed_loc = resolver.resolve(step.get("target"))
             if healed_loc:
                 try:
-                    self._perform_action(page, healed_loc, step)
+                    self._perform_action(page, healed_loc, step, resolver)
                     resolver.record_alias(original_target, step.get("target"))
                     ss = self._screenshot(page, artifacts, step_id, "healed")
                     log.info(
@@ -739,19 +785,106 @@ class QAExecutor:
                 step["target"] = ""
                 log.debug("[보정] navigate: target → value로 이동")
 
-    # ── 9대 DSL 액션 수행 ──
+    def _resolve_upload_path(self, raw_path) -> str:
+        """upload.value 를 artifacts 루트 아래의 실제 파일 경로로 해석한다."""
+        value = str(raw_path or "").strip()
+        if not value:
+            raise ValueError("upload.value 가 비어 있음")
+
+        allowed_root = os.path.abspath(self.config.artifacts_dir)
+        candidates: list[str] = []
+        if os.path.isabs(value):
+            candidates.append(os.path.abspath(value))
+        else:
+            candidates.append(os.path.abspath(os.path.join(allowed_root, value)))
+            candidates.append(os.path.abspath(os.path.join(allowed_root, os.path.basename(value))))
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if os.path.commonpath([allowed_root, candidate]) != allowed_root:
+                continue
+            if os.path.isfile(candidate):
+                return candidate
+
+        raise FileNotFoundError(
+            f"업로드 파일을 찾을 수 없거나 허용 루트 밖 경로임: {value!r} "
+            f"(허용 루트: {allowed_root})"
+        )
+
     @staticmethod
-    def _perform_action(page: Page, locator: Locator, step: dict):
-        """9대 DSL 액션(click, fill, press, select, check, hover, verify, navigate, wait)을 수행한다.
+    def _normalize_mock_body(value) -> str:
+        """mock_data.value 를 application/json body 문자열로 정규화한다."""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("mock_data.value 가 비어 있음")
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        return json.dumps(parsed, ensure_ascii=False)
+
+    @staticmethod
+    def _install_mock_route(
+        page: Page, url_pattern: str, *, status: int | None = None, body: str | None = None
+    ) -> None:
+        """API 모킹을 정확히 1회만 설치해 후속 스텝 전역 오염을 막는다."""
+        pattern = str(url_pattern or "").strip()
+        if not pattern:
+            raise ValueError("mock_* action 에 target(URL 패턴)이 필요함")
+
+        def _handler(route):
+            fulfill_args = {"status": status or 200}
+            if body is not None:
+                fulfill_args["body"] = body
+                fulfill_args["content_type"] = "application/json"
+            route.fulfill(**fulfill_args)
+
+        page.route(pattern, _handler, times=1)
+
+    @staticmethod
+    def _assert_locator_contains_value(locator: Locator, expected: str) -> None:
+        """기존 verify 호환을 위해 text_content 와 input_value 를 모두 고려한다."""
+        actual = ""
+        try:
+            actual = (locator.inner_text() or "").strip()
+        except Exception:
+            actual = ""
+        if not actual:
+            try:
+                actual = (locator.text_content() or "").strip()
+            except Exception:
+                actual = ""
+        if not actual:
+            try:
+                actual = (locator.input_value() or "").strip()
+            except Exception:
+                actual = ""
+        if str(expected) not in actual:
+            raise VerificationAssertionError(
+                f"텍스트/값 불일치: 기대='{expected}', 실제='{actual}'"
+            )
+
+    # ── 14대 DSL 액션 수행 ──
+    def _perform_action(
+        self, page: Page, locator: Locator, step: dict, resolver: LocatorResolver
+    ):
+        """14대 DSL 액션을 실제 Playwright 동작으로 수행한다.
 
         Args:
             page: Playwright Page (verify 에서 사용).
             locator: 대상 요소의 Playwright Locator.
             step: DSL 스텝 dict. ``action`` 과 ``value`` 키를 참조한다.
+            resolver: drag 목적지 같은 추가 target 을 해석할 LocatorResolver.
 
         Raises:
             ValueError: 미지원 액션일 때.
-            AssertionError: verify 액션에서 조건 불일치 시.
+            VerificationAssertionError: verify 액션에서 조건 불일치 시.
         """
         action = step["action"].lower()
         value = step.get("value", "")
@@ -831,6 +964,24 @@ class QAExecutor:
                             f"새 탭 URL: {new_tab_urls} "
                             f"(chrome-error/about:blank 은 봇 차단으로 간주)"
                         )
+        elif action == "upload":
+            file_path = self._resolve_upload_path(value)
+            locator.set_input_files(file_path)
+        elif action == "drag":
+            target_locator = resolver.resolve(value)
+            if not target_locator:
+                raise RuntimeError(f"drag 목적지 탐색 실패: {value!r}")
+            try:
+                locator.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            try:
+                target_locator.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            locator.drag_to(target_locator, timeout=10000)
+        elif action == "scroll":
+            locator.scroll_into_view_if_needed(timeout=5000)
         elif action == "select":
             locator.select_option(label=str(value))
         elif action == "check":
@@ -848,38 +999,42 @@ class QAExecutor:
             if QAExecutor._matches_search_results_intent(desc):
                 current_url = page.url or ""
                 if not QAExecutor._SEARCH_RESULT_URL_RE.search(current_url):
-                    raise AssertionError(
+                    raise VerificationAssertionError(
                         f"검색결과 verify 실패 — 현재 URL 이 검색결과 페이지가 아님: "
                         f"{current_url} "
                         f"(검색 제출이 실제로 이뤄졌는지 이전 스텝 확인 필요)"
                     )
-            if not value:
-                assert locator.is_visible(), (
-                    f"요소가 보이지 않습니다: {step.get('target')}"
-                )
-            else:
-                actual = ""
-                try:
-                    actual = (locator.inner_text() or "").strip()
-                except Exception:
-                    actual = ""
-                if not actual:
-                    try:
-                        actual = (locator.text_content() or "").strip()
-                    except Exception:
-                        actual = ""
-                if not actual:
-                    try:
-                        actual = (locator.input_value() or "").strip()
-                    except Exception:
-                        actual = ""
-                assert str(value) in actual, (
-                    f"텍스트 불일치: 기대='{value}', 실제='{actual}'"
-                )
+            condition = str(step.get("condition", "")).strip().lower()
+            try:
+                if condition in ("", "visible"):
+                    if not value:
+                        expect(locator).to_be_visible()
+                    else:
+                        self._assert_locator_contains_value(locator, str(value))
+                elif condition == "hidden":
+                    expect(locator).not_to_be_visible()
+                elif condition == "disabled":
+                    expect(locator).to_be_disabled()
+                elif condition == "enabled":
+                    expect(locator).to_be_enabled()
+                elif condition == "checked":
+                    expect(locator).to_be_checked()
+                elif condition == "value":
+                    expect(locator).to_have_value(str(value))
+                elif condition in ("text", "contains_text", "contains"):
+                    expect(locator).to_contain_text(str(value))
+                else:
+                    raise ValueError(
+                        f"미지원 verify.condition: {condition!r} "
+                        f"(허용: visible, hidden, disabled, enabled, checked, value, text)"
+                    )
+            except AssertionError as e:
+                raise VerificationAssertionError(str(e)) from e
         else:
             raise ValueError(
                 f"미지원 DSL 액션: '{action}'. "
-                f"허용: navigate, click, fill, press, select, check, hover, wait, verify"
+                "허용: navigate, click, fill, press, select, check, hover, wait, "
+                "verify, upload, drag, scroll, mock_status, mock_data"
             )
 
     # ── 스크린샷 ──
