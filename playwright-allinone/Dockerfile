@@ -5,7 +5,7 @@
 # 설계다. Mac 과 Windows (WSL2 Ubuntu) 환경의 공통 요구 때문에 이렇게 나왔다:
 #
 #   - Docker Desktop on Mac: Linux 컨테이너에 Metal GPU passthrough 미지원 →
-#     컨테이너 내 Ollama 가 CPU 모드 (gemma4:e4b 기준 1-2 tok/s) → 타임아웃.
+#     컨테이너 내 Ollama 가 CPU 모드 (gemma4:26b 기준 1-2 tok/s) → 타임아웃.
 #   - Playwright headed Chromium 은 컨테이너 안에서 호스트 데스크탑에 창을
 #     띄울 수 없음 (컨테이너에 X/Wayland 소켓 마운트해도 경험이 일관되지 않음).
 #
@@ -25,7 +25,7 @@
 #
 # ⚠️ 본 이미지는 호스트에 Ollama 데몬이 설치·기동된 상태에서만 동작한다.
 #   docker run -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
-#              -e OLLAMA_MODEL=gemma4:e4b (또는 호스트에 pull 된 모델) ... 필수.
+#              -e OLLAMA_MODEL=gemma4:26b (또는 호스트에 pull 된 모델) ... 필수.
 #   호스트 agent 스크립트: mac-agent-setup.sh (Mac) / wsl-agent-setup.sh (WSL2)
 #   자세한 가이드: README §4 (Mac), §5 (Windows 11 / WSL2 Ubuntu).
 #

@@ -29,15 +29,25 @@
 
 ### 1.2 비즈니스 가치
 
-- **시간 단축**: 테스트 계획서 / 시나리오 초안 작성 시간 (평균 4–8시간 / 모듈) 을 LLM 으로
-  몇 분 단위로 압축. 사람은 검토 / 수정만 수행.
-- **품질 균질화**: 신입 / 시니어가 동일한 테스트 이론 KB 를 참조하므로 작성자별 변동성
-  감소. 누락된 테스트 설계 기법 (예: 경계값 분석) 을 LLM 이 KB 기반으로 빠뜨리지 않음.
-- **추적성 (traceability)**: 모든 시나리오는 어떤 spec 청크 + 어떤 테스트 이론 청크에서
-  파생됐는지 retrieval log 로 역추적 가능. 향후 spec 변경 시 영향받는 시나리오 식별이
-  쉬워진다.
-- **ZeroTouch-QA 와의 결합**: 시나리오 출력이 14대 DSL JSON 형식이면 그대로 자동 실행 가능.
-  사람의 SRS 작성 → DSL 변환 단계가 아예 사라진다.
+본 트랙의 **1차 가치는 "테스트 설계 초안 + 누락 방지"** 다. 14-DSL JSON 자동 실행 결합은
+선택적 다운스트림으로 분리한다 — 14-DSL 의 결정성 / 회귀성은 ZeroTouch-QA 트랙이 이미
+보장하고, 본 트랙은 **시나리오를 "무엇을 테스트할 것인가" 단계에서 자동 생성** 하는 것이
+주된 효용이다.
+
+- **(1차) 시간 단축 + 누락 방지**: 테스트 계획서 / 시나리오 초안 작성 시간 (평균 4–8시간 /
+  모듈) 을 LLM 으로 몇 분 단위로 압축. 사람은 검토 / 수정만 수행. **누락된 테스트 설계 기법
+  (예: 경계값 분석, 동등 분할) 을 KB 기반으로 빠뜨리지 않는 것이 핵심** — 신입 / 시니어
+  변동성을 줄이고 모듈별 테스트 커버리지를 균질화한다.
+- **(1차) 추적성 (traceability)**: 모든 시나리오는 어떤 spec 청크 + 어떤 테스트 이론
+  청크에서 파생됐는지 retrieval log 로 역추적 가능. 향후 spec 변경 시 영향받는 시나리오
+  식별이 쉬워진다.
+- **(2차) 품질 균질화**: 동일 KB 를 참조하므로 작성자 / 모듈 / 시점에 따른 결과 변동성
+  감소.
+- **(선택적) ZeroTouch-QA 와의 다운스트림 결합**: `scenario_dsl` 모드 출력은 14대 DSL
+  JSON 호환이므로 ZeroTouch-QA execute 입력으로 그대로 사용 가능 — **단, 실 웹 UI 의
+  selector 는 spec / API 문서만으로 안정적으로 맞추기 어려우므로** 이 결합은 제한된 fixture
+  / staging 환경에서만 안정적. 운영 도메인의 결정론적 실행이 필요하면 사람이 selector
+  를 검토 / 수정한 후 ZeroTouch-QA 에 전달해야 한다.
 
 ### 1.3 범위
 
@@ -46,7 +56,7 @@
 - Dify 의 **두 개 Knowledge Base** 신설 + 자동 생성 (provision.sh).
   - `kb_project_info`: 프로젝트 산출물 (spec / 기획서 / API 문서 / 사용자 시나리오)
   - `kb_test_theory`: 테스트 이론 / 프로세스 (테스트 설계 기법, V-model, 회귀 정책 등)
-- 입력 문서 형식: `csv`, `pdf`, `pptx`, `docx`. 두 KB 모두 동일 형식 지원.
+- 입력 문서 형식: `csv`, `pdf`, `docx` (3 형식). 두 KB 모두 동일. **PPTX 는 본 트랙에서 미지원** — Dify 1.13.3 의 기본 ETL (`ETL_TYPE=dify`) 분기에 PPTX 처리가 없어 binary 텍스트가 깨져 인덱싱됨. PPTX 가 필요한 경우 사용자가 PDF / Markdown 으로 변환 후 업로드 권장. (출처: 컨테이너 내부 `extract_processor.py:107-162` 직접 검증 + [Dify 공식 docs](https://docs.dify.ai/en/use-dify/knowledge/create-knowledge/introduction))
 - **Embedding 모델**: `bona/bge-m3-korean:latest` (Ollama 호스트). 한국어 우선, 영어
   혼합 입력도 처리.
 - **신규 Dify 챗봇**: `Test Planning Brain` (별도 chatflow YAML).
@@ -74,7 +84,7 @@
 | --- | --- |
 | 두 KB 가 fresh provision 시 자동 생성 | `provision.sh` 실행 후 Dify console 에서 두 KB 노출 |
 | `bona/bge-m3-korean:latest` 가 embedding provider 로 등록 | DB `provider_model_credentials` 에 model_type=text-embedding 레코드 존재 |
-| 4개 형식 (csv/pdf/pptx/docx) 모두 GUI 업로드 → 인덱싱 완료 | 각 형식별 1개 샘플 문서 업로드 후 chunk 수 > 0 |
+| 3개 형식 (csv/pdf/docx) 모두 GUI 업로드 → 인덱싱 완료 | 각 형식별 1개 샘플 문서 업로드 후 chunk 수 > 0. PPTX 는 미지원 (out-of-scope) |
 | `Test Planning Brain` 챗봇이 fresh provision 시 자동 생성 | provision.sh 후 Dify console 에 두 번째 앱 노출 |
 | **복수 chatflow seed 인프라** — `OFFLINE_DIFY_CHATFLOW_YAML` 단수 처리 → 복수 처리로 리팩토링 (Dockerfile / entrypoint.sh / provision.sh) | provision.sh 가 두 chatflow YAML 모두 import + publish + API key 발급 |
 | **Dataset id 주입** — chatflow YAML 의 Knowledge Retrieval 노드가 fresh KB 의 실 ID 를 참조 | provision.sh 가 KB 생성 후 ID 캡처 → chatflow YAML 의 placeholder (`__KB_PROJECT_INFO_ID__`, `__KB_TEST_THEORY_ID__`) 를 substitute 후 import |
@@ -111,7 +121,7 @@
 │                        │                        │                 │
 │             ┌──────────┴──────────┐  ┌──────────┴───────────┐     │
 │             │ KB: kb_project_info │  │ KB: kb_test_theory   │     │
-│             │ csv/pdf/pptx/docx   │  │ pdf/docx (이론)       │     │
+│             │ csv/pdf/docx        │  │ pdf/docx (이론)       │     │
 │             │ project spec, API   │  │ test design 기법,     │     │
 │             │ doc, 기획서          │  │ V-model, 회귀 정책   │     │
 │             └─────────────────────┘  └──────────────────────┘     │
@@ -268,7 +278,10 @@ sister 의 KB body 에는 retrieval 정책도 포함됨:
 - **모델**: `gemma4:26b` (Ollama, 호스트, 기존과 동일).
 - **completion_params**: `temperature=0.1`, `max_tokens=8192` (기존 ZeroTouch QA Brain 과
   동일 — Sprint 6 에서 검증된 값).
-- **context_size**: Ollama provider credential 의 12288 (Sprint 6 에서 결정).
+- **context_size**: 본 트랙은 **20480** (Sprint 6 의 12288 대비 상향 — §4.3 책상 비유 참조).
+  Dify Ollama plugin 이 native `/api/chat` API 를 사용하므로 credential `context_size` 가
+  request body `options.num_ctx` 로 정상 전달 (`langgenius/ollama-0.1.3` plugin `llm.py:206,747`
+  검증 완료). Modelfile 별도 작성 불필요.
 - **`<think>` 출력 금지**: ZeroTouch QA Brain 과 동일하게 system prompt 에 명시
   (max_tokens 낭비 방지).
 
@@ -324,32 +337,28 @@ sister 의 KB body 에는 retrieval 정책도 포함됨:
 **근거**: `<문서명>` chunk-<id> (score=<0.xx>) — "인용 텍스트 첫 30자..."
 ```
 
-**14-DSL JSON** (ZeroTouch-QA 호환) — `_validate_scenario` 와 동일 schema, traceability
-는 별도 sibling 블록으로:
+**14-DSL JSON** (ZeroTouch-QA 호환) — `_validate_scenario` 와 1:1 동일 schema. **wrapping
+object 사용 안 함** (ZeroTouch-QA execute 입력과 직접 호환 보장). traceability 는 JSON
+list 본체 다음 줄부터 `# traceability:` 주석으로 부착 (§3.6 의 `scenario_dsl` 모드 참조).
 
-```json
-{
-  "scenario": [
-    {"step": 1, "action": "navigate", "target": "", "value": "<URL>",
-     "description": "<자연어 시나리오의 어느 부분에 해당>", "fallback_targets": []},
-    {"step": 2, "action": "click", "target": "<role+name 또는 #id>", "value": "",
-     "description": "...", "fallback_targets": ["..."]}
-  ],
-  "traceability": [
-    {"step": 1, "source_document": "module_payment_v1.2.pdf", "chunk_id": "chunk-7f2a",
-     "retrieval_score": 0.84, "citation": "결제 모듈의 첫 페이지는 ..."},
-    {"step": 2, "source_document": "api_endpoints.csv", "chunk_id": "chunk-9c3d",
-     "retrieval_score": 0.78, "citation": "POST /payments accepts ..."}
-  ]
-}
+```text
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "<URL>",
+   "description": "<자연어 시나리오의 어느 부분에 해당>", "fallback_targets": []},
+  {"step": 2, "action": "click", "target": "<role+name 또는 #id>", "value": "",
+   "description": "...", "fallback_targets": ["..."]}
+]
+# traceability:
+# step 1 — module_payment_v1.2.pdf chunk-7f2a (score=0.84) — "결제 모듈의 첫 페이지는 ..."
+# step 2 — api_endpoints.csv row 12 chunk-9c3d (score=0.78) — "POST /payments accepts ..."
 ```
 
 action 화이트리스트 14개 (`navigate`, `click`, `fill`, `press`, `select`, `check`,
 `hover`, `wait`, `verify`, `upload`, `drag`, `scroll`, `mock_status`, `mock_data`).
-field 계약은 ZeroTouch QA Brain Planner 와 1:1 일치. **단, ZeroTouch-QA execute 모드는
-스칼라 list 형태의 scenario 를 받으므로**, 사용자는 위 wrapping object 의
-`scenario` 필드만 추출해서 입력해야 한다 (또는 `scenario_dsl` 모드는 wrapping 없이
-순수 list 만 emit — 아래 §3.6 출력 모드 정책 참조).
+field 계약은 ZeroTouch QA Brain Planner 와 1:1 일치. **자동 파서 추출 룰**:
+`out.split("\n#", 1)[0].rstrip()` → `json.loads()` → `_validate_scenario()`. 즉 `# traceability:`
+주석부터 끝까지는 메타데이터로 분리되고, 앞쪽 JSON list 가 그대로 ZeroTouch-QA execute
+입력으로 사용 가능.
 
 ##### 출력 모드별 schema 계약 (자동화 친화)
 
@@ -357,12 +366,13 @@ field 계약은 ZeroTouch QA Brain Planner 와 1:1 일치. **단, ZeroTouch-QA e
 | --- | --- | --- |
 | `plan` | Markdown 계획서 (8 섹션 — 7 + traceability) | N/A |
 | `scenario_natural` | Markdown G/W/T + 근거 줄 | N/A |
-| `scenario_dsl` | **순수 JSON list (`[{step:1,...}, ...]`)** + 별도 줄에 `# traceability:` 주석으로 source citation. 다른 텍스트 일절 금지 | 그대로 ZeroTouch-QA execute 입력 가능 |
-| `both` | Markdown 계획서 / 자연어 시나리오 / **fenced code block** (`<!-- BEGIN SCENARIO_DSL -->\n```json\n...\n```\n<!-- END SCENARIO_DSL -->`) 로 14-DSL 분리 | 자동화 파서가 BEGIN/END marker 사이의 ```json 블록만 추출 → 그대로 입력 |
+| `scenario_dsl` | **JSON-first-block 룰**: 첫 글자 `[` 로 시작하는 JSON list, 그 닫는 `]` 다음 빈 줄 한 개, 이후 `# traceability:` 주석 행 (선택). markdown / 설명 / fence / `<think>` 모두 금지 | 자동 파서: `out.split("\n#", 1)[0].rstrip()` → `json.loads` → `_validate_scenario` |
+| `both` | Markdown 계획서 / 자연어 시나리오 / **fenced code block** (`<!-- BEGIN SCENARIO_DSL -->\n```json\n[...]\n```\n<!-- END SCENARIO_DSL -->`) 로 14-DSL 분리. fence 안은 순수 JSON list 만 (traceability 표는 fence 밖 markdown) | 자동 파서: regex `<!-- BEGIN SCENARIO_DSL -->.*?\`\`\`json\n(.*?)\n\`\`\`.*?<!-- END SCENARIO_DSL -->` (DOTALL). group(1) = JSON 텍스트 → `_validate_scenario` |
 
-`scenario_dsl` 모드의 **순수 JSON only 강제** 는 사용자가 결과를 자동화 파이프라인에
-바로 연결할 때 가장 안전하다. system prompt 가 이 모드일 때 markdown / 설명 / `<think>`
-모두 금지를 명시한다.
+`scenario_dsl` 모드의 핵심 계약: **JSON list 본체** (`[...]`) + (선택) 그 다음 줄부터 `# traceability:`
+주석. 두 영역의 경계는 `\n#` 토큰. 자동 파서가 `split("\n#", 1)[0]` 으로 안정적으로
+JSON 만 추출 가능 (sister 의 sed 단순 substitute 와 같은 텍스트 우선 패턴). system prompt
+가 이 모드일 때 markdown / 설명 / fence / `<think>` 모두 금지를 명시한다.
 
 ### 2.3 데이터 흐름
 
@@ -375,10 +385,23 @@ field 계약은 ZeroTouch QA Brain Planner 와 1:1 일치. **단, ZeroTouch-QA e
    ↓
 [Dify API: POST /datasets/{id}/document/create-by-file]
    ↓
-[Dify ETL]
-   - PDF: PyMuPDF (Dify 기본)
-   - DOCX/PPTX: Dify 기본 ETL
+[Dify ETL] (ETL_TYPE=dify 기본 분기)
+   - PDF: PyMuPDF
+   - DOCX: python-docx
    - CSV: Dify CSV 모드 (row-as-chunk)
+   - PPTX: 미지원 (out-of-scope)
+
+# 사용 API 종류 (운영 인지 사항):
+# - `POST /v1/datasets/{id}/document/create-by-file` = **공식 API** (API key 인증).
+#   문서 데이터 조작 / 업로드는 이 endpoint 사용 가능 (사용자 자동화 시).
+# - `POST /console/api/datasets`, `/console/api/apps/imports`, `/console/api/workspaces/.../default-model`
+#   등 = **console (private) API** (cookie 인증). 워크스페이스 셋업 / 앱 import / KB 신규
+#   생성 / provider credential 은 **공식 API 미공개**, console API 만 가능.
+# - 본 PLAN 의 provision.sh 패치는 console API 다수 사용 — Dify 1.13.x pinned.
+#   sister 프로젝트 (`code-AI-quality-allinone/scripts/provision.sh`) 가 같은 endpoint
+#   를 production 사용 중 (검증).
+# - Dify minor upgrade (1.14+) 시 console API 회귀 위험 — 업그레이드 PR 마다 sister
+#   provision.sh 동작 회귀 테스트 + 본 PLAN provision.sh 도 함께 검증.
    ↓
 [Chunking] (chunk_size=500, overlap=50)
    ↓
@@ -395,9 +418,9 @@ field 계약은 ZeroTouch QA Brain Planner 와 1:1 일치. **단, ZeroTouch-QA e
 [Test Planning Brain chatflow]
    ↓
 [Knowledge Retrieval #1: kb_project_info]
-   - 임베딩 (bge-m3-korean)
-   - Qdrant top_k=5 검색
-   - 청크 텍스트 + score 반환
+   - 임베딩 (bge-m3-korean, 1024차원)
+   - Qdrant + BM25 hybrid 검색, top_k=3
+   - 청크 텍스트 + metadata.score / dataset_name / document_name / segment_id 반환
    ↓
 [Knowledge Retrieval #2: kb_test_theory]
    - 동일 (top_k=3)
@@ -442,13 +465,12 @@ field 계약은 ZeroTouch QA Brain Planner 와 1:1 일치. **단, ZeroTouch-QA e
 | --- | --- | --- | --- |
 | PDF | PyMuPDF (Dify 기본) | 500/50 | 표 / 이미지 텍스트 추출은 OCR 미사용 — 표는 마크다운 변환 권장 |
 | DOCX | python-docx | 500/50 | 헤딩 구조 보존됨 |
-| PPTX | python-pptx | 500/50 | 슬라이드 단위 chunking 권장 (수동 조정 가능) |
 | CSV | Dify CSV 모드 | row-as-chunk | 표 헤더 + 1 행 = 1 청크. 행이 많으면 인덱싱 시간 ↑ |
+| ~~PPTX~~ | **미지원** | — | `ETL_TYPE=dify` 분기에 PPTX 처리 없음. binary 깨짐. PDF 변환 후 업로드 |
 
 #### 권장 사용 가이드
 
-- **spec / 기획서**: PDF 또는 DOCX. PPTX 는 슬라이드 단위 청크가 의미를 자르므로 가능하면
-  PDF 변환 후 업로드.
+- **spec / 기획서**: PDF 또는 DOCX. PPTX 는 본 트랙 미지원 — PDF 변환 후 업로드.
 - **API 문서**: CSV 가 가장 자연. (endpoint, method, params, response, description) 컬럼.
 - **테스트 이론**: PDF 가 표준 (책, 논문 발췌). DOCX 도 OK.
 
@@ -524,21 +546,35 @@ system prompt 가 다음 4 패턴을 의도 분류:
 
 #### `scenario_dsl` (자동화 핵심)
 
-- 출력 계약: **첫 문자가 `[`, 마지막 문자가 `]` 인 순수 JSON list** + 그 다음 줄부터
-  `# traceability:` 로 시작하는 주석 형태로 source citation. JSON 영역 안에는 `<think>`,
-  markdown, 설명, fenced block 모두 **금지**.
+- **출력 계약 (JSON-first-block 룰)**:
+  - 첫 글자 = `[` (JSON list 시작).
+  - JSON list 본체는 standard JSON. 다중 줄 indentation 허용.
+  - JSON 닫는 `]` 다음에 빈 줄 1 개 (선택, 가독성용).
+  - 이후 `# traceability:` 줄 (선택). 그 아래 `# step N — ...` 주석 행들.
+  - JSON 본체 안에는 `<think>`, markdown, 설명, fenced block 모두 **금지**.
+  - JSON 외부의 traceability 영역도 markdown 금지 (`#` 주석 행만).
+- 자동 파서가 보는 두 영역의 경계 = `\n#` 토큰 첫 등장 위치.
 - 예시:
 
   ```text
   [{"step": 1, "action": "navigate", "target": "", "value": "https://...", "description": "...", "fallback_targets": []},
    {"step": 2, "action": "click", "target": "#submit", "value": "", "description": "...", "fallback_targets": []}]
+
   # traceability:
   # step 1 — module_payment_v1.2.pdf chunk-7f2a (score=0.84)
   # step 2 — api_endpoints.csv row 12 chunk-9c3d (score=0.78)
   ```
 
-- 파서 구현: `out.split("\n# traceability:", 1)[0]` 로 JSON 추출 → `json.loads()` →
-  `_validate_scenario()`. 실패 시 모드 위반으로 reject (LLM retry).
+- **파서 구현** (단일 검증 책임):
+
+  ```python
+  json_part = out.split("\n#", 1)[0].rstrip()
+  scenario = json.loads(json_part)            # list[dict]
+  _validate_scenario(scenario)                # ZeroTouch-QA 호환 검증
+  ```
+
+  실패 시 모드 위반으로 reject (LLM retry). 검증 단계마다 명확한 에러 (decode / shape /
+  action whitelist) 분리해 디버깅 용이.
 
 #### `both`
 
@@ -810,13 +846,13 @@ PoC 로 수행 후 PLAN 갱신.
 
 | ID | 작업 | 파일 | 산출물 | 검증 |
 | --- | --- | --- | --- | --- |
-| T-11 | 샘플 문서 세트 작성 — `examples/test-planning-samples/` (4개 형식 모두 포함) | `examples/test-planning-samples/` | (a) `spec.pdf` 가짜 모듈 spec 1쪽 (b) `api.csv` 5 endpoint (c) `feature_login.docx` 사용자 시나리오 1쪽 (d) `architecture.pptx` 슬라이드 3장 (e) `test_theory.pdf` boundary value analysis 1쪽 | 5개 형식 모두 GUI 업로드 시 인덱싱 PASS + chunk 수 > 0 |
+| T-11 | 샘플 문서 세트 작성 — `examples/test-planning-samples/` (3 형식) | `examples/test-planning-samples/` | (a) `spec.pdf` 가짜 모듈 spec 1쪽 (b) `api.csv` 5 endpoint (c) `feature_login.docx` 사용자 시나리오 1쪽 (d) `test_theory.pdf` boundary value analysis 1쪽 | 4 파일 모두 GUI 업로드 시 인덱싱 PASS + chunk 수 > 0. PPTX 는 out-of-scope |
 | T-12 | end-to-end 검증 1: 계획서 요청 | (수동 호출) | 결과 markdown 캡처 | 8 섹션 모두 포함 (7 IEEE + traceability) + spec 인용 + 이론 적용 |
-| T-13 | end-to-end 검증 2: 시나리오 요청 (`scenario_dsl` 모드) | (수동 호출) | 순수 JSON 출력 캡처 | first-char `[` last-char `]` + `_validate_scenario` 통과 + traceability 주석 존재 |
+| T-13 | end-to-end 검증 2: 시나리오 요청 (`scenario_dsl` 모드) | (수동 호출) | 순수 JSON 출력 캡처 | (1) 첫 글자 = `[`. (2) `out.split("\n#", 1)[0].rstrip()` 로 추출한 영역의 마지막 글자 = `]`. (3) 추출 후 `json.loads` + `_validate_scenario` 통과. (4) `# traceability:` 주석 영역에 step 별 인용 존재 (없어도 PASS) |
 | T-13a | end-to-end 검증 3: 시나리오 요청 (`both` 모드) | (수동 호출) | markdown + fenced JSON 출력 | regex 파서가 BEGIN/END marker 사이 JSON 100% 추출 |
 | T-14 | end-to-end 검증 4: scenario_dsl JSON 을 ZeroTouch-QA execute 모드로 실행 | Jenkins 수동 빌드 | run_log step 모두 PASS (sample scope) | 결정론 PASS |
 | T-15 | retrieval recall 정성 평가 | 수동 | 첫 3+2 chunks 가 query 와 의미적으로 정합한가 | 검토 |
-| T-15a | context budget 실측 — 실 호출 1회의 prompt + retrieved + output 토큰 합 측정. 12288 한계 안에 들어오는가 | (수동 호출) | Dify run log + tiktoken 측정 결과 | 합계 < 11500 (마진 800). 초과 시 OLLAMA_CONTEXT_SIZE 16384 상향 검토 |
+| T-15a | context budget 실측 — 실 호출 1회의 prompt + retrieved + output 토큰 합 측정. **20480 한계** 안에 들어오는가 | (수동 호출) | Dify run log + tiktoken 측정 결과 | 합계 < 18000 (마진 2480). 초과 시 OLLAMA_CONTEXT_SIZE 24576 상향 검토 |
 
 ### 5.6 Phase 5 — 문서
 
@@ -847,7 +883,7 @@ T-06 (auto-import — KB ID substitute + publish + API key)
         ▼
 rebuild required
         ▼
-T-11 (5 형식 샘플 문서)  ◀ pdf/csv/docx/pptx 모두 포함
+T-11 (3 형식 샘플 문서)  ◀ pdf / csv / docx (PPTX out-of-scope)
         ▼
 T-12, T-13, T-13a, T-14, T-15, T-15a (검증, 병렬 가능)
         ▼
@@ -877,7 +913,7 @@ T-03, T-04 는 코드 없음 → 검증 후 화면 캡처와 함께 작성하면
 End-to-end 절차:
 
 1. fresh provision (`build.sh --redeploy --fresh`).
-2. Dify GUI 에서 4개 형식 (csv/pdf/pptx/docx) 샘플 업로드 → 인덱싱 완료.
+2. Dify GUI 에서 3 형식 (csv/pdf/docx) 샘플 업로드 → 인덱싱 완료.
 3. Dify Web UI 에서 `Test Planning Brain` 챗봇에 "결제 모듈 테스트 계획서 + 시나리오" 입력.
 4. 응답 검증:
    - Markdown 계획서 7 섹션
@@ -934,18 +970,22 @@ End-to-end 절차:
 | --- | --- | --- | --- |
 | `gemma4:26b` (Ollama) | 호스트에 설치됨 | 모델 변경 시 Sprint 6 보강 효과 무효화 가능 | README 사전 준비에 모델 명시 (T-01b) |
 | `bona/bge-m3-korean:latest` (Ollama) | 호스트에 설치됨 (1.2GB) | 모델 누락 시 Phase 0 부터 실패 | 오프라인 반입 list / README 사전 준비 줄에 추가 (T-01b) |
-| Dify 1.13.3 KB API schema | 운영 중 | 다음 메이저 (1.14+) 에서 바뀔 수 있음 | T-spike-1 으로 1.13.3 schema 실측 fixture 보존 (`examples/spike/`) |
-| Dify 1.13.3 Chatflow Knowledge Retrieval 노드 schema | 미검증 | dataset_id 필드명 / 형식이 PLAN 가정과 다를 수 있음 | T-spike-2 로 export 결과 실측 후 PLAN §2.2.3 갱신 |
+| Dify 1.13.3 KB API schema (공식 `/v1/datasets/*` + console `/console/api/*` 혼용) | sister 검증 | console API 는 비공개 — 1.14+ minor 에서 바뀔 수 있음 | sister 프로젝트 (`code-AI-quality-allinone/scripts/provision.sh`) 의 production 검증 코드 인용. Dify 업그레이드 PR 마다 sister provision.sh 회귀 테스트 + 본 트랙 provision.sh 도 함께 검증. **1.13.x pinned** 명시 |
+| Dify 1.13.3 Chatflow Knowledge Retrieval 노드 schema | 검증 완료 | sister fixture 와 1:1 일치 | sister `sonar-analyzer-workflow.yaml:251-267` 인용 |
 | Qdrant (Dify 내장) | 운영 중 | 디스크 부족 시 인덱싱 실패 | KB 업로드 가이드에 디스크 모니터링 명시 |
 | 호스트 Ollama Embedding 처리량 | 미측정 | 32 청크 임베딩 시간 미상 — 대용량 KB 업로드 시 hang 가능 | T-12 검증 시 측정 + §4.5 SLA 행 추가 |
 
 ### 8.2 KV cache / context 부담
 
-- Sprint 6 의 `OLLAMA_CONTEXT_SIZE=12288` 이 Test Planning Brain 에도 적용됨 (같은
-  provider). retrieved context (5 + 3 chunks × 500 chars × 2 bytes/char ≈ 8000 chars
-  ≈ 2000 tokens) + system prompt (~2000) + user query (~200) + max_tokens=8192 = 합계
-  ~12400 — context 한계 12288 에 거의 닿음.
-- **위험**: 사용자 query 가 길거나 retrieved chunk 수가 많으면 context overflow.
+- Sprint 6 의 `OLLAMA_CONTEXT_SIZE=12288` 은 ZeroTouch-QA Brain 까지 충분했지만, Test
+  Planning Brain 은 retrieved context (3+2 chunks × ~250 tokens ≈ 1250 tokens) 가 추가로
+  차지. 합계 추정: system prompt (~5000) + retrieved (~1250) + user query (~500) +
+  max_tokens=8192 = **~14942 tokens** — Sprint 6 의 12288 한계 ~2700 초과.
+- **본 트랙 결정** (§4.3): `OLLAMA_CONTEXT_SIZE=20480` 으로 상향. 안전 마진 ~5500 토큰
+  (27%). Dify Ollama plugin 이 native `/api/chat` 사용으로 num_ctx 정상 전달 (Modelfile
+  불필요).
+- **위험**: 사용자 query 가 길거나 retrieved chunk 수가 많으면 여전히 overflow 가능. T-15a
+  실측 후 24576 추가 상향 검토.
 - **완화**:
   - top_k 를 5+3 → 3+2 로 줄이는 것이 안전 마진을 늘림.
   - 또는 OLLAMA_CONTEXT_SIZE 를 16384 로 상향 (Sprint 6 에서 거절했지만 본 트랙은 부담
@@ -984,7 +1024,7 @@ End-to-end 절차:
 | Dify 인스턴스 | 같은 인스턴스 (port 18081) 에 두 번째 앱 | 2026-04-27 | 인프라 단순 |
 | **Dataset id 주입 방식** | provision.sh 가 KB 생성 후 ID 캡처 → chatflow YAML placeholder substitute → import | 2026-04-27 (review) | Dify 1.13.3 의 Knowledge Retrieval 노드는 dataset 을 ID 로 참조. 이름 참조 미지원 가정. T-spike-2 로 검증. |
 | **복수 chatflow seed 인프라** | `OFFLINE_DIFY_CHATFLOW_YAML` 단수 → 복수 (`OFFLINE_DIFY_CHATFLOW_YAMLS` 또는 디렉토리 스캔) 리팩토링 | 2026-04-27 (review) | 기존 ZeroTouch QA Brain + 신규 Test Planning Brain 두 chatflow 동시 seed 필요 |
-| **Top_k 보수적 시작** | project=3, theory=2 (5+3 → 3+2) | 2026-04-27 (review) | context budget 12288 한계에 안전 마진 확보. 품질 부족 시 5+3 으로 상향 검토 |
+| **Top_k 보수적 시작** | project=3, theory=2 (5+3 → 3+2) | 2026-04-27 (review) | context budget 부담 ↓ + 정밀 우선. 품질 부족 시 5+3 으로 상향 검토 |
 | **Traceability 강제** | 모든 출력에 source_documents / chunk_id / retrieval_score 인용 강제 | 2026-04-27 (review) | §1.2 의 "역추적" 가치를 출력 schema 에 박지 않으면 hallucination 검증 불가 |
 | **출력 모드별 strict contract** | `scenario_dsl` = 순수 JSON only / `both` = `<!-- BEGIN/END SCENARIO_DSL -->` fence 강제 | 2026-04-27 (review) | 자동화 파서가 안정적으로 JSON 추출 — Markdown 혼합으로 깨지는 비용 방지 |
 | **Phase -1 Spike 선행** | 코드 작성 전 Dify API/Chatflow schema 실측 spike 3건 (T-spike-1/2/3) | 2026-04-27 (review) | 가장 큰 미지수 (KB 생성 body, dataset id 주입 방식) 를 PoC 로 사전 해소 |
@@ -1002,4 +1042,5 @@ End-to-end 절차:
 | --- | --- | --- |
 | 2026-04-27 | 초안 작성 | 본 PLAN 신설. T-01 (embedding provider 등록) 만 사전 patch 됨, 나머지는 미착수. |
 | 2026-04-27 | review 반영 — 5 우선 보강 + 5 세부 보강 | (1) 복수 chatflow seed 인프라 리팩토링 (T-01a) — Dockerfile/entrypoint/provision.sh `OFFLINE_DIFY_CHATFLOW_YAMLS` 또는 dir scan 으로 전환. (2) Dataset id 주입 메커니즘 — chatflow YAML 에 placeholder 박고 provision.sh 가 KB ID 캡처 후 substitute. T-spike-1/2/3 신설. (3) traceability 스키마 — 모든 출력에 source_documents/chunk_id/retrieval_score 강제 (§2.2.5, §3.3~3.5). (4) `scenario_dsl` 모드 순수 JSON only + `both` 모드 strict fence (§3.6). (5) 모델 / 오프라인 반입 정합성 — gemma4:26b + bge-m3-korean 모두 README/사전 준비 줄에 (T-01b). 세부: T-11 샘플 5 형식 (pdf/csv/docx/pptx + theory pdf), top_k 보수적 (3+2), 저작권 가이드 (§4.4), T-06a 선등록 명확화. 총 작업 단위 30 → 38 로 확장. |
-| 2026-04-27 | 실현 가능성 검증 + sister 프로젝트 직접 인용 | 38 작업 단위에 대한 web search + 컨테이너 API probe + sister source code 직접 검증. (a) **OLLAMA_CONTEXT_SIZE 20480 채택** — Test Planning RAG 의 retrieved context 추가 부담으로 12288 부족. 책상 비유로 §4.3 설명. (b) **KB embedding lock 운영 룰** — Qdrant collection 첫 인덱싱 시 차원 lock. §4.4.2 신설 + 도서관 비유 + 교체 절차 명시. (c) **Phase -1 spike 폐기** — sister 프로젝트 (`code-AI-quality-allinone/scripts/`) 가 동일 패턴 production 검증 중. T-spike-1/2/3 → sister 인용표 + T-pre-13a/T-pre-15a 사전 측정 우선화. (d) **Sister 직접 검증으로 정정** — agent 요약의 "embedding_model 이 KB body 에 들어가지 않음" 주장은 오류. 실제 sister 는 (1) provider 등록 + (2) workspace default-model + (3) KB body 의 embedding_model 명시 셋 다 함 (belt-and-suspenders). (e) **`search_method: hybrid_search` 채택** — sister 와 동일하게 BM25 + dense 결합 검색으로 한국어 정밀도 ↑. (f) **Retrieval 노드 schema 정정** — `top_k`/`score_threshold` 가 `multiple_retrieval_config` 하위 (평면 아님) + `query_variable_selector: list[str]` path. §2.2.3 갱신. (g) **§7.2 후속 트랙 추가** — embedding 모델 변경 procedure (zero-downtime 후보) + hybrid 검색 가중치 튜닝. |
+| 2026-04-27 | v4 — 6 결함 객관 검증 후 정정 | 공식 docs (Dify ETL / Ollama OpenAI-compat) + 컨테이너 plugin 직접 probe (`langgenius/ollama-0.1.3` `llm.py:206,747`) + sister 프로젝트 검증으로 6 결함 판정. (1) **PPTX out-of-scope** — Dify `ETL_TYPE=dify` 분기에 PPTX 처리 없음 (`extract_processor.py:107-162`). 4 형식 → 3 형식 (csv/pdf/docx). (2) **scenario_dsl 계약 (b) 통일** — wrapping object 삭제, JSON-first-block 룰 (`out.split("\n#",1)[0]` 파서). (3) **Context 20480 정합화** — Dify Ollama plugin 이 native `/api/chat` 사용 → `context_size` credential → `options.num_ctx` 정상 전달 (Modelfile 불필요 검증). T-15a / §8.2 의 12288 잔여 모두 20480 으로 정정. (4) **console API 명시** — 공식 `/v1/datasets/*` (KB 데이터) vs console `/console/api/*` (워크스페이스/앱 셋업) 분리 박스 추가. 1.13.x pinned 위험 §8.1 명시. (5) **§1.2 톤다운** — 1차 가치 = 설계 초안 + 누락 방지, ZeroTouch-QA 결합은 선택적 다운스트림으로 강등. (6) **gemma4:e4b 잔여 정리** — Dockerfile/mac-agent-setup/wsl-agent-setup/README 의 운영 기본값 → gemma4:26b 일괄 치환. README 모델 비교 표는 legacy/comparison 행으로 보존. |
+| 2026-04-27 | v3 — 실현 가능성 검증 + sister 프로젝트 직접 인용 | 38 작업 단위에 대한 web search + 컨테이너 API probe + sister source code 직접 검증. (a) **OLLAMA_CONTEXT_SIZE 20480 채택** — Test Planning RAG 의 retrieved context 추가 부담으로 12288 부족. 책상 비유로 §4.3 설명. (b) **KB embedding lock 운영 룰** — Qdrant collection 첫 인덱싱 시 차원 lock. §4.4.2 신설 + 도서관 비유 + 교체 절차 명시. (c) **Phase -1 spike 폐기** — sister 프로젝트 (`code-AI-quality-allinone/scripts/`) 가 동일 패턴 production 검증 중. T-spike-1/2/3 → sister 인용표 + T-pre-13a/T-pre-15a 사전 측정 우선화. (d) **Sister 직접 검증으로 정정** — agent 요약의 "embedding_model 이 KB body 에 들어가지 않음" 주장은 오류. 실제 sister 는 (1) provider 등록 + (2) workspace default-model + (3) KB body 의 embedding_model 명시 셋 다 함 (belt-and-suspenders). (e) **`search_method: hybrid_search` 채택** — sister 와 동일하게 BM25 + dense 결합 검색으로 한국어 정밀도 ↑. (f) **Retrieval 노드 schema 정정** — `top_k`/`score_threshold` 가 `multiple_retrieval_config` 하위 (평면 아님) + `query_variable_selector: list[str]` path. §2.2.3 갱신. (g) **§7.2 후속 트랙 추가** — embedding 모델 변경 procedure (zero-downtime 후보) + hybrid 검색 가중치 튜닝. |
