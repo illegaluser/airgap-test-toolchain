@@ -640,28 +640,62 @@ except Exception:
       continue
     fi
 
-    # /v1/datasets/{id}/document/create-by-file 는 multipart/form-data + dataset API key 필요.
-    # 그러나 console API 의 동일 경로 (/console/api/datasets/{id}/document/create-by-file)
-    # 는 cookie 인증으로 동작. console 사용 (provision 환경 일관성).
-    local indexing_payload
-    indexing_payload='{
-      "indexing_technique": "high_quality",
-      "process_rule": {
-        "rules": {"pre_processing_rules": [{"id": "remove_extra_spaces", "enabled": true}], "segmentation": {"separator": "\n\n", "max_tokens": 500, "chunk_overlap": 50}},
-        "mode": "custom"
-      }
-    }'
-    local up_resp
-    up_resp=$(curl -sS -w $'\nHTTP:%{http_code}' -b "$DIFY_COOKIES" \
-        -X POST "${DIFY_URL}/console/api/datasets/${kb_id}/document/create-by-file" \
+    # Dify 1.13.3 KB 문서 upload 는 2단계:
+    #  (1) POST /console/api/files/upload (multipart) → upload_file_id
+    #  (2) POST /console/api/datasets/{id}/documents (JSON, data_source.info_list 에 file_id 참조)
+    local file_resp file_id
+    file_resp=$(curl -sS -b "$DIFY_COOKIES" \
+        -X POST "${DIFY_URL}/console/api/files/upload?source=datasets" \
         -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
-        -F "data=${indexing_payload};type=text/plain" \
-        -F "file=@${f}" 2>&1 || echo "HTTP:000")
-    if echo "$up_resp" | grep -qE 'HTTP:(200|201)'; then
+        -F "file=@${f}" 2>/dev/null || echo '{}')
+    file_id=$(echo "$file_resp" | $PY -c "
+import json,sys
+try: print(json.load(sys.stdin).get('id',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+    if [ -z "$file_id" ]; then
+      warn "    ! file upload 실패: $fname — $(echo "$file_resp" | head -c 200)"
+      continue
+    fi
+    # (2) Dataset 에 등록 + 인덱싱 트리거
+    local doc_payload
+    doc_payload=$(FILE_ID="$file_id" $PY - <<PYEOF
+import json, os
+print(json.dumps({
+    "indexing_technique": "high_quality",
+    "doc_form": "text_model",
+    "doc_language": "Korean",
+    "process_rule": {
+        "mode": "custom",
+        "rules": {
+            "pre_processing_rules": [
+                {"id": "remove_extra_spaces", "enabled": True},
+                {"id": "remove_urls_emails", "enabled": False}
+            ],
+            "segmentation": {"separator": "\n\n", "max_tokens": 500, "chunk_overlap": 50}
+        }
+    },
+    "data_source": {
+        "type": "upload_file",
+        "info_list": {
+            "data_source_type": "upload_file",
+            "file_info_list": {"file_ids": [os.environ["FILE_ID"]]}
+        }
+    }
+}))
+PYEOF
+)
+    local doc_resp
+    doc_resp=$(curl -sS -w $'\nHTTP:%{http_code}' -b "$DIFY_COOKIES" \
+        -X POST "${DIFY_URL}/console/api/datasets/${kb_id}/documents" \
+        -H "Content-Type: application/json" \
+        -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+        -d "$doc_payload" 2>&1 || echo "HTTP:000")
+    if echo "$doc_resp" | grep -qE 'HTTP:(200|201)'; then
       uploaded=$((uploaded+1))
-      log "    + uploaded: $fname"
+      log "    + uploaded: $fname (file_id=${file_id:0:12}...)"
     else
-      warn "    ! upload 실패: $fname — $(echo "$up_resp" | head -c 200)"
+      warn "    ! document 등록 실패: $fname — $(echo "$doc_resp" | head -c 200)"
     fi
   done
   ok "  KB '$kb_name' seed 완료 — uploaded=$uploaded, skipped(이미 존재)=$skipped"
@@ -862,7 +896,11 @@ try: print(json.load(sys.stdin).get('code',''))
 except Exception: print('')
 " 2>/dev/null || echo "")
   if [ -n "$site_code" ]; then
-    ok "  공개 chat URL 활성화 — ${DIFY_URL}/chat/${site_code}"
+    # 사용자 노출 URL 은 dify-api 의 APP_WEB_URL (= 외부 접근 표준 :18081) 기반.
+    # provision 은 컨테이너 내부에서 127.0.0.1:18081 로 호출하므로 로그용으로
+    # 별도 표기 — 호스트에서 접근 가능한 기본 URL 을 안내.
+    local public_url="${DIFY_PUBLIC_URL:-http://localhost:18081}"
+    ok "  공개 chat URL 활성화 — ${public_url}/chat/${site_code}"
   else
     warn "  공개 chat URL 활성화 실패 — Dify console GUI 에서 수동 토글 필요"
   fi
