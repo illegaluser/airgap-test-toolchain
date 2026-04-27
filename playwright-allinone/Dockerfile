@@ -235,6 +235,7 @@ COPY provision.sh       /opt/provision.sh
 COPY zero_touch_qa                   /opt/zero_touch_qa
 COPY test/fixtures                   /opt/seed/fixtures
 COPY dify-chatflow.yaml              /opt/dify-chatflow.yaml
+COPY test-planning-chatflow.yaml     /opt/test-planning-chatflow.yaml
 COPY ZeroTouch-QA.jenkinsPipeline /opt/ZeroTouch-QA.jenkinsPipeline
 COPY jenkins-init                    /opt/jenkins-init
 

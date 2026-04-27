@@ -441,9 +441,376 @@ PYEOF
   fi
 fi
 
-# 2-4. Chatflow import (기존 app 이 있으면 삭제 후 재import)
+# ────────────────────────────────────────────────────────────────────────────
+# 2-3g. Workspace default-model 설정 (Test Planning RAG 트랙)
+#
+# Dify 1.13 Dataset high_quality 생성 시 workspace 의 기본 LLM + text-embedding 이
+# 설정돼 있어야 한다. 둘 다 비어 있으면 "Default model not found" 400 으로 KB 생성
+# 자체가 실패. sister 프로젝트 (`code-AI-quality-allinone/scripts/provision.sh:440-470`)
+# 패턴 채택.
+# ────────────────────────────────────────────────────────────────────────────
+if [ "$DIFY_LOGGED_IN" = "true" ]; then
+  log "2-3g. Workspace 기본 모델 설정 (llm=${OLLAMA_MODEL}, embedding=${EMBEDDING_MODEL:-bona/bge-m3-korean:latest})"
+  EMB_MODEL_NAME="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
+  DEFAULT_MODEL_BODY=$($PY - <<PYEOF
+import json
+print(json.dumps({
+    "model_settings": [
+        {"model_type": "llm", "provider": "langgenius/ollama/ollama", "model": "${OLLAMA_MODEL}"},
+        {"model_type": "text-embedding", "provider": "langgenius/ollama/ollama", "model": "${EMB_MODEL_NAME}"}
+    ]
+}))
+PYEOF
+)
+  DEFAULT_MODEL_RESP=$(curl -sS -w $'\nHTTP:%{http_code}' -b "$DIFY_COOKIES" \
+      -X POST "${DIFY_URL}/console/api/workspaces/current/default-model" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+      -d "$DEFAULT_MODEL_BODY" 2>&1 || echo "HTTP:000")
+  debug "default-model response: $DEFAULT_MODEL_RESP"
+  if echo "$DEFAULT_MODEL_RESP" | grep -qE 'HTTP:(200|201)'; then
+    ok "  workspace 기본 모델 설정 완료"
+  else
+    warn "  workspace 기본 모델 설정 이상: $DEFAULT_MODEL_RESP"
+  fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2-3h. Knowledge Base 자동 생성 — Test Planning RAG 트랙 두 KB
+#
+# kb_project_info, kb_test_theory 두 KB 를 생성하고 ID 를 환경변수로 캡처.
+# 이후 Test Planning Brain chatflow YAML 의 `dataset_ids: []` 에 substitute 된다.
+# 멱등: 동일 이름 KB 이미 존재하면 기존 ID 재사용.
+# Body schema = sister `code-context-dataset.json` 패턴 (embedding_model 명시 +
+# retrieval_model.search_method=hybrid_search). PLAN §2.2.5 / §4.3 참조.
+# ────────────────────────────────────────────────────────────────────────────
+KB_PROJECT_INFO_ID=""
+KB_TEST_THEORY_ID=""
+
+dify_ensure_kb() {
+  # $1 = KB name, $2 = KB description, $3 = output env var name
+  local kb_name="$1"
+  local kb_desc="$2"
+  local out_var="$3"
+
+  # 기존 KB 확인 (멱등)
+  local existing_id
+  existing_id=$(curl -sS -G -b "$DIFY_COOKIES" \
+      "${DIFY_URL}/console/api/datasets" \
+      --data-urlencode "page=1" --data-urlencode "limit=100" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" 2>/dev/null \
+    | $PY -c "
+import json, sys
+target = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+    matches = [x for x in d.get('data', []) if x.get('name') == target]
+    print(matches[0]['id'] if matches else '')
+except Exception:
+    print('')
+" "$kb_name" 2>/dev/null || echo "")
+
+  if [ -n "$existing_id" ]; then
+    eval "${out_var}='${existing_id}'"
+    ok "  KB '$kb_name' 기존 재사용: ${existing_id:0:20}..."
+    return 0
+  fi
+
+  # 신규 생성 — sister body schema 그대로 채택
+  local emb="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
+  local body
+  body=$($PY - <<PYEOF
+import json
+print(json.dumps({
+    "name": "${kb_name}",
+    "description": "${kb_desc}",
+    "indexing_technique": "high_quality",
+    "embedding_model": "${emb}",
+    "embedding_model_provider": "langgenius/ollama/ollama",
+    "permission": "only_me",
+    "retrieval_model": {
+        "search_method": "hybrid_search",
+        "reranking_enable": False,
+        "reranking_mode": None,
+        "reranking_model": {"reranking_provider_name": "", "reranking_model_name": ""},
+        "top_k": 6,
+        "score_threshold_enabled": False,
+        "score_threshold": 0.0
+    }
+}))
+PYEOF
+)
+  local resp
+  resp=$(curl -sS -b "$DIFY_COOKIES" \
+      -X POST "${DIFY_URL}/console/api/datasets" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+      -d "$body" 2>/dev/null || echo "{}")
+  local new_id
+  new_id=$(echo "$resp" | $PY -c "
+import json, sys
+try: print(json.load(sys.stdin).get('id',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+  if [ -n "$new_id" ]; then
+    eval "${out_var}='${new_id}'"
+    ok "  KB '$kb_name' 신규 생성: ${new_id:0:20}..."
+  else
+    warn "  KB '$kb_name' 생성 실패: $resp"
+  fi
+}
+
+if [ "$DIFY_LOGGED_IN" = "true" ]; then
+  step "=== 2-3h. Knowledge Base 자동 생성 (Test Planning RAG 트랙) ==="
+  dify_ensure_kb "kb_project_info" \
+    "Project Info KB — spec / 기획서 / API 문서. Test Planning Brain 의 retrieval #1 대상" \
+    "KB_PROJECT_INFO_ID"
+  dify_ensure_kb "kb_test_theory" \
+    "Test Theory KB — 테스트 설계 기법 / V-model / 회귀 정책. Test Planning Brain 의 retrieval #2 대상" \
+    "KB_TEST_THEORY_ID"
+  log "  KB IDs: project=${KB_PROJECT_INFO_ID:0:20}... / theory=${KB_TEST_THEORY_ID:0:20}..."
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2-4. Chatflow import 헬퍼 함수 — 복수 chatflow 처리 (T-01a 리팩터링)
+#
+# $1 = source YAML 절대 경로
+# $2 = Jenkins credential ID (등록될 이름)
+# $3 = credential description
+# $4..N = (선택) KB UUID 목록 — chatflow YAML 의 `dataset_ids: []` 빈 리스트에
+#        순서대로 substitute 됨 (Python str.replace count=1 로 첫 등장만 치환).
+#
+# 작업: tmp YAML 생성 → KB ID substitute → import → confirm → publish → API key
+#       → Jenkins credential 등록 → API key 를 stdout 으로 반환
+# ────────────────────────────────────────────────────────────────────────────
+DIFY_API_KEY_PLANNER=""
+DIFY_API_KEY_PLANNING=""
+
+dify_import_chatflow() {
+  local src_yaml="$1"
+  local cred_id="$2"
+  local cred_desc="$3"
+  shift 3
+  local kb_ids=("$@")
+
+  if [ ! -f "$src_yaml" ]; then
+    warn "  chatflow YAML 없음: $src_yaml — skip"
+    return 1
+  fi
+
+  # 1. KB UUID substitute (필요 시)
+  local tmp_yaml
+  tmp_yaml=$(mktemp /tmp/chatflow.XXXXXX.yaml)
+  cp "$src_yaml" "$tmp_yaml"
+  if [ "${#kb_ids[@]}" -gt 0 ]; then
+    log "  KB UUID substitute: ${#kb_ids[@]} 개 → $tmp_yaml"
+    KB_IDS_JSON=$(printf '%s\n' "${kb_ids[@]}" | $PY -c "
+import json, sys
+ids = [line.strip() for line in sys.stdin if line.strip()]
+print(json.dumps(ids))
+")
+    KB_IDS_ENV="$KB_IDS_JSON" $PY - "$tmp_yaml" <<'PYEOF'
+import json, os, sys
+ids = json.loads(os.environ["KB_IDS_ENV"])
+path = sys.argv[1]
+content = open(path).read()
+for kid in ids:
+    content = content.replace("dataset_ids: []", f"dataset_ids: ['{kid}']", 1)
+open(path, "w").write(content)
+PYEOF
+  fi
+
+  # 2. App name 추출
+  local app_name
+  app_name=$($PY -c "
+import yaml,sys
+with open('$tmp_yaml') as f:
+    d = yaml.safe_load(f)
+print(d.get('app',{}).get('name',''))
+" 2>/dev/null || echo "")
+  if [ -z "$app_name" ]; then
+    warn "  chatflow.yaml app.name 추출 실패: $src_yaml"
+    rm -f "$tmp_yaml" "$tmp_yaml.bak"
+    return 1
+  fi
+  log "  대상 App: $app_name"
+
+  # 3. 기존 App 삭제 (멱등)
+  local app_list
+  app_list=$(curl -sS -b "$DIFY_COOKIES" \
+      "${DIFY_URL}/console/api/apps?page=1&limit=100" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" 2>/dev/null || echo '{}')
+  local existing_ids
+  existing_ids=$(echo "$app_list" | $PY -c "
+import json,sys
+target = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+    print(' '.join(a['id'] for a in d.get('data',[]) if a.get('name')==target))
+except Exception: pass
+" "$app_name" 2>/dev/null || echo "")
+  for aid in $existing_ids; do
+    log "    기존 App 삭제: $aid"
+    curl -sS -X DELETE -b "$DIFY_COOKIES" \
+        "${DIFY_URL}/console/api/apps/$aid" \
+        -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" >/dev/null 2>&1 || true
+  done
+
+  # 4. Import
+  local yaml_payload
+  yaml_payload=$($PY -c "
+import json
+with open('$tmp_yaml') as f: c = f.read()
+print(json.dumps({'mode':'yaml-content','yaml_content':c}))
+")
+  local imp_resp
+  imp_resp=$(curl -sS -w $'\nHTTP:%{http_code}' -b "$DIFY_COOKIES" \
+      -X POST "${DIFY_URL}/console/api/apps/imports" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+      -d "$yaml_payload" 2>&1 || echo "HTTP:000")
+  debug "import response: $imp_resp"
+  local imp_id imp_status app_id
+  imp_id=$(echo "$imp_resp" | $PY -c "
+import json,sys,re
+body=re.split(r'\\nHTTP:',sys.stdin.read())[0]
+try: print(json.loads(body).get('id',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+  imp_status=$(echo "$imp_resp" | $PY -c "
+import json,sys,re
+body=re.split(r'\\nHTTP:',sys.stdin.read())[0]
+try: print(json.loads(body).get('status',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+  app_id=$(echo "$imp_resp" | $PY -c "
+import json,sys,re
+body=re.split(r'\\nHTTP:',sys.stdin.read())[0]
+try: print(json.loads(body).get('app_id',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+
+  if [ "$imp_status" = "pending" ] && [ -n "$imp_id" ]; then
+    log "    import pending — confirm 호출"
+    local conf_resp
+    conf_resp=$(curl -sS -b "$DIFY_COOKIES" \
+        -X POST "${DIFY_URL}/console/api/apps/imports/$imp_id/confirm" \
+        -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" 2>&1 || echo '{}')
+    app_id=$(echo "$conf_resp" | $PY -c "
+import json,sys
+try: print(json.load(sys.stdin).get('app_id',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+  fi
+
+  if [ -z "$app_id" ]; then
+    warn "  Import 응답에서 app_id 추출 실패"
+    rm -f "$tmp_yaml" "$tmp_yaml.bak"
+    return 1
+  fi
+  ok "  Import 완료 — App ID: $app_id"
+
+  # 5. Publish
+  local pub_resp
+  pub_resp=$(curl -sS -w $'\nHTTP:%{http_code}' -b "$DIFY_COOKIES" \
+      -X POST "${DIFY_URL}/console/api/apps/$app_id/workflows/publish" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "{}" 2>&1 || echo "HTTP:000")
+  debug "publish response: $pub_resp"
+  if echo "$pub_resp" | grep -qE 'HTTP:(200|201)'; then
+    ok "  Publish 성공"
+  else
+    warn "  Publish 실패: $pub_resp"
+  fi
+
+  # 6. API key
+  local key_resp
+  key_resp=$(curl -sS -b "$DIFY_COOKIES" \
+      -X POST "${DIFY_URL}/console/api/apps/$app_id/api-keys" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" 2>&1 || echo '{}')
+  local api_key
+  api_key=$(echo "$key_resp" | $PY -c "
+import json,sys
+try: print(json.load(sys.stdin).get('token',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+  if [ -z "$api_key" ]; then
+    warn "  API Key 추출 실패: $key_resp"
+    rm -f "$tmp_yaml" "$tmp_yaml.bak"
+    return 1
+  fi
+  ok "  API Key 발급 완료 (앞 12자: ${api_key:0:12}...)"
+
+  # 7. Jenkins credential 등록 (upsert)
+  local cred_xml="<org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl plugin=\"plain-credentials\">
+  <scope>GLOBAL</scope>
+  <id>${cred_id}</id>
+  <description>${cred_desc}</description>
+  <secret>${api_key}</secret>
+</org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl>"
+  local cred_resp
+  cred_resp=$(jkpost -w $'\nHTTP:%{http_code}' -X POST \
+      "${JENKINS_URL}/credentials/store/system/domain/_/createCredentials" \
+      -H "Content-Type: application/xml" \
+      --data "$cred_xml" 2>&1 || echo "HTTP:000")
+  if echo "$cred_resp" | grep -qE 'HTTP:(200|302)'; then
+    ok "  Jenkins credential '$cred_id' 등록 완료"
+  else
+    local upd_resp
+    upd_resp=$(jkpost -w $'\nHTTP:%{http_code}' -X POST \
+        "${JENKINS_URL}/credentials/store/system/domain/_/credential/${cred_id}/config.xml" \
+        -H "Content-Type: application/xml" \
+        --data "$cred_xml" 2>&1 || echo "HTTP:000")
+    if echo "$upd_resp" | grep -qE 'HTTP:(200|302)'; then
+      ok "  Jenkins credential '$cred_id' 업데이트 완료"
+    else
+      warn "  Jenkins credential 등록/업데이트 실패: $cred_resp"
+    fi
+  fi
+
+  rm -f "$tmp_yaml" "$tmp_yaml.bak"
+
+  # 외부 변수에 API key 보존 (caller 가 이후 사용)
+  printf '%s' "$api_key"
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2-4. Chatflow import (기존 ZeroTouch QA Brain) — 헬퍼 함수 사용
+# ────────────────────────────────────────────────────────────────────────────
 if [ "$DIFY_LOGGED_IN" = "true" ] && [ -f "$OFFLINE_DIFY_CHATFLOW_YAML" ]; then
-  log "2-4. Chatflow DSL import"
+  step "=== 2-4. ZeroTouch QA Brain Chatflow import ==="
+  DIFY_API_KEY_PLANNER=$(dify_import_chatflow \
+    "$OFFLINE_DIFY_CHATFLOW_YAML" \
+    "dify-qa-api-token" \
+    "Dify QA Chatflow API Key (provision-apps.sh auto-registered)")
+  DIFY_API_KEY="$DIFY_API_KEY_PLANNER"  # legacy 호환 — 아래 §3 Jenkins credential 처리 코드 호환
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2-5. Test Planning Brain Chatflow import (RAG 트랙 신설)
+# ────────────────────────────────────────────────────────────────────────────
+if [ "$DIFY_LOGGED_IN" = "true" ] && [ -f "${OFFLINE_TEST_PLANNING_CHATFLOW_YAML:-/opt/test-planning-chatflow.yaml}" ] \
+   && [ -n "$KB_PROJECT_INFO_ID" ] && [ -n "$KB_TEST_THEORY_ID" ]; then
+  step "=== 2-5. Test Planning Brain Chatflow import ==="
+  DIFY_API_KEY_PLANNING=$(dify_import_chatflow \
+    "${OFFLINE_TEST_PLANNING_CHATFLOW_YAML:-/opt/test-planning-chatflow.yaml}" \
+    "dify-test-planning-api-token" \
+    "Dify Test Planning Brain API Key (RAG track, 선등록 only - 사용처는 후속 자동화 트랙)" \
+    "$KB_PROJECT_INFO_ID" \
+    "$KB_TEST_THEORY_ID")
+elif [ "$DIFY_LOGGED_IN" = "true" ] && [ ! -f "${OFFLINE_TEST_PLANNING_CHATFLOW_YAML:-/opt/test-planning-chatflow.yaml}" ]; then
+  log "2-5. Test Planning Brain chatflow YAML 부재 — RAG 트랙 미설정 (skip)"
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# (legacy block — 직전 함수가 이미 처리하지만, 함수 이전 호출자가 기대하는
+# ${DIFY_API_KEY} 변수를 그대로 유지하기 위해 below §3 의 credential 등록은
+# 함수 안에서 이미 끝났으므로 여기서는 marker 만 남긴다.)
+# ────────────────────────────────────────────────────────────────────────────
+if false; then
+  log "_ legacy single-app block (refactored into dify_import_chatflow)"
   APP_NAME=$($PY -c "
 import yaml,sys
 with open('$OFFLINE_DIFY_CHATFLOW_YAML') as f:
