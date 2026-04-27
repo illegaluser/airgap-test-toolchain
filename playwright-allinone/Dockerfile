@@ -148,7 +148,7 @@ RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
 RUN python3 -m playwright install --with-deps chromium
 
 # -- Zero-Touch QA 전용 venv (Jenkins Pipeline 이 참조) --
-# Jenkins Pipeline(DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline Stage 1) 은
+# Jenkins Pipeline(ZeroTouch-QA.jenkinsPipeline Stage 1) 은
 # ${WORKSPACE}/.qa_home/venv/bin/activate 를 요구한다. 워크스페이스는 런타임에만
 # 생기므로, 이미지 빌드 시에는 전역 venv 를 /opt/qa-venv 에 만들고 provision.sh
 # 가 워크스페이스의 .qa_home/venv 를 이 경로로 심볼릭 링크한다.
@@ -235,7 +235,7 @@ COPY provision.sh       /opt/provision.sh
 COPY zero_touch_qa                   /opt/zero_touch_qa
 COPY test/fixtures                   /opt/seed/fixtures
 COPY dify-chatflow.yaml              /opt/dify-chatflow.yaml
-COPY DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline /opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline
+COPY ZeroTouch-QA.jenkinsPipeline /opt/ZeroTouch-QA.jenkinsPipeline
 COPY jenkins-init                    /opt/jenkins-init
 
 # -- Jenkins 관리자 계정 그루비 스크립트를 seed 디렉토리에 배치 --

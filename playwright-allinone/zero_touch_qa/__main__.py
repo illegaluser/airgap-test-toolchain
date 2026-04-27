@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -21,6 +22,7 @@ from .config import Config
 from .converter import convert_playwright_to_dsl
 from .dify_client import DifyClient, DifyConnectionError
 from .executor import QAExecutor
+from .metrics import aggregate_llm_sla
 from .report import build_html_report, save_run_log, save_scenario
 from .regression_generator import generate_regression_test
 from .utils import parse_structured_doc_steps
@@ -120,6 +122,9 @@ def main():
     # 산출물 생성
     save_run_log(results, config.artifacts_dir)
     save_scenario(scenario, config.artifacts_dir, suffix=".healed")
+    # llm_calls.jsonl → llm_sla.json 집계 (S4C-05). 빌드별 LLM SLA 가
+    # archiveArtifacts 와 HTML 리포트의 운영 지표 섹션에 자동 노출된다.
+    aggregate_llm_sla(config.artifacts_dir)
     build_html_report(
         results,
         config.artifacts_dir,
@@ -293,8 +298,19 @@ def _sanitize_scenario(scenario):
             continue
         normalized = action.strip().strip("`'\" ").lower()
         if normalized not in _VALID_ACTIONS:
-            log.warning("[Sanitize] step[%d] 미지원 action=%r — drop", i, action)
-            continue
+            # LLM 이 action 필드에 meta-reasoning 을 섞어 emit 하는 케이스 회복.
+            # 예: "verify, target: id=status, value: ..." 또는 "`verify`, ..."
+            # 앞쪽 첫 토큰이 valid action 이면 그것을 채택, 그 외는 drop.
+            head = re.split(r"[\s,;:()`'\"*]", normalized, maxsplit=1)[0]
+            if head in _VALID_ACTIONS:
+                log.warning(
+                    "[Sanitize] step[%d] action=%r → 첫 토큰 %r 로 회복 (LLM meta-reasoning leak)",
+                    i, action, head,
+                )
+                st = {**st, "action": head}
+            else:
+                log.warning("[Sanitize] step[%d] 미지원 action=%r — drop", i, action)
+                continue
         keep.append(st)
     if len(keep) != len(scenario):
         log.warning("[Sanitize] %d/%d step 유지", len(keep), len(scenario))

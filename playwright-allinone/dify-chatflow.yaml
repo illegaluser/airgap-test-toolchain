@@ -238,7 +238,7 @@ workflow:
           model:
             completion_params:
               temperature: 0.1
-              max_tokens: 4096
+              max_tokens: 8192
             mode: chat
             name: "gemma4:26b"
             provider: ollama
@@ -249,18 +249,46 @@ workflow:
                 당신은 SRS(자연어 요구사항)를 Playwright 기반 [14대 표준 액션] JSON 배열로 변환하는 변환기입니다.
                 JSON 배열만 출력합니다. 그 외 텍스트는 출력하지 않습니다.
 
-                [작성 규칙 — 짧게]
-                - step 1 은 navigate, value=target_url, target="".
-                - SRS 의 N 개 항목은 step 2..N+1 에 1:1 순서대로 매핑. 압축/생략/추가/순서변경 금지.
-                - 각 step 은 dict, 키: step, action, target, value, description, fallback_targets. (verify 만 condition 추가 가능)
-                - action 은 14개 중 하나의 소문자 문자열: navigate, click, fill, press, select, check, hover, wait, verify, upload, drag, scroll, mock_status, mock_data
-                - verify.condition: visible, hidden, disabled, enabled, checked, value, text, contains_text 중 택1 (불명확하면 "").
-                - drag: target=출발 selector, value=도착 selector.
-                - mock_data: value=JSON body 문자열. mock_status: value=숫자 문자열.
-                - press: target=입력 selector, value=키 이름 (예: Enter).
-                - scroll: value="into_view".
+                ⚠️ 사고 과정을 외부에 출력하지 마십시오. `<think>`, `<thinking>`, `<reasoning>` 등의 블록을
+                **절대로 응답에 포함하지 마십시오.** 추론은 모두 내부적으로 수행하고, 응답은 즉시 JSON 배열로
+                시작하십시오 (`[` 로 시작). 사고 텍스트가 출력에 새어 나오면 max_tokens 초과로 JSON 자체가
+                emit 되지 못합니다.
 
-                [✅ 완성 예시 — SRS 4 항목 → step 5 개]
+                [핵심 규칙 — 1:1 매핑]
+                - step 1 은 navigate, value=target_url, target="".
+                - SRS 가 N 개 항목이면 출력은 정확히 N+1 개 step. 절대로 압축·생략·합성하지 않습니다.
+                - SRS 항목 i (1..N) 는 step (i+1) 로 1:1 변환. 한 step 에 두 SRS 항목을 합성하지 마십시오.
+                - 출력 step 수가 N+1 과 다르면 잘못된 출력입니다.
+                - **mock_status / mock_data 항목도 반드시 step 으로 emit**. 사용자 가시성이 낮아 보여도
+                  drop 금지 — 후속 verify step 의 의미를 좌우하는 setup 입니다.
+                - SRS 항목 하나가 두 액션을 섞어 적은 경우 (예: "X 한 뒤 Y 한다" 같은 compound) 가 발견되면,
+                  그 항목 자체가 잘못 작성된 것입니다. SRS 작성자가 atomic 으로 분리하기 전까지는 첫 번째
+                  액션만 emit (단, description 에 원문 그대로 복사하여 추적 가능하게 함).
+
+                [필드 계약]
+                - 각 step 은 dict, 키: step, action, target, value, description, fallback_targets. (verify 만 condition 추가)
+                - description: 해당 SRS 항목 원문을 그대로 복사 (자체 요약·변형 금지). 자기 점검의 근거가 됩니다.
+
+                [action 의미 그룹 — 같은 그룹 내에서만 혼동 가능, 그룹 간 절대 금지]
+                - 페이지 이동:        navigate
+                - 사용자 입력:        click, fill, press, select, check, hover, drag, scroll, upload
+                - 결과 검증:          verify
+                - 시간 제어:          wait
+                - 네트워크 요청 모킹: mock_status, mock_data
+                - upload 와 mock_data 는 다른 그룹입니다. URL 패턴이 SRS 에 등장한다고 upload 의 target 에 URL 을 넣지 마십시오.
+
+                [필드별 사용]
+                - drag: target=출발 selector, value=도착 selector.
+                - upload: target=`<input type="file">` selector (URL 아님), value=파일 경로(상대 경로 가능, 예: "upload_sample.txt").
+                - mock_data: target=URL 패턴(`**/api/...` 또는 절대 URL), value=JSON body 문자열.
+                - mock_status: target=URL 패턴, value=숫자 문자열(예: "500").
+                - press: target=입력 selector, value=키 이름 (예: Enter).
+                - select: target=`<select>` selector, value=옵션의 visible label 텍스트.
+                - check: target=`<input type="checkbox">` selector, value="on" 또는 "off".
+                - scroll: value="into_view".
+                - verify.condition: visible, hidden, disabled, enabled, checked, value, text, contains_text 중 택1 (불명확하면 "").
+
+                [완성 예시 1 — SRS 4 항목 → step 5 개]
                 target_url: https://example.com/profile
                 SRS:
                 1) 저장 API 가 500 에러를 반환하도록 모킹한다.
@@ -270,14 +298,60 @@ workflow:
                 출력:
                 [
                   {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/profile", "description": "대상 페이지 로드", "fallback_targets": []},
-                  {"step": 2, "action": "mock_status", "target": "**/api/profile", "value": "500", "description": "저장 API 500 모킹", "fallback_targets": []},
-                  {"step": 3, "action": "click", "target": "role=button, name=저장", "value": "", "description": "저장 버튼 클릭", "fallback_targets": ["text=저장"]},
-                  {"step": 4, "action": "verify", "target": "role=alert", "value": "", "condition": "visible", "description": "에러 팝업 표시 확인", "fallback_targets": ["text=실패"]},
-                  {"step": 5, "action": "wait", "target": "", "value": "1000", "description": "1초 대기", "fallback_targets": []}
+                  {"step": 2, "action": "mock_status", "target": "**/api/profile", "value": "500", "description": "저장 API 가 500 에러를 반환하도록 모킹한다.", "fallback_targets": []},
+                  {"step": 3, "action": "click", "target": "role=button, name=저장", "value": "", "description": "저장 버튼을 클릭한다.", "fallback_targets": ["text=저장"]},
+                  {"step": 4, "action": "verify", "target": "role=alert", "value": "", "condition": "visible", "description": "에러 팝업이 표시되는지 확인한다.", "fallback_targets": ["text=실패"]},
+                  {"step": 5, "action": "wait", "target": "", "value": "1000", "description": "1초 대기한다.", "fallback_targets": []}
                 ]
+
+                [완성 예시 2 — SRS 16 항목 → step 17 개 (long-context atomic 1:1 보장)]
+                target_url: http://localhost:18081/fixtures/full_dsl.html
+                SRS:
+                1) primary 버튼(id=primary-btn)에 마우스를 호버한다.
+                2) primary 버튼(id=primary-btn)을 클릭한다.
+                3) status 영역(id=status) 텍스트가 "clicked" 인지 검증한다.
+                4) 검색 입력란(id=search-input)에 "DSCORE" 를 입력한다.
+                5) 검색 입력란(id=search-input)에서 Enter 키를 눌러 제출한다.
+                6) echo 영역(id=echo) 텍스트가 "submitted:DSCORE" 인지 검증한다.
+                7) 언어 드롭다운(id=lang)에서 "한국어" 를 선택한다.
+                8) 동의 체크박스(id=agree)를 체크한다.
+                9) 파일 입력란(id=file-input)에 upload_sample.txt 를 업로드한다.
+                10) CARD 항목(id=card)을 dst-zone(id=dst-zone)으로 드래그 앤 드롭한다.
+                11) **/api/list 응답을 {"items":[]} 빈 배열로 모킹한다.
+                12) load 버튼(id=load-btn)을 클릭한다.
+                13) **/api/list 응답을 HTTP 500 상태로 모킹한다.
+                14) 페이지 하단의 footer(id=footer)까지 스크롤한다.
+                15) footer(id=footer) 가 화면에 보이는지 검증한다.
+                16) 1초간 대기한다.
+                출력:
+                [
+                  {"step": 1, "action": "navigate", "target": "", "value": "http://localhost:18081/fixtures/full_dsl.html", "description": "대상 페이지 로드", "fallback_targets": []},
+                  {"step": 2, "action": "hover", "target": "#primary-btn", "value": "", "description": "primary 버튼(id=primary-btn)에 마우스를 호버한다.", "fallback_targets": ["role=button, name=primary"]},
+                  {"step": 3, "action": "click", "target": "#primary-btn", "value": "", "description": "primary 버튼(id=primary-btn)을 클릭한다.", "fallback_targets": ["role=button, name=primary"]},
+                  {"step": 4, "action": "verify", "target": "#status", "value": "clicked", "condition": "text", "description": "status 영역(id=status) 텍스트가 \"clicked\" 인지 검증한다.", "fallback_targets": []},
+                  {"step": 5, "action": "fill", "target": "#search-input", "value": "DSCORE", "description": "검색 입력란(id=search-input)에 \"DSCORE\" 를 입력한다.", "fallback_targets": []},
+                  {"step": 6, "action": "press", "target": "#search-input", "value": "Enter", "description": "검색 입력란(id=search-input)에서 Enter 키를 눌러 제출한다.", "fallback_targets": []},
+                  {"step": 7, "action": "verify", "target": "#echo", "value": "submitted:DSCORE", "condition": "text", "description": "echo 영역(id=echo) 텍스트가 \"submitted:DSCORE\" 인지 검증한다.", "fallback_targets": []},
+                  {"step": 8, "action": "select", "target": "#lang", "value": "한국어", "description": "언어 드롭다운(id=lang)에서 \"한국어\" 를 선택한다.", "fallback_targets": []},
+                  {"step": 9, "action": "check", "target": "#agree", "value": "on", "description": "동의 체크박스(id=agree)를 체크한다.", "fallback_targets": []},
+                  {"step": 10, "action": "upload", "target": "#file-input", "value": "upload_sample.txt", "description": "파일 입력란(id=file-input)에 upload_sample.txt 를 업로드한다.", "fallback_targets": []},
+                  {"step": 11, "action": "drag", "target": "#card", "value": "#dst-zone", "description": "CARD 항목(id=card)을 dst-zone(id=dst-zone)으로 드래그 앤 드롭한다.", "fallback_targets": []},
+                  {"step": 12, "action": "mock_data", "target": "**/api/list", "value": "{\"items\":[]}", "description": "**/api/list 응답을 {\"items\":[]} 빈 배열로 모킹한다.", "fallback_targets": []},
+                  {"step": 13, "action": "click", "target": "#load-btn", "value": "", "description": "load 버튼(id=load-btn)을 클릭한다.", "fallback_targets": []},
+                  {"step": 14, "action": "mock_status", "target": "**/api/list", "value": "500", "description": "**/api/list 응답을 HTTP 500 상태로 모킹한다.", "fallback_targets": []},
+                  {"step": 15, "action": "scroll", "target": "#footer", "value": "into_view", "description": "페이지 하단의 footer(id=footer)까지 스크롤한다.", "fallback_targets": []},
+                  {"step": 16, "action": "verify", "target": "#footer", "value": "", "condition": "visible", "description": "footer(id=footer) 가 화면에 보이는지 검증한다.", "fallback_targets": []},
+                  {"step": 17, "action": "wait", "target": "", "value": "1000", "description": "1초간 대기한다.", "fallback_targets": []}
+                ]
+
+                [잘못된 예시 — 압축/합성으로 인한 오답 (절대 따라하지 마십시오)]
+                ❌ 위 14 항목 SRS 를 step 2 개로 압축한 출력. SRS 항목 8 (upload) 과 항목 10 (mock_data) 을
+                   하나의 upload step 으로 합성한 변종도 잘못된 출력입니다 — action, target, value 의
+                   의미 그룹이 다른 SRS 항목은 절대 한 step 으로 묶지 마십시오.
 
                 [로케이터 팁]
                 - `role+name`, `text=`, `label=`, `placeholder=` 같은 시맨틱 우선.
+                - SRS 가 id 를 명시했다면(`id=foo`) `#foo` 를 그대로 사용.
                 - name 없는 단독 role (`role=button`) 금지. 복잡한 CSS/XPath 추측 금지.
             - id: planner-user
               role: user
@@ -354,15 +428,32 @@ workflow:
 
                 [출력 형식]:
                 - 순수 JSON 객체({...}) 형식으로만 출력하십시오. 부연 설명 금지.
-                - 다음 키 중 mutate 할 것만 포함: "target", "value", "condition", "fallback_targets".
-                - action 종류 자체는 절대 변경하지 마십시오 (drag→click 같은 의미 변경 금지).
+                - 다음 키 중 mutate 할 것만 포함: "target", "value", "condition", "fallback_targets", "action".
                 - 변경하지 않을 키는 응답에 포함하지 마십시오.
 
-                [✅ 예시 (click 액션 실패 치유)]
+                [action mutation 정책 — 엄격 화이트리스트]:
+                - 원칙적으로 action 변경은 false-PASS 위험이 큽니다 (예: drag→click 으로 바꾸면 다른
+                  요소가 클릭되어 step 이 PASS 처리되지만 의도한 검증은 통과되지 않음).
+                - 따라서 다음 의미 등가 전이만 허용합니다 (executor 가 화이트리스트 외 action 변경은 거절):
+                  · select ↔ fill   (form 입력 매핑 미스 — 옵션 라벨이 자유 입력 필드인 경우)
+                  · check  ↔ click  (커스텀 체크박스가 button 으로 구현된 경우)
+                  · click  ↔ press  (Enter 같은 키보드 이벤트로 트리거되는 버튼)
+                  · upload ↔ click  (파일 input 이 보이는 button 뒤에 숨겨진 경우)
+                - 그룹간 변경 절대 금지: navigate ↔ verify ↔ wait ↔ mock_* 사이의 변경은 모두 거절됩니다.
+                - drag → 다른 action 도 금지 (드래그 의도가 클릭 등으로 위장되면 검증 무효).
+                - action 변경 시 target/value 도 새 action 의 계약에 맞게 함께 갱신해야 합니다.
+
+                [✅ 예시 (click 액션 실패 치유 — target 만 변경)]
                 {"target": "role=button, name=Submit", "fallback_targets": ["text=Submit", "#submit-btn"]}
 
                 [✅ 예시 (select value 매핑 미스매치 치유 — strategy_trace 가 모두 실패한 케이스)]
                 {"value": "한국어"}
+
+                [✅ 예시 (upload 의 target 이 URL 로 잘못 emit 된 경우 — DOM 의 file input 으로 교정)]
+                {"target": "input[type='file']", "value": "upload_sample.txt"}
+
+                [✅ 예시 (action whitelist 전이 — select 가 자유 입력 필드인 경우)]
+                {"action": "fill", "target": "#combobox", "value": "한국어"}
 
                 [엄수 사항]:
                 - ⚠️ <think>, <thinking>, <reasoning> 등의 내부 추론 블록을 절대 출력하지 마십시오.

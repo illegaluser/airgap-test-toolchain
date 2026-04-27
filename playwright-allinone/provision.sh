@@ -25,8 +25,8 @@
 #   JENKINS_ADMIN_PW             Jenkins 관리자 비밀번호
 #   OFFLINE_DIFY_PLUGIN_DIR      /opt/seed/dify-plugins (langgenius-ollama-*.difypkg)
 #   OFFLINE_DIFY_CHATFLOW_YAML   /opt/dify-chatflow.yaml
-#   OFFLINE_JENKINS_PIPELINE     /opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline
-#   OLLAMA_MODEL                 gemma4:e4b
+#   OFFLINE_JENKINS_PIPELINE     /opt/ZeroTouch-QA.jenkinsPipeline
+#   OLLAMA_MODEL                 gemma4:26b   (Sprint 5 §10.2 기본 모델 — chatflow YAML 과 일치)
 #   DEBUG=1                      상세 출력
 # ============================================================================
 set -euo pipefail
@@ -40,14 +40,14 @@ JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER:-admin}"
 JENKINS_ADMIN_PW="${JENKINS_ADMIN_PW:-password}"
 OFFLINE_DIFY_PLUGIN_DIR="${OFFLINE_DIFY_PLUGIN_DIR:-/opt/seed/dify-plugins}"
 OFFLINE_DIFY_CHATFLOW_YAML="${OFFLINE_DIFY_CHATFLOW_YAML:-/opt/dify-chatflow.yaml}"
-OFFLINE_JENKINS_PIPELINE="${OFFLINE_JENKINS_PIPELINE:-/opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
+OFFLINE_JENKINS_PIPELINE="${OFFLINE_JENKINS_PIPELINE:-/opt/ZeroTouch-QA.jenkinsPipeline}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 DEBUG="${DEBUG:-0}"
 
 # Ollama 모델 등록 시 Dify plugin 이 사용할 기본 컨텍스트/토큰 크기
-OLLAMA_CONTEXT_SIZE="${OLLAMA_CONTEXT_SIZE:-8192}"
-OLLAMA_MAX_TOKENS="${OLLAMA_MAX_TOKENS:-4096}"
+OLLAMA_CONTEXT_SIZE="${OLLAMA_CONTEXT_SIZE:-12288}"
+OLLAMA_MAX_TOKENS="${OLLAMA_MAX_TOKENS:-8192}"
 
 DIFY_COOKIES="${DIFY_COOKIES:-/tmp/dify-cookies.txt}"
 DIFY_CSRF_TOKEN=""
@@ -594,7 +594,7 @@ fi
 
 # 3-3. Pipeline Job 생성
 if [ -f "$OFFLINE_JENKINS_PIPELINE" ]; then
-  log "3-3. Pipeline Job 생성: DSCORE-ZeroTouch-QA-Docker"
+  log "3-3. Pipeline Job 생성: ZeroTouch-QA"
   JOB_XML=$($PY - << PYEOF 2>/dev/null
 import xml.sax.saxutils as sax
 with open('${OFFLINE_JENKINS_PIPELINE}', encoding='utf-8') as f:
@@ -617,14 +617,14 @@ PYEOF
     warn "Job XML 생성 실패"
   else
     JOB_RESP=$(printf '%s' "$JOB_XML" | jkpost -w $'\nHTTP:%{http_code}' -X POST \
-        "${JENKINS_URL}/createItem?name=DSCORE-ZeroTouch-QA-Docker" \
+        "${JENKINS_URL}/createItem?name=ZeroTouch-QA" \
         -H "Content-Type: application/xml" \
         --data-binary @- 2>&1 || echo "HTTP:000")
     if echo "$JOB_RESP" | grep -qE 'HTTP:(200|302)'; then
       ok "Pipeline Job 생성 완료"
     elif echo "$JOB_RESP" | grep -qE 'HTTP:400' && echo "$JOB_RESP" | grep -qi 'already exists'; then
       UPDATE_RESP=$(printf '%s' "$JOB_XML" | jkpost -w $'\nHTTP:%{http_code}' -X POST \
-          "${JENKINS_URL}/job/DSCORE-ZeroTouch-QA-Docker/config.xml" \
+          "${JENKINS_URL}/job/ZeroTouch-QA/config.xml" \
           -H "Content-Type: application/xml" \
           --data-binary @- 2>&1 || echo "HTTP:000")
       echo "$UPDATE_RESP" | grep -qE 'HTTP:(200|302)' && ok "Pipeline Job 업데이트 완료" \

@@ -74,6 +74,32 @@ def summarize_llm_calls(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def aggregate_llm_sla(artifacts_dir: str | None) -> str | None:
+    """`llm_calls.jsonl` 을 읽어 `llm_sla.json` 으로 집계 저장.
+
+    빌드 종료 시점에 호출해 Zero-Touch QA Report 운영 지표 섹션에 LLM SLA 가
+    노출되도록 한다. `llm_calls.jsonl` 이 없거나 비어 있으면 no-op 으로 None 반환.
+
+    Args:
+        artifacts_dir: artifacts 디렉토리 절대 경로. 없거나 디렉토리 부재 시 no-op.
+
+    Returns:
+        생성된 `llm_sla.json` 절대 경로, 또는 입력 데이터가 없으면 None.
+    """
+    if not artifacts_dir:
+        return None
+    src = os.path.join(artifacts_dir, "llm_calls.jsonl")
+    rows = read_jsonl(src)
+    if not rows:
+        return None
+    summary = summarize_llm_calls(rows)
+    out_path = os.path.join(artifacts_dir, "llm_sla.json")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2, sort_keys=True)
+    return out_path
+
+
 def _summarize_by_kind(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for record in records:
