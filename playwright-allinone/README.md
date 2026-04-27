@@ -346,8 +346,9 @@ chmod +x *.sh
 **추가 옵션**:
 
 ```bash
-./build.sh --redeploy --fresh      # 기존 dscore-data 볼륨까지 삭제 (provision 재수행)
-./build.sh --redeploy --no-agent   # 컨테이너만 재기동, agent 는 수동으로
+./build.sh --redeploy --fresh         # 기존 dscore-data 볼륨까지 삭제 (provision 재수행, 데이터 폐기)
+./build.sh --redeploy --reprovision   # 데이터 보존 + provision 재실행 (chatflow YAML / Jenkins job 정의 갱신 시)
+./build.sh --redeploy --no-agent      # 컨테이너만 재기동, agent 는 수동으로
 ```
 
 > 폐쇄망 / 원격 타겟 (빌드 머신과 실행 머신이 다름) 이라면 `--redeploy` 대신 [§1.3 분리 배포](#13-분리-배포-빌드-머신과-실행-머신이-다른-경우)를 따른다.
@@ -528,8 +529,9 @@ Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분
 | `OLLAMA_MODEL` | `gemma4:26b` | Dify provider 등록 시 사용될 모델 id |
 | `OUTPUT_TAR` | `dscore.ttc.playwright-<ts>.tar.gz` | 출력 tar.gz 파일명 |
 | `FORCE_PLUGIN_DOWNLOAD` | `false` | `true` 면 `jenkins-plugins/` / `dify-plugins/` 에 파일이 있어도 재다운로드 (버전 갱신 시). 기본은 기존 파일 재사용 — **airgap 환경에서 네트워크 없이 빌드 가능**. git 저장소에 플러그인 53 개 + Dify plugin 1 개가 동반된다 |
-| `--redeploy` | — | 빌드 후 기존 컨테이너 rm → run → NODE_SECRET 대기 (최대 15분) → agent-setup 자동 기동 |
-| `--fresh` | — | `--redeploy` 와 함께 — `dscore-data` 볼륨까지 삭제 (provision 재수행) |
+| `--redeploy` | — | 빌드 후 기존 컨테이너 rm → run → NODE_SECRET 대기 (최대 15분) → agent-setup 자동 기동. 볼륨은 유지하되 provision skip (`.app_provisioned` 마커 발견 시) — chatflow YAML / Jenkins job 정의 변경은 반영 안 됨 |
+| `--fresh` | — | `--redeploy` 와 함께 — `dscore-data` 볼륨 통째 삭제 (KB·Jenkins 이력 모두 폐기, provision 재수행) |
+| `--reprovision` | — | `--redeploy` 와 함께 — `.app_provisioned` 마커만 wipe → provision 재실행, **데이터(KB·Jenkins 이력·챗봇 conversation) 보존**. chatflow YAML·Jenkins job 정의·Dify provider 등록 같은 이미지 baked-in 정의를 새 이미지 기준으로 재생성할 때 사용. `--fresh` 와 함께 쓰면 `--fresh` 우선 |
 | `--no-agent` | — | `--redeploy` 와 함께 — 컨테이너만 재기동, agent 는 수동으로 |
 
 **동작 요약**:
@@ -983,15 +985,25 @@ docker run -d ...
 `/data/.app_provisioned` 가 있으므로 코드 변경은 자동 반영 안 됨 — Path A 의 "수동 작업"
 박스 참조.
 
-#### `--fresh` 플래그의 의미 (주의)
+#### `--fresh` / `--reprovision` 플래그 — 어떤 때 무엇을 쓰나
 
-데이터 폐기 위험이 큰 옵션 — 운영 환경에서는 절대 사용 금지.
+데이터 폐기 위험이 다른 세 가지 재배포 모드:
 
-| 명령 | 효과 |
-| --- | --- |
-| `./build.sh --redeploy --fresh` | **개발 전용**. 컨테이너 + dscore-data 볼륨까지 wipe → KB / Jenkins job / 챗봇 이력 모두 폐기 후 새 이미지로 컴플리트 재배포 |
-| `./build.sh --redeploy` (without `--fresh`) | 기존 볼륨 보존. provision.sh 가 마커 발견 시 skip — 신 image 의 코드 변경 자동 반영 안 됨 |
-| `./restore-volume.sh --fresh <tarball>` | 기존 볼륨이 있어도 wipe 후 복구. 운영 데이터 교체 시점에만 사용 |
+| 명령 | 데이터 보존? | 새 이미지의 정의 반영? | 주 용도 |
+| --- | --- | --- | --- |
+| `./build.sh --redeploy` | ✓ 보존 | ✗ 반영 안 됨 (마커 skip) | 단순 코드 핫스왑 — chatflow YAML / Jenkins job 변경 없을 때. 호스트 스크립트(`mac-agent-setup.sh` 등) 갱신은 반영됨 |
+| `./build.sh --redeploy --reprovision` | ✓ 보존 (KB·Jenkins 이력·챗봇 대화) | ✓ 반영 (chatflow / Jenkins job / Dify provider 재생성) | **운영 시 표준** — 이미지의 정의 변경을 데이터 손실 없이 반영. provision.sh 가 idempotent 라는 가정 — 안전망으로 `./backup-volume.sh` 선행 권장 |
+| `./build.sh --redeploy --fresh` | ✗ 통째 폐기 | ✓ 반영 (제로베이스) | **개발 전용**. KB / Jenkins job / 챗봇 이력 모두 폐기 후 baseline 4 파일로 다시 시작 |
+| `./restore-volume.sh --fresh <tarball>` | — | — | 기존 볼륨이 있어도 wipe 후 복구. 운영 데이터 교체 시점에만 사용 |
+
+**언제 `--reprovision` 이 필요한가**:
+
+- `dify-chatflow.yaml` 수정 (Planner/Healer 프롬프트, 모델, max_tokens 등)
+- `ZeroTouch-QA.jenkinsPipeline` 수정 (Stage 추가/제거, sh 블록 변경)
+- `provision.sh` 수정 (Dify provider 등록 파라미터, 챗봇 import 정의 등)
+- `requirements.txt` 의 호스트-반영 패키지 변경 (단, 호스트 venv 는 `mac-agent-setup.sh` 재실행이 따로 필요)
+
+이미지 빌드만 새로 떴는데 `--reprovision` 없이 `--redeploy` 만 하면 위 변경분이 **자동 반영되지 않으므로 주의**.
 
 호스트 `~/.dscore.ttc.playwright-agent` 는 백업 불필요 — agent-setup 재실행으로 자동 복구된다.
 
