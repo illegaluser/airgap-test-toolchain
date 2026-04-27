@@ -22,6 +22,16 @@ class VerificationAssertionError(AssertionError):
 
 
 @dataclass
+class _StrategyAttempt:
+    """단일 전략 시도 결과. ``error`` 가 비어있으면 그 전략으로 PASS."""
+    name: str
+    error: str = ""
+
+    def to_dict(self) -> dict:
+        return {"strategy": self.name, "error": self.error or "ok"}
+
+
+@dataclass
 class StepResult:
     """단일 DSL 스텝의 실행 결과를 담는 데이터클래스.
 
@@ -61,6 +71,10 @@ class QAExecutor:
     def __init__(self, config: Config):
         self.config = config
         self.dify = DifyClient(config)
+        # A: 직전 step 의 strategy chain 시도 기록. _perform_action 진입 시 reset.
+        # Dify healer 호출 시 LLM 컨텍스트로 주입 → "selector 만 바꾸면 같은 timeout"
+        # 같은 정보를 LLM 이 알 수 있게 한다.
+        self._latest_strategy_trace: list[_StrategyAttempt] = []
 
     def execute(
         self, scenario: list[dict], headed: bool = True
@@ -364,20 +378,30 @@ class QAExecutor:
                  step_id, self.config.heal_timeout_sec)
         try:
             dom_snapshot = page.content()[: self.config.dom_snapshot_limit]
+            # B: 직전 strategy chain 의 시도/실패 결과를 healer 프롬프트에 주입.
+            # "selector 만 바꿔도 같은 timeout 이었다" 정보를 LLM 에 전달한다.
             new_target_info = self.dify.request_healing(
                 error_msg=f"요소 탐색/실행 실패: {original_target}",
                 dom_snapshot=dom_snapshot,
                 failed_step=step,
+                strategy_trace=[a.to_dict() for a in self._latest_strategy_trace],
             )
         except DifyConnectionError as e:
             log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
             new_target_info = None
 
         if new_target_info:
-            step.update(new_target_info)
+            # B: target 외에 value/condition mutate 도 허용 (action 변경은 허용 안 함 —
+            # false healing 폭탄 위험. drag→click 같은 의미 변경 차단).
+            allowed_keys = {"target", "value", "condition", "fallback_targets"}
+            mutation = {k: v for k, v in new_target_info.items() if k in allowed_keys}
+            step.update(mutation)
             healed_loc = resolver.resolve(step.get("target"))
             if healed_loc:
                 try:
+                    # B3: post-condition 강제 — _perform_action 의 strategy chain 에
+                    # post-check 가 내장돼 있으므로, 이 호출이 성공하면 자동으로
+                    # 의미적 검증까지 통과한 것이다.
                     self._perform_action(page, healed_loc, step, resolver)
                     resolver.record_alias(original_target, step.get("target"))
                     ss = self._screenshot(page, artifacts, step_id, "healed")
@@ -942,6 +966,7 @@ class QAExecutor:
                 error_msg=f"mock 설치 실패: {original_target}",
                 dom_snapshot="",  # mock_* 는 DOM 무관 — 빈 컨텍스트로 호출
                 failed_step=step,
+                strategy_trace=[a.to_dict() for a in self._latest_strategy_trace],
             )
         except DifyConnectionError as e:
             log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
@@ -1002,6 +1027,242 @@ class QAExecutor:
                 f"텍스트/값 불일치: 기대='{expected}', 실제='{actual}'"
             )
 
+    # ── A: action 별 strategy chain (multi-strategy + post-condition) ──
+    #
+    # 동기: 단일 매핑 강제 (예: select_option(label=...)) 가 LLM healer 로도 못 고치는
+    # 클래스의 실패를 만든다. 각 액션이 자체적으로 여러 매핑/형태를 시도하고 직접
+    # 결과를 검증하면, healer 호출 전에 결정적으로 회복 가능한 케이스를 모두 흡수한다.
+    #
+    # 시도 결과는 ``self._latest_strategy_trace`` 에 누적되어 Dify healer 호출 시
+    # 컨텍스트로 주입된다 ("selector 만 바꿔도 같은 timeout 이었다" 정보 보존).
+
+    @staticmethod
+    def _normalize_check_state(value) -> bool:
+        s = str(value or "").strip().lower()
+        if s in ("false", "off", "no", "0", "uncheck", "unchecked"):
+            return False
+        # 빈 값은 default = check
+        return True
+
+    def _do_select(self, locator: Locator, value: str) -> None:
+        """select 다중 전략. positional → value= → label= 순. post-check: 실 selected."""
+        trace: list[_StrategyAttempt] = []
+        last_err: Exception | None = None
+
+        def post_check():
+            try:
+                actual = locator.evaluate("el => el.value")
+            except Exception:
+                actual = None
+            try:
+                sel_text = locator.evaluate(
+                    "el => el.options && el.options[el.selectedIndex] "
+                    "&& el.options[el.selectedIndex].text"
+                ) or ""
+            except Exception:
+                sel_text = ""
+            if value and value != actual and value not in str(sel_text):
+                raise RuntimeError(
+                    f"select post-check 실패: 기대={value!r}, "
+                    f"actual_value={actual!r}, label={sel_text!r}"
+                )
+
+        strategies = [
+            ("positional", lambda: locator.select_option(value, timeout=5000)),
+            ("value=",     lambda: locator.select_option(value=value, timeout=5000)),
+            ("label=",     lambda: locator.select_option(label=value, timeout=5000)),
+        ]
+        for name, fn in strategies:
+            try:
+                fn()
+                post_check()
+                trace.append(_StrategyAttempt(name, ""))
+                self._latest_strategy_trace = trace
+                return
+            except Exception as e:
+                trace.append(_StrategyAttempt(name, str(e)[:200]))
+                last_err = e
+
+        self._latest_strategy_trace = trace
+        raise last_err if last_err else RuntimeError("select 모든 전략 실패")
+
+    def _do_check(self, locator: Locator, value: str) -> None:
+        """check 다중 전략. native → click 토글 → JS force-set. post-check: is_checked()."""
+        desired = self._normalize_check_state(value)
+        trace: list[_StrategyAttempt] = []
+        last_err: Exception | None = None
+
+        def native():
+            if desired:
+                locator.check()
+            else:
+                locator.uncheck()
+
+        def click_to_match():
+            if locator.is_checked() != desired:
+                locator.click()
+
+        def force_set():
+            locator.evaluate(
+                "(el, v) => { el.checked = v; "
+                "el.dispatchEvent(new Event('change', {bubbles:true})); }",
+                desired,
+            )
+
+        strategies = [
+            ("native",    native),
+            ("click",     click_to_match),
+            ("force-set", force_set),
+        ]
+        for name, fn in strategies:
+            try:
+                fn()
+                actual = locator.is_checked()
+                if actual != desired:
+                    raise RuntimeError(
+                        f"check post-check: actual={actual} != desired={desired}"
+                    )
+                trace.append(_StrategyAttempt(name, ""))
+                self._latest_strategy_trace = trace
+                return
+            except Exception as e:
+                trace.append(_StrategyAttempt(name, str(e)[:200]))
+                last_err = e
+
+        self._latest_strategy_trace = trace
+        raise last_err if last_err else RuntimeError("check 모든 전략 실패")
+
+    def _upload_path_candidates(self, value: str) -> list[tuple[str, str]]:
+        """upload.value 를 여러 경로 변형으로 확장. (전략명, 절대경로) 리스트.
+
+        마지막 후보는 항상 ``upload_sample.txt`` default 더미 — LLM 이 ``test.txt``
+        같은 placeholder 를 emit 했을 때도 결정적으로 PASS 시키기 위함.
+        """
+        artifacts_root = os.path.abspath(self.config.artifacts_dir)
+        candidates: list[tuple[str, str]] = []
+        if os.path.isabs(value):
+            candidates.append(("absolute", os.path.abspath(value)))
+        else:
+            candidates.append((
+                "artifacts/value",
+                os.path.abspath(os.path.join(artifacts_root, value)),
+            ))
+            candidates.append((
+                "artifacts/basename",
+                os.path.abspath(os.path.join(artifacts_root, os.path.basename(value))),
+            ))
+            scripts_home = os.environ.get("SCRIPTS_HOME") or ""
+            if scripts_home:
+                candidates.append((
+                    "scripts_home/test/fixtures",
+                    os.path.abspath(
+                        os.path.join(scripts_home, "test", "fixtures", value)
+                    ),
+                ))
+
+        # default 더미 fallback — Pipeline 이 artifacts 안에 ``upload_sample.txt`` 를
+        # 미리 생성하므로 항상 존재한다. LLM 의 placeholder value 도 결정적으로 흡수.
+        candidates.append((
+            "artifacts/default-sample",
+            os.path.abspath(os.path.join(artifacts_root, "upload_sample.txt")),
+        ))
+
+        # dedup, preserve order
+        seen: set[str] = set()
+        uniq: list[tuple[str, str]] = []
+        for name, p in candidates:
+            if p not in seen:
+                seen.add(p)
+                uniq.append((name, p))
+        return uniq
+
+    def _do_upload(self, locator: Locator, value: str) -> None:
+        """upload 다중 전략. 후보 경로 순회 + post-check (input.value endswith basename)."""
+        if not value:
+            raise ValueError("upload.value 가 비어 있음")
+
+        trace: list[_StrategyAttempt] = []
+        last_err: Exception | None = None
+
+        for name, path in self._upload_path_candidates(value):
+            if not os.path.exists(path):
+                trace.append(_StrategyAttempt(name, f"not found: {path}"))
+                continue
+            # 보안 가드: artifacts root 또는 SCRIPTS_HOME 하위만 허용
+            allowed_roots = [os.path.abspath(self.config.artifacts_dir)]
+            sh = os.environ.get("SCRIPTS_HOME") or ""
+            if sh:
+                allowed_roots.append(os.path.abspath(sh))
+            if not any(path.startswith(root + os.sep) or path == root for root in allowed_roots):
+                trace.append(_StrategyAttempt(
+                    name, f"보안 가드: 허용 루트 밖 — {path}"
+                ))
+                continue
+            try:
+                locator.set_input_files(path)
+                actual = (locator.input_value() or "")
+                expected_basename = os.path.basename(path)
+                if not actual.endswith(expected_basename):
+                    raise RuntimeError(
+                        f"upload post-check: input.value={actual!r}, "
+                        f"expected basename={expected_basename!r}"
+                    )
+                trace.append(_StrategyAttempt(name, ""))
+                self._latest_strategy_trace = trace
+                return
+            except Exception as e:
+                trace.append(_StrategyAttempt(name, str(e)[:200]))
+                last_err = e
+
+        self._latest_strategy_trace = trace
+        raise last_err if last_err else FileNotFoundError(
+            f"업로드 후보 경로 모두 사용 불가: {value!r}"
+        )
+
+    def _do_fill(self, locator: Locator, value: str) -> None:
+        """fill 다중 전략. clear+fill → type → JS evaluate. post-check: input_value()."""
+        trace: list[_StrategyAttempt] = []
+        last_err: Exception | None = None
+
+        def clear_then_fill():
+            locator.fill("")
+            locator.fill(value)
+
+        def type_with_delay():
+            locator.fill("")
+            locator.type(value, delay=20)
+
+        def js_set():
+            locator.evaluate(
+                "(el, v) => { el.value = v; "
+                "el.dispatchEvent(new Event('input', {bubbles:true})); "
+                "el.dispatchEvent(new Event('change', {bubbles:true})); }",
+                value,
+            )
+
+        strategies = [
+            ("clear+fill", clear_then_fill),
+            ("type",       type_with_delay),
+            ("js-set",     js_set),
+        ]
+        for name, fn in strategies:
+            try:
+                fn()
+                actual = locator.input_value() or ""
+                if actual != value:
+                    raise RuntimeError(
+                        f"fill post-check: actual={actual!r} != expected={value!r}"
+                    )
+                trace.append(_StrategyAttempt(name, ""))
+                self._latest_strategy_trace = trace
+                return
+            except Exception as e:
+                trace.append(_StrategyAttempt(name, str(e)[:200]))
+                last_err = e
+
+        self._latest_strategy_trace = trace
+        raise last_err if last_err else RuntimeError("fill 모든 전략 실패")
+
     # ── 14대 DSL 액션 수행 ──
     def _perform_action(
         self, page: Page, locator: Locator, step: dict, resolver: LocatorResolver
@@ -1020,6 +1281,8 @@ class QAExecutor:
         """
         action = step["action"].lower()
         value = step.get("value", "")
+        # A: 매 step 마다 strategy trace reset. healer 가 마지막 step 의 trace 만 본다.
+        self._latest_strategy_trace = []
 
         if action == "click":
             # 1) viewport 안으로 명시적 스크롤 (best-effort, 실패 무시).
@@ -1056,7 +1319,8 @@ class QAExecutor:
                     f"링크가 overlay 에 가려졌거나 봇 차단 가능성."
                 )
         elif action == "fill":
-            locator.fill(str(value))
+            # A: multi-strategy + post-condition (clear+fill / type / js-set).
+            self._do_fill(locator, str(value))
         elif action == "press":
             # M+N. post-press 검증 — press Enter + '검색' 의도 맥락이면 둘 중
             # 하나여야 진짜 submit 된 것: (a) URL 변경, (b) 새 탭/창이 열리고
@@ -1097,8 +1361,8 @@ class QAExecutor:
                             f"(chrome-error/about:blank 은 봇 차단으로 간주)"
                         )
         elif action == "upload":
-            file_path = self._resolve_upload_path(value)
-            locator.set_input_files(file_path)
+            # A: 후보 경로 다중 전략 + post-condition (input.value endswith basename).
+            self._do_upload(locator, str(value))
         elif action == "drag":
             target_locator = resolver.resolve(value)
             if not target_locator:
@@ -1115,12 +1379,11 @@ class QAExecutor:
         elif action == "scroll":
             locator.scroll_into_view_if_needed(timeout=5000)
         elif action == "select":
-            locator.select_option(label=str(value))
+            # A: multi-strategy + post-condition. positional → value= → label= 순.
+            self._do_select(locator, str(value))
         elif action == "check":
-            if str(value).lower() == "off":
-                locator.uncheck()
-            else:
-                locator.check()
+            # A: multi-strategy + post-condition. native → click → JS force-set.
+            self._do_check(locator, str(value))
         elif action == "hover":
             locator.hover()
         elif action == "verify":

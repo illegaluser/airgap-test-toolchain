@@ -294,6 +294,7 @@ class DifyClient:
         error_msg: str,
         dom_snapshot: str,
         failed_step: dict,
+        strategy_trace: list[dict] | None = None,
     ) -> dict | None:
         """실패한 스텝의 치유를 LLM 에 요청하고 새 target 정보를 반환한다.
 
@@ -301,16 +302,24 @@ class DifyClient:
             error_msg: 실패 원인 에러 메시지.
             dom_snapshot: 현재 페이지의 HTML DOM (잘린 길이).
             failed_step: 실패한 DSL 스텝 dict.
+            strategy_trace: executor 가 시도한 multi-strategy 결과 리스트. 각 항목
+                ``{"strategy": <name>, "error": <msg or "ok">}``. healer 가 "selector
+                만 바꿔봐야 같은 timeout" 같은 정보를 알 수 있게 한다.
 
         Returns:
-            새 target 이 포함된 dict. 파싱 실패 시 ``None``.
+            새 target/value/condition 이 포함된 dict. 파싱 실패 시 ``None``.
         """
+        # B: strategy_trace 를 chatflow inputs 에 주입. chatflow yaml 의 healer 노드
+        # prompt 가 ``{{strategy_trace}}`` placeholder 로 받아 사용한다.
         payload = {
             "inputs": {
                 "run_mode": "heal",
                 "error": error_msg,
                 "dom": dom_snapshot,
                 "failed_step": json.dumps(failed_step, ensure_ascii=False),
+                "strategy_trace": json.dumps(
+                    strategy_trace or [], ensure_ascii=False
+                ),
             },
             "query": "실행을 요청합니다.",
             "response_mode": "blocking",
