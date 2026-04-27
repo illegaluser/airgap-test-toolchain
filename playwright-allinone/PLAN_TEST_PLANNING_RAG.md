@@ -1114,6 +1114,100 @@ inputs: {user_query: "결제 모듈 테스트 계획서를 만들어줘", output
 
 ---
 
+## 9.2 v6.5 운영 결함 4건 fix + end-to-end PASS (2026-04-27)
+
+v6 자동화 (KB seed + 폐쇄망 반입 + 공개 URL) 가 fresh rebuild 환경에서 검증되는 과정에서
+4건의 운영 결함이 추가로 드러나 모두 fix.
+
+### 결함과 fix
+
+| ID | 증상 | 원인 | 수정 |
+| --- | --- | --- | --- |
+| 1 | 챗봇 공개 chat URL 의 호스트 포트 누락 (`http://localhost/chat/<token>` ← :18081 빠짐) | dify-api 의 `APP_WEB_URL` / `CONSOLE_API_URL` / `SERVICE_API_URL` / `CONSOLE_WEB_URL` 4종이 공란이라 nginx 요청 hostname 만 사용 | `supervisord.conf` 에 `http://localhost:18081` 기본값 박음. `entrypoint.sh` 가 `DIFY_PUBLIC_URL` env 받으면 in-place sed 로 치환 (사내 DNS / 비표준 포트 대응) |
+| 2 | `supervisorctl restart dify-web` 후 EADDRINUSE 3000 → FATAL 재발 | `sh -c → entrypoint.sh → next-server` 체인에서 sh 만 종료되고 node 가 PID1 재부모화로 살아남아 port 3000 점유 | dify-web 프로그램에 `stopasgroup=true` + `killasgroup=true` 추가 (프로세스 그룹 전체 SIGTERM/SIGKILL) |
+| 3 | KB seed 자동 업로드 `uploaded=0` (무성 실패) | Dify 1.13.3 이 `/console/api/datasets/{id}/document/create-by-file` 를 404 처리. console API 가 분리됨 | 2단계 API 로 교체: (1) `POST /console/api/files/upload?source=datasets` → `upload_file_id` (2) `POST /console/api/datasets/{id}/documents` (JSON, `data_source.info_list.file_info_list.file_ids`) |
+| 4 | `backup-volume.sh /tmp/x.tar.gz` 절대경로 인자 실패 (호스트가 `SCRIPT_DIR` 안에서 찾음) | host mount 가 항상 `SCRIPT_DIR:/dst` 로 고정 → 절대경로의 dirname 무시 | 절대경로 분기 (`case "$OUTPUT_TAR" in /*) dirname/basename ;;`) 추가하고 mount target 동적 결정 |
+
+### Fresh-boot end-to-end 검증
+
+clean volume + new image 로 부팅한 결과 — 운영자 수동 개입 0회로 챗봇 + 데이터까지 ready.
+
+```text
+# entrypoint
+[entrypoint-allinone]   Dify 공개 URL: http://localhost:18081 (default)
+
+# provision (자동)
+[18:02:44] [✓]   workspace 기본 모델 설정 완료
+[18:02:44] [✓]   KB 'kb_project_info' 신규 생성: 80829766-2c95-...
+[18:02:44] [✓]   KB 'kb_test_theory' 신규 생성: 7d356c3e-6d5d-...
+[18:02:44] [▶] === 2-3i. KB seed 문서 자동 업로드 (B 보조 — image baked-in) ===
+[18:02:44] [·]     + uploaded: api.csv (file_id=6a463910-8ee...)
+[18:02:44] [·]     + uploaded: feature_login.md (file_id=0fa47121-898...)
+[18:02:44] [·]     + uploaded: spec.md (file_id=12b63d86-2b1...)
+[18:02:44] [✓]   KB 'kb_project_info' seed 완료 — uploaded=3, skipped(이미 존재)=0
+[18:02:44] [·]     + uploaded: test_theory_boundary_value.md (file_id=54e39632-243...)
+[18:02:44] [✓]   KB 'kb_test_theory' seed 완료 — uploaded=1, skipped(이미 존재)=0
+[18:02:46] [✓]   공개 chat URL 활성화 — http://localhost:18081/chat/Nt9eulgYSKNu9baX
+[18:02:47] [✓]   공개 chat URL 활성화 — http://localhost:18081/chat/CUCVgHjbf7btUj8J
+```
+
+`supervisorctl status` — 10 개 서비스 모두 RUNNING (dify-web 포함, FATAL 0건).
+
+### Chat sanity (retrieval 활성)
+
+**plan mode** — `결제 모듈에 대한 IEEE 829-lite 형식 테스트 계획서` 요청:
+
+```markdown
+# 테스트 계획서: 결제 모듈
+
+## 1. 목적
+사용자의 결제 요청을 처리하고 외부 PG(Payment Gateway)와 통신하여 거래를 완료하는...
+(출처: spec.md chunk-bc99e71c)
+
+## 2. 범위
+- **포함**:
+    - 카드 결제 프로세스 (`/payment` 페이지 접근 및 `POST /api/payments` 호출)
+    ...
+## 8. 근거 문서 (Traceability)
+| 섹션 | 출처 문서 | 청크 ID | retrieval score | 인용 |
+| --- | --- | --- | --- | --- |
+| 1. 목적 | spec.md  | bc99e71c | 0.61 | "본 모듈은 사용자의 결제 요청을 처리하고..." |
+| 2. 범위 | spec.md  | fea3d5e5 | 0.60 | "- 사용자가 결제 페이지 (`/payment`) 에..." |
+| 2. 범위 | api.csv  | 53a712a7 | 0.59 | "endpoint: /api/payments;method: POST;..." |
+```
+
+검증 포인트:
+
+- `kb_project_info` 의 `spec.md` / `api.csv` 가 retrieval 됨 (score=0.59-0.61).
+- `feature_login.md` (로그인용 doc) 는 결제 쿼리에 미매칭 — 의도대로.
+- 부족한 정보는 `(KB 미확인 — 상세 스펙 추가 필요)` 로 정직 표시 (hallucination 방지).
+
+**scenario_dsl mode** — `사용자 로그인 페이지 시나리오를 14대 DSL JSON 으로`:
+
+```text
+[{"step": 1, "action": "navigate", "target": "", "value": "https://example.com/login", ...},
+ {"step": 2, "action": "fill", "target": "role=textbox, name=username", ...},
+ ...
+]
+
+# traceability:
+# step 1 — feature_login.md chunk-184f4f69 (score=0.69) — "사용자 로그인 기능 — 사용자 시나리오"
+# step 2, 3, 4, 5 — (KB 미확인 — Selector 및 Value는 표준 패턴으로 추정)
+```
+
+검증 포인트:
+
+- JSON-first-block 룰 (`out.split("\n#", 1)[0]`) 로 깔끔히 파싱 — 5 액션 모두 14-DSL whitelist 내.
+- `kb_project_info` 의 `feature_login.md` 가 적절히 retrieval (score=0.69).
+- 부족 정보는 본문이 아닌 `# traceability` 코멘트에 표기 — JSON 오염 없음.
+
+### 후속 트랙 (변동 없음)
+
+T-pre-13a / T-pre-15a 사전 측정은 다양한 프로젝트 도메인 KB 가 적재된 후 실측 권장.
+KB ingestion CLI / Jenkins 트리거 등 자동화는 §7.2 후속.
+
+---
+
 ## 10. 변경 이력
 
 | 일자 | 항목 | 비고 |
@@ -1121,6 +1215,7 @@ inputs: {user_query: "결제 모듈 테스트 계획서를 만들어줘", output
 | 2026-04-27 | 초안 작성 | 본 PLAN 신설. T-01 (embedding provider 등록) 만 사전 patch 됨, 나머지는 미착수. |
 | 2026-04-27 | review 반영 — 5 우선 보강 + 5 세부 보강 | (1) 복수 chatflow seed 인프라 리팩토링 (T-01a) — Dockerfile/entrypoint/provision.sh `OFFLINE_DIFY_CHATFLOW_YAMLS` 또는 dir scan 으로 전환. (2) Dataset id 주입 메커니즘 — chatflow YAML 에 placeholder 박고 provision.sh 가 KB ID 캡처 후 substitute. T-spike-1/2/3 신설. (3) traceability 스키마 — 모든 출력에 source_documents/chunk_id/retrieval_score 강제 (§2.2.5, §3.3~3.5). (4) `scenario_dsl` 모드 순수 JSON only + `both` 모드 strict fence (§3.6). (5) 모델 / 오프라인 반입 정합성 — gemma4:26b + bge-m3-korean 모두 README/사전 준비 줄에 (T-01b). 세부: T-11 샘플 5 형식 (pdf/csv/docx/pptx + theory pdf), top_k 보수적 (3+2), 저작권 가이드 (§4.4), T-06a 선등록 명확화. 총 작업 단위 30 → 38 로 확장. |
 | 2026-04-27 | v4 — 6 결함 객관 검증 후 정정 | 공식 docs (Dify ETL / Ollama OpenAI-compat) + 컨테이너 plugin 직접 probe (`langgenius/ollama-0.1.3` `llm.py:206,747`) + sister 프로젝트 검증으로 6 결함 판정. (1) **PPTX out-of-scope** — Dify `ETL_TYPE=dify` 분기에 PPTX 처리 없음 (`extract_processor.py:107-162`). 4 형식 → 3 형식 (csv/pdf/docx). (2) **scenario_dsl 계약 (b) 통일** — wrapping object 삭제, JSON-first-block 룰 (`out.split("\n#",1)[0]` 파서). (3) **Context 20480 정합화** — Dify Ollama plugin 이 native `/api/chat` 사용 → `context_size` credential → `options.num_ctx` 정상 전달 (Modelfile 불필요 검증). T-15a / §8.2 의 12288 잔여 모두 20480 으로 정정. (4) **console API 명시** — 공식 `/v1/datasets/*` (KB 데이터) vs console `/console/api/*` (워크스페이스/앱 셋업) 분리 박스 추가. 1.13.x pinned 위험 §8.1 명시. (5) **§1.2 톤다운** — 1차 가치 = 설계 초안 + 누락 방지, ZeroTouch-QA 결합은 선택적 다운스트림으로 강등. (6) **gemma4:e4b 잔여 정리** — Dockerfile/mac-agent-setup/wsl-agent-setup/README 의 운영 기본값 → gemma4:26b 일괄 치환. README 모델 비교 표는 legacy/comparison 행으로 보존. |
+| 2026-04-27 | **v6.5 — 운영 결함 4건 fix + fresh-boot end-to-end PASS** | v6 자동화 검증 도중 드러난 4건 fix (cf29e3c). (1) 챗 share URL 호스트 포트 누락 — `supervisord.conf` 의 `APP_WEB_URL` / `CONSOLE_API_URL` / `SERVICE_API_URL` / `CONSOLE_WEB_URL` 4종을 `http://localhost:18081` 로 박고, `entrypoint.sh` 가 `DIFY_PUBLIC_URL` env 받으면 in-place sed 치환. (2) `supervisorctl restart dify-web` 후 EADDRINUSE 3000 재발 — `sh -c → entrypoint.sh → next-server` 체인의 PID1 재부모화 문제. dify-web 프로그램에 `stopasgroup`/`killasgroup=true` 추가. (3) KB seed `uploaded=0` 무성 실패 — 1.13.3 에서 `/document/create-by-file` 가 404. 2단계 API (`/files/upload?source=datasets` → `/datasets/{id}/documents`) 로 교체. (4) `backup-volume.sh` 절대경로 인자 fail — dirname/basename 분리 후 mount target 동적 결정. **Fresh rebuild → KB seed 4 파일 자동 업로드 + 챗봇 2개 자동 import + 공개 chat URL (`:18081` 포함) 활성화 + 10 서비스 RUNNING + plan/scenario_dsl 양 모드 retrieval 성공 (spec.md/api.csv/feature_login.md 매칭 + traceability 표 + 14-DSL whitelist 만 사용)** 까지 운영자 수동 개입 0회로 검증. PLAN §9.2 신설. |
 | 2026-04-27 | **v6 — 폐쇄망 반입 + KB seed 자동화** | 운영 누적 지식 보존 요구로 추가 작업. (1) `backup-volume.sh` / `restore-volume.sh` 스크립트 신설 — supervisorctl quiesce + busybox tar 로 dscore-data 볼륨 일관성 export/import. 폐쇄망 반입을 image tar.gz + volume tar.gz 쌍으로 표준화. (2) Dockerfile + entrypoint.sh + provision.sh 에 KB seed 자동화 추가 — image baked-in `/opt/seed/kb-docs/` (= `examples/test-planning-samples/`) 를 첫 부팅 시 자동으로 두 KB 에 업로드 + 인덱싱. 멱등 (동일 이름 skip). image 단독 반입 시에도 비어 있지 않은 KB 로 시작 가능. (3) 챗봇 공개 URL 자동 활성화 — `prompt_public:true` 자동 호출 (이전 commit). (4) README §3.4 백업/복원/폐쇄망 반입 절차 표 + `--fresh` 의미 명확화 + 업그레이드 가이드. (5) `dataset_ids: []` substitute 결함 / `reranking_mode: null` Pydantic 거절 / 함수 stdout 캡처 결함 모두 fix (이전 commit). |
 | 2026-04-27 | **v5 — 구현 + 실 환경 검증** | T-01a / T-02 / T-05~T-11 일괄 구현. provision.sh 에 `dify_set_default_models` + `dify_ensure_kb` + `dify_import_chatflow` 함수 신설. Dockerfile / entrypoint / build.sh 에 두 번째 chatflow 경로 추가. `test-planning-chatflow.yaml` 신설 (5 노드 + system prompt 4 모드 + traceability 강제). `examples/test-planning-samples/` 에 4 sample 문서. fresh rebuild 후 자동 검증: KB 2 개 자동 생성 (kb_project_info / kb_test_theory) + 두 chatflow auto-import + Jenkins credential 2 개 (dify-qa-api-token + dify-test-planning-api-token) 등록. **실 chat-messages 호출 검증 — Test Planning Brain 이 IEEE 829-lite 8 섹션 markdown 정상 emit**. 결함 3건 발견 + 수정: (1) yaml comments 안 `dataset_ids: []` literal 5 곳 → substitute 가 comment 부터 먹음, comments rephrase 로 fix. (2) `multiple_retrieval_config.reranking_mode: null` Pydantic 거절 → `weighted_score` 로 fix. (3) 함수 stdout 캡처 패턴이 log 출력 가림 + variable garbage → 글로벌 변수 `DIFY_IMPORT_LAST_API_KEY` 반환 패턴으로 fix. README §3.10 신설 (운영 가이드). |
 | 2026-04-27 | v3 — 실현 가능성 검증 + sister 프로젝트 직접 인용 | 38 작업 단위에 대한 web search + 컨테이너 API probe + sister source code 직접 검증. (a) **OLLAMA_CONTEXT_SIZE 20480 채택** — Test Planning RAG 의 retrieved context 추가 부담으로 12288 부족. 책상 비유로 §4.3 설명. (b) **KB embedding lock 운영 룰** — Qdrant collection 첫 인덱싱 시 차원 lock. §4.4.2 신설 + 도서관 비유 + 교체 절차 명시. (c) **Phase -1 spike 폐기** — sister 프로젝트 (`code-AI-quality-allinone/scripts/`) 가 동일 패턴 production 검증 중. T-spike-1/2/3 → sister 인용표 + T-pre-13a/T-pre-15a 사전 측정 우선화. (d) **Sister 직접 검증으로 정정** — agent 요약의 "embedding_model 이 KB body 에 들어가지 않음" 주장은 오류. 실제 sister 는 (1) provider 등록 + (2) workspace default-model + (3) KB body 의 embedding_model 명시 셋 다 함 (belt-and-suspenders). (e) **`search_method: hybrid_search` 채택** — sister 와 동일하게 BM25 + dense 결합 검색으로 한국어 정밀도 ↑. (f) **Retrieval 노드 schema 정정** — `top_k`/`score_threshold` 가 `multiple_retrieval_config` 하위 (평면 아님) + `query_variable_selector: list[str]` path. §2.2.3 갱신. (g) **§7.2 후속 트랙 추가** — embedding 모델 변경 procedure (zero-downtime 후보) + hybrid 검색 가중치 튜닝. |
