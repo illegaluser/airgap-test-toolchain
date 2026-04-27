@@ -180,7 +180,7 @@ pipeline {
                         echo "  또는 수동 생성:"
                         echo "    python3 -m venv '${AGENT_HOME}/venv'"
                         echo "    source '${AGENT_HOME}/venv/bin/activate'"
-                        echo "    pip install requests playwright pillow"
+                        echo "    pip install requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright"
                         echo "    playwright install chromium"
                         echo "======================================================"
                         exit 1
