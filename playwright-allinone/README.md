@@ -12,25 +12,25 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 | 컨테이너 기동 결과 | `dscore.ttc.playwright` 1개 컨테이너에 Jenkins, Dify, PostgreSQL, Redis, Qdrant, nginx 통합 |
 | 자동 프로비저닝 결과 | Dify 관리자 계정, Ollama plugin/provider, `ZeroTouch QA Brain` publish, Jenkins credential `dify-qa-api-token`, Job `ZeroTouch-QA`, Jenkins Node `mac-ui-tester`/`wsl-ui-tester` 자동 등록 |
 | 완료 마커 | `/data/.app_provisioned` 생성 시 재기동부터 provision 생략 |
-| 최근 실측 검증 | Jenkins `http://localhost:18080/login` → `200`, Dify `http://localhost:18081/` → `307`, Build #9 (execute) 14/14 PASS, Build #14 (chat) 12/12 PASS + HEAL 2 |
-| Action DSL 런타임 | 14대 DSL (`navigate`, `click`, `fill`, `press`, `select`, `check`, `hover`, `wait`, `verify`, `upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 실행기 구현 완료. Sprint 5 에서 select/check/upload/fill 에 multi-strategy chain + post-condition 추가 |
-| 자가 치유 구조 | A 단 (executor multi-strategy chain) + B 단 (Healer 가 `target/value/condition/fallback_targets` 만 mutate, action 변경 금지) layered defense. healer 호출 시 strategy_trace 주입 |
-| 로컬 회귀 테스트 | integration/단위 56건 + 9대 native 회귀 30건 = 총 86건 PASS |
+| 최근 실측 검증 | Jenkins `http://localhost:18080/login` → `200`, Dify `http://localhost:18081/` → `307`. v4.1 실환경 출시 검증 (4 모드): execute 14/14, convert 14/14, chat 6/6, doc 20/20 모두 PASS. Sprint 6 chat 모드 3 회 연속 17/17 PASS, 0 retry, 평균 dur 101s |
+| Action DSL 런타임 | 14대 DSL (`navigate`, `click`, `fill`, `press`, `select`, `check`, `hover`, `wait`, `verify`, `upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 실행기 구현 완료. Sprint 5 multi-strategy chain + post-condition. Sprint 6 press heuristic localhost/file:// 제외 |
+| 자가 치유 구조 | A 단 (executor multi-strategy chain) + B 단 (Healer mutate). Sprint 6 에서 Healer 의 action mutation 을 whitelisted 의미 등가 전이 4쌍 (`select↔fill`, `check↔click`, `click↔press`, `upload↔click`) 으로 확장 — 그룹간 변경은 거절해 false-PASS 차단. healer 호출 시 strategy_trace 주입 |
+| Convert 14대 확장 | `zero_touch_qa/converter.py` 가 `set_input_files`/`drag_to`/`scroll_into_view_if_needed`/`page.route` 를 upload/drag/scroll/mock_* 로 변환. Sprint 4C closure |
+| Sprint 6 chat 결정성 | `<think>` 출력 금지 prompt 룰 + max_tokens 4096 → 8192 + OLLAMA_CONTEXT_SIZE 8192 → 12288 + sanitizer leading-token 회복 + atomic 16 항목 default SRS_TEXT. chat 모드가 17/17 결정론적 PASS (Sprint 5 §10.5 의 best-effort 위치 폐기) |
+| 로컬 회귀 테스트 | integration 단위 82건 + 9대 native 회귀 30건 = 총 **112건 PASS, flake 0** |
 | Jenkins 회귀 단계 | Stage `2.4. pytest 회귀 (Sprint 2/3)` 에서 integration/native pytest 를 분리 실행하고 JUnit XML 보존 |
-| Sprint 4 운영 기반 | Jenkins agent preflight, Dify credential/model health probe, 30일 artifact retention, Dify 호출 metric(`llm_calls.jsonl`) 계측, Zero Touch QA Report 운영 지표 섹션 구현 |
-| Sprint 5 듀얼 모드 | `chat` = best-effort 자연어 시연 (gemma4:26b + 단순화된 1-shot 프롬프트). `execute` = 결정적 14액션 검증, DOC_FILE 미업로드 시 `test/fixtures/scenario_14.json` fallback. fixture 페이지는 nginx `/fixtures/` 로 호스팅 |
+| Sprint 4 운영 기반 | Jenkins agent preflight, Dify credential/model health probe, 30일 artifact retention, Dify 호출 metric(`llm_calls.jsonl`) 계측, Zero Touch QA Report 운영 지표 섹션, `aggregate_llm_sla()` 자동 집계 |
 
 추가 메모:
 
 - `dify-chatflow.yaml`, `architecture.md`, `zero_touch_qa` 런타임은 v4.1 Action DSL 14대 확장 계약을 반영한다.
 - 신규 5종 액션(`upload`, `drag`, `scroll`, `mock_status`, `mock_data`)은 fixture 기반 pytest 로 잠겨 있다.
 - mock route 는 `TARGET_URL` / `MOCK_BLOCKED_HOSTS` 기준으로 넓은 운영 host intercept 를 차단하며, 운영 우회는 `MOCK_OVERRIDE=1` 일 때만 허용한다.
-- Dify Planner/Healer 호출은 `artifacts/llm_calls.jsonl` 에 latency, timeout, retry, status, answer 길이를 JSON Lines 로 기록한다.
+- Dify Planner/Healer 호출은 `artifacts/llm_calls.jsonl` 에 latency, timeout, retry, status, answer 길이를 JSON Lines 로 기록하고 빌드 종료 시 `aggregate_llm_sla()` 가 `llm_sla.json` 으로 자동 집계한다.
 - `index.html` 리포트는 metric 파일이 있을 때 운영 지표 섹션에 LLM SLA / Planner / Healer / healing / flake / pytest 요약과 원본 metric 링크를 표시한다.
 - 리포트 "첨부 문서" 섹션은 `doc`/`convert`/`execute` 모드처럼 실제 파일이 업로드됐을 때만 노출. `chat` 모드는 자연어 SRS 가 입력이라 첨부 섹션이 뜨지 않는다.
-- Convert 경로(`zero_touch_qa/converter.py`)의 14대 확장은 아직 Sprint 4 범위다. 현재 Convert 문서/아키텍처의 9대 제한 설명은 의도된 잔여 작업이다.
-- 실 Dify Brain + 실 Mac/WSL agent + 운영 도메인 E2E 검증, Convert 14대 확장, 리포트 운영 지표 섹션/추세 관리는 Sprint 4 잔여 범위다.
-- Sprint 5 변경 상세는 `PLAN_DSL_ACTION_EXPANSION.md` §10 참조.
+- chat 모드 SRS 작성 가이드 (Sprint 6): **각 SRS 항목은 정확히 하나의 액션** (atomic). "X 한 뒤 Y" 같은 compound 항목은 첫 액션만 emit 되어 후속 verify 가 false-fail 가능. 기본 SRS_TEXT 는 16 atomic 항목으로 작성됐다.
+- Sprint 5/6 변경 상세는 `PLAN_DSL_ACTION_EXPANSION.md` §10/§11 참조.
 
 로컬 회귀 확인:
 
@@ -965,9 +965,9 @@ curl -sS -u admin:password -X POST \
 
 UI 에서 기동할 때는 DOC_FILE 을 비워 두어도 문제없다 (Jenkins 가 자동으로 빈 값 처리).
 
-### 3.9 v4.1 운영 SLA / 모니터링 (Sprint 4 closure)
+### 3.9 v4.1 운영 SLA / 모니터링 (Sprint 4 + Sprint 6 closure)
 
-Sprint 4 (4A/4B/4C) 가 닫히면서 v4.1 운영 표준이 다음과 같이 정해졌다.
+Sprint 4 (4A/4B/4C) + Sprint 6 (chat 모드 결정성) 가 닫히면서 v4.1 운영 표준이 다음과 같이 정해졌다.
 
 #### 산출물 7종 (빌드별 `qa_reports/build-${BUILD_NUMBER}/`)
 
@@ -1018,6 +1018,33 @@ Dify 콘솔에서 새 app key 발급 → Jenkins → Manage Credentials → `DIF
 #### agent 동시성 한계
 
 단일 Mac/WSL agent 는 동시 빌드 1 개를 권장한다. JOB 의 `disableConcurrentBuilds()` 또는 agent label 의 `numExecutors=1` 로 제한. 동시 2+ 빌드는 artifacts 디렉토리 충돌, 브라우저 자원 부족으로 false fail 위험이 있다.
+
+#### Sprint 6 chat 모드 결정성 (Sprint 5 §10.5 한계 해소)
+
+Sprint 5 까지 chat 모드는 "best-effort 의미 시연" 으로 위치 (결정적 14 액션 검증은 execute 모드 책임). Sprint 6 에서 다섯 결함을 표적 수정해 chat 모드도 17/17 결정적 PASS 를 달성:
+
+| 결함 | 보강 |
+| --- | --- |
+| Meta-reasoning leak (action 필드에 `'verify, target: ...'` 같은 자기 설명) | `_sanitize_scenario` 가 leading valid token 추출 회복 |
+| Compound SRS ("X 한 뒤 Y") 가 첫 액션만 emit | Default SRS_TEXT 16 atomic 항목 + Planner prompt 의 N=16 1-shot 예시 |
+| `mock_*` 자율 drop (사용자 가시성 낮다고 판단) | Planner prompt 에 "mock_* drop 금지" 명시 룰 |
+| Healer mutation 표면 협소 (action 변경 절대 금지 → 의미 매핑 미스 회복 불가) | Whitelisted 의미 등가 전이 4쌍 (`select↔fill`, `check↔click`, `click↔press`, `upload↔click`) 만 허용 — 그룹간 변경은 거절해 false-PASS 차단 |
+| Press heuristic 과확장 (fixture 단순 DOM 업데이트도 search 실패로 오판) | `localhost`/`file://` 환경에서는 strict URL/탭 체크 skip |
+
+**추가 보강 — `<think>` 토큰 한도 초과**:
+
+- Planner system prompt 에 `<think>`/`<thinking>`/`<reasoning>` 출력 금지 룰 추가.
+- Planner `max_tokens` 4096 → **8192**, `OLLAMA_CONTEXT_SIZE` 8192 → **12288** (1.5x 안전 마진, KV cache 비용 trade-off 로 16384 대신 12288 채택).
+
+**측정 결과** — 동일 default SRS 로 chat 3 회 연속:
+
+| Build | Result | Steps | Duration | Retry |
+| --- | --- | --- | --- | --- |
+| #1 | SUCCESS | 17/17 PASS | 126.0s | 0 |
+| #2 | SUCCESS | 17/17 PASS | 89.4s | 0 |
+| #3 | SUCCESS | 17/17 PASS | 88.0s | 0 |
+
+3/3 first-try PASS, 0 retry, 평균 dur 101s. Sprint 5 §10.5 의 "chat = best-effort" 위치 사실상 폐기.
 
 ---
 
