@@ -40,27 +40,34 @@ BUILD_CTX="$SCRIPT_DIR"
 cd "$SCRIPT_DIR"
 
 # ── 플래그 파싱 ────────────────────────────────────────────────────────────
-# --redeploy : 빌드 직후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
-# --fresh    : redeploy 시 dscore-data 볼륨까지 삭제 (프로비저닝 재수행)
-# --no-agent : redeploy 시 agent 재연결 스킵 (컨테이너만 기동)
+# --redeploy    : 빌드 직후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
+# --fresh       : redeploy 시 dscore-data 볼륨까지 삭제 (프로비저닝 재수행, 데이터 폐기)
+# --reprovision : redeploy 시 .app_provisioned 마커만 wipe — provision 재실행하되 데이터(KB·Jenkins 이력) 보존
+# --no-agent    : redeploy 시 agent 재연결 스킵 (컨테이너만 기동)
 REDEPLOY=false
 FRESH_VOLUME=false
+REPROVISION=false
 SKIP_AGENT=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    --redeploy) REDEPLOY=true; shift ;;
-    --fresh)    FRESH_VOLUME=true; shift ;;
-    --no-agent) SKIP_AGENT=true; shift ;;
+    --redeploy)    REDEPLOY=true; shift ;;
+    --fresh)       FRESH_VOLUME=true; shift ;;
+    --reprovision) REPROVISION=true; shift ;;
+    --no-agent)    SKIP_AGENT=true; shift ;;
     -h|--help)
       cat <<'USAGE'
 사용법: ./e2e-pipeline/offline/playwright-allinone/build.sh [옵션]
 
-  --redeploy   빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
-               (기존 dscore.ttc.playwright 컨테이너가 있으면 rm -f, 기존 agent.jar
-                프로세스는 agent-setup 이 정리. dscore-data 볼륨은 유지)
-  --fresh      --redeploy 와 함께 사용 — dscore-data 볼륨도 삭제해 제로베이스 기동
-  --no-agent   --redeploy 와 함께 사용 — 컨테이너만 기동, agent 재연결은 스킵
-  -h, --help   이 도움말
+  --redeploy     빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
+                 (기존 dscore.ttc.playwright 컨테이너가 있으면 rm -f, 기존 agent.jar
+                  프로세스는 agent-setup 이 정리. dscore-data 볼륨은 유지)
+  --fresh        --redeploy 와 함께 — dscore-data 볼륨도 삭제해 제로베이스 기동 (데이터 폐기)
+  --reprovision  --redeploy 와 함께 — .app_provisioned 마커만 wipe → provision 재실행.
+                 데이터(KB 임베딩·Jenkins 이력·챗봇 conversation)는 보존하면서 chatflow YAML /
+                 Jenkins job 정의 / Dify provider 등록 같은 이미지 baked-in 정의를 새 이미지 기준으로 재생성.
+                 --fresh 와 함께 쓰면 --fresh 가 우선 (전체 wipe).
+  --no-agent     --redeploy 와 함께 — 컨테이너만 기동, agent 재연결은 스킵
+  -h, --help     이 도움말
 
 주요 env:
   IMAGE_TAG                dscore.ttc.playwright:latest (기본)
@@ -72,11 +79,12 @@ while [ $# -gt 0 ]; do
                            기본은 기존 파일 재사용 — airgap 환경에서 네트워크 없이 빌드 가능.
 
 예시:
-  ./build.sh                           # 빌드만 (tar.gz 산출)
-  ./build.sh --redeploy                # 빌드 + 기존 볼륨 재사용 재기동 + agent
-  ./build.sh --redeploy --fresh        # 빌드 + 볼륨 초기화 + agent
-  ./build.sh --redeploy --no-agent     # 빌드 + 컨테이너만 재기동
-  FORCE_PLUGIN_DOWNLOAD=true ./build.sh    # 플러그인 강제 재다운로드
+  ./build.sh                              # 빌드만 (tar.gz 산출)
+  ./build.sh --redeploy                   # 빌드 + 기존 볼륨 재사용 재기동 + agent
+  ./build.sh --redeploy --fresh           # 빌드 + 볼륨 초기화 + agent (데이터 폐기)
+  ./build.sh --redeploy --reprovision     # 빌드 + 데이터 보존 + chatflow/Jenkins job 재생성 + agent
+  ./build.sh --redeploy --no-agent        # 빌드 + 컨테이너만 재기동
+  FORCE_PLUGIN_DOWNLOAD=true ./build.sh   # 플러그인 강제 재다운로드
 USAGE
       exit 0
       ;;
@@ -293,18 +301,24 @@ if [ "$REDEPLOY" = "true" ]; then
   log "[--redeploy] 빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결 시작"
   log "=========================================================================="
 
-  # 5-1. 기존 컨테이너 정리 (볼륨은 --fresh 일 때만 제거)
+  # 5-1. 기존 컨테이너 정리 + 볼륨 처리 분기
   if docker ps -a --format '{{.Names}}' | grep -qxF "$CONTAINER_NAME"; then
     log "  [5-1] 기존 컨테이너 '$CONTAINER_NAME' 제거 (docker rm -f)"
     docker rm -f "$CONTAINER_NAME" >/dev/null
   fi
   if [ "$FRESH_VOLUME" = "true" ]; then
     if docker volume ls --format '{{.Name}}' | grep -qxF "$DATA_VOLUME"; then
-      log "  [5-1] --fresh — 볼륨 '$DATA_VOLUME' 제거 (provision 재수행됨)"
+      log "  [5-1] --fresh — 볼륨 '$DATA_VOLUME' 제거 (provision 재수행됨, 데이터 폐기)"
       docker volume rm "$DATA_VOLUME" >/dev/null
     fi
+  elif [ "$REPROVISION" = "true" ]; then
+    if docker volume ls --format '{{.Name}}' | grep -qxF "$DATA_VOLUME"; then
+      log "  [5-1] --reprovision — 볼륨 '$DATA_VOLUME' 의 .app_provisioned 마커만 wipe (provision 재실행, 데이터 보존)"
+      docker run --rm -v "$DATA_VOLUME":/data busybox rm -f /data/.app_provisioned
+    fi
   else
-    log "  [5-1] 볼륨 '$DATA_VOLUME' 유지 (--fresh 없음 — 기존 provision 재사용)"
+    log "  [5-1] 볼륨 '$DATA_VOLUME' 유지 — 기존 provision 결과 재사용"
+    log "        (이미지의 chatflow YAML / Jenkins job 정의 변경은 자동 반영 안 됨. 반영하려면 --reprovision)"
   fi
 
   # 5-2. 컨테이너 기동 — 호스트 플랫폼 감지해 provision.sh 가 올바른 Jenkins Node 를
