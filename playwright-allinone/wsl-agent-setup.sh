@@ -33,7 +33,7 @@
 #
 # 환경변수:
 #   OLLAMA_PING_URL  - 호스트 Ollama 확인 URL 강제 지정 (기본: 자동 탐색)
-#   OLLAMA_MODEL     - 존재 확인 대상 모델 (정보성, 기본 gemma4:e4b)
+#   OLLAMA_MODEL     - 존재 확인 대상 모델 (정보성, 기본 gemma4:26b)
 #
 # 재실행은 idempotent — 이미 설치된 것은 스킵.
 # ============================================================================
@@ -43,7 +43,7 @@ AGENT_DIR="${WSL_AGENT_WORKDIR:-$HOME/.dscore.ttc.playwright-agent}"
 JENKINS_URL="${JENKINS_URL:-http://localhost:18080}"
 AGENT_NAME="${AGENT_NAME:-wsl-ui-tester}"
 PY_VERSION_MIN="${PY_VERSION_MIN:-3.11}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-false}"
 # NODE_SECRET 자동 추출 시 읽을 컨테이너 (docker logs) — 이름 override 가능
 CONTAINER_NAME="${CONTAINER_NAME:-dscore.ttc.playwright}"
