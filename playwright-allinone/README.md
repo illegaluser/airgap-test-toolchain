@@ -784,32 +784,84 @@ docker exec dscore.ttc.playwright supervisorctl status
 tail -f /tmp/dscore-agent.log
 ```
 
-### 3.4 백업 / 복원 / 업그레이드
+### 3.4 백업 / 복원 / 폐쇄망 반입 / 업그레이드
+
+#### 운영 데이터 백업 (권장 절차)
+
+`backup-volume.sh` / `restore-volume.sh` 스크립트가 dscore-data 볼륨의 전체 누적 상태
+(PG 메타 + Qdrant 벡터 + Jenkins job + 챗봇 conversation) 를 일관성 있게 export / import 한다.
+
+내부 동작: supervisorctl 로 모든 서비스 quiesce → busybox 컨테이너로 tar gzip → 서비스
+재기동. DB 트랜잭션 일관성 보장.
 
 **백업**:
 
 ```bash
-docker run --rm -v dscore-data:/data -v $PWD:/backup busybox \
-  tar czf /backup/dscore-data-$(date +%Y%m%d).tar.gz /data
+cd playwright-allinone
+./backup-volume.sh                              # 자동 파일명: dscore-data-YYYYMMDD-HHMMSS.tar.gz
+./backup-volume.sh /custom/path/backup.tar.gz   # 사용자 지정 경로
 ```
 
 **복원**:
 
 ```bash
-docker stop dscore.ttc.playwright
-docker run --rm -v dscore-data:/data -v $PWD:/backup busybox \
-  tar xzf /backup/dscore-data-YYYYMMDD.tar.gz -C /
-docker start dscore.ttc.playwright
+docker stop dscore.ttc.playwright || true
+docker rm  dscore.ttc.playwright || true
+
+cd playwright-allinone
+./restore-volume.sh dscore-data-20260427-120000.tar.gz
+# 기존 볼륨이 있으면 거절 — wipe 후 복구하려면 --fresh 추가:
+# ./restore-volume.sh --fresh dscore-data-20260427-120000.tar.gz
+
+# 복구 후 docker run 으로 재기동 (Step 2 동일 옵션 + AGENT_NAME)
 ```
 
-**업그레이드** (새 tar.gz 를 받은 경우):
+#### 폐쇄망 반입 (image + volume 쌍)
+
+운영 누적 지식이 있는 환경 (KB 문서, 챗봇 대화 이력 등) 을 폐쇄망으로 옮길 때:
+
+| 머신 | 단계 | 산출 / 입력 |
+| --- | --- | --- |
+| 빌드/온라인 | `./build.sh` | `dscore.ttc.playwright-YYYYMMDD-HHMMSS.tar.gz` (image) |
+| 빌드/온라인 | `./backup-volume.sh` | `dscore-data-YYYYMMDD-HHMMSS.tar.gz` (volume) |
+| → 반입 | 두 파일 모두 폐쇄망 머신으로 (USB / SCP / artifact) | |
+| 폐쇄망 | `docker load -i dscore.ttc.playwright-*.tar.gz` | image 등록 |
+| 폐쇄망 | `./restore-volume.sh dscore-data-*.tar.gz` | volume 복구 |
+| 폐쇄망 | `docker run -d ...` (Step 2 옵션) | 컨테이너 기동, 누적 상태로 즉시 운영 |
+
+엔트리포인트가 `/data/.app_provisioned` 마커 발견 시 provision 단계 skip — 기존 KB / Jenkins
+job / 챗봇 그대로 복구 시작. 신규 image 코드 (chatflow YAML 변경 등) 가 반영되려면 별도
+재import 필요 (자동화 미지원, 운영자 수동 작업).
+
+#### Image 단독 반입 (KB seed 자동 업로드 — B 보조)
+
+volume 백업 없이 image 만 반입한 경우에도 빈 KB 가 아닌 사내 baseline 문서로 시작 가능:
+`provision.sh` 가 첫 부팅 시 image baked-in `/opt/seed/kb-docs/` (= 빌드 시점의
+[`examples/test-planning-samples/`](examples/test-planning-samples/)) 를 자동으로 두 KB
+에 업로드 + 인덱싱. 운영자는 GUI 로 추가 업로드만 진행하면 됨.
+
+#### `--fresh` 의미 명확화
+
+- `build.sh --redeploy --fresh`: **개발 / 트러블슈팅용**. dscore-data 볼륨까지 wipe →
+  KB / Jenkins job / 챗봇 이력 모두 폐기. 운영 반입에는 사용 금지.
+- `build.sh --redeploy` (without `--fresh`): 기존 볼륨 보존. provision.sh 가 마커
+  (`/data/.app_provisioned`) 발견 시 KB / chatflow 재생성 skip — 신 image 의 코드 변경
+  (예: chatflow YAML 갱신) 은 자동 반영 안 됨. 명시적 재import 필요.
+
+#### 업그레이드
 
 ```bash
+# 누적 데이터 백업 먼저 (반드시!)
+./backup-volume.sh
+
+# 컨테이너 정지 + 새 image 로드
 docker stop dscore.ttc.playwright
 docker rm dscore.ttc.playwright
 docker load -i dscore.ttc.playwright-new.tar.gz
-# Step 2 의 docker run 과 동일 옵션으로 재기동
-# Step 3 의 agent-setup 재실행
+
+# 기존 볼륨 그대로 사용해 재기동 (Step 2 docker run 옵션)
+# 새 image 의 코드 변경 (예: chatflow YAML) 반영이 필요하면 manual re-import
+# 또는 --fresh 후 ./restore-volume.sh 로 부분 복구 (KB 만 옮겨오는 식 — 별도 절차).
 ```
 
 호스트 `~/.dscore.ttc.playwright-agent` 는 백업 불필요 — agent-setup 재실행으로 복구됨.
@@ -1062,7 +1114,9 @@ Sprint 5 까지 chat 모드는 "best-effort 의미 시연" 으로 위치 (결정
 | Workspace default-model | LLM=`gemma4:26b`, embedding=위와 동일 | KB high_quality 생성 전제 |
 | Knowledge Base #1 | `kb_project_info` | spec / 기획서 / API 문서. retrieval #1 대상 |
 | Knowledge Base #2 | `kb_test_theory` | 테스트 설계 기법 / 회귀 정책. retrieval #2 대상 |
+| **KB seed 문서 자동 업로드** | image baked-in `/opt/seed/kb-docs/` | image 단독 반입 시에도 비어 있지 않은 KB 시작 가능. 멱등 (이미 존재하면 skip) |
 | Dify 앱 | `Test Planning Brain` (advanced-chat) | retrieval ×2 → LLM (gemma4:26b) → answer |
+| Dify 공개 chat URL | 두 앱 모두 `prompt_public:true` 활성화 | `http://localhost:18081/chat/<code>` 즉시 접근 |
 | Jenkins credential | `dify-test-planning-api-token` | API key 선등록 (사용처는 후속 자동화 트랙) |
 
 #### KB 문서 업로드 (Dify console GUI)

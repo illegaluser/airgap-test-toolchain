@@ -572,6 +572,109 @@ if [ "$DIFY_LOGGED_IN" = "true" ]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
+# 2-3i. KB seed 문서 자동 업로드 — image baked-in `/opt/seed/kb-docs/` 에서
+# Test Planning RAG 트랙 두 KB 로 문서 업로드 + 인덱싱.
+#
+# 폴더 구조 (image build 시 examples/test-planning-samples/ → /opt/seed/kb-docs/):
+#   - spec.md, feature_login.md, api.csv  → kb_project_info
+#   - test_theory_*.md                     → kb_test_theory
+#   - 그 외 prefix 가 'test_theory' 가 아닌 파일은 모두 kb_project_info 로 분류
+#
+# 멱등: 동일 이름 문서가 이미 있으면 skip. 신규 부팅 시 자동 업로드, 사용자가
+# Dify GUI 로 추가 업로드한 문서는 영향 없음.
+#
+# 폐쇄망 반입 의의: image 단독으로도 비어 있지 않은 KB 로 시작 가능. volume
+# restore 가 더 우선이지만, image 만 반입한 경우에도 사내 정리된 baseline 문서
+# 만으로 즉시 챗봇 동작 검증 가능.
+# ────────────────────────────────────────────────────────────────────────────
+OFFLINE_KB_SEED_DIR="${OFFLINE_KB_SEED_DIR:-/opt/seed/kb-docs}"
+
+dify_seed_kb_documents() {
+  local kb_id="$1"
+  local kb_name="$2"
+  local seed_dir="$3"
+  local prefix_filter="$4"   # ""=모든 파일, "test_theory"=test_theory* 만
+
+  if [ ! -d "$seed_dir" ]; then
+    log "  KB seed 디렉토리 부재 ($seed_dir) — skip"
+    return 0
+  fi
+
+  # 기존 문서 목록 (멱등)
+  local existing_names
+  existing_names=$(curl -sS -b "$DIFY_COOKIES" \
+      "${DIFY_URL}/console/api/datasets/${kb_id}/documents?page=1&limit=200" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" 2>/dev/null \
+    | $PY -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    names = [x.get('name','') for x in d.get('data',[])]
+    print('\n'.join(names))
+except Exception:
+    pass
+" 2>/dev/null || echo "")
+
+  local uploaded=0 skipped=0
+  for f in "$seed_dir"/*; do
+    [ -f "$f" ] || continue
+    local fname; fname=$(basename "$f")
+    # README.md 는 sample 사용법 안내라 KB 인덱싱 대상에서 제외
+    [ "$fname" = "README.md" ] && continue
+    # prefix filter
+    if [ -n "$prefix_filter" ]; then
+      case "$fname" in
+        ${prefix_filter}*) ;;
+        *) continue ;;
+      esac
+    else
+      # prefix_filter 가 비어 있으면 'test_theory' 로 시작하는 것은 제외 (다른 KB 의 것)
+      case "$fname" in
+        test_theory*) continue ;;
+      esac
+    fi
+
+    # 이미 존재하면 skip
+    if echo "$existing_names" | grep -qxF "$fname"; then
+      skipped=$((skipped+1))
+      continue
+    fi
+
+    # /v1/datasets/{id}/document/create-by-file 는 multipart/form-data + dataset API key 필요.
+    # 그러나 console API 의 동일 경로 (/console/api/datasets/{id}/document/create-by-file)
+    # 는 cookie 인증으로 동작. console 사용 (provision 환경 일관성).
+    local indexing_payload
+    indexing_payload='{
+      "indexing_technique": "high_quality",
+      "process_rule": {
+        "rules": {"pre_processing_rules": [{"id": "remove_extra_spaces", "enabled": true}], "segmentation": {"separator": "\n\n", "max_tokens": 500, "chunk_overlap": 50}},
+        "mode": "custom"
+      }
+    }'
+    local up_resp
+    up_resp=$(curl -sS -w $'\nHTTP:%{http_code}' -b "$DIFY_COOKIES" \
+        -X POST "${DIFY_URL}/console/api/datasets/${kb_id}/document/create-by-file" \
+        -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+        -F "data=${indexing_payload};type=text/plain" \
+        -F "file=@${f}" 2>&1 || echo "HTTP:000")
+    if echo "$up_resp" | grep -qE 'HTTP:(200|201)'; then
+      uploaded=$((uploaded+1))
+      log "    + uploaded: $fname"
+    else
+      warn "    ! upload 실패: $fname — $(echo "$up_resp" | head -c 200)"
+    fi
+  done
+  ok "  KB '$kb_name' seed 완료 — uploaded=$uploaded, skipped(이미 존재)=$skipped"
+}
+
+if [ "$DIFY_LOGGED_IN" = "true" ] && [ -d "$OFFLINE_KB_SEED_DIR" ] \
+   && [ -n "$KB_PROJECT_INFO_ID" ] && [ -n "$KB_TEST_THEORY_ID" ]; then
+  step "=== 2-3i. KB seed 문서 자동 업로드 (B 보조 — image baked-in) ==="
+  dify_seed_kb_documents "$KB_PROJECT_INFO_ID" "kb_project_info" "$OFFLINE_KB_SEED_DIR" ""
+  dify_seed_kb_documents "$KB_TEST_THEORY_ID" "kb_test_theory" "$OFFLINE_KB_SEED_DIR" "test_theory"
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
 # 2-4. Chatflow import 헬퍼 함수 — 복수 chatflow 처리 (T-01a 리팩터링)
 #
 # $1 = source YAML 절대 경로

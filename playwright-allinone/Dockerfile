@@ -236,6 +236,9 @@ COPY zero_touch_qa                   /opt/zero_touch_qa
 COPY test/fixtures                   /opt/seed/fixtures
 COPY dify-chatflow.yaml              /opt/dify-chatflow.yaml
 COPY test-planning-chatflow.yaml     /opt/test-planning-chatflow.yaml
+# Test Planning RAG 트랙의 KB seed 문서. provision.sh 가 첫 부팅 시 자동으로 두 KB 에 업로드.
+# 폐쇄망 반입 시 image 단독으로도 비어 있지 않은 KB 로 시작 가능 (volume restore 미수행 시).
+COPY examples/test-planning-samples  /opt/seed/kb-docs
 COPY ZeroTouch-QA.jenkinsPipeline /opt/ZeroTouch-QA.jenkinsPipeline
 COPY jenkins-init                    /opt/jenkins-init
 
