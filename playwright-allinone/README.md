@@ -14,14 +14,18 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 | 완료 마커 | `/data/.app_provisioned` 생성 시 재기동부터 provision 생략 |
 | 최근 실측 검증 | Jenkins `http://localhost:18080/login` → `200`, Dify `http://localhost:18081/` → `307` |
 | Action DSL 런타임 | 14대 DSL (`navigate`, `click`, `fill`, `press`, `select`, `check`, `hover`, `wait`, `verify`, `upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 실행기 구현 완료 |
-| 로컬 회귀 테스트 | Sprint 2 단위 16건 + Sprint 3 통합 31건 + 9대 native 회귀 30건 = 총 77건 PASS |
+| 로컬 회귀 테스트 | integration/단위 56건 + 9대 native 회귀 30건 = 총 86건 PASS |
 | Jenkins 회귀 단계 | Stage `2.4. pytest 회귀 (Sprint 2/3)` 에서 integration/native pytest 를 분리 실행하고 JUnit XML 보존 |
+| Sprint 4 운영 기반 | Jenkins agent preflight, Dify credential/model health probe, 30일 artifact retention, Dify 호출 metric(`llm_calls.jsonl`) 계측, Zero Touch QA Report 운영 지표 섹션 구현 |
 
 추가 메모:
 - `dify-chatflow.yaml`, `architecture.md`, `zero_touch_qa` 런타임은 v4.1 Action DSL 14대 확장 계약을 반영한다.
 - 신규 5종 액션(`upload`, `drag`, `scroll`, `mock_status`, `mock_data`)은 fixture 기반 pytest 로 잠겨 있다.
+- mock route 는 `TARGET_URL` / `MOCK_BLOCKED_HOSTS` 기준으로 넓은 운영 host intercept 를 차단하며, 운영 우회는 `MOCK_OVERRIDE=1` 일 때만 허용한다.
+- Dify Planner/Healer 호출은 `artifacts/llm_calls.jsonl` 에 latency, timeout, retry, status, answer 길이를 JSON Lines 로 기록한다.
+- `index.html` 리포트는 metric 파일이 있을 때 운영 지표 섹션에 LLM SLA / Planner / Healer / healing / flake / pytest 요약과 원본 metric 링크를 표시한다.
 - Convert 경로(`zero_touch_qa/converter.py`)의 14대 확장은 아직 Sprint 4 범위다. 현재 Convert 문서/아키텍처의 9대 제한 설명은 의도된 잔여 작업이다.
-- 실 Dify Brain + 실 Mac/WSL agent + 운영 도메인 E2E 검증, 산출물 retention/추세 관리는 Sprint 4 범위다.
+- 실 Dify Brain + 실 Mac/WSL agent + 운영 도메인 E2E 검증, Convert 14대 확장, 리포트 운영 지표 섹션/추세 관리는 Sprint 4 잔여 범위다.
 
 로컬 회귀 확인:
 
