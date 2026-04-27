@@ -3,8 +3,8 @@
 #
 # 수동 import: Dify 콘솔 → 스튜디오 → 앱 만들기 → DSL 파일에서 가져오기
 #
-# 모델: 호스트 Ollama 모드 기본 가정 — `gemma4:e4b` 로 고정
-#   호스트 머신에 `gemma4:e4b` 가 설치되어 있어야 하고,
+# 모델: 호스트 Ollama 모드 기본 가정 — `gemma4:26b` 로 고정
+#   호스트 머신에 `gemma4:26b` 가 설치되어 있어야 하고,
 #   Dify 콘솔의 Ollama 공급자에도 동일 Model Name 으로 등록되어 있어야 한다.
 #   다른 모델을 쓰려면 아래 Planner/Healer LLM 노드의 `name:` 을 일괄 교체한다.
 #
@@ -168,6 +168,14 @@ workflow:
               required: false
               type: paragraph
               variable: failed_step
+            # B: executor 의 strategy chain 시도 결과 (JSON 배열). healer 가 "selector
+            # 만 바꿔도 같은 timeout" 같은 정보를 받아 의미적 mutation 가능.
+            - label: strategy_trace
+              max_length: 4000
+              options: []
+              required: false
+              type: paragraph
+              variable: strategy_trace
         height: 360
         id: start
         position:
@@ -230,54 +238,47 @@ workflow:
           model:
             completion_params:
               temperature: 0.1
-              max_tokens: 1024
+              max_tokens: 4096
             mode: chat
-            name: "gemma4:e4b"
+            name: "gemma4:26b"
             provider: ollama
           prompt_template:
             - id: planner-system
               role: system
               text: |
-                당신은 Playwright 기반의 E2E 테스트 자동화 아키텍트입니다. 
-                사용자의 자연어 요구사항(SRS)을 분석하여, 브라우저를 제어할 수 있는 [14대 표준 액션] 기반의 JSON 시나리오 배열을 작성하십시오.
+                당신은 SRS(자연어 요구사항)를 Playwright 기반 [14대 표준 액션] JSON 배열로 변환하는 변환기입니다.
+                JSON 배열만 출력합니다. 그 외 텍스트는 출력하지 않습니다.
 
-                [반드시 지킬 것]
-                - step 1 은 항상 navigate 입니다:
-                  { "step": 1, "action": "navigate", "target": "", "value": "<target_url>", "description": "대상 페이지 로드" }
-                - target_url 값을 step 1 value 에 그대로 넣습니다.
-                - JSON 배열([...])만 출력합니다. 마크다운, 부연 설명, `<think>` 류 내부 추론 텍스트는 금지합니다.
-                - 각 step 은 `step`, `action`, `target`, `value`, `description`, `fallback_targets` 를 포함합니다.
-                - `condition` 은 verify 에서만 선택적으로 사용합니다.
-                - `action_alternatives` 는 press Enter/Escape 처럼 대체 액션이 명백할 때만 선택적으로 넣습니다.
+                [작성 규칙 — 짧게]
+                - step 1 은 navigate, value=target_url, target="".
+                - SRS 의 N 개 항목은 step 2..N+1 에 1:1 순서대로 매핑. 압축/생략/추가/순서변경 금지.
+                - 각 step 은 dict, 키: step, action, target, value, description, fallback_targets. (verify 만 condition 추가 가능)
+                - action 은 14개 중 하나의 소문자 문자열: navigate, click, fill, press, select, check, hover, wait, verify, upload, drag, scroll, mock_status, mock_data
+                - verify.condition: visible, hidden, disabled, enabled, checked, value, text, contains_text 중 택1 (불명확하면 "").
+                - drag: target=출발 selector, value=도착 selector.
+                - mock_data: value=JSON body 문자열. mock_status: value=숫자 문자열.
+                - press: target=입력 selector, value=키 이름 (예: Enter).
+                - scroll: value="into_view".
 
-                [14대 표준 액션]
-                - navigate, click, fill, press, select, check, hover, wait, verify, upload, drag, scroll, mock_status, mock_data
-                - verify: 텍스트 검증이면 value 사용, 상태 검증이면 condition=`visible|hidden|disabled|enabled|checked|value`
-                - scroll: value 는 `"into_view"` 고정
-                - mock_status / mock_data: target 은 API URL 패턴이며 반드시 실제 API 호출보다 먼저 배치합니다.
-
-                [작성 규칙]
-                - `role+name`, `text=`, `label=`, `placeholder=` 같은 시맨틱 로케이터를 우선 사용합니다.
-                - name 없는 단독 role (`role=button`, `role=link`) 은 금지합니다.
-                - 복잡한 CSS/XPath 추측은 금지합니다.
-                - `wait` 는 최소화하고 상태 확인은 `verify` 로 표현합니다.
-                - `press` 의 키 이름은 target 이 아니라 value 에 넣습니다.
-                - `verify` 에서 value 가 비어 있으면 condition 을 함께 넣습니다.
-                - `api_docs`가 제공되면 네트워크 모킹 대상 URL 패턴을 정할 때 참고하되, 장문 설명을 그대로 복사하지 말고 필요한 엔드포인트만 반영합니다.
-                - "첫 번째 검색결과 링크 클릭" 같은 동적 항목 클릭은
-                  `target: "main a[href]:visible"` 와
-                  `fallback_targets: ["article a[href]:visible", "[id*='result' i] a[href]:visible", "[class*='result' i] a[href]:visible"]`
-                  를 우선 사용합니다.
-
-                [✅ 복합 시나리오 예시 (네트워크 모킹 및 검증)]
-                입력: "프로필 저장 API에서 500 에러 발생 시 에러 팝업 노출 확인"
+                [✅ 완성 예시 — SRS 4 항목 → step 5 개]
+                target_url: https://example.com/profile
+                SRS:
+                1) 저장 API 가 500 에러를 반환하도록 모킹한다.
+                2) 저장 버튼을 클릭한다.
+                3) 에러 팝업이 표시되는지 확인한다.
+                4) 1초 대기한다.
                 출력:
                 [
                   {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/profile", "description": "대상 페이지 로드", "fallback_targets": []},
-                  {"step": 2, "action": "mock_status", "target": "**/api/profile", "value": "500", "description": "저장 API 500 에러 모킹", "fallback_targets": []},
-                  {"step": 3, "action": "click", "target": "role=button, name=저장", "value": "", "description": "저장 버튼 클릭", "fallback_targets": ["text=저장", "[type='submit']"]},
-                  {"step": 4, "action": "verify", "target": "text=저장에 실패했습니다", "value": "", "condition": "visible", "description": "에러 팝업 노출 검증", "fallback_targets": ["role=alert", "text=실패"]}
+                  {"step": 2, "action": "mock_status", "target": "**/api/profile", "value": "500", "description": "저장 API 500 모킹", "fallback_targets": []},
+                  {"step": 3, "action": "click", "target": "role=button, name=저장", "value": "", "description": "저장 버튼 클릭", "fallback_targets": ["text=저장"]},
+                  {"step": 4, "action": "verify", "target": "role=alert", "value": "", "condition": "visible", "description": "에러 팝업 표시 확인", "fallback_targets": ["text=실패"]},
+                  {"step": 5, "action": "wait", "target": "", "value": "1000", "description": "1초 대기", "fallback_targets": []}
                 ]
+
+                [로케이터 팁]
+                - `role+name`, `text=`, `label=`, `placeholder=` 같은 시맨틱 우선.
+                - name 없는 단독 role (`role=button`) 금지. 복잡한 CSS/XPath 추측 금지.
             - id: planner-user
               role: user
               text: "대상 URL: {{#start.target_url#}}\n요구사항: {{#start.srs_text#}}\nAPI 문서(선택): {{#start.api_docs#}}"
@@ -320,7 +321,7 @@ workflow:
               temperature: 0.1
               max_tokens: 768
             mode: chat
-            name: "gemma4:e4b"
+            name: "gemma4:26b"
             provider: ollama
           prompt_template:
             - id: healer-system
@@ -343,20 +344,32 @@ workflow:
                 [로케이터 작성 원칙]:
                 - DOM을 분석할 때 복잡한 CSS/XPath 계층 구조보다, 변하지 않는 텍스트(`text=로그인`)나 시맨틱 속성(`role=button, name=확인`, `[placeholder="검색"]`)을 최우선으로 제안하십시오.
 
+                [전략 시도 흔적 (strategy_trace) 활용]:
+                - executor 가 이미 multi-strategy 로 시도한 결과가 strategy_trace 에 들어옵니다.
+                - 같은 selector/value 로 또 다른 mutation 을 시도해도 같은 실패가 반복될 수 있습니다.
+                - strategy_trace 의 모든 시도가 같은 사유로 실패했다면, target 교체만으로는 부족할
+                  수 있으니 value/condition 변경을 우선 고려하십시오.
+                  예: select 액션에서 value="ko" 가 모든 매칭 전략 (positional/value=/label=) 에서
+                      실패했다면, value 를 옵션의 visible label (예: "한국어") 로 mutate 해 보십시오.
+
                 [출력 형식]:
                 - 순수 JSON 객체({...}) 형식으로만 출력하십시오. 부연 설명 금지.
-                - 반드시 "target", "value", "fallback_targets" 세 개의 키를 모두 포함하십시오.
-                - "value" 키는 목적지(drag)나 입력값이 변경될 필요가 있을 때만 값을 넣고, 그 외에는 빈 문자열("")을 넣으십시오.
+                - 다음 키 중 mutate 할 것만 포함: "target", "value", "condition", "fallback_targets".
+                - action 종류 자체는 절대 변경하지 마십시오 (drag→click 같은 의미 변경 금지).
+                - 변경하지 않을 키는 응답에 포함하지 마십시오.
 
                 [✅ 예시 (click 액션 실패 치유)]
-                {"target": "role=button, name=Submit", "value": "", "fallback_targets": ["text=Submit", "#submit-btn"]}
+                {"target": "role=button, name=Submit", "fallback_targets": ["text=Submit", "#submit-btn"]}
+
+                [✅ 예시 (select value 매핑 미스매치 치유 — strategy_trace 가 모두 실패한 케이스)]
+                {"value": "한국어"}
 
                 [엄수 사항]:
                 - ⚠️ <think>, <thinking>, <reasoning> 등의 내부 추론 블록을 절대 출력하지 마십시오.
                   바로 JSON 객체만 응답하십시오.
             - id: healer-user
               role: user
-              text: "에러: {{#start.error#}}\n\n실패한 스텝:\n{{#start.failed_step#}}\n\nDOM 스냅샷:\n{{#start.dom#}}"
+              text: "에러: {{#start.error#}}\n\n실패한 스텝:\n{{#start.failed_step#}}\n\n시도 흔적 (strategy_trace):\n{{#start.strategy_trace#}}\n\nDOM 스냅샷:\n{{#start.dom#}}"
           selected: false
           title: Healer
           type: llm

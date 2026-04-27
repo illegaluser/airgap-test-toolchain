@@ -76,13 +76,14 @@ def test_normalize_mock_body_accepts_dict_and_json_string(tmp_path: Path):
     assert executor._normalize_mock_body("plain-text") == "plain-text"
 
 
-def test_validate_scenario_rejects_unknown_verify_condition():
+def test_validate_scenario_demotes_unknown_verify_condition():
+    """LLM 비결정성 대응: 화이트리스트 밖 condition 은 reject 대신 ""(default) 로 강등."""
     scenario = [
         {"step": 1, "action": "navigate", "value": "https://example.com"},
         {"step": 2, "action": "verify", "target": "#x", "condition": "exists"},
     ]
-    with pytest.raises(ScenarioValidationError, match="condition"):
-        _validate_scenario(scenario)
+    _validate_scenario(scenario)
+    assert scenario[1]["condition"] == ""
 
 
 def test_validate_scenario_accepts_extended_verify_conditions():

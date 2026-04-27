@@ -19,7 +19,9 @@ def extract_json_safely(text: str):
     """
     original = text
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    cleaned = re.sub(r"<think>.*", "", cleaned, flags=re.S)
+    # 닫힘 태그가 없는 비대칭 <think> 는 태그만 제거 — 본문(개별 JSON object 라인)을 보존.
+    # 작은 LLM 이 <think> 만 열고 그 안에 분석 + step JSON 을 함께 쏟는 케이스 대응.
+    cleaned = re.sub(r"</?think>", "", cleaned)
     cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
     cleaned = re.sub(r"//.*?\n|/\*.*?\*/", "", cleaned, flags=re.S)
 

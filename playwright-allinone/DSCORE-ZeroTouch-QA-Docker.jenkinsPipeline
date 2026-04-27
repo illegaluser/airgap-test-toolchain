@@ -35,13 +35,27 @@ pipeline {
         )
         string(
             name: 'TARGET_URL',
-            defaultValue: 'https://www.google.com',
-            description: '테스트 대상 URL'
+            defaultValue: 'http://localhost:18081/fixtures/full_dsl.html',
+            description: '테스트 대상 URL (기본값: 14대 DSL fixture)'
         )
         text(
             name: 'SRS_TEXT',
-            defaultValue: '검색창에 DSCORE 입력 후 엔터',
-            description: '[Chat] 자연어 요구사항'
+            defaultValue: '''다음 시나리오를 순서대로 실행하라:
+1) primary 라벨 버튼에 마우스를 호버한 뒤 클릭한다.
+2) status 영역 텍스트가 "clicked" 인지 검증한다.
+3) 검색 입력란(id=search-input)에 "DSCORE" 를 입력한다.
+4) 엔터 키를 눌러 제출한다.
+5) echo 영역 텍스트가 "submitted:DSCORE" 인지 검증한다.
+6) 언어 드롭다운(id=lang)에서 "ko" 를 선택한다.
+7) 동의 체크박스(id=agree)를 체크한다.
+8) 파일 입력란(id=file-input)에 임의 텍스트 파일을 업로드한다.
+9) CARD 항목(id=card)을 dst-zone(id=dst-zone)으로 드래그 앤 드롭한다.
+10) https://api.example.test/api/list 응답을 {"items":[]} 빈 배열로 모킹한다.
+11) load 버튼(id=load-btn)을 클릭하고 list(id=list)가 비어있는지 검증한다.
+12) https://api.example.test/api/list 응답을 HTTP 500 상태로 모킹한다.
+13) 페이지 하단의 footer(id=footer)까지 스크롤하여 화면에 보이는지 검증한다.
+14) 1초간 대기한다.''',
+            description: '[Chat] 자연어 요구사항 (기본값: 14대 액션 통합 시연)'
         )
         text(
             name: 'API_DOCS',
@@ -363,6 +377,11 @@ PY
 
                     BROWSER_FLAG="${params.HEADLESS ? '--headless' : '--headed'}"
 
+                    # 모든 모드 공통: executor 의 upload action default fallback 더미.
+                    # LLM 이 placeholder file path 를 emit 해도 결정적으로 PASS 가능.
+                    mkdir -p "\$ARTIFACTS_DIR"
+                    printf 'ZTQA upload sample\\n' > "\$ARTIFACTS_DIR/upload_sample.txt"
+
                     case "${params.RUN_MODE}" in
                         chat)
                             echo "[Engine] Chat 모드"
@@ -377,8 +396,16 @@ PY
                             python3 -m zero_touch_qa --mode convert --file '${AGENT_HOME}/upload.py' \$BROWSER_FLAG
                             ;;
                         execute)
-                            echo "[Engine] Execute 모드"
-                            python3 -m zero_touch_qa --mode execute --scenario '${AGENT_HOME}/upload.json' \$BROWSER_FLAG
+                            # DOC_FILE 미업로드 / 빈 파일 / invalid JSON 인 경우 14대 액션 통합 시연
+                            # default 시나리오 fallback. LLM 비결정성을 우회한 결정적 검증 경로.
+                            SCENARIO='${AGENT_HOME}/upload.json'
+                            if ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d, list) and d" "\$SCENARIO" 2>/dev/null; then
+                                SCENARIO="\${SCRIPTS_HOME}/test/fixtures/scenario_14.json"
+                                echo "[Engine] Execute 모드 — DOC_FILE 누락/무효, default 14대 시나리오 사용: \$SCENARIO"
+                            else
+                                echo "[Engine] Execute 모드 — 업로드된 시나리오: \$SCENARIO"
+                            fi
+                            python3 -m zero_touch_qa --mode execute --scenario "\$SCENARIO" \$BROWSER_FLAG
                             ;;
                     esac
                 """

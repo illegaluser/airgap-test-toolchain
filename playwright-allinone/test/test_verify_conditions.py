@@ -83,10 +83,11 @@ def test_verify_blank_condition_with_value_means_contains(make_executor, run_sce
     assert [r.status for r in results] == ["PASS", "PASS"]
 
 
-def test_verify_unknown_condition_is_rejected_at_validation():
+def test_verify_unknown_condition_is_demoted_at_validation():
+    """화이트리스트 밖 condition 은 reject 대신 ""(default fallback) 로 강등."""
     bad = [
         navigate("file:///x", step=1),
         verify("#x", step=2, condition="exists"),
     ]
-    with pytest.raises(ScenarioValidationError, match="condition"):
-        _validate_scenario(bad)
+    _validate_scenario(bad)
+    assert bad[1]["condition"] == ""

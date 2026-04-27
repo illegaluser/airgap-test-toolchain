@@ -97,6 +97,11 @@ def main():
             "value": target_url,
             "description": "대상 페이지 로드 (엔진 자동 보강)",
         })
+        # prepend 후 step 번호 1..N 으로 재정렬 — _validate_scenario 가 수행하는
+        # renumber 가 prepend 이전에 끝나므로, 여기서도 동일 정책을 다시 적용해
+        # 리포트에 "Step 1 navigate, Step 1 hover" 같이 중복 번호가 노출되지 않게 한다.
+        for idx, st in enumerate(scenario):
+            st["step"] = idx + 1
 
     # 원본 시나리오 저장
     save_scenario(scenario, config.artifacts_dir)
@@ -203,6 +208,11 @@ def _check_step_shape(i: int, step) -> dict:
             f"step[{i}] 가 dict 아님 (타입={type(step).__name__})"
         )
     action = step.get("action")
+    if isinstance(action, str):
+        normalized = action.strip().strip("`'\" ").lower()
+        if normalized != action:
+            step["action"] = normalized
+            action = normalized
     if action not in _VALID_ACTIONS:
         raise ScenarioValidationError(f"step[{i}].action 이 유효하지 않음: {action!r}")
     return step
@@ -254,10 +264,41 @@ def _check_action_specific(i: int, step: dict) -> None:
     if action == "verify":
         condition = str(step.get("condition", "")).strip().lower()
         if condition not in _VALID_VERIFY_CONDITIONS:
-            raise ScenarioValidationError(
-                f"step[{i}] action=verify 의 condition={condition!r} 이 허용 목록 밖. "
-                f"허용: {sorted(c for c in _VALID_VERIFY_CONDITIONS if c)}"
-            )
+            # LLM 이 화이트리스트 밖의 자유 condition (empty / present / exists 등) 을 emit 하면
+            # reject 하지 말고 빈 문자열로 강등 — executor 의 default fallback ("value 있으면
+            # contains, 없으면 visible") 으로 안전 매핑한다. 시나리오 전체 폐기를 막는다.
+            step["condition"] = ""
+
+
+def _sanitize_scenario(scenario):
+    """LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 반환.
+
+    Planner LLM 이 14스텝 중 1개 step 의 action 키를 누락하거나 typos 가 섞이는 케이스
+    가 빈번. 시나리오 전체를 reject + retry 하는 비용 (gemma4:26b 추론 ~30s+) 보다
+    invalid step 만 drop 하고 진행하는 게 결정적이고 빠르다. 단, drop 사유는 WARNING
+    으로 남겨 사용자가 추적 가능.
+
+    빈 시나리오는 그대로 반환 — _validate_scenario 가 reject 처리.
+    """
+    if not isinstance(scenario, list):
+        return scenario
+    keep = []
+    for i, st in enumerate(scenario):
+        if not isinstance(st, dict):
+            log.warning("[Sanitize] step[%d] 가 dict 아님 — drop: %r", i, st)
+            continue
+        action = st.get("action")
+        if not isinstance(action, str):
+            log.warning("[Sanitize] step[%d] action 누락/None — drop: %r", i, st)
+            continue
+        normalized = action.strip().strip("`'\" ").lower()
+        if normalized not in _VALID_ACTIONS:
+            log.warning("[Sanitize] step[%d] 미지원 action=%r — drop", i, action)
+            continue
+        keep.append(st)
+    if len(keep) != len(scenario):
+        log.warning("[Sanitize] %d/%d step 유지", len(keep), len(scenario))
+    return keep
 
 
 def _validate_scenario(scenario) -> None:
@@ -279,6 +320,9 @@ def _validate_scenario(scenario) -> None:
         step = _check_step_shape(i, raw_step)
         _check_target_value_contract(i, step)
         _check_action_specific(i, step)
+        # LLM 이 emit 한 step 번호는 비순차·누락이 잦다 (예: 1, 18). list 순서 자체가
+        # 진짜 ordering 이므로 1..N 으로 강제 정렬해 리포트 가독성을 보장한다.
+        step["step"] = i + 1
 
 
 def _prepare_scenario(
@@ -353,6 +397,9 @@ def _prepare_scenario(
                 api_docs=api_docs,
                 file_id=file_id,
             )
+            # LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 검증.
+            # 정상 step 만 ≥1개 남으면 retry 비용을 아끼고 그대로 진행.
+            scenario = _sanitize_scenario(scenario)
             _validate_scenario(scenario)
             log.info(
                 "[Dify] 시나리오 수신 (%d스텝) — attempt %d/3 성공",

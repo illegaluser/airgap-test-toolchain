@@ -1099,3 +1099,128 @@ Jenkins 판정 방식:
 - **Sprint 2 (구현 완료)**: Python Executor(`executor.py`)에 신규 5종 DSL(`upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 매핑 로직 구현 + `regression_generator.py` 14대 확장 + execute 모드 구조 검증 일관화 + mock 라우트 healing 경로 신설 완료.
 - **Sprint 3 (구현 완료 — 2026-04-27)**: §7 의 14건 작업 모두 닫힘. 14대 DSL fixture 기반 pytest (Sprint 2 16 + Sprint 3 31 + native 30 = 77 PASS), mock_* UI 예외처리, 3-Flow 통합, regression_test.py subprocess 실행 검증, airgap 가드, Jenkins Stage 2.4 추가까지 완료.
 - **Sprint 4 (진행 예정)**: §8 의 4A/4B/4C 게이트로 운영 기반/계측, 실 Dify + agent E2E, healing 실효성, Convert 14대 확장, 운영 SLA / archiveArtifacts / 매뉴얼까지 닫고 v4.1 운영 출시 선언.
+- **Sprint 5 (구현 완료 — 2026-04-27)**: chat/execute 듀얼 안정화 + 자가 치유 견고화. §10 참조.
+
+## 10. Sprint 5 — chat/execute 듀얼 안정화 + 자가 치유 견고화 (2026-04-27)
+
+### 10.1 배경
+
+Sprint 4 자동화 회귀로 호스트 하이브리드 실 Dify E2E 를 돌리던 중, **chat 모드의 비결정적 실패** 가 반복되었다. 동일 SRS 로 빌드를 여러 번 트리거해도 매번 다른 시나리오가 생성되고, 그 중 일부 trial 은 다음 클래스의 실패를 만들었다:
+
+1. Planner 응답에 닫힘 없는 `<think>` 만 있어 본문이 통째로 제거됨 (utils.py 정규식 결함).
+2. Planner 응답이 `max_tokens=1024` 한도에서 잘려 14 step 중 9~10 step 까지만 emit.
+3. Planner 응답이 `'`navigate`'` 처럼 백틱·markdown 으로 감싸져 action 화이트리스트 거절.
+4. 시나리오의 의미가 정상이어도 Executor 의 단일 매핑 강제 (`select_option(label=...)`) 로 `value="ko"` 같은 정상 입력이 timeout.
+5. Healer 가 호출돼도 selector 만 mutate 가능했기 때문에 **API 인자 매핑 미스매치 클래스의 버그를 못 고침**.
+
+이 5 가지 클래스가 동시에 노출되면서 Sprint 4 의 "실 Dify + agent E2E" 가 chat 모드에서 결정적으로 PASS 되지 못하는 상태였다. Sprint 5 는 이 결함들을 코드/프롬프트/배포 3 축에서 동시에 수정하고 chat·execute 두 모드를 분명히 분리한다.
+
+### 10.2 의사결정
+
+| 결정 | 선택 | 근거 |
+| --- | --- | --- |
+| 기본 모델 | `gemma4:e4b` → **`gemma4:26b`** | e4b 가 14 step 시나리오를 안정적으로 emit 못 함. 26b 는 추론 ~30s/call 이지만 출력 형식 일관성 ↑ |
+| chat 모드 default 입력 | `https://www.google.com` + 검색 SRS → **`http://localhost:18081/fixtures/full_dsl.html` + 14 항목 SRS** | 외부 봇 차단 의존 제거. 14대 액션 cover. airgap 호환 |
+| execute 모드 default 입력 | (없음, DOC_FILE 필수) → **`test/fixtures/scenario_14.json` fallback** | DOC_FILE 미업로드 시도 14 액션 결정적 검증 가능. LLM 우회 |
+| Planner 프롬프트 강도 | 더 strict 한 절대 금지 룰 + 자가점검 추가 시도 → **단순 8줄 + 1-shot 완성 예시** 로 회귀 | 강한 룰이 작은 LLM 의 attention 을 분산시켜 메타-추론을 본문에 출력하는 역효과를 실측 (build #13 — `action="`target` is source, `value` is destination?..."`) |
+| 자가 치유 구조 | Healer 만 → **A+B layered defense (executor multi-strategy + healer mutation surface 확장)** | LLM healer 권한이 selector 로 한정돼 API 매핑 버그 클래스를 못 고침. 결정적 회복은 코드, 의미적 회복은 LLM 으로 분리 |
+| chat 모드 첨부 섹션 | (모드 무관 노출 시도) → **chat 모드는 첨부 섹션 자체 미노출** | 자연어 SRS 는 첨부 파일이 아님. 진짜 파일 (doc/convert/execute) 일 때만 노출 |
+
+### 10.3 변경 사항
+
+#### 10.3.1 LLM 응답 처리 견고화 (`zero_touch_qa/utils.py`, `zero_touch_qa/__main__.py`)
+
+- 닫힘 없는 `<think>` 의 본문 보존: `re.sub(r"<think>.*", "", ...)` 가 응답 전체를 삭제하던 결함 제거. `</?think>` 태그만 strip 해 본문(개별 JSON object 라인) 보존.
+- action 정규화: `_check_step_shape` 에서 백틱/따옴표/공백 strip 후 lowercase.
+- unknown verify condition 강등: 화이트리스트 밖 condition 은 reject 대신 `""` (default fallback) 로 강등 — `executor` 의 default behavior ("값 있으면 contains, 없으면 visible") 로 안전 매핑.
+- step 번호 1..N renumber: validator 와 navigate auto-prepend 양쪽에서 동일 정책. LLM 이 비순차 번호 (예: 1, 18) 를 emit 해도 리포트는 1..N 연속.
+- `_sanitize_scenario` 신설: action 누락/None/typo 한 step 만 drop 하고 정상 step 으로 시나리오 진행. 빈 배열은 그대로 reject → retry.
+
+#### 10.3.2 Executor multi-strategy chain — A 단 (`zero_touch_qa/executor.py`)
+
+`_StrategyAttempt` dataclass + `self._latest_strategy_trace` 누적 + 4 액션 helper 신설:
+
+| 액션 | 전략 chain | post-condition |
+| --- | --- | --- |
+| `select` | positional → `value=` → `label=` | 실 selected.value 또는 option.text 가 기대값과 일치 |
+| `check` | native check/uncheck → click 토글 → JS `el.checked = v + change event` | `is_checked()` == 정규화된 desired 상태 |
+| `upload` | `artifacts/<value>` → `artifacts/<basename>` → `${SCRIPTS_HOME}/test/fixtures/<value>` → **default fallback `artifacts/upload_sample.txt`** | `input_value()` 가 basename 으로 끝남. 보안 가드(허용 루트) 통과 |
+| `fill` | `clear+fill` → `type(delay=20)` → JS `el.value=v + input/change event` | `input_value() == expected` |
+
+전략별 시도 결과는 `self._latest_strategy_trace: list[_StrategyAttempt]` 에 누적되어 Healer 호출 시 prompt context 로 주입.
+
+#### 10.3.3 Healer 권한 확장 + strategy_trace 주입 — B 단 (`zero_touch_qa/dify_client.py`, `zero_touch_qa/executor.py`, `dify-chatflow.yaml`)
+
+- `request_healing(strategy_trace=...)` 시그니처 확장. 두 호출 사이트 모두 trace 주입.
+- chatflow yaml `Start` 노드에 `strategy_trace` 변수 추가. healer-user 프롬프트 템플릿에 `{{#start.strategy_trace#}}` 블록 포함.
+- healer-system 프롬프트: mutation 권한을 `target` / `value` / `condition` / `fallback_targets` 4 키로 명시. **`action` 종류 변경은 금지** (drag→click 같은 의미 변경은 false PASS 폭탄). value/label 매핑 미스매치 시 value 자체를 mutate 하라는 hint 와 1-shot 예시 추가.
+- `step.update(...)` 시 화이트리스트 키만 적용해 false healing 의 폭탄 반경 제한.
+- post-condition gating: healed step 도 `_perform_action` 을 다시 호출 → strategy chain 의 post-check 가 자동으로 의미적 검증 수행.
+
+#### 10.3.4 Planner 프롬프트 단순화 (`dify-chatflow.yaml`)
+
+build #13 에서 ⛔/✅ 강조 + 자가점검 4 문항 + 메타-룰 추가 시 작은 LLM (gemma4:26b) 가 자기 사고 과정을 action 필드에 출력하는 역효과 실측. revert 하고 다음 형태로 단순화:
+
+```text
+JSON 배열만 출력합니다. 그 외 텍스트는 출력하지 않습니다.
+
+[작성 규칙 — 짧게]  (8 줄)
+[로케이터 팁]      (2 줄)
+[완성 예시]        (1-shot, SRS 4 항목 → step 5 개)
+```
+
+기존 두 개 이상 흩어져 있던 액션/규칙 섹션을 하나로 통합. prompt 길이 ~50% 감소. 모델 추론 안정성 ↑.
+
+#### 10.3.5 Fixture nginx 호스팅 + Pipeline default (`Dockerfile`, `nginx.conf`, `DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline`, `test/fixtures/scenario_14.json`)
+
+- `COPY test/fixtures /opt/seed/fixtures` (이미지 baked-in).
+- nginx `location /fixtures/ { alias /opt/seed/fixtures/; autoindex on; }` 추가 (기존 Dify reverse-proxy 와 충돌 없음).
+- Pipeline `TARGET_URL` 기본값 → `http://localhost:18081/fixtures/full_dsl.html`. `SRS_TEXT` 기본값 → 14 항목 자연어 시연.
+- Pipeline `RUN_MODE=execute` case fallback: `${AGENT_HOME}/upload.json` 가 valid JSON list 가 아니면 자동으로 `${SCRIPTS_HOME}/test/fixtures/scenario_14.json` 사용. DOC_FILE 미업로드/빈 파일/형식 깨짐 모두 흡수.
+- Pipeline 모든 모드 공통: `${ARTIFACTS_DIR}/upload_sample.txt` 더미 자동 생성 (executor 의 upload default fallback 이 참조).
+
+`scenario_14.json` 는 14 액션 1 회씩 정확히 cover 하는 결정적 시나리오 (LLM 우회 경로). `full_dsl.html` 의 `id=lang/agree/primary-btn/file-input/card/dst-zone/load-btn/footer/search-input` element 들과 1:1 매핑.
+
+#### 10.3.6 리포트 첨부 섹션 정리 (`zero_touch_qa/report.py`)
+
+`label_map` 에서 `chat` 키 제거. chat 모드는 자연어 SRS 가 입력이므로 "첨부 파일"이 존재하지 않음. doc/convert/execute 만 첨부 섹션 노출.
+
+### 10.4 검증 결과
+
+#### 10.4.1 pytest 회귀
+
+```text
+integration (test/, exclude native): 56 PASS / 0 FAIL — 17.51s
+native      (test/native/):           30 PASS / 0 FAIL — 8.78s
+total                                86 PASS / 0 FAIL
+```
+
+회귀 테스트 정책 갱신:
+
+- `test_validate_scenario_rejects_unknown_verify_condition` → `_demotes_unknown_verify_condition` 으로 정책 갱신 (reject → graceful demote).
+- `test_verify_unknown_condition_is_rejected_at_validation` → `_demoted_at_validation` 동일 갱신.
+
+#### 10.4.2 Jenkins 빌드
+
+| 빌드 | 모드 | 결과 | 비고 |
+| --- | --- | --- | --- |
+| #9 | execute | 14/14 PASS | default `scenario_14.json` (LLM 우회) |
+| #14 | chat | 12/12 PASS, HEAL 2 (selector mutation) | 단순화된 prompt + gemma4:26b. SRS 14 항목 중 11 항목을 LLM 이 emit. step 3/6 verify selector 잘못 emit → Healer 가 mutate → PASS |
+
+Build #5 (Sprint 5 시작 시점) → #14 의 진행: Step 7 select timeout 으로 cascade abort → 최종 12 step 모두 PASS, 2 건은 LLM healing 으로 회복.
+
+### 10.5 잔여 한계 (chat 모드)
+
+LLM 이 SRS 14 항목을 자율적으로 11 항목으로 압축한다 (mock_data + click + verify list 를 click 하나로 통합 등). 이는 의미적 통합으로, 강한 prompt 룰로 막으려 하면 build #13 처럼 모델 자체가 망가진다. **chat 모드는 best-effort 의미 시연**, **결정적 14 액션 검증은 execute 모드** 로 책임 분리한다 (build #9 14/14 가 그 보증).
+
+향후 Sprint 6 후보 (선택):
+
+- few-shot 예시를 SRS 길이별로 다양화하여 LLM 매핑 정확도 ↑.
+- Healer 가 missing step 을 추가 emit 가능하도록 mutation 권한 확장 (false healing 위험과 trade-off).
+- Planner 자체 검산 step (시나리오 emit → 다른 LLM 호출로 self-review) — 비용 trade-off 검토.
+
+### 10.6 산출물
+
+- 이미지: `dscore.ttc.playwright-20260427-103135.tar.gz` (gemma4:26b + fixture 호스팅 + A+B layered defense 적용).
+- 신규 파일: `test/fixtures/scenario_14.json`.
+- 변경 파일: `Dockerfile`, `nginx.conf`, `DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline`, `dify-chatflow.yaml`, `zero_touch_qa/{__main__,executor,dify_client,utils,report}.py`, `test/test_sprint2_runtime.py`, `test/test_verify_conditions.py`.

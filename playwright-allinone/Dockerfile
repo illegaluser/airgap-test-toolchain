@@ -233,6 +233,7 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY entrypoint.sh  /entrypoint.sh
 COPY provision.sh       /opt/provision.sh
 COPY zero_touch_qa                   /opt/zero_touch_qa
+COPY test/fixtures                   /opt/seed/fixtures
 COPY dify-chatflow.yaml              /opt/dify-chatflow.yaml
 COPY DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline /opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline
 COPY jenkins-init                    /opt/jenkins-init
