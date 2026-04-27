@@ -944,8 +944,12 @@ CI/스크립트 연동이 필요하면 UI 대신 `buildWithParameters` REST 로 
 
 ```bash
 EMPTY=/tmp/empty.txt; : > "$EMPTY"
+CRUMB_HEADER=$(curl -sS -u admin:password \
+  "http://localhost:18080/crumbIssuer/api/json" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["crumbRequestField"]+":"+d["crumb"])')
 
 curl -sS -u admin:password -X POST \
+  -H "$CRUMB_HEADER" \
   "http://localhost:18080/job/DSCORE-ZeroTouch-QA-Docker/buildWithParameters" \
   -F "RUN_MODE=chat" \
   -F "TARGET_URL=https://www.naver.com" \

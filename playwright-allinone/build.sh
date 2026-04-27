@@ -117,6 +117,7 @@ JENKINS_PLUGINS=(
   workflow-aggregator
   file-parameters
   htmlpublisher
+  junit
   plain-credentials
 )
 # Jenkins base 는 최신 LTS exact tag 로 고정한다.
@@ -161,12 +162,21 @@ log "[1/4] Jenkins 플러그인 준비"
 mkdir -p "$SCRIPT_DIR/jenkins-plugins"
 EXISTING_PLUGIN_COUNT=$(find "$SCRIPT_DIR/jenkins-plugins" \( -name '*.hpi' -o -name '*.jpi' \) 2>/dev/null | wc -l | tr -d ' ')
 
-if [ "${FORCE_PLUGIN_DOWNLOAD:-false}" != "true" ] && [ "$EXISTING_PLUGIN_COUNT" -gt 0 ]; then
+MISSING_REQUIRED_PLUGINS=()
+for p in "${JENKINS_PLUGINS[@]}"; do
+  if ! find "$SCRIPT_DIR/jenkins-plugins" -maxdepth 1 -type f \( -name "$p.hpi" -o -name "$p.jpi" \) 2>/dev/null | grep -q .; then
+    MISSING_REQUIRED_PLUGINS+=("$p")
+  fi
+done
+
+if [ "${FORCE_PLUGIN_DOWNLOAD:-false}" != "true" ] && [ "$EXISTING_PLUGIN_COUNT" -gt 0 ] && [ "${#MISSING_REQUIRED_PLUGINS[@]}" -eq 0 ]; then
   log "  기존 플러그인 $EXISTING_PLUGIN_COUNT 개 재사용 (다운로드 스킵)."
   log "  강제 재다운로드: FORCE_PLUGIN_DOWNLOAD=true ./build.sh"
 else
   if [ "$EXISTING_PLUGIN_COUNT" -eq 0 ]; then
     log "  jenkins-plugins/ 비어 있음 — 다운로드 시작 (인터넷 필요)"
+  elif [ "${#MISSING_REQUIRED_PLUGINS[@]}" -gt 0 ]; then
+    log "  필수 플러그인 누락: ${MISSING_REQUIRED_PLUGINS[*]} — 추가 다운로드"
   else
     log "  FORCE_PLUGIN_DOWNLOAD=true — 기존 $EXISTING_PLUGIN_COUNT 개 무시하고 재다운로드"
   fi
