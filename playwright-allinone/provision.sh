@@ -743,6 +743,27 @@ except Exception: print('')
   fi
   ok "  API Key 발급 완료 (앞 12자: ${api_key:0:12}...)"
 
+  # 6.5. 공개 chat URL 활성화 (prompt_public=true) — Dify Web UI 의 chat share URL.
+  # 활성화 시 응답에 `code` 가 발급되며 `${DIFY_URL}/chat/<code>` 로 익명 챗봇 접근 가능.
+  # 이 단계 없으면 chat URL 이 404 처리됨 (사용자가 GUI 에서 직접 토글하지 않은 상태).
+  local site_resp
+  site_resp=$(curl -sS -b "$DIFY_COOKIES" \
+      -X POST "${DIFY_URL}/console/api/apps/$app_id/site" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+      -d '{"prompt_public":true}' 2>&1 || echo '{}')
+  local site_code
+  site_code=$(echo "$site_resp" | $PY -c "
+import json,sys
+try: print(json.load(sys.stdin).get('code',''))
+except Exception: print('')
+" 2>/dev/null || echo "")
+  if [ -n "$site_code" ]; then
+    ok "  공개 chat URL 활성화 — ${DIFY_URL}/chat/${site_code}"
+  else
+    warn "  공개 chat URL 활성화 실패 — Dify console GUI 에서 수동 토글 필요"
+  fi
+
   # 7. Jenkins credential 등록 (upsert)
   local cred_xml="<org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl plugin=\"plain-credentials\">
   <scope>GLOBAL</scope>
