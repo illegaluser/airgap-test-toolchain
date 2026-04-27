@@ -37,6 +37,18 @@ log()  { printf '[mac-agent-setup] %s\n' "$*"; }
 err()  { printf '[mac-agent-setup] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[mac-agent-setup] WARN:  %s\n' "$*" >&2; }
 
+session_id_of() {
+  local pid="$1" sid
+  for key in sid sess pgid; do
+    sid=$(ps -p "$pid" -o "$key=" 2>/dev/null | awk '/^[[:space:]]*[0-9]+[[:space:]]*$/ {print $1; exit}' || true)
+    if [ -n "$sid" ]; then
+      echo "$sid"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ── 0. 사전 검증 ────────────────────────────────────────────────────────────
 [[ "$(uname -s)" == "Darwin" ]] || err "macOS 전용 스크립트. 현재 OS: $(uname -s)"
 
@@ -45,7 +57,7 @@ warn() { printf '[mac-agent-setup] WARN:  %s\n' "$*" >&2; }
 # 있어 **session id (SID) 기준**으로 자기 세션을 제외. pkill -f 는 자기 자신까지
 # 죽일 수 있어 사용 금지 — 반드시 PID 지정 kill.
 MY_PID=$$
-MY_SID=$({ ps -o sid= -p "$MY_PID" 2>/dev/null || true; } | tr -d ' ')
+MY_SID=$(session_id_of "$MY_PID" || true)
 [ -z "$MY_SID" ] && MY_SID="$MY_PID"
 log "[0-A] 기존 agent / setup 프로세스 정리 (my_sid=$MY_SID)"
 
@@ -65,7 +77,7 @@ fi
 OTHER_SETUP_PIDS=""
 _setup_pids=$(pgrep -f "mac-agent-setup.sh" 2>/dev/null || true)
 for _pid in $_setup_pids; do
-  _sid=$({ ps -o sid= -p "$_pid" 2>/dev/null || true; } | tr -d ' ')
+  _sid=$(session_id_of "$_pid" || true)
   if [ -n "$_sid" ] && [ "$_sid" != "$MY_SID" ]; then
     OTHER_SETUP_PIDS="$OTHER_SETUP_PIDS $_pid"
   fi

@@ -244,7 +244,7 @@ PY
             post {
                 always {
                     junit(
-                        testResults: "${AGENT_HOME}/artifacts/pytest_*.xml",
+                        testResults: ".qa_home/artifacts/pytest_*.xml",
                         allowEmptyResults: false
                     )
                 }
