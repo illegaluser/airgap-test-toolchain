@@ -570,7 +570,7 @@ Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분
 | **1. Ollama 도달성** | 호스트 Ollama 가 reachable 한지 정보성 확인 (실패해도 진행 — 컨테이너 쪽 경로 별도) |
 | **2. JDK 21** | 엄격 탐지. Mac: `/opt/homebrew/opt/openjdk@21` 또는 `/usr/libexec/java_home -v21`. WSL2: `/usr/lib/jvm/{temurin,java}-21-*` |
 | **3. Python 3.11+** | `sys.version_info >= (3,11)` 만족하는 `python3` |
-| **4. venv + Chromium** | `~/.dscore.ttc.playwright-agent/venv` 생성 + `pip install requests playwright pillow` + `playwright install chromium` |
+| **4. venv + Chromium** | `~/.dscore.ttc.playwright-agent/venv` 생성 + `pip install requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright` + `playwright install chromium`. pytest 계열은 Pipeline Stage 2.4 (`pytest test` / `pytest test/native`) 의 page fixture 의존성이라 누락 시 Stage 2.4 가 `ModuleNotFoundError: pytest` 로 실패한다. |
 | **5. Node remoteFS** | Groovy 로 Jenkins Node `mac-ui-tester` 의 remoteFS 를 호스트 절대경로로 갱신 + workspace venv symlink |
 | **6. agent.jar** | `$JENKINS_URL/jnlpJars/agent.jar` 다운로드 |
 | **7. 기동** | `run-agent.sh` 생성 + `exec java -jar agent.jar ...` foreground 실행 → `INFO: Connected` |
