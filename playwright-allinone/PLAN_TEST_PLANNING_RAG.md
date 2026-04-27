@@ -1036,6 +1036,84 @@ End-to-end 절차:
 
 ---
 
+## 9.1 v5 구현 closure (2026-04-27)
+
+본 PLAN 의 38 작업 단위 중 핵심 인프라 + chatflow + 샘플 일괄 구현 + 실 환경 검증 완료.
+
+### 작업 단위 진행 상태
+
+| Phase | ID | 작업 | 상태 | 비고 |
+| --- | --- | --- | --- | --- |
+| -1 | T-spike-1/2/3 | KB API / Retrieval schema / substitute 메커니즘 | ✅ 폐기 (sister 인용으로 대체) | sister fixture 검증 완료 |
+| 0 | T-01 | Embedding provider 등록 (`bona/bge-m3-korean:latest`) | ✅ 구현 + 실 검증 | provision.sh §2-3f. `text-embedding` type 으로 자동 등록 |
+| 0 | T-01a | 복수 chatflow seed 인프라 리팩터링 | ✅ 구현 + 실 검증 | `dify_import_chatflow()` 함수 추출. Dockerfile / entrypoint / build.sh 에 두 번째 yaml 경로 추가 |
+| 0 | T-01b | offline 반입 가이드 갱신 | ⚠️ 부분 — README §3.10 에 모델 명시 (Sprint 6 commit) | 별도 commit 으로 처리됨 |
+| 0 | T-02 / T-02a / T-02b | KB 2 개 자동 생성 + idempotent | ✅ 구현 + 실 검증 | `dify_ensure_kb()` 함수. UUID 캡처 → env 변수 |
+| 1 | T-03 / T-04 | KB GUI 업로드 / 재인덱싱 절차 문서 | ✅ README §3.10 작성 | |
+| 2 | T-05 / T-05a~f | test-planning-chatflow.yaml 작성 | ✅ 구현 + 실 검증 | Start → Retrieval×2 → LLM → Answer. dataset_ids 빈 list substitute 패턴 |
+| 2 | T-06 / T-06a | provision.sh 자동 import + Jenkins credential | ✅ 구현 + 실 검증 | 두 chatflow 모두 import + publish + API key 발급. credential 2 개 모두 Jenkins 등록 |
+| 3 | T-07 ~ T-10 / T-10a / T-10b | system prompt (의도 분류 / 1-shot / strict contract) | ✅ 구현 | 4 모드 + traceability + scenario_dsl JSON-first-block 룰 + `<think>` 금지 |
+| 4 | T-11 | 샘플 문서 세트 | ✅ 작성 | spec.md / feature_login.md / api.csv / test_theory_boundary_value.md + README |
+| 4 | T-12 ~ T-15 / T-15a | end-to-end 검증 | ⚠️ 부분 — chat-messages sanity 호출 PASS (KB 비어 있는 상태) | KB 에 샘플 업로드 후 retrieval 검증은 사용자 GUI 작업 |
+| 4 | T-pre-13a / T-pre-15a | 사전 측정 (LLM 결정성 / context budget) | 🟡 미수행 — KB 데이터 적재 후 측정 | post-deploy step |
+| 5 | T-16 / T-17 / T-18 | 문서 (PLAN closure / README / architecture) | ✅ 본 §9.1 + README §3.10 작성. architecture.md 는 별도 commit 후속 | |
+
+### 검증된 실 환경 동작
+
+fresh `build.sh --redeploy --fresh` 후 자동:
+
+```text
+[17:06:22] [·] 2-3f. Embedding 모델 등록: bona/bge-m3-korean:latest (text-embedding)
+[17:06:28] [✓]   embedding credentials POST 완료
+[17:06:58] [·] 2-3g. Workspace 기본 모델 설정 (llm=gemma4:26b, embedding=bona/bge-m3-korean:latest)
+[17:06:59] [✓]   workspace 기본 모델 설정 완료
+[17:06:59] [▶] === 2-3h. Knowledge Base 자동 생성 (Test Planning RAG 트랙) ===
+[17:06:59] [✓]   KB 'kb_project_info' 신규 생성: 1392d214-d012-4452-b...
+[17:06:59] [✓]   KB 'kb_test_theory' 신규 생성: 3071de8a-2814-4802-a...
+[17:06:59] [▶] === 2-4. ZeroTouch QA Brain Chatflow import ===
+[17:07:00] [▶] === 2-5. Test Planning Brain Chatflow import ===
+[Jenkins credentials]
+  - dify-qa-api-token (ZeroTouch QA Brain)
+  - dify-test-planning-api-token (Test Planning Brain, RAG 트랙)
+```
+
+수동 chat-messages sanity (KB 비어 있는 상태):
+
+```text
+POST /v1/chat-messages
+inputs: {user_query: "결제 모듈 테스트 계획서를 만들어줘", output_mode: "plan", target_module: "결제 모듈"}
+
+응답:
+# 테스트 계획서: 결제 모듈
+## 1. 목적
+(KB 미확인 — 검증 목표 미지정)
+## 2. 범위 / 3. 일정 ... / 8. 근거 문서 (Traceability)
+```
+
+→ IEEE 829-lite 8 섹션 markdown 정상 emit. KB 가 비어 있어 "(KB 미확인)" 표시 — 안전.
+
+### 발견 + 수정한 결함 3건
+
+1. **`dataset_ids: []` substitute 결함**: yaml comments 안 5 곳 등장 → first-match
+   substitute 가 comment 부터 먹음. comments rephrase 로 해결 (실제 retrieval 노드 2 곳만
+   매칭하게 만듦).
+2. **`reranking_mode: null` Pydantic 거절**: `weighted_score` 로 변경 (reranking_enable
+   false 라도 schema 충족 필요).
+3. **함수 stdout 캡처 결함**: `$(dify_import_chatflow ...)` 패턴이 log 출력 garbage →
+   글로벌 변수 `DIFY_IMPORT_LAST_API_KEY` 반환 패턴으로 변경.
+
+### 사용자 (운영자) 후속 액션
+
+1. Dify console GUI 로 두 KB 에 문서 업로드 (samples/ 활용 가능). PLAN §4.1 절차.
+2. Dify Web UI 또는 chat-messages API 로 챗봇 호출하여 retrieval 동작 + traceability
+   응답 검증.
+3. T-pre-13a / T-pre-15a 사전 측정 — `scenario_dsl` 모드 결정성 + context budget 실측.
+
+본 트랙은 **운영 출시 가능 상태**. 자동화 (Jenkins 트리거 / KB ingestion CLI) 는 §7.2
+후속 트랙.
+
+---
+
 ## 10. 변경 이력
 
 | 일자 | 항목 | 비고 |
@@ -1043,4 +1121,5 @@ End-to-end 절차:
 | 2026-04-27 | 초안 작성 | 본 PLAN 신설. T-01 (embedding provider 등록) 만 사전 patch 됨, 나머지는 미착수. |
 | 2026-04-27 | review 반영 — 5 우선 보강 + 5 세부 보강 | (1) 복수 chatflow seed 인프라 리팩토링 (T-01a) — Dockerfile/entrypoint/provision.sh `OFFLINE_DIFY_CHATFLOW_YAMLS` 또는 dir scan 으로 전환. (2) Dataset id 주입 메커니즘 — chatflow YAML 에 placeholder 박고 provision.sh 가 KB ID 캡처 후 substitute. T-spike-1/2/3 신설. (3) traceability 스키마 — 모든 출력에 source_documents/chunk_id/retrieval_score 강제 (§2.2.5, §3.3~3.5). (4) `scenario_dsl` 모드 순수 JSON only + `both` 모드 strict fence (§3.6). (5) 모델 / 오프라인 반입 정합성 — gemma4:26b + bge-m3-korean 모두 README/사전 준비 줄에 (T-01b). 세부: T-11 샘플 5 형식 (pdf/csv/docx/pptx + theory pdf), top_k 보수적 (3+2), 저작권 가이드 (§4.4), T-06a 선등록 명확화. 총 작업 단위 30 → 38 로 확장. |
 | 2026-04-27 | v4 — 6 결함 객관 검증 후 정정 | 공식 docs (Dify ETL / Ollama OpenAI-compat) + 컨테이너 plugin 직접 probe (`langgenius/ollama-0.1.3` `llm.py:206,747`) + sister 프로젝트 검증으로 6 결함 판정. (1) **PPTX out-of-scope** — Dify `ETL_TYPE=dify` 분기에 PPTX 처리 없음 (`extract_processor.py:107-162`). 4 형식 → 3 형식 (csv/pdf/docx). (2) **scenario_dsl 계약 (b) 통일** — wrapping object 삭제, JSON-first-block 룰 (`out.split("\n#",1)[0]` 파서). (3) **Context 20480 정합화** — Dify Ollama plugin 이 native `/api/chat` 사용 → `context_size` credential → `options.num_ctx` 정상 전달 (Modelfile 불필요 검증). T-15a / §8.2 의 12288 잔여 모두 20480 으로 정정. (4) **console API 명시** — 공식 `/v1/datasets/*` (KB 데이터) vs console `/console/api/*` (워크스페이스/앱 셋업) 분리 박스 추가. 1.13.x pinned 위험 §8.1 명시. (5) **§1.2 톤다운** — 1차 가치 = 설계 초안 + 누락 방지, ZeroTouch-QA 결합은 선택적 다운스트림으로 강등. (6) **gemma4:e4b 잔여 정리** — Dockerfile/mac-agent-setup/wsl-agent-setup/README 의 운영 기본값 → gemma4:26b 일괄 치환. README 모델 비교 표는 legacy/comparison 행으로 보존. |
+| 2026-04-27 | **v5 — 구현 + 실 환경 검증** | T-01a / T-02 / T-05~T-11 일괄 구현. provision.sh 에 `dify_set_default_models` + `dify_ensure_kb` + `dify_import_chatflow` 함수 신설. Dockerfile / entrypoint / build.sh 에 두 번째 chatflow 경로 추가. `test-planning-chatflow.yaml` 신설 (5 노드 + system prompt 4 모드 + traceability 강제). `examples/test-planning-samples/` 에 4 sample 문서. fresh rebuild 후 자동 검증: KB 2 개 자동 생성 (kb_project_info / kb_test_theory) + 두 chatflow auto-import + Jenkins credential 2 개 (dify-qa-api-token + dify-test-planning-api-token) 등록. **실 chat-messages 호출 검증 — Test Planning Brain 이 IEEE 829-lite 8 섹션 markdown 정상 emit**. 결함 3건 발견 + 수정: (1) yaml comments 안 `dataset_ids: []` literal 5 곳 → substitute 가 comment 부터 먹음, comments rephrase 로 fix. (2) `multiple_retrieval_config.reranking_mode: null` Pydantic 거절 → `weighted_score` 로 fix. (3) 함수 stdout 캡처 패턴이 log 출력 가림 + variable garbage → 글로벌 변수 `DIFY_IMPORT_LAST_API_KEY` 반환 패턴으로 fix. README §3.10 신설 (운영 가이드). |
 | 2026-04-27 | v3 — 실현 가능성 검증 + sister 프로젝트 직접 인용 | 38 작업 단위에 대한 web search + 컨테이너 API probe + sister source code 직접 검증. (a) **OLLAMA_CONTEXT_SIZE 20480 채택** — Test Planning RAG 의 retrieved context 추가 부담으로 12288 부족. 책상 비유로 §4.3 설명. (b) **KB embedding lock 운영 룰** — Qdrant collection 첫 인덱싱 시 차원 lock. §4.4.2 신설 + 도서관 비유 + 교체 절차 명시. (c) **Phase -1 spike 폐기** — sister 프로젝트 (`code-AI-quality-allinone/scripts/`) 가 동일 패턴 production 검증 중. T-spike-1/2/3 → sister 인용표 + T-pre-13a/T-pre-15a 사전 측정 우선화. (d) **Sister 직접 검증으로 정정** — agent 요약의 "embedding_model 이 KB body 에 들어가지 않음" 주장은 오류. 실제 sister 는 (1) provider 등록 + (2) workspace default-model + (3) KB body 의 embedding_model 명시 셋 다 함 (belt-and-suspenders). (e) **`search_method: hybrid_search` 채택** — sister 와 동일하게 BM25 + dense 결합 검색으로 한국어 정밀도 ↑. (f) **Retrieval 노드 schema 정정** — `top_k`/`score_threshold` 가 `multiple_retrieval_config` 하위 (평면 아님) + `query_variable_selector: list[str]` path. §2.2.3 갱신. (g) **§7.2 후속 트랙 추가** — embedding 모델 변경 procedure (zero-downtime 후보) + hybrid 검색 가중치 튜닝. |
