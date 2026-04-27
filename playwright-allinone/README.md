@@ -864,19 +864,21 @@ docker run -d --name dscore.ttc.playwright \
 docker logs -f dscore.ttc.playwright
 ```
 
-##### 첫 부팅 시 자동으로 일어나는 일
+##### 첫 부팅 후 운영자가 보게 될 것 (3-5분 후)
 
-볼륨이 비어 있으므로 `entrypoint.sh` + `provision.sh` 가 자동으로:
+`provision.sh` 자동 실행이 완료되면 **운영자가 별도 작업 없이** 다음이 ready:
 
-1. `/data/` 에 PG / Jenkins / Dify storage / Redis 데이터 dir 생성
-2. Dify 관리자 계정 + Ollama 플러그인 등록
-3. **KB 2개 자동 생성**: `kb_project_info`, `kb_test_theory`
-4. **KB seed 자동 업로드** — 이미지 안 `/opt/seed/kb-docs/` 의 baseline 4 파일 (spec.md / feature_login.md / api.csv / test_theory_boundary_value.md)
-5. 챗봇 2개 자동 import (`ZeroTouch QA Brain`, `Test Planning Brain`) + 공개 chat URL 활성화
-6. Jenkins Pipeline `ZeroTouch-QA` + 노드 등록
-7. 완료되면 `/data/.app_provisioned` 마커 생성 → 다음 부팅부터는 provision skip
+- **Dify 챗봇 2개** — `ZeroTouch QA Brain` / `Test Planning Brain` (공개 chat URL 즉시 접근 가능)
+- **Knowledge Base 2개** — `kb_project_info` / `kb_test_theory` (이미지에 baked-in 된 baseline 4 파일이 자동 업로드 + 인덱싱된 상태)
+- **Jenkins Pipeline** — `ZeroTouch-QA` job + agent node 등록 완료 (`NODE_SECRET` 은 `docker logs` 에 노출됨)
 
-운영자는 Dify console GUI 로 **추가 KB 문서를 업로드** 만 하면 된다 ([§3.10](#310-test-planning-rag-트랙--운영-가이드)).
+자세한 자동 동작 목록 / 데이터 흐름은 [§3.5 프로비저닝 체크리스트](#35-프로비저닝-체크리스트) 참조.
+
+운영자가 곧바로 할 수 있는 작업:
+
+- **챗봇 사용** — `http://localhost:18081/chat/<code>` 또는 Dify console (Studio)
+- **KB 문서 추가 업로드** — Dify console GUI ([§3.10](#310-test-planning-rag-트랙--운영-가이드))
+- **Pipeline 실행** — Jenkins (호스트 agent 연결 후, [§1.4](#14-step-4-첫-pipeline-실행-검증))
 
 ---
 
