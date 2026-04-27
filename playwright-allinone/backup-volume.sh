@@ -54,24 +54,31 @@ sleep 3
 log "  서비스 stop 완료"
 
 # ── 2. tar gzip export ───────────────────────────────────────────────────
-log "[2/3] 볼륨 tar gzip export → $OUTPUT_TAR"
+# 절대경로 인자 지원: dirname 을 mount target 으로, basename 을 tarfile 명으로.
+# 상대경로면 SCRIPT_DIR 기준.
+case "$OUTPUT_TAR" in
+  /*) OUTPUT_DIR=$(dirname "$OUTPUT_TAR"); OUTPUT_NAME=$(basename "$OUTPUT_TAR") ;;
+  *)  OUTPUT_DIR="$SCRIPT_DIR"; OUTPUT_NAME="$OUTPUT_TAR" ;;
+esac
+mkdir -p "$OUTPUT_DIR"
+
+log "[2/3] 볼륨 tar gzip export → $OUTPUT_DIR/$OUTPUT_NAME"
 log "  (대용량 볼륨은 수 분~수십 분 소요)"
 
-# busybox 로 짧게 — volume mount + 호스트 PWD mount → tar
 docker run --rm \
   -v "$DATA_VOLUME:/src:ro" \
-  -v "$SCRIPT_DIR:/dst" \
+  -v "$OUTPUT_DIR:/dst" \
   busybox \
-  sh -c "cd /src && tar czf /dst/$OUTPUT_TAR ."
+  sh -c "cd /src && tar czf /dst/$OUTPUT_NAME ."
 
-if [ ! -f "$OUTPUT_TAR" ]; then
-  # 서비스 복구 시도 후 에러
+if [ ! -f "$OUTPUT_DIR/$OUTPUT_NAME" ]; then
   docker exec "$CONTAINER_NAME" supervisorctl -c /etc/supervisor/supervisord.conf start all >/dev/null 2>&1 || true
-  err "tarball 생성 실패: $OUTPUT_TAR"
+  err "tarball 생성 실패: $OUTPUT_DIR/$OUTPUT_NAME"
 fi
 
-TAR_SIZE=$(du -h "$OUTPUT_TAR" | cut -f1)
-log "  완료: $OUTPUT_TAR ($TAR_SIZE)"
+TAR_PATH="$OUTPUT_DIR/$OUTPUT_NAME"
+TAR_SIZE=$(du -h "$TAR_PATH" | cut -f1)
+log "  완료: $TAR_PATH ($TAR_SIZE)"
 
 # ── 3. 서비스 재기동 ─────────────────────────────────────────────────────
 log "[3/3] 서비스 재기동 (supervisorctl start all)"
@@ -89,11 +96,11 @@ log "  서비스 재기동 완료 (${_w}s)"
 
 log ""
 log "============================================================"
-log "백업 완료: $SCRIPT_DIR/$OUTPUT_TAR ($TAR_SIZE)"
+log "백업 완료: $TAR_PATH ($TAR_SIZE)"
 log ""
 log "폐쇄망 반입 절차:"
 log "  1. (이 머신에서) image tar.gz + 본 backup tarball 두 파일을 폐쇄망 머신으로 옮김"
 log "  2. (폐쇄망에서) docker load -i dscore.ttc.playwright-*.tar.gz"
-log "  3. (폐쇄망에서) ./restore-volume.sh $OUTPUT_TAR"
+log "  3. (폐쇄망에서) ./restore-volume.sh $TAR_PATH"
 log "  4. (폐쇄망에서) docker run -d ... dscore.ttc.playwright:latest"
 log "============================================================"
