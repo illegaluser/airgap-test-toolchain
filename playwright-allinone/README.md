@@ -1046,6 +1046,98 @@ Sprint 5 까지 chat 모드는 "best-effort 의미 시연" 으로 위치 (결정
 
 3/3 first-try PASS, 0 retry, 평균 dur 101s. Sprint 5 §10.5 의 "chat = best-effort" 위치 사실상 폐기.
 
+### 3.10 Test Planning RAG 트랙 — 운영 가이드
+
+**Test Planning Brain** 은 별도 RAG 트랙으로, 사용자 자연어
+요청을 받아 **테스트 계획서 / 자연어 시나리오 / 14-DSL JSON** 을 자동 생성하는 신규
+챗봇이다. 자세한 설계는 [`PLAN_TEST_PLANNING_RAG.md`](PLAN_TEST_PLANNING_RAG.md) 참조.
+
+#### 자동 생성되는 인프라
+
+`provision.sh` 가 fresh 부팅 시 다음을 자동 생성:
+
+| 항목 | 이름 / ID | 비고 |
+| --- | --- | --- |
+| Embedding 모델 등록 | `bona/bge-m3-korean:latest` | `text-embedding` type. PLAN §2.2.2 |
+| Workspace default-model | LLM=`gemma4:26b`, embedding=위와 동일 | KB high_quality 생성 전제 |
+| Knowledge Base #1 | `kb_project_info` | spec / 기획서 / API 문서. retrieval #1 대상 |
+| Knowledge Base #2 | `kb_test_theory` | 테스트 설계 기법 / 회귀 정책. retrieval #2 대상 |
+| Dify 앱 | `Test Planning Brain` (advanced-chat) | retrieval ×2 → LLM (gemma4:26b) → answer |
+| Jenkins credential | `dify-test-planning-api-token` | API key 선등록 (사용처는 후속 자동화 트랙) |
+
+#### KB 문서 업로드 (Dify console GUI)
+
+본 트랙은 GUI 직접 업로드 정책 (PLAN §4.1). 자동화는 후속 트랙.
+
+1. 브라우저 → `http://localhost:18081` → admin 로그인 (`admin@example.com` / `Admin1234!`).
+2. 좌측 메뉴 → **Knowledge** → 두 KB (`kb_project_info`, `kb_test_theory`) 확인.
+3. KB 클릭 → **Add documents** → 파일 드래그.
+4. 청킹 모드 — Automatic 또는 Custom (chunk_size=500, overlap=50 권장).
+5. 인덱싱 시작 → 완료까지 5분 미만 (5 청크 기준).
+
+#### 지원 형식 (3 형식)
+
+| 형식 | 처리 | 비고 |
+| --- | --- | --- |
+| `pdf` | PyMuPDF | 표 / 이미지 OCR 미사용 |
+| `docx` | python-docx | 헤딩 구조 보존 |
+| `csv` | Dify CSV | row-as-chunk |
+
+**PPTX 는 미지원** — Dify 1.13.3 의 `ETL_TYPE=dify` 분기에 PPTX 처리가 없음 (PLAN §3.1).
+PPTX 가 필요하면 사용자가 PDF / Markdown 으로 변환 후 업로드.
+
+#### 변경 파일만 재인덱싱 (PLAN §4.2)
+
+Dify console → 대상 KB → 문서 목록 → 변경된 문서 우측 메뉴 → **다시 인덱싱**.
+전체 KB 재인덱싱은 청킹 정책 자체가 바뀐 경우만 사용.
+
+#### 챗봇 호출 예시 (Dify Web UI)
+
+좌측 메뉴 → **Studio** → `Test Planning Brain` 클릭 → 우측 상단 **API access** 또는
+**Run** 으로 즉시 테스트.
+
+```text
+사용자 입력 변수:
+  user_query: 결제 모듈 테스트 계획서를 만들어줘
+  output_mode: plan
+  target_module: 결제 모듈
+```
+
+| output_mode | 출력 형식 |
+| --- | --- |
+| `plan` | IEEE 829-lite 8 섹션 Markdown (7 + traceability 표) |
+| `scenario_natural` | Given/When/Then BDD 시나리오 + 근거 줄 |
+| `scenario_dsl` | 순수 14-DSL JSON list + `# traceability:` 주석 (자동 파서 추출 가능) |
+| `both` | 위 셋 모두. 14-DSL 은 `<!-- BEGIN/END SCENARIO_DSL -->` strict fence 안 |
+
+#### `scenario_dsl` 출력을 ZeroTouch-QA execute 로 연결 (수동)
+
+1. Dify Web UI 에서 `output_mode: scenario_dsl` 호출 → 응답 받기.
+2. 응답에서 `# traceability:` 이전까지의 JSON list 추출.
+3. JSON 을 파일로 저장 (예: `scenario.json`).
+4. Jenkins **ZeroTouch-QA** Job 트리거 — `RUN_MODE=execute`, `DOC_FILE=scenario.json`.
+5. 실 환경 selector 가 안 맞으면 사람이 selector 검토 / 수정 후 재시도.
+
+자동화 (webhook 등) 는 PLAN §7.2 의 "Test Planning → ZeroTouch-QA AutoLink" 후속 트랙
+범위.
+
+#### Embedding 모델 교체 금지 (Qdrant collection lock)
+
+KB 첫 인덱싱 시점에 차원이 고정 (현재 1024차원). 모델 변경 시 KB 재생성 + 모든 문서
+재업로드 필요. PLAN §4.4.2 도서관 색인 시스템 비유 참조.
+
+#### 샘플 문서 세트
+
+[`examples/test-planning-samples/`](examples/test-planning-samples/) 에 4 파일 (3 형식)
+샘플 제공:
+
+- `spec.md` (Markdown) → `kb_project_info`
+- `feature_login.md` (Markdown) → `kb_project_info`
+- `api.csv` (CSV) → `kb_project_info`
+- `test_theory_boundary_value.md` (Markdown) → `kb_test_theory`
+
+세부 절차는 해당 디렉토리의 README 참조.
+
 ---
 
 ## 4. 트러블슈팅
