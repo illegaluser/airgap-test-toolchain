@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from zero_touch_qa.__main__ import ScenarioValidationError, _validate_scenario
+from zero_touch_qa.__main__ import (
+    ScenarioValidationError,
+    _sanitize_scenario,
+    _validate_scenario,
+)
 from zero_touch_qa.config import Config
 from zero_touch_qa.executor import QAExecutor
 from zero_touch_qa.regression_generator import _emit_step_code, _target_to_playwright_code
@@ -205,3 +209,77 @@ def test_install_mock_route_clamps_times_minimum(tmp_path: Path):
 
     assert calls[0][1] == 1
     assert calls[1][1] == 3
+
+
+# ─── Sanitizer meta-reasoning leak 회복 (Sprint 5 §10.5 후속) ──────────────
+
+
+def test_sanitize_recovers_leading_valid_action_from_polluted_field():
+    """LLM 이 action 필드에 'verify, target: ...' 형태로 meta-reasoning 을 섞어 emit
+    하더라도 앞쪽 첫 토큰이 valid action 이면 회복한다."""
+    raw = [
+        {"action": 'verify, target: id=status, value: "clicked", condition: text',
+         "target": "#status", "value": "clicked"},
+        {"action": "`upload`, target: <input type='file'>", "target": "#file"},
+        {"action": "click", "target": "#btn"},  # 정상
+    ]
+    out = _sanitize_scenario(raw)
+    assert len(out) == 3
+    assert out[0]["action"] == "verify"
+    assert out[1]["action"] == "upload"
+    assert out[2]["action"] == "click"
+
+
+def test_sanitize_drops_when_leading_token_not_valid():
+    """앞쪽 첫 토큰조차 valid action 이 아니면 drop 한다."""
+    raw = [
+        {"action": "* target is source, value is destination", "target": "x"},
+        {"action": "click", "target": "#btn"},
+    ]
+    out = _sanitize_scenario(raw)
+    assert len(out) == 1
+    assert out[0]["action"] == "click"
+
+
+# ─── Healer action whitelist 전이 (Sprint 6 / Option-2) ────────────────────
+
+
+def test_heal_action_transition_whitelist_accepts_intra_group():
+    from zero_touch_qa.executor import _is_allowed_action_transition
+
+    # 의미 등가 전이는 허용
+    assert _is_allowed_action_transition("select", "fill")
+    assert _is_allowed_action_transition("fill", "select")
+    assert _is_allowed_action_transition("check", "click")
+    assert _is_allowed_action_transition("click", "check")
+    assert _is_allowed_action_transition("click", "press")
+    assert _is_allowed_action_transition("press", "click")
+    assert _is_allowed_action_transition("upload", "click")
+    assert _is_allowed_action_transition("click", "upload")
+    # identity 도 허용 (Healer 가 같은 action 으로 재confirm 하는 경우)
+    assert _is_allowed_action_transition("click", "click")
+
+
+def test_heal_action_transition_whitelist_rejects_cross_group():
+    from zero_touch_qa.executor import _is_allowed_action_transition
+
+    # false-PASS 위험 전이는 거절
+    assert not _is_allowed_action_transition("drag", "click")  # 의미 변경 — 검증 무력화
+    assert not _is_allowed_action_transition("click", "drag")
+    assert not _is_allowed_action_transition("verify", "click")  # 검증 그룹간 변경
+    assert not _is_allowed_action_transition("navigate", "click")
+    assert not _is_allowed_action_transition("mock_status", "mock_data")  # 다른 그룹
+    assert not _is_allowed_action_transition("upload", "mock_data")  # 결함 4 케이스
+    assert not _is_allowed_action_transition("wait", "verify")
+    assert not _is_allowed_action_transition("hover", "click")  # hover 는 부분적으로 click 과 다른 의미
+
+
+def test_heal_action_transition_whitelist_rejects_invalid_inputs():
+    from zero_touch_qa.executor import _is_allowed_action_transition
+
+    assert not _is_allowed_action_transition(None, "click")
+    assert not _is_allowed_action_transition("click", None)
+    assert not _is_allowed_action_transition("", "click")
+    assert not _is_allowed_action_transition("click", "")
+    # 대문자 입력은 함수 내부 lowercase 정규화로 화이트리스트와 매치된다 (방어적 처리)
+    assert _is_allowed_action_transition("CLICK", "PRESS")

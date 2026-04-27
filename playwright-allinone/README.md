@@ -10,7 +10,7 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 |------|-----------|
 | 베이스 이미지 핀 | Jenkins `2.555.1-lts-jdk21`, Dify API/Web `1.13.3`, Dify Plugin Daemon `0.5.3-local` |
 | 컨테이너 기동 결과 | `dscore.ttc.playwright` 1개 컨테이너에 Jenkins, Dify, PostgreSQL, Redis, Qdrant, nginx 통합 |
-| 자동 프로비저닝 결과 | Dify 관리자 계정, Ollama plugin/provider, `ZeroTouch QA Brain` publish, Jenkins credential `dify-qa-api-token`, Job `DSCORE-ZeroTouch-QA-Docker`, Jenkins Node `mac-ui-tester`/`wsl-ui-tester` 자동 등록 |
+| 자동 프로비저닝 결과 | Dify 관리자 계정, Ollama plugin/provider, `ZeroTouch QA Brain` publish, Jenkins credential `dify-qa-api-token`, Job `ZeroTouch-QA`, Jenkins Node `mac-ui-tester`/`wsl-ui-tester` 자동 등록 |
 | 완료 마커 | `/data/.app_provisioned` 생성 시 재기동부터 provision 생략 |
 | 최근 실측 검증 | Jenkins `http://localhost:18080/login` → `200`, Dify `http://localhost:18081/` → `307`, Build #9 (execute) 14/14 PASS, Build #14 (chat) 12/12 PASS + HEAL 2 |
 | Action DSL 런타임 | 14대 DSL (`navigate`, `click`, `fill`, `press`, `select`, `check`, `hover`, `wait`, `verify`, `upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 실행기 구현 완료. Sprint 5 에서 select/check/upload/fill 에 multi-strategy chain + post-condition 추가 |
@@ -55,7 +55,7 @@ python3 -m pytest test/native -q
 2. `--redeploy` 또는 `docker run` 으로 컨테이너를 올린다.
 3. 로그에서 `NODE_SECRET` 이 나올 때까지 기다린다.
 4. 호스트에서 `mac-agent-setup.sh` 또는 `wsl-agent-setup.sh` 를 실행한다.
-5. Jenkins 에서 `DSCORE-ZeroTouch-QA-Docker` 를 실행한다.
+5. Jenkins 에서 `ZeroTouch-QA` 를 실행한다.
 
 ## 이 문서를 어디서부터 읽으면 되나
 
@@ -93,7 +93,7 @@ chmod +x *.sh
 - `ZeroTouch QA Brain` import/publish
 - Dify API Key 발급
 - Jenkins credential `dify-qa-api-token` 등록
-- Jenkins job `DSCORE-ZeroTouch-QA-Docker` 생성
+- Jenkins job `ZeroTouch-QA` 생성
 - Jenkins node `mac-ui-tester` 또는 `wsl-ui-tester` 생성
 - `/data/.app_provisioned` 생성
 
@@ -455,7 +455,7 @@ AUTO_INSTALL_DEPS=true ./wsl-agent-setup.sh       # sudo apt 로 자동 설치
 
 Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분리-배포-빌드-머신과-실행-머신이-다른-경우)) 완료 후, 브라우저에서 <http://localhost:18080> → `admin / password` 로 로그인:
 
-**[1] Dashboard → `DSCORE-ZeroTouch-QA-Docker` → Build with Parameters**
+**[1] Dashboard → `ZeroTouch-QA` → Build with Parameters**
 
 **[2] 검증된 데모 입력값** (기본값 대신 아래를 권장):
 
@@ -570,7 +570,7 @@ Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분
 ├── venv/                         # Python 3.11+ + Playwright
 ├── agent.jar                     # Jenkins remoting jar
 ├── run-agent.sh                  # 재연결 시 이 스크립트 직접 실행해도 됨
-└── workspace/DSCORE-ZeroTouch-QA-Docker/
+└── workspace/ZeroTouch-QA/
     └── .qa_home/                 # Pipeline Stage 1 이 생성
         ├── venv → /home/user/.dscore.ttc.playwright-agent/venv (symlink)
         └── artifacts/
@@ -597,7 +597,7 @@ Step 1-3 ([§1.2](#12-빠른-경로-같은-머신-추천) 또는 [§1.3](#13-분
   - Stage 1 산출물 COPY
   - Qdrant 바이너리 + Node.js (TARGETARCH 분기 — amd64 는 glibc / arm64 는 musl)
   - `jenkins-plugins/` + `dify-plugins/` seed
-  - 프로비저닝용 스크립트/설정 파일 + 같은 폴더의 [DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline](#210-seed-자원-빌드-시점에-이미지로-들어가는-파일들) / [dify-chatflow.yaml](#210-seed-자원-빌드-시점에-이미지로-들어가는-파일들) 을 이미지에 포함
+  - 프로비저닝용 스크립트/설정 파일 + 같은 폴더의 [ZeroTouch-QA.jenkinsPipeline](#210-seed-자원-빌드-시점에-이미지로-들어가는-파일들) / [dify-chatflow.yaml](#210-seed-자원-빌드-시점에-이미지로-들어가는-파일들) 을 이미지에 포함
   - 빌드 타임에 `pg-init.sh` 실행 → `/opt/seed/pg/` 에 Dify DB initdb 산출물 생성
 
 **수정이 필요할 때**: Dify / Jenkins 버전업, OS 패키지 추가, seed 자원 경로 변경.
@@ -729,7 +729,7 @@ docker restart dscore.ttc.playwright
 
 | 경로 | 역할 | 빌드 시점에 이미지 어디로 |
 |------|------|----------------------------|
-| `DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline` | Jenkins Pipeline DSL (`agent { label 'mac-ui-tester' }` + `zero_touch_qa` 실행) | `/opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline` |
+| `ZeroTouch-QA.jenkinsPipeline` | Jenkins Pipeline DSL (`agent { label 'mac-ui-tester' }` + `zero_touch_qa` 실행) | `/opt/ZeroTouch-QA.jenkinsPipeline` |
 | `dify-chatflow.yaml` | Dify App `ZeroTouch QA Brain` 의 Chatflow DSL (Planner / Healer LLM 노드 포함) | `/opt/dify-chatflow.yaml` |
 | `zero_touch_qa/` (Python 패키지) | 호스트 agent 가 `python -m zero_touch_qa` 로 실행 (Playwright + Dify client) | 이미지에 포함되지 않음 — **호스트에서 `SCRIPTS_HOME` 경로로 import** |
 | `jenkins-plugins/*.hpi` | `build.sh [1/4]` 가 수집한 Jenkins 플러그인 | `/usr/share/jenkins/ref/plugins/` |
@@ -823,11 +823,11 @@ docker load -i dscore.ttc.playwright-new.tar.gz
 | 1 | Dify 관리자 | `curl -fsS http://localhost:18081/console/api/setup \| jq .setup_status` → `"finished"` |
 | 2 | Dify Ollama 플러그인 | `docker exec dscore.ttc.playwright ls /data/dify/plugins/packages` 에 `langgenius-ollama-*` |
 | 3 | Ollama 모델 등록 (host URL) | DB 조회로 `base_url: host.docker.internal:11434` |
-| 4 | Chatflow | Dify UI 에 `ZeroTouch QA Brain` 앱 (또는 `DSCORE-ZeroTouch-QA`) |
+| 4 | Chatflow | Dify UI 에 `ZeroTouch QA Brain` 앱 (또는 `ZeroTouch-QA`) |
 | 5 | Dify API Key | `docker logs dscore.ttc.playwright \| grep "API Key 발급 완료"` |
 | 6 | Jenkins 플러그인 4 개 | UI `/pluginManager/` 또는 `curl … /pluginManager/api/json?depth=1` |
 | 7 | Jenkins Credentials | `curl -u admin:pw … /credentials/store/system/domain/_/api/json` 에 `dify-qa-api-token` |
-| 8 | Pipeline Job | Dashboard 에 `DSCORE-ZeroTouch-QA-Docker` |
+| 8 | Pipeline Job | Dashboard 에 `ZeroTouch-QA` |
 | 9 | **Node online** | `curl -u admin:pw … /computer/mac-ui-tester/api/json \| jq .offline` → `false` (Step 3 이후) |
 
 ### 3.6 관리자 비밀번호 변경
@@ -955,7 +955,7 @@ CRUMB_HEADER=$(curl -sS -u admin:password \
 
 curl -sS -u admin:password -X POST \
   -H "$CRUMB_HEADER" \
-  "http://localhost:18080/job/DSCORE-ZeroTouch-QA-Docker/buildWithParameters" \
+  "http://localhost:18080/job/ZeroTouch-QA/buildWithParameters" \
   -F "RUN_MODE=chat" \
   -F "TARGET_URL=https://www.naver.com" \
   -F "SRS_TEXT=검색창에 si qa 입력 후 검색 실행하고 결과 확인" \
@@ -964,6 +964,60 @@ curl -sS -u admin:password -X POST \
 ```
 
 UI 에서 기동할 때는 DOC_FILE 을 비워 두어도 문제없다 (Jenkins 가 자동으로 빈 값 처리).
+
+### 3.9 v4.1 운영 SLA / 모니터링 (Sprint 4 closure)
+
+Sprint 4 (4A/4B/4C) 가 닫히면서 v4.1 운영 표준이 다음과 같이 정해졌다.
+
+#### 산출물 7종 (빌드별 `qa_reports/build-${BUILD_NUMBER}/`)
+
+| 파일 | 의미 | 용도 |
+| --- | --- | --- |
+| `index.html` | Zero-Touch QA Report | step 결과 + 운영 지표 섹션 (Planner/Healer/SLA/heal/flake/pytest) |
+| `run_log.jsonl` | step 단위 실행 로그 | 회귀 / heal trace 추적 |
+| `scenario.json` / `scenario.healed.json` | 입력 / healed 결과 시나리오 | 재실행, healing diff |
+| `regression_test.py` | 결정론적 회귀 (Playwright 라인) | 향후 Dify 없이 같은 시나리오 재실행 |
+| `pytest_integration.xml`, `pytest_native.xml` | JUnit 결과 | Jenkins **JUnit Trend** 자동 추세 |
+| `llm_calls.jsonl`, `llm_sla.json` | Dify Planner/Healer 호출 metric (raw + 집계) | LLM SLA baseline / 임계값 추적 |
+| `screenshots/*.png` | 단계별 스냅샷 | 재현 디버깅 |
+
+`buildDiscarder` 가 30 일 / 100 빌드 보존을 강제하며, JUnit XML 의 추세는 Jenkins Job 페이지의 **Test Result Trend** 그래프에서 자동 노출된다.
+
+#### LLM SLA 추적
+
+Sprint 4A 의 `llm_calls.jsonl` 계측 + Sprint 4C 의 `aggregate_llm_sla` hook 으로, 매 빌드 종료 시 자동으로 `llm_sla.json` 이 만들어진다. 본 파일은 `index.html` 의 운영 지표 섹션에 다음 형태로 노출된다:
+
+- `latency_ms` p50 / p95 / p99
+- `total_calls`, `timeout_count`, `timeout_rate`, `retry_total`
+- `by_kind.planner` / `by_kind.healer` 분리 metric
+
+모델 변경 또는 hardware 변경 시 `llm_sla.json` 의 p95 latency 가 baseline 대비 +30% 이상 상승하면 회귀로 본다. 임계값 baseline 은 첫 1~2 회 빌드의 metric 으로 확정한다.
+
+#### mock 안전장치 (S4B-09 완료 — 운영 필수)
+
+`mock_status` / `mock_data` 의 URL pattern 이 운영 host 와 충돌하지 않도록 다음 환경변수를 사용한다:
+
+| 환경변수 | 의미 |
+| --- | --- |
+| `TARGET_URL` | 현재 빌드의 운영 host. 동일 host 와 매칭되는 mock pattern 은 빌드 실패 |
+| `MOCK_BLOCKED_HOSTS` | `,` 구분 추가 차단 host 목록 (예: `api.production.example.com,internal.example.com`) |
+| `MOCK_OVERRIDE=1` | 명시적 우회 (감사 로그 남김). 디버깅 외에는 사용 금지 |
+
+#### healing / heal 비용 모니터링
+
+`llm_sla.json` 의 `by_kind.healer` 가 Dify heal 호출 횟수와 평균 latency 를 보여준다. 단일 시나리오에서 heal 호출이 step 수의 30% 를 초과하면 시나리오 품질 / fixture 안정성 문제로 본다.
+
+#### Convert 14대 모드 사용 (Sprint 4C 완료)
+
+Playwright codegen 으로 녹화한 14대 액션 (`set_input_files` / `drag_to` / `scroll_into_view_if_needed` / `page.route(... fulfill ...)` 포함) 을 그대로 Jenkins 에 업로드하면 `RUN_MODE=convert` 가 정규식 파서로 14대 DSL 로 변환 후 즉시 실행한다. LLM 호출 0. `test/recorded-14actions.py` 가 codegen 형식 reference fixture 다.
+
+#### DIFY_API_KEY 갱신
+
+Dify 콘솔에서 새 app key 발급 → Jenkins → Manage Credentials → `DIFY_API_KEY` 값 갱신 → 빈 빌드 트리거하여 Stage 2.5 (Dify health probe) 가 PASS 하는지 확인. health probe 가 401/timeout 이면 즉시 Job 실패하므로 운영 영향 없음.
+
+#### agent 동시성 한계
+
+단일 Mac/WSL agent 는 동시 빌드 1 개를 권장한다. JOB 의 `disableConcurrentBuilds()` 또는 agent label 의 `numExecutors=1` 로 제한. 동시 2+ 빌드는 artifacts 디렉토리 충돌, 브라우저 자원 부족으로 false fail 위험이 있다.
 
 ---
 
@@ -1252,7 +1306,7 @@ supervisord (PID 1, tini 위, 10 개 프로그램)
 ├── venv/                      # Python 3.11+ + playwright
 ├── agent.jar                  # Jenkins remoting
 ├── run-agent.sh               # agent 기동 스크립트 (SCRIPTS_HOME export)
-└── workspace/DSCORE-ZeroTouch-QA-Docker/
+└── workspace/ZeroTouch-QA/
     └── .qa_home/
         ├── venv → (symlink)
         └── artifacts/

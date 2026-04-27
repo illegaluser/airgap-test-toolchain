@@ -345,7 +345,7 @@ fi
 #
 # 또한 Pipeline Stage 1 이 ${WORKSPACE}/.qa_home/venv/bin/activate 를 요구하므로,
 # 우리가 만든 AGENT_DIR/venv 를 해당 워크스페이스에 미리 심볼릭 링크.
-ABS_WORKSPACE="$AGENT_DIR/workspace/DSCORE-ZeroTouch-QA-Docker"
+ABS_WORKSPACE="$AGENT_DIR/workspace/ZeroTouch-QA"
 log "[5/7] Jenkins Node remoteFS 절대경로 갱신 + workspace venv 사전 링크"
 
 # (a) Node remoteFS 를 절대경로로 (Groovy)

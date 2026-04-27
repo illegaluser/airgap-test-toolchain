@@ -176,7 +176,7 @@ if [ ! -f "$DATA/.app_provisioned" ]; then
   fi
   export OFFLINE_DIFY_PLUGIN_DIR="$SEED/dify-plugins"
   export OFFLINE_DIFY_CHATFLOW_YAML="/opt/dify-chatflow.yaml"
-  export OFFLINE_JENKINS_PIPELINE="/opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline"
+  export OFFLINE_JENKINS_PIPELINE="/opt/ZeroTouch-QA.jenkinsPipeline"
 
   if bash /opt/provision.sh; then
     touch "$DATA/.app_provisioned"

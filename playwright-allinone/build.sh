@@ -65,7 +65,7 @@ while [ $# -gt 0 ]; do
 주요 env:
   IMAGE_TAG                dscore.ttc.playwright:latest (기본)
   TARGET_PLATFORM          uname -m 자동 감지 (Mac arm64 → linux/arm64, 그 외 → linux/amd64)
-  OLLAMA_MODEL             gemma4:e4b (Dify provider 에 등록될 모델 id)
+  OLLAMA_MODEL             gemma4:26b (Dify provider 에 등록될 모델 id; Sprint 5 §10.2 기본 모델)
   OUTPUT_TAR               dscore.ttc.playwright-<ts>.tar.gz
   FORCE_PLUGIN_DOWNLOAD    false (기본). true 면 jenkins-plugins/ dify-plugins/ 에
                            파일이 있어도 재다운로드 (플러그인 버전 갱신 시만 사용).
@@ -110,7 +110,7 @@ fi
 # OLLAMA_MODEL: 이미지에 사전 pull 되지 않음 (이 이미지는 호스트 Ollama 사용).
 # 이 값은 docker buildx 가 Dockerfile ARG 로 받아두긴 하지만 실질적 효과는 없음.
 # 실제 런타임 모델 지정은 docker run 의 `-e OLLAMA_MODEL=...` 로 Dify provider 에 등록됨.
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 OUTPUT_TAR="${OUTPUT_TAR:-dscore.ttc.playwright-$(date +%Y%m%d-%H%M%S).tar.gz}"
 
 JENKINS_PLUGINS=(
@@ -143,7 +143,7 @@ docker buildx version >/dev/null 2>&1 || err "docker buildx 가 필요합니다 
 [ -f "$SCRIPT_DIR/Dockerfile" ]         || err "Dockerfile 이 없습니다."
 [ -f "$SCRIPT_DIR/dify-chatflow.yaml" ] || err "dify-chatflow.yaml 이 없습니다."
 [ -d "$SCRIPT_DIR/zero_touch_qa" ]      || err "zero_touch_qa/ 디렉토리가 없습니다."
-[ -f "$SCRIPT_DIR/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline" ] || err "Pipeline 정의 파일 없음."
+[ -f "$SCRIPT_DIR/ZeroTouch-QA.jenkinsPipeline" ] || err "Pipeline 정의 파일 없음."
 [ -d "$SCRIPT_DIR/jenkins-init" ]       || err "jenkins-init/ 디렉토리가 없습니다."
 
 log "빌드 대상: $IMAGE_TAG (platform=$TARGET_PLATFORM)"

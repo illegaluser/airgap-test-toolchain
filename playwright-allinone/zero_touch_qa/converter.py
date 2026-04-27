@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import re
@@ -9,7 +10,16 @@ log = logging.getLogger(__name__)
 def convert_playwright_to_dsl(file_path: str, output_dir: str) -> list[dict]:
     """
     Playwright codegen이 생성한 Python 스크립트를 파싱하여
-    9대 DSL scenario.json으로 변환한다.
+    14대 DSL scenario.json으로 변환한다.
+
+    매핑:
+      9대 (Sprint 2 이전): navigate, wait, click, fill, press, select, check, hover, verify
+      신규 5대 (Sprint 4C):
+        - upload      ← page.locator(...).set_input_files("path")
+        - drag        ← page.locator(src).drag_to(page.locator(dst))
+        - scroll      ← page.locator(...).scroll_into_view_if_needed()
+        - mock_status ← page.route("PATTERN", lambda r: r.fulfill(status=NN))
+        - mock_data   ← page.route("PATTERN", lambda r: r.fulfill(... body=...))
 
     사용법:
       playwright codegen https://target-app.com --output recorded.py
@@ -78,6 +88,13 @@ def _parse_playwright_line(line: str) -> dict | None:
     if "wait_for_load_state" in line or "wait_for_url" in line:
         return None
 
+    # mock_status / mock_data — page.route("PATTERN", lambda r: r.fulfill(...))
+    # 우선순위: 다른 액션과 토큰 충돌이 없으므로 page.locator 매칭 전에 처리.
+    if "page.route(" in line and "fulfill" in line:
+        mock_step = _parse_mock_route(line)
+        if mock_step is not None:
+            return mock_step
+
     target = _extract_target(line)
 
     # fill
@@ -121,6 +138,36 @@ def _parse_playwright_line(line: str) -> dict | None:
         return {
             "action": "hover", "target": target, "value": "",
             "description": "마우스 호버",
+        }
+
+    # upload — set_input_files("path") 또는 set_input_files(["a", "b"]) (첫 항목 채택)
+    m = re.search(r'\.set_input_files\(\s*\[\s*["\'](.+?)["\']', line)
+    if m:
+        return {
+            "action": "upload", "target": target, "value": m.group(1),
+            "description": f"'{m.group(1)}' 파일 업로드",
+        }
+    m = re.search(r'\.set_input_files\(\s*["\'](.+?)["\']\s*\)', line)
+    if m:
+        return {
+            "action": "upload", "target": target, "value": m.group(1),
+            "description": f"'{m.group(1)}' 파일 업로드",
+        }
+
+    # drag — page.locator(src).drag_to(page.locator(dst)) 형태
+    if ".drag_to(" in line:
+        dst_target = _extract_drag_destination(line)
+        if dst_target:
+            return {
+                "action": "drag", "target": target, "value": dst_target,
+                "description": "드래그 앤 드롭",
+            }
+
+    # scroll — scroll_into_view_if_needed
+    if "scroll_into_view_if_needed" in line:
+        return {
+            "action": "scroll", "target": target, "value": "into_view",
+            "description": "요소 위치로 스크롤",
         }
 
     # click (다른 액션 매칭 후 최후에 체크)
@@ -192,3 +239,63 @@ def _extract_target(line: str) -> str:
         return m.group(1)
 
     return ""
+
+
+def _extract_drag_destination(line: str) -> str:
+    """`.drag_to(<expr>)` 의 인자에서 dst locator 표현식을 추출하여 DSL target 으로 변환."""
+    idx = line.find(".drag_to(")
+    if idx < 0:
+        return ""
+    # `(` 다음 위치
+    start = idx + len(".drag_to(")
+    depth = 1
+    i = start
+    while i < len(line) and depth > 0:
+        c = line[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    inner = line[start:i]
+    # inner 는 통상 `page.locator("...")` / `page.get_by_role("...", name="...")` 등
+    # _extract_target 이 동일 패턴을 처리하므로 위임. timeout=, force= 같은 옵션 인자는
+    # 첫 번째 표현식 뒤에 콤마로 따라오는데, _extract_target 의 정규식들은 첫 매칭만
+    # 잡으므로 그대로 통과.
+    return _extract_target(inner)
+
+
+def _parse_mock_route(line: str) -> dict | None:
+    """`page.route("PATTERN", lambda r: r.fulfill(...))` 형태를 mock_status/mock_data 로 변환."""
+    m_pat = re.search(r'page\.route\(\s*["\'](.+?)["\']', line)
+    if not m_pat:
+        return None
+    pattern = m_pat.group(1)
+
+    # body=... 가 있으면 mock_data, 없고 status=NN 만 있으면 mock_status.
+    m_body = re.search(r'body\s*=\s*([^,)]+(?:\([^)]*\))?[^,)]*)', line)
+    if m_body:
+        body_expr = m_body.group(1).strip()
+        # 따옴표 문자열이면 Python escape 해제 후 value 로.
+        # `body="{\"items\":[]}"` → `{"items":[]}` 로 평탄화해야 regression_generator
+        # emitter (`json.dumps(str(value))`) 와 mock 라우트 fulfill body 가 1:1 일관.
+        body_value = body_expr
+        if re.match(r'^["\'].*["\']$', body_expr):
+            try:
+                body_value = ast.literal_eval(body_expr)
+            except (ValueError, SyntaxError):
+                body_value = body_expr.strip("\"'")
+        return {
+            "action": "mock_data", "target": pattern, "value": body_value,
+            "description": f"{pattern} 응답 본문 모킹",
+        }
+
+    m_status = re.search(r'status\s*=\s*(\d+)', line)
+    if m_status:
+        return {
+            "action": "mock_status", "target": pattern, "value": m_status.group(1),
+            "description": f"{pattern} 응답 상태 {m_status.group(1)} 모킹",
+        }
+    return None

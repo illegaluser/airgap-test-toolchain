@@ -17,6 +17,27 @@ from .local_healer import LocalHealer
 log = logging.getLogger(__name__)
 
 
+# Healer 가 action 자체를 변경하는 것은 false-PASS 위험이 크기 때문에, 의미적으로
+# 등가인 좁은 전이 집합만 허용한다. 그룹 간 전이 (예: navigate ↔ verify, drag → click)
+# 는 의도된 검증 자체를 무력화하므로 절대 통과시키지 않는다. dify-chatflow.yaml 의
+# Healer system prompt 와 1:1 동기화돼 있다.
+_HEAL_ACTION_TRANSITIONS = frozenset({
+    ("select", "fill"), ("fill", "select"),
+    ("check", "click"), ("click", "check"),
+    ("click", "press"), ("press", "click"),
+    ("upload", "click"), ("click", "upload"),
+})
+
+
+def _is_allowed_action_transition(old_action: str, new_action: str) -> bool:
+    """Healer 가 제안한 action 변경이 화이트리스트 전이인지 검사한다."""
+    if not isinstance(old_action, str) or not isinstance(new_action, str):
+        return False
+    if old_action == new_action:
+        return True
+    return (old_action.lower(), new_action.lower()) in _HEAL_ACTION_TRANSITIONS
+
+
 class VerificationAssertionError(AssertionError):
     """요소 탐색은 성공했지만 verify 조건이 맞지 않을 때 사용한다."""
 
@@ -391,10 +412,27 @@ class QAExecutor:
             new_target_info = None
 
         if new_target_info:
-            # B: target 외에 value/condition mutate 도 허용 (action 변경은 허용 안 함 —
-            # false healing 폭탄 위험. drag→click 같은 의미 변경 차단).
+            # B: target / value / condition / fallback_targets 는 자유롭게 mutate 허용.
+            # action 변경은 _HEAL_ACTION_TRANSITIONS 화이트리스트 전이만 허용 (Sprint 6
+            # Option-2). 그 외 키는 무시. dify-chatflow.yaml Healer prompt 와 1:1 동기.
             allowed_keys = {"target", "value", "condition", "fallback_targets"}
             mutation = {k: v for k, v in new_target_info.items() if k in allowed_keys}
+            proposed_action = new_target_info.get("action")
+            if isinstance(proposed_action, str) and proposed_action.strip():
+                proposed_action = proposed_action.strip().lower()
+                old_action = str(step.get("action", "")).lower()
+                if _is_allowed_action_transition(old_action, proposed_action):
+                    if proposed_action != old_action:
+                        log.warning(
+                            "[Step %s] Healer action 전이 허용: %s → %s (whitelist)",
+                            step_id, old_action, proposed_action,
+                        )
+                    mutation["action"] = proposed_action
+                else:
+                    log.warning(
+                        "[Step %s] Healer action 전이 거절: %s → %s (whitelist 외, false-PASS 위험)",
+                        step_id, old_action, proposed_action,
+                    )
             step.update(mutation)
             healed_loc = resolver.resolve(step.get("target"))
             if healed_loc:
@@ -410,7 +448,8 @@ class QAExecutor:
                         step_id, step.get("target"),
                     )
                     return StepResult(
-                        step_id, action, str(step.get("target", "")),
+                        step_id, str(step.get("action", action)),
+                        str(step.get("target", "")),
                         str(step.get("value", "")), desc,
                         "HEALED", heal_stage="dify", screenshot_path=ss,
                     )
@@ -1336,7 +1375,15 @@ class QAExecutor:
             locator.press(str(value))
             if str(value).lower() in ("enter", "return"):
                 desc = str(step.get("description", ""))
-                if re.search(r"검색|search", desc, re.IGNORECASE):
+                # 검색 폼에 대한 anti-flake 휴리스틱 — 외부 검색 사이트가 봇 차단으로
+                # chrome-error 새 탭을 띄우면 후속 verify 가 false PASS 되는 것을 방지.
+                # 단, localhost/file:// 같은 fixture 환경은 단순 DOM 업데이트(예: #echo
+                # 텍스트 변경)만 하는 것이 정상이므로 strict 검사 대상에서 제외한다.
+                # 후속 verify step 이 실제 동작을 검증하므로 여기서 막을 필요 없음.
+                is_local_fixture = before_url.startswith(
+                    ("http://localhost", "http://127.0.0.1", "file://")
+                )
+                if re.search(r"검색|search", desc, re.IGNORECASE) and not is_local_fixture:
                     deadline = time.time() + 3.0
                     while time.time() < deadline:
                         if page.url != before_url:
