@@ -1091,7 +1091,37 @@ PPTX 가 필요하면 사용자가 PDF / Markdown 으로 변환 후 업로드.
 Dify console → 대상 KB → 문서 목록 → 변경된 문서 우측 메뉴 → **다시 인덱싱**.
 전체 KB 재인덱싱은 청킹 정책 자체가 바뀐 경우만 사용.
 
-#### 챗봇 호출 예시 (Dify Web UI)
+#### 챗봇 접근 — 두 경로
+
+**(1) 공개 chat URL** (anonymous, 익명 사용 가능 — provision.sh 가 자동 활성화):
+
+```text
+http://localhost:18081/chat/<code>
+```
+
+`<code>` 는 fresh provision 시점에 무작위 생성. 발급된 code 를 확인하려면 console GUI
+(앱 → 모니터링 → 공개 / API access) 또는 다음 curl:
+
+```bash
+PASS_B64=$(printf '%s' 'Admin1234!' | base64)
+COOKIES=$(mktemp)
+curl -sf -c "$COOKIES" -X POST "http://localhost:18081/console/api/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"admin@example.com\",\"password\":\"$PASS_B64\",\"remember_me\":true}" >/dev/null
+CSRF=$(awk '$6 == "csrf_token" || $6 == "__Host-csrf_token" { print $7; exit }' "$COOKIES")
+curl -sS -b "$COOKIES" -H "X-CSRF-Token: $CSRF" \
+  "http://localhost:18081/console/api/apps?page=1&limit=10" | \
+  python3 -c "import json,sys
+d=json.load(sys.stdin)
+for a in d.get('data',[]):
+    s=a.get('site') or {}
+    print(f\"  {a.get('name')}: http://localhost:18081/chat/{s.get('code','(disabled)')}\")"
+```
+
+⚠️ **포트 18081 필수** — Dify 는 컨테이너 내부 nginx 가 18081 에서 서빙. `http://localhost/chat/...`
+(포트 80) 은 동작 안 함.
+
+**(2) Studio (관리자 작업용)**:
 
 좌측 메뉴 → **Studio** → `Test Planning Brain` 클릭 → 우측 상단 **API access** 또는
 **Run** 으로 즉시 테스트.
