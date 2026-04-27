@@ -397,6 +397,18 @@ docker run -d --name dscore.ttc.playwright \
 docker logs -f dscore.ttc.playwright   # NODE_SECRET 확인. 확인되면 Ctrl+C.
 ```
 
+> **선택 — `DIFY_PUBLIC_URL` env 오버라이드** (사내 DNS 또는 비표준 호스트 포트로 노출하는 경우만):
+>
+> ```bash
+> # 예: 18081 외 포트로 노출하거나 사내 도메인을 부여한 경우
+> docker run -d ... -e DIFY_PUBLIC_URL=http://qa.intranet.example.com:18081 ...
+> ```
+>
+> 미설정 시 README 표준값 `http://localhost:18081` 사용. 이 값은 Dify 가 절대경로
+> URL (앱 share URL, 공개 chat URL, embed iframe) 을 렌더링할 때 들어가며 — 비어 있으면
+> nginx 요청 hostname 만 (포트 없이) 노출되어 `http://localhost/chat/<token>` 처럼
+> 잘못된 링크가 콘솔에 보인다. 표준 18081 매핑을 그대로 쓰면 별도 설정 불필요.
+
 **첫 기동 (볼륨 `dscore-data` 가 비어있을 때) — 3-5 분 소요**:
 
 | 경과 | 로그 마커 |
@@ -1172,8 +1184,11 @@ for a in d.get('data',[]):
     print(f\"  {a.get('name')}: http://localhost:18081/chat/{s.get('code','(disabled)')}\")"
 ```
 
-⚠️ **포트 18081 필수** — Dify 는 컨테이너 내부 nginx 가 18081 에서 서빙. `http://localhost/chat/...`
-(포트 80) 은 동작 안 함.
+⚠️ **포트 18081 필수** — Dify 는 컨테이너 내부 nginx 가 80 에서 서빙되며 호스트로는
+`-p 18081:80` 로 노출. `http://localhost/chat/...` (포트 80) 은 동작하지 않는다. 본 이미지는
+`APP_WEB_URL=http://localhost:18081` 을 baked-in 으로 박아 콘솔 / share UI 가 자동으로 포트
+포함 URL 을 렌더링한다. 다른 호스트 / 포트로 노출한다면 `docker run -e DIFY_PUBLIC_URL=...`
+로 덮어쓴다 (§1.2 docker run 박스 참조).
 
 **(2) Studio (관리자 작업용)**:
 
@@ -1442,6 +1457,38 @@ swap=8GB
 ```
 
 관리자 PowerShell 에서 `wsl --shutdown` → WSL 재기동.
+
+### 4.14b 챗봇 share URL 이 `http://localhost/chat/...` (포트 누락) 으로 보임
+
+본 이미지는 `APP_WEB_URL=http://localhost:18081` 을 baked-in 으로 박아 자동 해결된다.
+구버전 (cf29e3c 이전) 으로 빌드된 이미지에서만 발생. 해결:
+
+```bash
+# 새 image 로 재빌드 / 재배포
+./build.sh && docker load -i dscore.ttc.playwright-*.tar.gz
+docker stop dscore.ttc.playwright && docker rm dscore.ttc.playwright
+docker run -d ... dscore.ttc.playwright:latest   # §1.2 옵션
+```
+
+다른 호스트 / 포트로 노출한다면 `-e DIFY_PUBLIC_URL=http://qa.example.com:18081` 추가
+(§1.2 docker run 박스).
+
+### 4.14c `dify-web` 가 FATAL `EADDRINUSE 127.0.0.1:3000` 으로 죽는다
+
+`supervisorctl restart dify-web` 후 발생 가능한 회귀. 본 이미지 (cf29e3c 이상) 는
+`stopasgroup`/`killasgroup` 로 자동 해결. 그래도 발생 시:
+
+```bash
+# 컨테이너 안에서 port 3000 점유 PID 강제 종료
+docker exec dscore.ttc.playwright sh -c '
+  PID=$(ss -tlnp 2>/dev/null | grep ":3000" | sed -E "s/.*pid=([0-9]+).*/\1/")
+  [ -n "$PID" ] && kill -9 "$PID"
+  supervisorctl -c /etc/supervisor/supervisord.conf restart dify-web
+'
+```
+
+근본 해결: `supervisord.conf` 의 `[program:dify-web]` 에 `stopasgroup=true` +
+`killasgroup=true` 가 있는지 확인 (cf29e3c 이상 자동).
 
 ### 4.15 디스크 공간 부족으로 빌드 실패
 
