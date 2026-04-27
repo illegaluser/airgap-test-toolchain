@@ -12,10 +12,20 @@
 // - [v2.2] 폐쇄망 대응: Stage 1 에서 pip install / playwright install 제거
 //          모든 설치는 setup.sh Phase 6 에서 사전 수행
 //          파이프라인은 기존 venv 활성화만 수행 — 미존재 시 명확한 에러 출력
+// - [v2.3] Sprint 4A 운영 preflight / Dify health probe / 30일 retention 추가
 // =============================================================================
 
 pipeline {
     agent { label 'mac-ui-tester || wsl-ui-tester' }
+
+    options {
+        buildDiscarder(logRotator(
+            daysToKeepStr: '30',
+            numToKeepStr: '100',
+            artifactDaysToKeepStr: '30',
+            artifactNumToKeepStr: '100'
+        ))
+    }
 
     parameters {
         choice(
@@ -74,12 +84,14 @@ pipeline {
 
         // ──────────────────────────────────────────────────────────────────
         // Stage 1: 환경 검증 및 Python venv 캐싱
-        // SCRIPTS_HOME 미설정 시 명확한 오류 메시지로 즉시 중단
-        // venv 는 WORKSPACE 아래에 캐싱 — 빌드 간 재사용
+        // SCRIPTS_HOME / venv / Playwright browser / artifacts 권한을
+        // 엔진 실행 전에 빠르게 검증해 후속 E2E false fail 을 줄인다.
         // ──────────────────────────────────────────────────────────────────
         stage('1. 환경 동기화 및 캐싱') {
             steps {
                 sh """
+                    set -eu
+
                     # SCRIPTS_HOME 설정 여부 검증
                     if [ -z "\${SCRIPTS_HOME:-}" ]; then
                         echo "======================================================"
@@ -90,9 +102,50 @@ pipeline {
                         echo "======================================================"
                         exit 1
                     fi
+                    if [ ! -d "\${SCRIPTS_HOME}" ]; then
+                        echo "======================================================"
+                        echo "[ERROR] SCRIPTS_HOME 경로가 존재하지 않습니다."
+                        echo "  SCRIPTS_HOME=\${SCRIPTS_HOME}"
+                        echo "======================================================"
+                        exit 1
+                    fi
+                    if [ ! -d "\${SCRIPTS_HOME}/zero_touch_qa" ]; then
+                        echo "======================================================"
+                        echo "[ERROR] SCRIPTS_HOME 아래 zero_touch_qa 패키지가 없습니다."
+                        echo "  SCRIPTS_HOME=\${SCRIPTS_HOME}"
+                        echo "======================================================"
+                        exit 1
+                    fi
 
                     mkdir -p '${AGENT_HOME}/artifacts'
                     rm -rf '${AGENT_HOME}/artifacts'/*
+                    if ! touch '${AGENT_HOME}/artifacts/.write-test'; then
+                        echo "======================================================"
+                        echo "[ERROR] artifacts 디렉토리에 쓸 수 없습니다."
+                        echo "  경로: ${AGENT_HOME}/artifacts"
+                        echo "======================================================"
+                        exit 1
+                    fi
+                    rm -f '${AGENT_HOME}/artifacts/.write-test'
+
+                    FREE_KB=\$(df -Pk '${AGENT_HOME}' | awk 'NR==2 {print \$4}')
+                    if [ "\${FREE_KB:-0}" -lt 1048576 ]; then
+                        echo "======================================================"
+                        echo "[ERROR] 디스크 여유 공간이 1GB 미만입니다."
+                        echo "  AGENT_HOME: ${AGENT_HOME}"
+                        echo "  free_kb: \${FREE_KB:-unknown}"
+                        echo "======================================================"
+                        exit 1
+                    fi
+
+                    if command -v java >/dev/null 2>&1; then
+                        java -version
+                    else
+                        echo "======================================================"
+                        echo "[ERROR] java 명령을 찾을 수 없습니다. Jenkins agent 실행 환경을 확인하십시오."
+                        echo "======================================================"
+                        exit 1
+                    fi
 
                     # venv 검증 — setup.sh Phase 6 에서 사전 생성된 venv 를 사용한다.
                     # 폐쇄망 환경 대응: 파이프라인 실행 중에는 아무것도 설치하지 않는다.
@@ -110,7 +163,26 @@ pipeline {
                         echo "======================================================"
                         exit 1
                     fi
-                    echo "[Setup] venv 확인 완료."
+
+                    . '${AGENT_HOME}/venv/bin/activate'
+                    export PYTHONPATH="\${SCRIPTS_HOME}"
+                    python3 --version
+                    python3 - <<'PY'
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+import zero_touch_qa
+
+with sync_playwright() as p:
+    chromium_path = Path(p.chromium.executable_path)
+    if not chromium_path.exists():
+        raise SystemExit(
+            "Playwright Chromium executable not found: "
+            f"{chromium_path}. Run playwright install chromium in the agent venv."
+        )
+    print(f"[Preflight] zero_touch_qa={zero_touch_qa.__version__}")
+    print(f"[Preflight] chromium={chromium_path}")
+PY
+                    echo "[Setup] agent preflight 완료."
                 """
             }
         }
@@ -180,13 +252,16 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────────
-        // Stage 2.5: Dify API 준비 대기
-        // /console/api/setup 이 HTTP 200 을 반환할 때까지 폴링한다.
-        // Dify 컨테이너 기동 직후 DB 마이그레이션 완료에 1~3분이 소요될 수 있다.
+        // Stage 2.5: Dify API 준비 대기 + credential/model health probe
+        // /console/api/setup readiness 후, app API key 로 /v1/parameters 를
+        // 호출해 endpoint / credential 정합성을 확인한다. 필요 시
+        // DIFY_HEALTH_CHAT_PROBE=1 로 최소 chat-messages probe 도 수행.
         // ──────────────────────────────────────────────────────────────────
         stage('2.5. Dify API 준비 대기') {
             steps {
                 sh """
+                    set -eu
+
                     echo "[HealthCheck] Dify API 준비 상태 확인 시작..."
                     HEALTH_URL="http://localhost:18081/console/api/setup"
                     MAX_WAIT=180
@@ -214,6 +289,53 @@ pipeline {
                         sleep \$INTERVAL
                         ELAPSED=\$((ELAPSED + INTERVAL))
                     done
+
+                    if [ -z "\${DIFY_BASE_URL:-}" ]; then
+                        echo "[ERROR] DIFY_BASE_URL 이 비어 있습니다."
+                        exit 1
+                    fi
+                    if [ -z "\${DIFY_API_KEY:-}" ]; then
+                        echo "[ERROR] DIFY_API_KEY credential 이 비어 있습니다."
+                        exit 1
+                    fi
+
+                    PARAM_URL="\${DIFY_BASE_URL%/}/parameters?user=mac-agent"
+                    PARAM_STATUS=\$(curl -sS -o '${AGENT_HOME}/artifacts/dify_parameters_probe.json' \\
+                        -w '%{http_code}' \\
+                        -H "Authorization: Bearer \${DIFY_API_KEY}" \\
+                        "\$PARAM_URL" 2>/dev/null || echo "000")
+                    if [ "\$PARAM_STATUS" != "200" ]; then
+                        echo "======================================================"
+                        echo "[ERROR] Dify app API credential / endpoint health check 실패"
+                        echo "  URL: \$PARAM_URL"
+                        echo "  HTTP: \$PARAM_STATUS"
+                        echo "  응답: ${AGENT_HOME}/artifacts/dify_parameters_probe.json"
+                        echo "======================================================"
+                        exit 1
+                    fi
+                    echo "[HealthCheck] Dify app API credential 확인 완료 (/parameters HTTP \$PARAM_STATUS)"
+
+                    if [ "\${DIFY_HEALTH_CHAT_PROBE:-0}" = "1" ]; then
+                        echo "[HealthCheck] Dify chat-messages 최소 probe 시작..."
+                        CHAT_PAYLOAD='{"inputs":{"run_mode":"chat","srs_text":"health check only","target_url":"about:blank","api_docs":""},"query":"health check","response_mode":"blocking","user":"mac-agent-health"}'
+                        CHAT_STATUS=\$(curl -sS -o '${AGENT_HOME}/artifacts/dify_chat_probe.json' \\
+                            -w '%{http_code}' \\
+                            -H "Authorization: Bearer \${DIFY_API_KEY}" \\
+                            -H "Content-Type: application/json" \\
+                            -X POST "\${DIFY_BASE_URL%/}/chat-messages" \\
+                            --data "\$CHAT_PAYLOAD" 2>/dev/null || echo "000")
+                        if [ "\$CHAT_STATUS" != "200" ]; then
+                            echo "======================================================"
+                            echo "[ERROR] Dify chat-messages model health probe 실패"
+                            echo "  HTTP: \$CHAT_STATUS"
+                            echo "  응답: ${AGENT_HOME}/artifacts/dify_chat_probe.json"
+                            echo "======================================================"
+                            exit 1
+                        fi
+                        echo "[HealthCheck] Dify chat-messages probe 완료 (HTTP \$CHAT_STATUS)"
+                    else
+                        echo "[HealthCheck] DIFY_HEALTH_CHAT_PROBE != 1 — model 생성 probe 생략"
+                    fi
                 """
             }
         }

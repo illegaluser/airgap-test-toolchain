@@ -5,6 +5,7 @@ import re
 import time
 import logging
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, Page, Locator, expect
 
@@ -841,6 +842,7 @@ class QAExecutor:
         pattern = str(url_pattern or "").strip()
         if not pattern:
             raise ValueError("mock_* action 에 target(URL 패턴)이 필요함")
+        QAExecutor._enforce_mock_scope(pattern)
 
         def _handler(route):
             fulfill_args = {"status": status or 200}
@@ -850,6 +852,44 @@ class QAExecutor:
             route.fulfill(**fulfill_args)
 
         page.route(pattern, _handler, times=max(1, int(times)))
+
+    @staticmethod
+    def _enforce_mock_scope(pattern: str) -> None:
+        """Prevent overly broad or blocked-host mock routes.
+
+        Playwright route mocking only affects the browser context, but an overly
+        broad pattern can hide real failures and create false positives. The
+        guard is opt-out via MOCK_OVERRIDE=1 for explicit operator actions.
+        """
+        if os.getenv("MOCK_OVERRIDE", "").strip() == "1":
+            log.warning("[MockGuard] MOCK_OVERRIDE=1 — mock scope guard 우회: %s", pattern)
+            return
+
+        normalized = pattern.strip().lower()
+        target_host = urlparse(os.getenv("TARGET_URL", "")).hostname or ""
+        blocked_hosts = {
+            h.strip().lower()
+            for h in os.getenv("MOCK_BLOCKED_HOSTS", "").split(",")
+            if h.strip()
+        }
+        if target_host and target_host.lower() in blocked_hosts:
+            blocked_hosts.add(target_host.lower())
+
+        broad_patterns = {"*", "**", "/*", "/**", "**/*", "**/**"}
+        is_broad = normalized in broad_patterns
+        if is_broad and (target_host or blocked_hosts):
+            raise ValueError(
+                "mock_* target 이 너무 넓어 false positive 위험이 큼: "
+                f"{pattern!r}. MOCK_OVERRIDE=1 로만 명시 우회 가능"
+            )
+
+        for host in blocked_hosts:
+            if host and host in normalized:
+                raise ValueError(
+                    "mock_* target 이 차단된 host 와 매칭됨: "
+                    f"host={host!r}, pattern={pattern!r}. "
+                    "MOCK_OVERRIDE=1 로만 명시 우회 가능"
+                )
 
     def _execute_mock_step(
         self, page: Page, step: dict, artifacts: str
