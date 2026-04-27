@@ -8,7 +8,7 @@
 # 자세한 설계: PLAN_TEST_PLANNING_RAG.md 참조.
 #
 # 자동 import: provision.sh 의 dify_import_chatflow() 함수가 KB ID 두 개를
-# `dataset_ids: []` 빈 리스트에 순서대로 substitute 한 뒤 import + publish.
+# 빈 dataset_ids 리스트에 순서대로 substitute 한 뒤 import + publish.
 #
 # 모델: gemma4:26b (호스트 Ollama). 변경 시 planner_llm 노드의 model.name 만 수정.
 # =============================================================================
@@ -125,7 +125,7 @@ workflow:
               default: ''
 
       # ── Knowledge Retrieval #1: kb_project_info ──
-      # provision.sh 가 KB 생성 후 dataset_ids: [] 에 첫 번째 UUID 를 주입.
+      # provision.sh 가 KB 생성 후 빈 dataset_ids 에 첫 번째 UUID 를 substitute.
       # PLAN §4.3 의 보수적 시작 — top_k=3, score_threshold=0.5.
       - id: retrieval_project
         type: custom
@@ -145,13 +145,21 @@ workflow:
             score_threshold_enabled: true
             score_threshold: 0.5
             reranking_enable: false
-            reranking_mode: null
+            reranking_mode: weighted_score
             reranking_model:
               provider: ''
               model: ''
+            weights:
+              weight_type: customized
+              keyword_setting:
+                keyword_weight: 0.3
+              vector_setting:
+                vector_weight: 0.7
+                embedding_provider_name: langgenius/ollama/ollama
+                embedding_model_name: bona/bge-m3-korean:latest
 
       # ── Knowledge Retrieval #2: kb_test_theory ──
-      # provision.sh 가 KB 생성 후 dataset_ids: [] 에 두 번째 UUID 를 주입.
+      # provision.sh 가 KB 생성 후 빈 dataset_ids 에 두 번째 UUID 를 substitute.
       # 이론 KB 는 잘못된 인용 비용이 크므로 top_k=2 + score_threshold=0.6 정밀 우선.
       - id: retrieval_theory
         type: custom
@@ -171,10 +179,18 @@ workflow:
             score_threshold_enabled: true
             score_threshold: 0.6
             reranking_enable: false
-            reranking_mode: null
+            reranking_mode: weighted_score
             reranking_model:
               provider: ''
               model: ''
+            weights:
+              weight_type: customized
+              keyword_setting:
+                keyword_weight: 0.3
+              vector_setting:
+                vector_weight: 0.7
+                embedding_provider_name: langgenius/ollama/ollama
+                embedding_model_name: bona/bge-m3-korean:latest
 
       # ── Planner LLM (gemma4:26b) ─────────────────
       - id: planner_llm

@@ -772,8 +772,11 @@ except Exception: print('')
 
   rm -f "$tmp_yaml" "$tmp_yaml.bak"
 
-  # 외부 변수에 API key 보존 (caller 가 이후 사용)
-  printf '%s' "$api_key"
+  # 외부 변수에 API key 보존 (caller 가 이후 사용).
+  # stdout 캡처 패턴 (`$(...)`) 을 쓰면 함수 내부 log/ok/warn 출력이 모두 캡처
+  # 되어 console 에 안 보이고 변수에 garbage 가 섞인다. 따라서 글로벌 변수
+  # `DIFY_IMPORT_LAST_API_KEY` 로 반환.
+  DIFY_IMPORT_LAST_API_KEY="$api_key"
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -781,10 +784,12 @@ except Exception: print('')
 # ────────────────────────────────────────────────────────────────────────────
 if [ "$DIFY_LOGGED_IN" = "true" ] && [ -f "$OFFLINE_DIFY_CHATFLOW_YAML" ]; then
   step "=== 2-4. ZeroTouch QA Brain Chatflow import ==="
-  DIFY_API_KEY_PLANNER=$(dify_import_chatflow \
+  DIFY_IMPORT_LAST_API_KEY=""
+  dify_import_chatflow \
     "$OFFLINE_DIFY_CHATFLOW_YAML" \
     "dify-qa-api-token" \
-    "Dify QA Chatflow API Key (provision-apps.sh auto-registered)")
+    "Dify QA Chatflow API Key (provision-apps.sh auto-registered)"
+  DIFY_API_KEY_PLANNER="$DIFY_IMPORT_LAST_API_KEY"
   DIFY_API_KEY="$DIFY_API_KEY_PLANNER"  # legacy 호환 — 아래 §3 Jenkins credential 처리 코드 호환
 fi
 
@@ -794,12 +799,14 @@ fi
 if [ "$DIFY_LOGGED_IN" = "true" ] && [ -f "${OFFLINE_TEST_PLANNING_CHATFLOW_YAML:-/opt/test-planning-chatflow.yaml}" ] \
    && [ -n "$KB_PROJECT_INFO_ID" ] && [ -n "$KB_TEST_THEORY_ID" ]; then
   step "=== 2-5. Test Planning Brain Chatflow import ==="
-  DIFY_API_KEY_PLANNING=$(dify_import_chatflow \
+  DIFY_IMPORT_LAST_API_KEY=""
+  dify_import_chatflow \
     "${OFFLINE_TEST_PLANNING_CHATFLOW_YAML:-/opt/test-planning-chatflow.yaml}" \
     "dify-test-planning-api-token" \
     "Dify Test Planning Brain API Key (RAG track, 선등록 only - 사용처는 후속 자동화 트랙)" \
     "$KB_PROJECT_INFO_ID" \
-    "$KB_TEST_THEORY_ID")
+    "$KB_TEST_THEORY_ID"
+  DIFY_API_KEY_PLANNING="$DIFY_IMPORT_LAST_API_KEY"
 elif [ "$DIFY_LOGGED_IN" = "true" ] && [ ! -f "${OFFLINE_TEST_PLANNING_CHATFLOW_YAML:-/opt/test-planning-chatflow.yaml}" ]; then
   log "2-5. Test Planning Brain chatflow YAML 부재 — RAG 트랙 미설정 (skip)"
 fi
