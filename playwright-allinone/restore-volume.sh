@@ -95,14 +95,22 @@ docker run --rm \
 RESTORED_COUNT=$(docker run --rm -v "$DATA_VOLUME:/src:ro" busybox sh -c 'find /src -mindepth 1 -maxdepth 1 | wc -l')
 log "  복구 완료 — 볼륨 최상위 항목: $RESTORED_COUNT"
 
-# 주요 디렉토리 sanity check
-for d in postgres qdrant redis jenkins-home; do
+# 주요 디렉토리 sanity check — entrypoint.sh 가 만드는 실제 구조 기준
+# (pg=postgres data dir, jenkins=JENKINS_HOME, dify=storage/plugins, logs=supervisor/service log)
+for d in pg qdrant redis jenkins dify; do
   if docker run --rm -v "$DATA_VOLUME:/src:ro" busybox test -d "/src/$d"; then
     log "  ✓ /data/$d 존재"
   else
     log "  ⚠ /data/$d 없음 — 백업 시점에 해당 서비스가 활성화 안 됐을 수 있음"
   fi
 done
+
+# .app_provisioned 마커 — provision skip 여부 결정
+if docker run --rm -v "$DATA_VOLUME:/src:ro" busybox test -f "/src/.app_provisioned"; then
+  log "  ✓ /data/.app_provisioned 존재 — entrypoint 가 provision 단계를 skip"
+else
+  log "  ⚠ /data/.app_provisioned 없음 — 다음 부팅 시 provision 이 다시 실행됨"
+fi
 
 log ""
 log "============================================================"
