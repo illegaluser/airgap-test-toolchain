@@ -373,6 +373,39 @@ SQL
     | while read k; do redis-cli -h 127.0.0.1 DEL "$k" >/dev/null 2>&1; done
   ok "  Redis 캐시 삭제 완료"
 
+  # 2-3f. Embedding 모델 등록 — Test Planning RAG 트랙용 (별도 트랙, KB 검색에 사용)
+  # `bona/bge-m3-korean:latest` 모델을 text-embedding type 으로 추가 등록한다.
+  # Dify Knowledge Base 가 청크를 임베딩할 때 이 provider 를 사용한다. LLM 등록과
+  # 동일한 endpoint 를 쓰되 model_type 이 다르다. 자세한 설계는 PLAN_TEST_PLANNING_RAG.md.
+  EMBEDDING_MODEL="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
+  log "2-3f. Embedding 모델 등록: ${EMBEDDING_MODEL} (text-embedding)"
+  EMB_REG_BODY=$($PY - << PYEOF
+import json
+print(json.dumps({
+    "model": "${EMBEDDING_MODEL}",
+    "model_type": "text-embedding",
+    "credentials": {
+        "base_url": "${OLLAMA_BASE_URL}",
+        "context_size": "${OLLAMA_CONTEXT_SIZE}",
+        "max_chunks": "32"
+    }
+}))
+PYEOF
+)
+  EMB_REG_RESP=$(curl -sS -w $'\nHTTP:%{http_code}' -b "$DIFY_COOKIES" \
+      -X POST "${DIFY_URL}/console/api/workspaces/current/model-providers/langgenius/ollama/ollama/models/credentials" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: ${DIFY_CSRF_TOKEN}" \
+      -d "$EMB_REG_BODY" 2>&1 || echo "HTTP:000")
+  debug "embedding register response: $EMB_REG_RESP"
+  if echo "$EMB_REG_RESP" | grep -qE 'HTTP:(200|201)'; then
+    ok "  embedding credentials POST 완료"
+  elif echo "$EMB_REG_RESP" | grep -q 'already_exist'; then
+    ok "  embedding credentials 이미 존재"
+  else
+    warn "  embedding credentials POST 이상 응답: $EMB_REG_RESP"
+  fi
+
   # 2-3e. 반영 위해 dify-api + dify-plugin-daemon 재기동
   #
   # PoC 2026-04-20: Windows 11 WSL2 (amd64) 환경에서 Dify 1.13.3 의 gevent 워커가
