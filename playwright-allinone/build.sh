@@ -142,6 +142,7 @@ docker buildx version >/dev/null 2>&1 || err "docker buildx 가 필요합니다 
 # 자체 완결 폴더 전제: 의존 파일이 이 폴더에 복사되어 있어야 한다.
 [ -f "$SCRIPT_DIR/Dockerfile" ]         || err "Dockerfile 이 없습니다."
 [ -f "$SCRIPT_DIR/dify-chatflow.yaml" ] || err "dify-chatflow.yaml 이 없습니다."
+[ -f "$SCRIPT_DIR/test-planning-chatflow.yaml" ] || err "test-planning-chatflow.yaml 이 없습니다 (Test Planning RAG 트랙)."
 [ -d "$SCRIPT_DIR/zero_touch_qa" ]      || err "zero_touch_qa/ 디렉토리가 없습니다."
 [ -f "$SCRIPT_DIR/ZeroTouch-QA.jenkinsPipeline" ] || err "Pipeline 정의 파일 없음."
 [ -d "$SCRIPT_DIR/jenkins-init" ]       || err "jenkins-init/ 디렉토리가 없습니다."

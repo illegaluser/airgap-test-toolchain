@@ -1,0 +1,6 @@
+endpoint,method,params,response,description
+/api/login,POST,"{username:string, password:string}","{token:string, expires_in:int}",로그인 API. 성공 시 JWT 토큰 발급. 실패 시 401.
+/api/users/{id},GET,"{id:int}","{id:int, name:string, email:string}",사용자 정보 조회. 본인 또는 admin 만 접근 가능.
+/api/payments,POST,"{card_number:string, amount:int, currency:string}","{transaction_id:string, status:string}",결제 처리. card_number 는 4111-1111-1111-1111 패턴. amount 는 양의 정수만.
+/api/payments/{id},GET,"{id:string}","{id:string, status:enum:[pending,completed,failed], amount:int}",결제 상태 조회. transaction_id 로 조회.
+/api/cart/items,POST,"{product_id:int, qty:int}","{cart_id:string, total:int}",장바구니 항목 추가. qty 는 1~99. product_id 가 매장에 없으면 404.

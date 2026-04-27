@@ -1,0 +1,389 @@
+# =============================================================================
+# Test Planning Brain — Dify Chatflow DSL (v0.1.0)
+#
+# Test Planning RAG 트랙의 신규 챗봇. 사용자 자연어 요청을 받아 두 KB
+# (kb_project_info / kb_test_theory) 에서 retrieve 한 후 gemma4:26b 로
+# 테스트 계획서 / 시나리오 / 14-DSL JSON 을 생성한다.
+#
+# 자세한 설계: PLAN_TEST_PLANNING_RAG.md 참조.
+#
+# 자동 import: provision.sh 의 dify_import_chatflow() 함수가 KB ID 두 개를
+# `dataset_ids: []` 빈 리스트에 순서대로 substitute 한 뒤 import + publish.
+#
+# 모델: gemma4:26b (호스트 Ollama). 변경 시 planner_llm 노드의 model.name 만 수정.
+# =============================================================================
+
+kind: app
+version: 0.1.3
+app:
+  description: 'Test Planning Brain — RAG 기반 테스트 계획서 / 시나리오 자동 생성. spec + 테스트 이론 KB 를 retrieval 해 IEEE 829-lite 계획서, BDD 시나리오, 14-DSL JSON 산출.'
+  icon: clipboard
+  icon_background: '#E0F2FE'
+  mode: advanced-chat
+  name: Test Planning Brain
+  use_icon_as_answer_icon: false
+
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+
+  graph:
+    # ──────────────────────────────────────────────────────────────────
+    # 엣지 (노드 간 연결)
+    # ──────────────────────────────────────────────────────────────────
+    edges:
+      - id: edge-start-to-retrieval-project
+        source: start
+        sourceHandle: source
+        target: retrieval_project
+        targetHandle: target
+        type: custom
+        data:
+          sourceType: start
+          targetType: knowledge-retrieval
+
+      - id: edge-retrieval-project-to-retrieval-theory
+        source: retrieval_project
+        sourceHandle: source
+        target: retrieval_theory
+        targetHandle: target
+        type: custom
+        data:
+          sourceType: knowledge-retrieval
+          targetType: knowledge-retrieval
+
+      - id: edge-retrieval-theory-to-llm
+        source: retrieval_theory
+        sourceHandle: source
+        target: planner_llm
+        targetHandle: target
+        type: custom
+        data:
+          sourceType: knowledge-retrieval
+          targetType: llm
+
+      - id: edge-llm-to-answer
+        source: planner_llm
+        sourceHandle: source
+        target: answer
+        targetHandle: target
+        type: custom
+        data:
+          sourceType: llm
+          targetType: answer
+
+    # ──────────────────────────────────────────────────────────────────
+    # 노드
+    # ──────────────────────────────────────────────────────────────────
+    nodes:
+      # ── Start 노드 ───────────────────────────────
+      - id: start
+        type: custom
+        position:
+          x: 80
+          y: 200
+        data:
+          type: start
+          title: Start
+          desc: '사용자 입력 — query, output_mode, target_module (선택)'
+          variables:
+            - variable: user_query
+              label: '사용자 요청 (자연어)'
+              type: paragraph
+              required: true
+              max_length: 8000
+            - variable: output_mode
+              label: '출력 모드'
+              type: select
+              required: true
+              default: both
+              options:
+                - plan
+                - scenario_natural
+                - scenario_dsl
+                - both
+            - variable: target_module
+              label: '대상 모듈 (선택, retrieval 정확도 ↑)'
+              type: text-input
+              required: false
+              max_length: 200
+              default: ''
+
+      # ── Knowledge Retrieval #1: kb_project_info ──
+      # provision.sh 가 KB 생성 후 dataset_ids: [] 에 첫 번째 UUID 를 주입.
+      # PLAN §4.3 의 보수적 시작 — top_k=3, score_threshold=0.5.
+      - id: retrieval_project
+        type: custom
+        position:
+          x: 320
+          y: 100
+        data:
+          type: knowledge-retrieval
+          title: 'KB 검색 #1 — project_info (spec / 기획서 / API)'
+          query_variable_selector:
+            - start
+            - user_query
+          dataset_ids: []
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 3
+            score_threshold_enabled: true
+            score_threshold: 0.5
+            reranking_enable: false
+            reranking_mode: null
+            reranking_model:
+              provider: ''
+              model: ''
+
+      # ── Knowledge Retrieval #2: kb_test_theory ──
+      # provision.sh 가 KB 생성 후 dataset_ids: [] 에 두 번째 UUID 를 주입.
+      # 이론 KB 는 잘못된 인용 비용이 크므로 top_k=2 + score_threshold=0.6 정밀 우선.
+      - id: retrieval_theory
+        type: custom
+        position:
+          x: 320
+          y: 300
+        data:
+          type: knowledge-retrieval
+          title: 'KB 검색 #2 — test_theory (테스트 설계 기법 / 회귀 정책)'
+          query_variable_selector:
+            - start
+            - user_query
+          dataset_ids: []
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 2
+            score_threshold_enabled: true
+            score_threshold: 0.6
+            reranking_enable: false
+            reranking_mode: null
+            reranking_model:
+              provider: ''
+              model: ''
+
+      # ── Planner LLM (gemma4:26b) ─────────────────
+      - id: planner_llm
+        type: custom
+        position:
+          x: 580
+          y: 200
+        data:
+          type: llm
+          title: Planner (gemma4:26b)
+          desc: 'output_mode 에 따라 계획서 / 자연어 시나리오 / 14-DSL JSON / 혼합 emit'
+          model:
+            completion_params:
+              temperature: 0.1
+              max_tokens: 8192
+            mode: chat
+            name: 'gemma4:26b'
+            provider: ollama
+          context:
+            enabled: true
+            variable_selector:
+              - retrieval_theory
+              - result
+          memory:
+            query_prompt_template: ''
+            role_prefix:
+              assistant: ''
+              user: ''
+            window:
+              enabled: false
+              size: 50
+          prompt_template:
+            - id: planner-system
+              role: system
+              text: |
+                당신은 RAG 기반 테스트 설계 보조 시스템입니다. 사용자 요청과 두 Knowledge Base
+                (프로젝트 정보 + 테스트 이론) 에서 retrieve 된 청크를 바탕으로,
+                출력 모드 (output_mode) 에 따라 다음 산출물 중 하나 또는 조합을 emit 합니다.
+
+                [⚠️ 핵심 제약 — 모든 모드 공통]
+                1. `<think>`, `<thinking>`, `<reasoning>` 등 사고 블록을 출력에 절대 포함하지 마십시오.
+                   추론은 모두 내부적으로 수행하고, 응답은 즉시 결과 형식으로 시작하십시오.
+                2. retrieve 된 청크 외의 정보를 추측 / 환각하지 마십시오. 청크에 없는 사실은 명시
+                   "(KB 미확인)" 으로 표시하거나 생략.
+                3. 모든 산출물은 traceability (출처 인용) 를 포함합니다.
+
+                [출력 모드 분류 — output_mode 변수 따라 분기]
+
+                ## 모드 1: `plan` (테스트 계획서 only)
+                IEEE 829-lite 8 섹션 Markdown 으로 출력. 각 섹션은 retrieve 된 청크에 근거.
+
+                ```markdown
+                # 테스트 계획서: <대상 모듈/기능>
+
+                ## 1. 목적
+                <spec 청크 인용 + 검증 목표>
+
+                ## 2. 범위
+                - 포함: ...
+                - 제외: ...
+
+                ## 3. 일정 / 자원
+                <예상 소요 + 필요 자원. spec 에 없으면 "(KB 미확인 — 운영자 지정 필요)">
+
+                ## 4. 책임
+                <역할별 담당 — RACI 패턴>
+
+                ## 5. 위험과 대응
+                <식별된 위험 + 완화 전략. 테스트 이론 KB 의 일반 위험 결합>
+
+                ## 6. 종료 기준
+                <조건. critical 시나리오 PASS / 회귀 통과율 ≥ 95% 등>
+
+                ## 7. 산출물
+                <테스트 시나리오 / 회귀 결과 / 결함 리포트>
+
+                ## 8. 근거 문서 (Traceability)
+                | 섹션 | 출처 문서 | 청크 ID | retrieval score | 인용 |
+                | --- | --- | --- | --- | --- |
+                | 1. 목적 | <문서명> | <chunk_id> | <0.xx> | "..." (인용 첫 30자) |
+                | ... | ... | ... | ... | ... |
+                ```
+
+                ## 모드 2: `scenario_natural` (자연어 시나리오 only)
+                Given/When/Then 형식 BDD 시나리오 Markdown. 한 시나리오당 1 G/W/T 블록.
+                각 시나리오 끝에 `**근거**:` 줄로 출처 명시.
+
+                ```markdown
+                ### 시나리오 1: <제목>
+
+                **Given** <전제 / 사전 조건>
+                **When** <단일 사용자/시스템 동작>  ← compound 금지 (atomic 1 액션)
+                **Then** <검증 가능한 단일 결과>
+
+                **근거**: <문서명> chunk-<id> (score=<0.xx>) — "인용 첫 30자..."
+
+                ### 시나리오 2: ...
+                ```
+
+                ## 모드 3: `scenario_dsl` (14-DSL JSON only — 자동화 핵심)
+                **JSON-first-block 룰 엄격 준수**:
+
+                - 첫 글자는 반드시 `[` (JSON list 시작).
+                - JSON list 본체는 standard JSON 객체 배열. 각 객체는 step / action / target /
+                  value / description / fallback_targets / (verify 만 condition).
+                - JSON 닫는 `]` 다음에 빈 줄 1 개.
+                - 그 다음 줄부터 `# traceability:` 주석 (선택, 권장).
+                - JSON 본체 안에는 markdown / 설명 / fenced block / `<think>` 모두 **금지**.
+                - JSON 외부의 traceability 영역도 markdown 금지 (`#` 주석 행만).
+
+                action 화이트리스트 14개: navigate, click, fill, press, select, check, hover,
+                wait, verify, upload, drag, scroll, mock_status, mock_data.
+
+                예시 출력:
+
+                ```text
+                [{"step": 1, "action": "navigate", "target": "", "value": "https://example.com/payment", "description": "결제 페이지 로드", "fallback_targets": []},
+                 {"step": 2, "action": "fill", "target": "#card-number", "value": "4111-1111-1111-1111", "description": "카드 번호 입력", "fallback_targets": []},
+                 {"step": 3, "action": "click", "target": "role=button, name=결제", "value": "", "description": "결제 버튼 클릭", "fallback_targets": ["text=결제하기"]},
+                 {"step": 4, "action": "verify", "target": "role=alert", "value": "성공", "condition": "text", "description": "성공 알림 검증", "fallback_targets": []}]
+
+                # traceability:
+                # step 1 — module_payment_v1.2.pdf chunk-7f2a (score=0.84) — "결제 페이지 URL 은 /payment ..."
+                # step 2 — api_endpoints.csv row 12 chunk-9c3d (score=0.78) — "POST /payments 의 카드번호 ..."
+                # step 3 — module_payment_v1.2.pdf chunk-7f2a (score=0.84)
+                # step 4 — boundary_value_analysis.pdf chunk-1b8e (score=0.72) — "성공 케이스 alert ..."
+                ```
+
+                자동 파서 추출 룰: `out.split("\n#", 1)[0].rstrip()` → `json.loads()` 통과해야 함.
+                위 룰 위반 시 자동 reject + retry 발생 → 토큰 낭비. 반드시 준수.
+
+                ## 모드 4: `both` (계획서 + 시나리오 + 14-DSL 모두)
+                위 세 산출물을 한 응답에 포함. **14-DSL JSON 은 strict fence 로 감쌈**:
+
+                ```markdown
+                # 테스트 계획서: ...
+                ## 1. 목적
+                ...
+                ## 8. 근거 문서
+                | ... |
+
+                ---
+
+                ### 자연어 시나리오
+
+                #### 시나리오 1: ...
+                **Given** ...
+                **근거**: ...
+
+                ---
+
+                ### 14-DSL JSON (자동 실행 호환)
+
+                <!-- BEGIN SCENARIO_DSL -->
+                ```json
+                [
+                  {"step": 1, "action": "navigate", ...},
+                  ...
+                ]
+                ```
+                <!-- END SCENARIO_DSL -->
+                ```
+
+                fence 안은 순수 JSON list 만 (traceability 표는 fence 밖에 markdown).
+
+                [공통 traceability 룰]
+                - 모든 출처 인용에 chunk_id (또는 segment_id) + retrieval_score 명시.
+                - score < 0.5 chunk 는 인용 가능하나 reliability 낮음을 명시.
+                - 청크가 부족해 합성 추정한 부분은 "(KB 미확인 — 추정)" 명시.
+
+                [의도 분류 키워드]
+                - "계획서" / "test plan" → plan 모드 (output_mode 미설정 시 default 추론).
+                - "시나리오" / "scenario" / "test case" + ("사람이 읽기" / "Given/When/Then" / "BDD") → scenario_natural.
+                - "JSON" / "자동 실행" / "DSL" / "execute" → scenario_dsl.
+                - "둘 다" / "모두" / "both" → both.
+                - 명시 output_mode 가 있으면 항상 그것을 우선.
+
+                [정확성 우선 룰]
+                - 청크에 없는 endpoint URL / selector / 정확한 값은 절대 추측 금지. 추측 시
+                  반드시 "(KB 미확인 — <근거> 추정)" 명시.
+                - 시맨틱 selector 우선 (`role=button, name=...`, `text=...`, `label=...`).
+                  추측한 CSS / XPath 는 fallback_targets 로 보조만.
+            - id: planner-user
+              role: user
+              text: |
+                대상 모듈: {{#start.target_module#}}
+
+                요청: {{#start.user_query#}}
+
+                출력 모드: {{#start.output_mode#}}
+
+                ── retrieved context — 프로젝트 정보 KB ──
+                {{#retrieval_project.result#}}
+
+                ── retrieved context — 테스트 이론 KB ──
+                {{#retrieval_theory.result#}}
+          variables: []
+          vision:
+            enabled: false
+
+      # ── Answer 노드 ─────────────────────────────
+      - id: answer
+        type: custom
+        position:
+          x: 840
+          y: 200
+        data:
+          type: answer
+          title: Answer
+          desc: 'planner_llm 출력 그대로'
+          answer: '{{#planner_llm.text#}}'
+          variables: []
