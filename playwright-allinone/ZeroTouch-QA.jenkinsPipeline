@@ -1,5 +1,5 @@
 // =============================================================================
-// DSCORE-ZeroTouch-QA-Docker Jenkinsfile (v2.2)
+// ZeroTouch-QA Jenkinsfile (v2.5)
 //
 // 변경 내역
 // - [v1.0] 독립 E2E 스택(e2e-net)에서 동작
@@ -13,6 +13,12 @@
 //          모든 설치는 setup.sh Phase 6 에서 사전 수행
 //          파이프라인은 기존 venv 활성화만 수행 — 미존재 시 명확한 에러 출력
 // - [v2.3] Sprint 4A 운영 preflight / Dify health probe / 30일 retention 추가
+// - [v2.4] Sprint 4C closure — convert 14대 변환 (upload/drag/scroll/mock_*),
+//          빌드별 `llm_sla.json` 자동 집계 (zero_touch_qa.metrics.aggregate_llm_sla)
+// - [v2.5] 파일명 / job 이름 일괄 변경 — DSCORE-ZeroTouch-QA-Docker → ZeroTouch-QA.
+//          v2.0 호스트 하이브리드 전환 후 -Docker 접미사가 의미 빗나갔던 점 정정.
+//          파일: DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline → ZeroTouch-QA.jenkinsPipeline.
+//          Jenkins 컨트롤러의 job 이름도 ZeroTouch-QA 로 변경.
 // =============================================================================
 
 pipeline {
@@ -40,22 +46,24 @@ pipeline {
         )
         text(
             name: 'SRS_TEXT',
-            defaultValue: '''다음 시나리오를 순서대로 실행하라:
-1) primary 라벨 버튼에 마우스를 호버한 뒤 클릭한다.
-2) status 영역 텍스트가 "clicked" 인지 검증한다.
-3) 검색 입력란(id=search-input)에 "DSCORE" 를 입력한다.
-4) 엔터 키를 눌러 제출한다.
-5) echo 영역 텍스트가 "submitted:DSCORE" 인지 검증한다.
-6) 언어 드롭다운(id=lang)에서 "ko" 를 선택한다.
-7) 동의 체크박스(id=agree)를 체크한다.
-8) 파일 입력란(id=file-input)에 임의 텍스트 파일을 업로드한다.
-9) CARD 항목(id=card)을 dst-zone(id=dst-zone)으로 드래그 앤 드롭한다.
-10) https://api.example.test/api/list 응답을 {"items":[]} 빈 배열로 모킹한다.
-11) load 버튼(id=load-btn)을 클릭하고 list(id=list)가 비어있는지 검증한다.
-12) https://api.example.test/api/list 응답을 HTTP 500 상태로 모킹한다.
-13) 페이지 하단의 footer(id=footer)까지 스크롤하여 화면에 보이는지 검증한다.
-14) 1초간 대기한다.''',
-            description: '[Chat] 자연어 요구사항 (기본값: 14대 액션 통합 시연)'
+            defaultValue: '''다음 시나리오를 순서대로 실행하라. 각 항목은 정확히 하나의 액션이며, 1:1 로 step 으로 변환되어야 한다.
+1) primary 버튼(id=primary-btn)에 마우스를 호버한다.
+2) primary 버튼(id=primary-btn)을 클릭한다.
+3) status 영역(id=status) 텍스트가 "clicked" 인지 검증한다.
+4) 검색 입력란(id=search-input)에 "DSCORE" 를 입력한다.
+5) 검색 입력란(id=search-input)에서 Enter 키를 눌러 제출한다.
+6) echo 영역(id=echo) 텍스트가 "submitted:DSCORE" 인지 검증한다.
+7) 언어 드롭다운(id=lang)에서 "한국어" 를 선택한다.
+8) 동의 체크박스(id=agree)를 체크한다.
+9) 파일 입력란(id=file-input)에 upload_sample.txt 를 업로드한다.
+10) CARD 항목(id=card)을 dst-zone(id=dst-zone)으로 드래그 앤 드롭한다.
+11) **/api/list 응답을 {"items":[]} 빈 배열로 모킹한다.
+12) load 버튼(id=load-btn)을 클릭한다.
+13) **/api/list 응답을 HTTP 500 상태로 모킹한다.
+14) 페이지 하단의 footer(id=footer)까지 스크롤한다.
+15) footer(id=footer) 가 화면에 보이는지 검증한다.
+16) 1초간 대기한다.''',
+            description: '[Chat] 자연어 요구사항 (기본값: 16 atomic 항목 — Planner 의 1:1 매핑 강제. compound 항목 금지)'
         )
         text(
             name: 'API_DOCS',
