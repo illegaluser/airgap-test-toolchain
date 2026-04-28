@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>[fixture] auth_totp</title>
+</head>
+<body>
+  <h1 id="page-title">2단계 인증</h1>
+  <p>인증 앱의 6자리 코드를 입력하세요.</p>
+
+  <form id="totp-form" autocomplete="off">
+    <label>
+      OTP
+      <input id="otp" name="otp" type="text" inputmode="numeric"
+             autocomplete="one-time-code" maxlength="6" required>
+    </label>
+    <br>
+    <button id="verify-btn" type="submit">확인</button>
+  </form>
+
+  <div id="status">awaiting_code</div>
+
+  <!--
+    fixture 가 자체 검증을 하려면 TOTP 시크릿이 클라이언트에 있어야 한다.
+    JS otplib 같은 외부 의존성 없이 동작하도록, fixture 는 "임의 6자리 숫자"
+    를 PASS 로 받는 단순화된 검증을 사용한다. 실 검증 (시크릿 일치) 은 별도
+    auth fixture / mock OAuth 단계에서 처리.
+  -->
+
+  <script>
+    document.getElementById("totp-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      const code = document.getElementById("otp").value.trim();
+      const status = document.getElementById("status");
+      const title = document.getElementById("page-title");
+      if (/^\d{6}$/.test(code)) {
+        status.textContent = "auth_totp_verify_ok";
+        title.textContent = "인증 완료";
+      } else {
+        status.textContent = "auth_totp_verify_fail";
+        title.textContent = "코드 형식 오류";
+      }
+    });
+  </script>
+</body>
+</html>

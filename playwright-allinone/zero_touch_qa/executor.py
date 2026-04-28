@@ -5,10 +5,24 @@ import re
 import time
 import logging
 from dataclasses import dataclass, field
+from typing import Optional
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, Page, Locator, expect
 
+from .auth import (
+    AuthOptions,
+    Credential,
+    CredentialError,
+    EMAIL_FIELD_CANDIDATES,
+    PASSWORD_FIELD_CANDIDATES,
+    SUBMIT_BUTTON_CANDIDATES,
+    TOTP_FIELD_CANDIDATES,
+    generate_totp_code,
+    mask_secret,
+    parse_auth_target,
+    resolve_credential,
+)
 from .config import Config
 from .dify_client import DifyClient, DifyConnectionError
 from .locator_resolver import LocatorResolver
@@ -79,6 +93,19 @@ class StepResult:
     screenshot_path: str | None = None
 
 
+def _dump_storage_state(context, path: str) -> None:
+    """현재 BrowserContext 의 storage_state 를 path 에 JSON 으로 덤프 (T-D / P0.1).
+
+    실패 시 경고만 — 시나리오 실행 결과 자체에 영향 주지 않는다.
+    """
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        context.storage_state(path=path)
+        log.info("[Auth] storage_state 덤프 완료 — %s", path)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[Auth] storage_state 덤프 실패 (%s): %s", path, e)
+
+
 class QAExecutor:
     """
     DSL 시나리오를 받아 실행하고, 3단계 하이브리드 자가 치유를 수행한다.
@@ -98,13 +125,23 @@ class QAExecutor:
         self._latest_strategy_trace: list[_StrategyAttempt] = []
 
     def execute(
-        self, scenario: list[dict], headed: bool = True
+        self,
+        scenario: list[dict],
+        headed: bool = True,
+        storage_state_in: Optional[str] = None,
+        storage_state_out: Optional[str] = None,
     ) -> list[StepResult]:
         """Playwright 브라우저를 실행하고 DSL 시나리오를 순차 실행한다.
 
         Args:
             scenario: DSL 스텝 dict 의 리스트.
             headed: True 면 브라우저 창을 표시, False 면 headless.
+            storage_state_in: 미리 dump 된 storage_state JSON 경로 — 인증 후 세션
+                을 새 컨텍스트에 복원한다 (T-D / P0.1). None 이면 env
+                ``AUTH_STORAGE_STATE_IN``, 그것도 없으면 새 컨텍스트.
+            storage_state_out: 시나리오 종료 후 현재 컨텍스트의 storage_state 를
+                덤프할 경로. None 이면 env ``AUTH_STORAGE_STATE_OUT``, 그것도
+                없으면 덤프 안 함.
 
         Returns:
             각 스텝의 실행 결과 ``StepResult`` 리스트. FAIL 발생 시 이후 스텝은 포함되지 않는다.
@@ -113,15 +150,30 @@ class QAExecutor:
         artifacts = self.config.artifacts_dir
         os.makedirs(artifacts, exist_ok=True)
 
+        # T-D / P0.1 — storage_state 경로 결정 (인자 우선, env fallback)
+        if storage_state_in is None:
+            storage_state_in = os.environ.get("AUTH_STORAGE_STATE_IN") or None
+        if storage_state_out is None:
+            storage_state_out = os.environ.get("AUTH_STORAGE_STATE_OUT") or None
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=not headed, slow_mo=self.config.slow_mo)
-            context = browser.new_context(
-                locale="ko-KR",
-                viewport={
+            context_kwargs: dict = {
+                "locale": "ko-KR",
+                "viewport": {
                     "width": self.config.viewport[0],
                     "height": self.config.viewport[1],
                 },
-            )
+            }
+            if storage_state_in and os.path.isfile(storage_state_in):
+                log.info("[Auth] storage_state 복원 — %s", storage_state_in)
+                context_kwargs["storage_state"] = storage_state_in
+            elif storage_state_in:
+                log.warning(
+                    "[Auth] storage_state_in 파일 없음 — 새 컨텍스트로 진행 (%s)",
+                    storage_state_in,
+                )
+            context = browser.new_context(**context_kwargs)
             page = context.new_page()
             resolver = LocatorResolver(page)
             healer = LocalHealer(page, self.config.heal_threshold)
@@ -229,6 +281,9 @@ class QAExecutor:
                 if headed:
                     time.sleep(3)
             finally:
+                # T-D / P0.1 — storage_state 덤프 (브라우저 종료 전, 인증 후 세션 보존)
+                if storage_state_out:
+                    _dump_storage_state(context, storage_state_out)
                 browser.close()
 
         return results
@@ -289,6 +344,9 @@ class QAExecutor:
 
         if action in ("mock_status", "mock_data"):
             return self._execute_mock_step(page, step, artifacts)
+
+        if action == "auth_login":
+            return self._execute_auth_login(page, step, artifacts)
 
         # ── 타겟 필요 액션: 실행 + 다단계 자가 치유 ──
         log.info("[Step %s] %s: %s", step_id, action, desc)
@@ -1042,6 +1100,209 @@ class QAExecutor:
         else:  # mock_data
             body = self._normalize_mock_body(step.get("value"))
             self._install_mock_route(page, pattern, body=body, times=times)
+
+    # ─────────────────────────────────────────────────────────────────
+    # auth_login (T-D / P0.1)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _execute_auth_login(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """auth_login 액션 — form / totp / oauth 모드 분기.
+
+        DSL 형태:
+          {"action": "auth_login", "target": "form", "value": "<credential_alias>"}
+          {"action": "auth_login", "target": "totp", "value": "<credential_alias>"}
+          {"action": "auth_login", "target": "form, email_field=#email, password_field=#pw, submit=#login",
+           "value": "<credential_alias>"}
+
+        credential 은 환경변수 `AUTH_CRED_<ALIAS>_USER` / `_PASS` / `_TOTP_SECRET`
+        에서 lookup. 자세한 spec 은 zero_touch_qa.auth 모듈 docstring 참조.
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target_str = str(step.get("target", ""))
+        alias = str(step.get("value", ""))
+
+        opts = parse_auth_target(target_str)
+        try:
+            cred = resolve_credential(alias)
+        except CredentialError as e:
+            log.error("[Step %s] auth_login credential 실패: %s", step_id, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        log.info(
+            "[Step %s] auth_login mode=%s alias=%s user=%s pass=%s totp=%s",
+            step_id, opts.mode, alias,
+            mask_secret(cred.user, keep=2),
+            mask_secret(cred.password, keep=0),
+            "<set>" if cred.has_totp() else "<empty>",
+        )
+
+        if opts.mode == "form":
+            return self._auth_login_form(page, step, opts, cred, artifacts)
+        if opts.mode == "totp":
+            return self._auth_login_totp(page, step, opts, cred, artifacts)
+        if opts.mode == "oauth":
+            # T-D Phase 5 — OAuth mock server 통합 후 활성화
+            log.error(
+                "[Step %s] auth_login oauth 모드는 T-D Phase 5 (mock OAuth) 미완료",
+                step_id,
+            )
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        log.error("[Step %s] auth_login 알 수 없는 mode=%r", step_id, opts.mode)
+        ss = self._screenshot(page, artifacts, step_id, "fail")
+        return StepResult(
+            step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+            "FAIL", screenshot_path=ss,
+        )
+
+    def _auth_login_form(
+        self, page: Page, step: dict, opts: AuthOptions, cred: Credential,
+        artifacts: str,
+    ) -> StepResult:
+        """form 로그인 — email + password 필드 채우고 submit 클릭."""
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target_str = str(step.get("target", ""))
+        alias = str(step.get("value", ""))
+
+        try:
+            email_loc = self._find_auth_field(
+                page, opts.email_field, EMAIL_FIELD_CANDIDATES, "email/username",
+            )
+            pwd_loc = self._find_auth_field(
+                page, opts.password_field, PASSWORD_FIELD_CANDIDATES, "password",
+            )
+            submit_loc = self._find_auth_field(
+                page, opts.submit, SUBMIT_BUTTON_CANDIDATES, "submit",
+            )
+
+            email_loc.fill(cred.user, timeout=5000)
+            pwd_loc.fill(cred.password, timeout=5000)
+            submit_loc.click(timeout=5000)
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception as e:
+            log.error("[Step %s] auth_login form 실패: %s", step_id, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        log.info("[Step %s] auth_login form -> PASS", step_id)
+        return StepResult(
+            step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    def _auth_login_totp(
+        self, page: Page, step: dict, opts: AuthOptions, cred: Credential,
+        artifacts: str,
+    ) -> StepResult:
+        """TOTP 로그인 — pyotp 로 6자리 코드 생성 후 입력."""
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target_str = str(step.get("target", ""))
+        alias = str(step.get("value", ""))
+
+        if not cred.has_totp():
+            log.error(
+                "[Step %s] auth_login totp 실패 — alias '%s' 에 TOTP 시크릿 없음",
+                step_id, alias,
+            )
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        try:
+            code = generate_totp_code(cred.totp_secret)
+            otp_loc = self._find_auth_field(
+                page, opts.totp_field, TOTP_FIELD_CANDIDATES, "totp",
+            )
+            otp_loc.fill(code, timeout=5000)
+            # submit — 별도 버튼 있으면 클릭, 없으면 그대로 (auto-submit form 가정)
+            submit_loc = self._try_find_auth_field(
+                page, opts.submit, SUBMIT_BUTTON_CANDIDATES,
+            )
+            if submit_loc is not None:
+                submit_loc.click(timeout=5000)
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception as e:
+            log.error("[Step %s] auth_login totp 실패: %s", step_id, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        log.info("[Step %s] auth_login totp -> PASS (code=******)", step_id)
+        return StepResult(
+            step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    @staticmethod
+    def _find_auth_field(
+        page: Page, explicit: Optional[str], candidates: tuple, field_name: str,
+    ) -> Locator:
+        """explicit selector 가 있으면 그것, 없으면 후보 selector 순서대로 시도.
+
+        매치 0건이면 RuntimeError. 첫 일치하는 element 의 ``.first`` 반환.
+        """
+        if explicit:
+            loc = page.locator(explicit)
+            try:
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(f"auth_login {field_name} field 매치 0 (explicit={explicit!r})")
+        for sel in candidates:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                continue
+        raise RuntimeError(
+            f"auth_login {field_name} field 자동 탐지 실패 — 후보: {list(candidates)}"
+        )
+
+    @staticmethod
+    def _try_find_auth_field(
+        page: Page, explicit: Optional[str], candidates: tuple,
+    ) -> Optional[Locator]:
+        """``_find_auth_field`` 의 optional 버전 — 미발견 시 RuntimeError 대신 None."""
+        if explicit:
+            try:
+                loc = page.locator(explicit)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                return None
+            return None
+        for sel in candidates:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                continue
+        return None
 
     @staticmethod
     def _assert_locator_contains_value(locator: Locator, expected: str) -> None:

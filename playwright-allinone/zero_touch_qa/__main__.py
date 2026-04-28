@@ -57,6 +57,16 @@ def main():
         ),
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="상세 로그 출력")
+    # T-D / P0.1 — storage_state dump/restore (인증 후 세션 재사용).
+    # env AUTH_STORAGE_STATE_IN/OUT 도 동작 — CLI 인자가 우선.
+    parser.add_argument(
+        "--storage-state-in", default=None,
+        help="시작 시 복원할 storage_state JSON 경로 (인증 스킵용)",
+    )
+    parser.add_argument(
+        "--storage-state-out", default=None,
+        help="종료 후 덤프할 storage_state JSON 경로 (인증 결과 보존)",
+    )
     args = parser.parse_args()
 
     # 로깅 설정
@@ -144,7 +154,12 @@ def main():
     # 실행
     log.info("시나리오 실행 시작 (%d스텝, headed=%s)", len(scenario), headed)
     executor = QAExecutor(config)
-    results = executor.execute(scenario, headed=headed)
+    results = executor.execute(
+        scenario,
+        headed=headed,
+        storage_state_in=args.storage_state_in,
+        storage_state_out=args.storage_state_out,
+    )
 
     # 산출물 생성
     save_run_log(results, config.artifacts_dir)
