@@ -1,0 +1,5 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/list", "description": "https://example.com/list로 이동", "fallback_targets": []},
+  {"step": 2, "action": "click", "target": "role=link, name=Read more, nth=0", "value": "", "description": "클릭", "fallback_targets": []},
+  {"step": 3, "action": "click", "target": "role=link, name=Read more, nth=2", "value": "", "description": "클릭", "fallback_targets": []}
+]

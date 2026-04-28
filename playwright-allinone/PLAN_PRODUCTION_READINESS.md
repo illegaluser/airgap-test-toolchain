@@ -827,3 +827,4 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 | --- | --- | --- |
 | 2026-04-29 | Claude (feat/grounding-recording-agent) | 초안 작성 — 직접 검증 결과 + 6 블로커 / 5 취약점 / P0~P3 로드맵 |
 | 2026-04-29 | Claude (feat/grounding-recording-agent) | P0.1/P0.2/P0.3 범위·완료조건을 현실 가능 범위로 보정 (form+OAuth+TOTP / 단일 iframe + open shadow / 클라이언트 vs 백엔드 분리) + §"당장 착수 가능한 상세 태스크" 신설 (T-A/B/C/D 4 개 태스크의 단계·변경파일·테스트·수락기준·예상시간) |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | **T-A 완료** — converter_ast.py 신설 (AST visitor + page 변수 스코프 + popup chain 추적 + .nth/.first/.filter/frame_locator chain 보존), converter.py 를 AST 우선 + line fallback 으로 라우팅, locator_resolver.py 에 `_split_modifiers` / `_resolve_raw` / `_apply_modifiers` 추가해 receiver-side 도 nth/has_text 처리. 8 corpus fixture + 42 단위 테스트, 회귀 0 (208 → 250 passed). docs/recording-troubleshooting.md §4-2 의 .nth backlog 항목 closed. |
