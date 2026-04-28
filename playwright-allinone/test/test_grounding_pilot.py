@@ -155,12 +155,15 @@ def test_grounding_eval_token_budget_env_override(monkeypatch):
     cfg = Config.from_env()
     client = DifyClient(cfg)
 
-    # 한도를 빡빡하게 → truncate 발생해야 함. GUIDE_FOOTER 만 ~131 토큰, 1 요소
-    # 추가로 ~40 토큰. 한도 300 이면 2~3 요소만 살아남고 truncated=True 가 된다.
-    monkeypatch.setenv("GROUNDING_TOKEN_BUDGET", "300")
+    # 한도를 빡빡하게 → truncate 발생해야 함. full_dsl.html 의 8 요소 인벤토리는
+    # 비-truncate 시 ~275 토큰 (헤더/푸터 ~99 + 요소당 ~22). budget=180 이면
+    # 3 요소만 살아남고 ~167 토큰으로 truncated=True 가 된다.
+    # (이전 budget=300 은 8 요소 / 275 토큰이 그대로 한도 안에 들어가 truncate 가
+    #  발생 안 함 — 토큰 카운터/fixture 변경으로 헐거워졌던 것을 이번 fix 에서 정정.)
+    monkeypatch.setenv("GROUNDING_TOKEN_BUDGET", "180")
     url = _file_url("full_dsl.html")
     _, meta = client._prepend_dom_inventory(srs_text="x", target_url=url)
     if not meta.get("used"):
         pytest.skip(f"인벤토리 추출 실패: {meta.get('error')}")
     assert meta.get("grounding_truncated") is True
-    assert meta.get("grounding_inventory_tokens", 0) <= 300
+    assert meta.get("grounding_inventory_tokens", 0) <= 180
