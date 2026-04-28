@@ -174,3 +174,34 @@ footer {
   padding: 24px;
   font-size: 0.85rem;
 }
+
+/* Compare 모달 */
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  min-width: 480px;
+  max-width: 720px;
+  background: #fff;
+}
+dialog::backdrop { background: rgba(0,0,0,0.4); }
+dialog h3 { margin: 0 0 8px; }
+dialog textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.badge.ok {
+  background: var(--ok);
+  color: #fff;
+}
