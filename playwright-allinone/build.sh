@@ -40,43 +40,51 @@ BUILD_CTX="$SCRIPT_DIR"
 cd "$SCRIPT_DIR"
 
 # ── 플래그 파싱 ────────────────────────────────────────────────────────────
-# --redeploy : 빌드 직후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
-# --fresh    : redeploy 시 dscore-data 볼륨까지 삭제 (프로비저닝 재수행)
-# --no-agent : redeploy 시 agent 재연결 스킵 (컨테이너만 기동)
+# --redeploy    : 빌드 직후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
+# --fresh       : redeploy 시 dscore-data 볼륨까지 삭제 (프로비저닝 재수행, 데이터 폐기)
+# --reprovision : redeploy 시 .app_provisioned 마커만 wipe — provision 재실행하되 데이터(KB·Jenkins 이력) 보존
+# --no-agent    : redeploy 시 agent 재연결 스킵 (컨테이너만 기동)
 REDEPLOY=false
 FRESH_VOLUME=false
+REPROVISION=false
 SKIP_AGENT=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    --redeploy) REDEPLOY=true; shift ;;
-    --fresh)    FRESH_VOLUME=true; shift ;;
-    --no-agent) SKIP_AGENT=true; shift ;;
+    --redeploy)    REDEPLOY=true; shift ;;
+    --fresh)       FRESH_VOLUME=true; shift ;;
+    --reprovision) REPROVISION=true; shift ;;
+    --no-agent)    SKIP_AGENT=true; shift ;;
     -h|--help)
       cat <<'USAGE'
 사용법: ./e2e-pipeline/offline/playwright-allinone/build.sh [옵션]
 
-  --redeploy   빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
-               (기존 dscore.ttc.playwright 컨테이너가 있으면 rm -f, 기존 agent.jar
-                프로세스는 agent-setup 이 정리. dscore-data 볼륨은 유지)
-  --fresh      --redeploy 와 함께 사용 — dscore-data 볼륨도 삭제해 제로베이스 기동
-  --no-agent   --redeploy 와 함께 사용 — 컨테이너만 기동, agent 재연결은 스킵
-  -h, --help   이 도움말
+  --redeploy     빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
+                 (기존 dscore.ttc.playwright 컨테이너가 있으면 rm -f, 기존 agent.jar
+                  프로세스는 agent-setup 이 정리. dscore-data 볼륨은 유지)
+  --fresh        --redeploy 와 함께 — dscore-data 볼륨도 삭제해 제로베이스 기동 (데이터 폐기)
+  --reprovision  --redeploy 와 함께 — .app_provisioned 마커만 wipe → provision 재실행.
+                 데이터(KB 임베딩·Jenkins 이력·챗봇 conversation)는 보존하면서 chatflow YAML /
+                 Jenkins job 정의 / Dify provider 등록 같은 이미지 baked-in 정의를 새 이미지 기준으로 재생성.
+                 --fresh 와 함께 쓰면 --fresh 가 우선 (전체 wipe).
+  --no-agent     --redeploy 와 함께 — 컨테이너만 기동, agent 재연결은 스킵
+  -h, --help     이 도움말
 
 주요 env:
   IMAGE_TAG                dscore.ttc.playwright:latest (기본)
   TARGET_PLATFORM          uname -m 자동 감지 (Mac arm64 → linux/arm64, 그 외 → linux/amd64)
-  OLLAMA_MODEL             gemma4:e4b (Dify provider 에 등록될 모델 id)
+  OLLAMA_MODEL             gemma4:26b (Dify provider 에 등록될 모델 id; Sprint 5 §10.2 기본 모델)
   OUTPUT_TAR               dscore.ttc.playwright-<ts>.tar.gz
   FORCE_PLUGIN_DOWNLOAD    false (기본). true 면 jenkins-plugins/ dify-plugins/ 에
                            파일이 있어도 재다운로드 (플러그인 버전 갱신 시만 사용).
                            기본은 기존 파일 재사용 — airgap 환경에서 네트워크 없이 빌드 가능.
 
 예시:
-  ./build.sh                           # 빌드만 (tar.gz 산출)
-  ./build.sh --redeploy                # 빌드 + 기존 볼륨 재사용 재기동 + agent
-  ./build.sh --redeploy --fresh        # 빌드 + 볼륨 초기화 + agent
-  ./build.sh --redeploy --no-agent     # 빌드 + 컨테이너만 재기동
-  FORCE_PLUGIN_DOWNLOAD=true ./build.sh    # 플러그인 강제 재다운로드
+  ./build.sh                              # 빌드만 (tar.gz 산출)
+  ./build.sh --redeploy                   # 빌드 + 기존 볼륨 재사용 재기동 + agent
+  ./build.sh --redeploy --fresh           # 빌드 + 볼륨 초기화 + agent (데이터 폐기)
+  ./build.sh --redeploy --reprovision     # 빌드 + 데이터 보존 + chatflow/Jenkins job 재생성 + agent
+  ./build.sh --redeploy --no-agent        # 빌드 + 컨테이너만 재기동
+  FORCE_PLUGIN_DOWNLOAD=true ./build.sh   # 플러그인 강제 재다운로드
 USAGE
       exit 0
       ;;
@@ -110,13 +118,14 @@ fi
 # OLLAMA_MODEL: 이미지에 사전 pull 되지 않음 (이 이미지는 호스트 Ollama 사용).
 # 이 값은 docker buildx 가 Dockerfile ARG 로 받아두긴 하지만 실질적 효과는 없음.
 # 실제 런타임 모델 지정은 docker run 의 `-e OLLAMA_MODEL=...` 로 Dify provider 에 등록됨.
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 OUTPUT_TAR="${OUTPUT_TAR:-dscore.ttc.playwright-$(date +%Y%m%d-%H%M%S).tar.gz}"
 
 JENKINS_PLUGINS=(
   workflow-aggregator
   file-parameters
   htmlpublisher
+  junit
   plain-credentials
 )
 # Jenkins base 는 최신 LTS exact tag 로 고정한다.
@@ -141,8 +150,9 @@ docker buildx version >/dev/null 2>&1 || err "docker buildx 가 필요합니다 
 # 자체 완결 폴더 전제: 의존 파일이 이 폴더에 복사되어 있어야 한다.
 [ -f "$SCRIPT_DIR/Dockerfile" ]         || err "Dockerfile 이 없습니다."
 [ -f "$SCRIPT_DIR/dify-chatflow.yaml" ] || err "dify-chatflow.yaml 이 없습니다."
+[ -f "$SCRIPT_DIR/test-planning-chatflow.yaml" ] || err "test-planning-chatflow.yaml 이 없습니다 (Test Planning RAG 트랙)."
 [ -d "$SCRIPT_DIR/zero_touch_qa" ]      || err "zero_touch_qa/ 디렉토리가 없습니다."
-[ -f "$SCRIPT_DIR/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline" ] || err "Pipeline 정의 파일 없음."
+[ -f "$SCRIPT_DIR/ZeroTouch-QA.jenkinsPipeline" ] || err "Pipeline 정의 파일 없음."
 [ -d "$SCRIPT_DIR/jenkins-init" ]       || err "jenkins-init/ 디렉토리가 없습니다."
 
 log "빌드 대상: $IMAGE_TAG (platform=$TARGET_PLATFORM)"
@@ -161,12 +171,21 @@ log "[1/4] Jenkins 플러그인 준비"
 mkdir -p "$SCRIPT_DIR/jenkins-plugins"
 EXISTING_PLUGIN_COUNT=$(find "$SCRIPT_DIR/jenkins-plugins" \( -name '*.hpi' -o -name '*.jpi' \) 2>/dev/null | wc -l | tr -d ' ')
 
-if [ "${FORCE_PLUGIN_DOWNLOAD:-false}" != "true" ] && [ "$EXISTING_PLUGIN_COUNT" -gt 0 ]; then
+MISSING_REQUIRED_PLUGINS=()
+for p in "${JENKINS_PLUGINS[@]}"; do
+  if ! find "$SCRIPT_DIR/jenkins-plugins" -maxdepth 1 -type f \( -name "$p.hpi" -o -name "$p.jpi" \) 2>/dev/null | grep -q .; then
+    MISSING_REQUIRED_PLUGINS+=("$p")
+  fi
+done
+
+if [ "${FORCE_PLUGIN_DOWNLOAD:-false}" != "true" ] && [ "$EXISTING_PLUGIN_COUNT" -gt 0 ] && [ "${#MISSING_REQUIRED_PLUGINS[@]}" -eq 0 ]; then
   log "  기존 플러그인 $EXISTING_PLUGIN_COUNT 개 재사용 (다운로드 스킵)."
   log "  강제 재다운로드: FORCE_PLUGIN_DOWNLOAD=true ./build.sh"
 else
   if [ "$EXISTING_PLUGIN_COUNT" -eq 0 ]; then
     log "  jenkins-plugins/ 비어 있음 — 다운로드 시작 (인터넷 필요)"
+  elif [ "${#MISSING_REQUIRED_PLUGINS[@]}" -gt 0 ]; then
+    log "  필수 플러그인 누락: ${MISSING_REQUIRED_PLUGINS[*]} — 추가 다운로드"
   else
     log "  FORCE_PLUGIN_DOWNLOAD=true — 기존 $EXISTING_PLUGIN_COUNT 개 무시하고 재다운로드"
   fi
@@ -282,18 +301,24 @@ if [ "$REDEPLOY" = "true" ]; then
   log "[--redeploy] 빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결 시작"
   log "=========================================================================="
 
-  # 5-1. 기존 컨테이너 정리 (볼륨은 --fresh 일 때만 제거)
+  # 5-1. 기존 컨테이너 정리 + 볼륨 처리 분기
   if docker ps -a --format '{{.Names}}' | grep -qxF "$CONTAINER_NAME"; then
     log "  [5-1] 기존 컨테이너 '$CONTAINER_NAME' 제거 (docker rm -f)"
     docker rm -f "$CONTAINER_NAME" >/dev/null
   fi
   if [ "$FRESH_VOLUME" = "true" ]; then
     if docker volume ls --format '{{.Name}}' | grep -qxF "$DATA_VOLUME"; then
-      log "  [5-1] --fresh — 볼륨 '$DATA_VOLUME' 제거 (provision 재수행됨)"
+      log "  [5-1] --fresh — 볼륨 '$DATA_VOLUME' 제거 (provision 재수행됨, 데이터 폐기)"
       docker volume rm "$DATA_VOLUME" >/dev/null
     fi
+  elif [ "$REPROVISION" = "true" ]; then
+    if docker volume ls --format '{{.Name}}' | grep -qxF "$DATA_VOLUME"; then
+      log "  [5-1] --reprovision — 볼륨 '$DATA_VOLUME' 의 .app_provisioned 마커만 wipe (provision 재실행, 데이터 보존)"
+      docker run --rm -v "$DATA_VOLUME":/data busybox rm -f /data/.app_provisioned
+    fi
   else
-    log "  [5-1] 볼륨 '$DATA_VOLUME' 유지 (--fresh 없음 — 기존 provision 재사용)"
+    log "  [5-1] 볼륨 '$DATA_VOLUME' 유지 — 기존 provision 결과 재사용"
+    log "        (이미지의 chatflow YAML / Jenkins job 정의 변경은 자동 반영 안 됨. 반영하려면 --reprovision)"
   fi
 
   # 5-2. 컨테이너 기동 — 호스트 플랫폼 감지해 provision.sh 가 올바른 Jenkins Node 를

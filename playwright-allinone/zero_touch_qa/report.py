@@ -5,6 +5,7 @@ import logging
 from html import escape as html_escape
 
 from .executor import StepResult
+from .metrics import read_jsonl, summarize_llm_calls
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def build_html_report(
 
     rows = _build_table_rows(results)
     upload_section = _build_upload_section(uploaded_file, run_mode, output_dir)
+    operations_section = _build_operations_section(output_dir)
 
     # 최종 상태 스크린샷 섹션 — 새 탭 전환 등으로 마지막 step_N_*.png 가
     # click 직전 페이지만 보여주는 경우 실제 도달 페이지를 별도 표시.
@@ -113,6 +115,7 @@ def build_html_report(
         pass_rate=pass_rate,
         rows=rows,
         upload_section=upload_section,
+        operations_section=operations_section,
         final_section=final_section,
     )
 
@@ -219,6 +222,149 @@ def _build_table_rows(results: list[StepResult]) -> str:
     return "\n      ".join(rows)
 
 
+def _build_operations_section(output_dir: str) -> str:
+    """Build the optional operations metric section for Jenkins HTML reports."""
+    rows: list[str] = []
+
+    llm_calls_path = os.path.join(output_dir, "llm_calls.jsonl")
+    llm_rows = read_jsonl(llm_calls_path)
+    if llm_rows:
+        summary = summarize_llm_calls(llm_rows)
+        latency = summary["latency_ms"]
+        rows.extend(
+            [
+                _metric_row(
+                    "LLM 호출",
+                    f"{summary['total_calls']}회",
+                    "llm_calls.jsonl",
+                    "Planner/Healer 전체 Dify 호출 수",
+                ),
+                _metric_row(
+                    "LLM latency",
+                    (
+                        f"p50 {latency['p50']}ms / "
+                        f"p95 {latency['p95']}ms / p99 {latency['p99']}ms"
+                    ),
+                    "llm_calls.jsonl",
+                    "llm_calls.jsonl 기반 percentile",
+                ),
+                _metric_row(
+                    "LLM timeout",
+                    f"{summary['timeout_count']}건 ({summary['timeout_rate'] * 100:.1f}%)",
+                    "llm_calls.jsonl",
+                    "timeout=true 레코드 비율",
+                ),
+                _metric_row(
+                    "LLM retry",
+                    f"{summary['retry_total']}회",
+                    "llm_calls.jsonl",
+                    "retry_count 합계",
+                ),
+            ]
+        )
+        for kind, by_kind in sorted(summary.get("by_kind", {}).items()):
+            kind_latency = by_kind["latency_ms"]
+            rows.append(
+                _metric_row(
+                    f"LLM {kind}",
+                    (
+                        f"{by_kind['total_calls']}회, "
+                        f"p95 {kind_latency['p95']}ms, "
+                        f"timeout {by_kind['timeout_count']}건"
+                    ),
+                    "llm_calls.jsonl",
+                    "kind 별 호출 요약",
+                )
+            )
+
+    rows.extend(_build_json_metric_rows(output_dir))
+
+    if not rows:
+        return ""
+
+    return (
+        '<h2 style="margin-top:24px;">운영 지표</h2>'
+        '<table class="ops-table">'
+        '<thead><tr><th>Metric</th><th>Value</th><th>Source</th><th>Note</th></tr></thead>'
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+
+
+def _build_json_metric_rows(output_dir: str) -> list[str]:
+    metric_files = [
+        ("planner_accuracy.json", "Planner 정확도"),
+        ("healer_accuracy.json", "Healer 정확도"),
+        ("llm_sla.json", "LLM SLA"),
+        ("heal_metrics.json", "Healing"),
+        ("flake_metrics.json", "Flake"),
+        ("pytest_summary.json", "pytest"),
+    ]
+    rows: list[str] = []
+    for filename, label in metric_files:
+        payload = _read_json_metric(os.path.join(output_dir, filename))
+        if payload is None:
+            continue
+        rows.append(
+            _metric_row(
+                label,
+                _summarize_metric_payload(payload),
+                filename,
+                "원본 metric JSON 링크",
+            )
+        )
+    return rows
+
+
+def _read_json_metric(path: str) -> object | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("[Report] metric 파일 읽기 실패: %s (%s)", path, e)
+        return None
+
+
+def _summarize_metric_payload(payload: object) -> str:
+    if isinstance(payload, dict):
+        preferred_keys = (
+            "accuracy",
+            "pass_rate",
+            "success_rate",
+            "flake_rate",
+            "timeout_rate",
+            "total",
+            "passed",
+            "failed",
+            "p95",
+        )
+        parts = [
+            f"{key}={payload[key]}"
+            for key in preferred_keys
+            if key in payload and payload[key] is not None
+        ]
+        if parts:
+            return ", ".join(parts[:5])
+        return f"{len(payload)} keys"
+    if isinstance(payload, list):
+        return f"{len(payload)} rows"
+    return str(payload)
+
+
+def _metric_row(metric: str, value: str, source: str, note: str) -> str:
+    safe_source = html_escape(source)
+    return (
+        "<tr>"
+        f"<td>{html_escape(metric)}</td>"
+        f"<td>{html_escape(value)}</td>"
+        f"<td><a href='{safe_source}' target='_blank'>{safe_source}</a></td>"
+        f"<td>{html_escape(note)}</td>"
+        "</tr>"
+    )
+
+
 # ── HTML 템플릿 ──
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ko">
@@ -271,6 +417,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                     font-size: 12px; line-height: 1.5; margin: 0;
                     white-space: pre; }}
     .upload-code code {{ background: transparent; color: inherit; padding: 0; }}
+    .ops-table td:nth-child(2) {{ font-weight: 700; }}
   </style>
 </head>
 <body>
@@ -297,6 +444,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
   {upload_section}
+  {operations_section}
   <h2 style="margin-top:24px;">스텝별 실행 결과</h2>
   <table>
     <thead>

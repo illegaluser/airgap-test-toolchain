@@ -1,0 +1,461 @@
+// =============================================================================
+// ZeroTouch-QA Jenkinsfile (v2.5)
+//
+// 변경 내역
+// - [v1.0] 독립 E2E 스택(e2e-net)에서 동작
+// - [v1.1] 아티팩트 공유: bind-mount → named volume (e2e-jenkins-ws)
+// - [v2.0] 아키텍처 롤백: e2e-runner 컨테이너 제거
+//          mac-ui-tester 에이전트에서 python -m zero_touch_qa 직접 실행
+// - [v2.1] 경로 하드코딩 제거 — 어떤 PC에서도 수정 없이 동작
+//          AGENT_HOME: ${WORKSPACE}/.qa_home 으로 자동 결정
+//          SCRIPTS_HOME: Jenkins 노드 환경변수로 주입 (Jenkinsfile 수정 불필요)
+// - [v2.2] 폐쇄망 대응: Stage 1 에서 pip install / playwright install 제거
+//          모든 설치는 setup.sh Phase 6 에서 사전 수행
+//          파이프라인은 기존 venv 활성화만 수행 — 미존재 시 명확한 에러 출력
+// - [v2.3] Sprint 4A 운영 preflight / Dify health probe / 30일 retention 추가
+// - [v2.4] Sprint 4C closure — convert 14대 변환 (upload/drag/scroll/mock_*),
+//          빌드별 `llm_sla.json` 자동 집계 (zero_touch_qa.metrics.aggregate_llm_sla)
+// - [v2.5] 파일명 / job 이름 일괄 변경 — DSCORE-ZeroTouch-QA-Docker → ZeroTouch-QA.
+//          v2.0 호스트 하이브리드 전환 후 -Docker 접미사가 의미 빗나갔던 점 정정.
+//          파일: DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline → ZeroTouch-QA.jenkinsPipeline.
+//          Jenkins 컨트롤러의 job 이름도 ZeroTouch-QA 로 변경.
+// =============================================================================
+
+pipeline {
+    agent { label 'mac-ui-tester || wsl-ui-tester' }
+
+    options {
+        buildDiscarder(logRotator(
+            daysToKeepStr: '30',
+            numToKeepStr: '100',
+            artifactDaysToKeepStr: '30',
+            artifactNumToKeepStr: '100'
+        ))
+    }
+
+    parameters {
+        choice(
+            name: 'RUN_MODE',
+            choices: ['chat', 'doc', 'convert', 'execute'],
+            description: 'chat: 자연어 입력, doc: 기획서 업로드, convert: Playwright 녹화 변환, execute: 기존 시나리오 재실행'
+        )
+        string(
+            name: 'TARGET_URL',
+            defaultValue: 'http://localhost:18081/fixtures/full_dsl.html',
+            description: '테스트 대상 URL (기본값: 14대 DSL fixture)'
+        )
+        text(
+            name: 'SRS_TEXT',
+            defaultValue: '''다음 시나리오를 순서대로 실행하라. 각 항목은 정확히 하나의 액션이며, 1:1 로 step 으로 변환되어야 한다.
+1) primary 버튼(id=primary-btn)에 마우스를 호버한다.
+2) primary 버튼(id=primary-btn)을 클릭한다.
+3) status 영역(id=status) 텍스트가 "clicked" 인지 검증한다.
+4) 검색 입력란(id=search-input)에 "DSCORE" 를 입력한다.
+5) 검색 입력란(id=search-input)에서 Enter 키를 눌러 제출한다.
+6) echo 영역(id=echo) 텍스트가 "submitted:DSCORE" 인지 검증한다.
+7) 언어 드롭다운(id=lang)에서 "한국어" 를 선택한다.
+8) 동의 체크박스(id=agree)를 체크한다.
+9) 파일 입력란(id=file-input)에 upload_sample.txt 를 업로드한다.
+10) CARD 항목(id=card)을 dst-zone(id=dst-zone)으로 드래그 앤 드롭한다.
+11) **/api/list 응답을 {"items":[]} 빈 배열로 모킹한다.
+12) load 버튼(id=load-btn)을 클릭한다.
+13) **/api/list 응답을 HTTP 500 상태로 모킹한다.
+14) 페이지 하단의 footer(id=footer)까지 스크롤한다.
+15) footer(id=footer) 가 화면에 보이는지 검증한다.
+16) 1초간 대기한다.''',
+            description: '[Chat] 자연어 요구사항 (기본값: 16 atomic 항목 — Planner 의 1:1 매핑 강제. compound 항목 금지)'
+        )
+        text(
+            name: 'API_DOCS',
+            defaultValue: '',
+            description: '[선택] 네트워크 모킹 힌트용 API 엔드포인트 목록'
+        )
+        base64File(
+            name: 'DOC_FILE',
+            description: '[Doc/Convert] 기획서(PDF) 또는 Playwright 녹화 스크립트(.py) / [Execute] scenario.json'
+        )
+        booleanParam(
+            name: 'HEADLESS',
+            defaultValue: false,
+            description: '체크 해제(기본값): 실제 브라우저 표시 / 체크: headless 모드'
+        )
+    }
+
+    environment {
+        // AGENT_HOME: Jenkins workspace 아래 자동 생성 — 수정 불필요
+        //   venv 와 artifacts 를 잡별(Job)로 분리하여 관리한다.
+        AGENT_HOME    = "${WORKSPACE}/.qa_home"
+
+        // SCRIPTS_HOME: Jenkins 노드 환경변수에서 자동 주입 — 수정 불필요
+        //   설정 위치: Jenkins 관리 → 노드 관리 → mac-ui-tester
+        //              → Node Properties → 환경변수 → SCRIPTS_HOME = /path/to/e2e-pipeline
+        //   (이 값은 zero_touch_qa/ 패키지가 들어있는 e2e-pipeline/ 폴더의 절대 경로)
+
+        // Jenkins Credentials 에 저장된 Dify QA Chatflow API 키
+        DIFY_API_KEY  = credentials('dify-qa-api-token')
+        // e2e 독립 스택 Dify 엔드포인트
+        DIFY_BASE_URL = "http://localhost:18081/v1"
+
+        // 한글 인코딩 — Playwright 입력/출력 + Python stdout 깨짐 방지
+        LANG              = "C.UTF-8"
+        LC_ALL            = "C.UTF-8"
+        PYTHONIOENCODING  = "utf-8"
+    }
+
+    stages {
+
+        // ──────────────────────────────────────────────────────────────────
+        // Stage 1: 환경 검증 및 Python venv 캐싱
+        // SCRIPTS_HOME / venv / Playwright browser / artifacts 권한을
+        // 엔진 실행 전에 빠르게 검증해 후속 E2E false fail 을 줄인다.
+        // ──────────────────────────────────────────────────────────────────
+        stage('1. 환경 동기화 및 캐싱') {
+            steps {
+                sh """
+                    set -eu
+
+                    # SCRIPTS_HOME 설정 여부 검증
+                    if [ -z "\${SCRIPTS_HOME:-}" ]; then
+                        echo "======================================================"
+                        echo "[ERROR] SCRIPTS_HOME 환경변수가 설정되지 않았습니다."
+                        echo "  Jenkins 관리 → 노드 관리 → mac-ui-tester"
+                        echo "  → Node Properties → 환경변수"
+                        echo "  → SCRIPTS_HOME = /path/to/e2e-pipeline"
+                        echo "======================================================"
+                        exit 1
+                    fi
+                    if [ ! -d "\${SCRIPTS_HOME}" ]; then
+                        echo "======================================================"
+                        echo "[ERROR] SCRIPTS_HOME 경로가 존재하지 않습니다."
+                        echo "  SCRIPTS_HOME=\${SCRIPTS_HOME}"
+                        echo "======================================================"
+                        exit 1
+                    fi
+                    if [ ! -d "\${SCRIPTS_HOME}/zero_touch_qa" ]; then
+                        echo "======================================================"
+                        echo "[ERROR] SCRIPTS_HOME 아래 zero_touch_qa 패키지가 없습니다."
+                        echo "  SCRIPTS_HOME=\${SCRIPTS_HOME}"
+                        echo "======================================================"
+                        exit 1
+                    fi
+
+                    mkdir -p '${AGENT_HOME}/artifacts'
+                    rm -rf '${AGENT_HOME}/artifacts'/*
+                    if ! touch '${AGENT_HOME}/artifacts/.write-test'; then
+                        echo "======================================================"
+                        echo "[ERROR] artifacts 디렉토리에 쓸 수 없습니다."
+                        echo "  경로: ${AGENT_HOME}/artifacts"
+                        echo "======================================================"
+                        exit 1
+                    fi
+                    rm -f '${AGENT_HOME}/artifacts/.write-test'
+
+                    FREE_KB=\$(df -Pk '${AGENT_HOME}' | awk 'NR==2 {print \$4}')
+                    if [ "\${FREE_KB:-0}" -lt 1048576 ]; then
+                        echo "======================================================"
+                        echo "[ERROR] 디스크 여유 공간이 1GB 미만입니다."
+                        echo "  AGENT_HOME: ${AGENT_HOME}"
+                        echo "  free_kb: \${FREE_KB:-unknown}"
+                        echo "======================================================"
+                        exit 1
+                    fi
+
+                    if command -v java >/dev/null 2>&1; then
+                        java -version
+                    else
+                        echo "======================================================"
+                        echo "[ERROR] java 명령을 찾을 수 없습니다. Jenkins agent 실행 환경을 확인하십시오."
+                        echo "======================================================"
+                        exit 1
+                    fi
+
+                    # venv 검증 — setup.sh Phase 6 에서 사전 생성된 venv 를 사용한다.
+                    # 폐쇄망 환경 대응: 파이프라인 실행 중에는 아무것도 설치하지 않는다.
+                    if [ ! -f '${AGENT_HOME}/venv/bin/activate' ]; then
+                        echo "======================================================"
+                        echo "[ERROR] venv 가 존재하지 않거나 손상되었습니다."
+                        echo "  경로: ${AGENT_HOME}/venv"
+                        echo ""
+                        echo "  해결: setup.sh 를 재실행하면 Phase 6 에서 자동 생성됩니다."
+                        echo "  또는 수동 생성:"
+                        echo "    python3 -m venv '${AGENT_HOME}/venv'"
+                        echo "    source '${AGENT_HOME}/venv/bin/activate'"
+                        echo "    pip install requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright"
+                        echo "    playwright install chromium"
+                        echo "======================================================"
+                        exit 1
+                    fi
+
+                    . '${AGENT_HOME}/venv/bin/activate'
+                    export PYTHONPATH="\${SCRIPTS_HOME}"
+                    python3 --version
+                    python3 - <<'PY'
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+import zero_touch_qa
+
+with sync_playwright() as p:
+    chromium_path = Path(p.chromium.executable_path)
+    if not chromium_path.exists():
+        raise SystemExit(
+            "Playwright Chromium executable not found: "
+            f"{chromium_path}. Run playwright install chromium in the agent venv."
+        )
+    print(f"[Preflight] zero_touch_qa={zero_touch_qa.__version__}")
+    print(f"[Preflight] chromium={chromium_path}")
+PY
+                    echo "[Setup] agent preflight 완료."
+                """
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────────
+        // Stage 2: 파일 준비 (doc / convert / execute 모드)
+        // ──────────────────────────────────────────────────────────────────
+        stage('2. 파일 준비') {
+            when {
+                allOf {
+                    expression { params.RUN_MODE in ['doc', 'convert', 'execute'] }
+                    expression { params.DOC_FILE != null && params.DOC_FILE != '' }
+                }
+            }
+            steps {
+                withFileParameter('DOC_FILE') {
+                    script {
+                        def ext = (params.RUN_MODE == 'convert') ? '.py'
+                                : (params.RUN_MODE == 'execute') ? '.json'
+                                : '.pdf'
+                        sh "cp \"\$DOC_FILE\" '${AGENT_HOME}/upload${ext}'"
+                    }
+                }
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────────
+        // Stage 2.4: Sprint 2/3 회귀 테스트 (S3-13)
+        // 본 코드베이스의 14대 DSL 계약/실행/회귀 산출물 검증을 운영 빌드에서
+        // 자동 수행. fixture 기반 pytest + airgap 가드 + regression 산출물
+        // subprocess 실행까지 한 번에 회귀하므로 운영 출시 전 마지막 안전장치다.
+        //
+        // 두 sub-step 으로 나눈다 — pytest-playwright 의 page fixture (native)
+        // 와 executor 의 sync_playwright (integration) 가 같은 세션 안에서
+        // asyncio loop 충돌하므로 격리해 별도 호출.
+        // ──────────────────────────────────────────────────────────────────
+        stage('2.4. pytest 회귀 (Sprint 2/3)') {
+            steps {
+                sh """
+                    . '${AGENT_HOME}/venv/bin/activate'
+
+                    export PYTHONPATH="\${SCRIPTS_HOME}"
+                    export PYTHONDONTWRITEBYTECODE=1
+
+                    mkdir -p '${AGENT_HOME}/artifacts'
+
+                    # (1) Sprint 2/3 통합 회귀 — executor / 14대 DSL / mock UI / healing
+                    cd "\${SCRIPTS_HOME}"
+                    python3 -m pytest test --ignore=test/native \\
+                        --junitxml='${AGENT_HOME}/artifacts/pytest_integration.xml' \\
+                        -q --tb=short
+
+                    # (2) 9대 native 회귀 — pytest-playwright page fixture
+                    python3 -m pytest test/native \\
+                        --junitxml='${AGENT_HOME}/artifacts/pytest_native.xml' \\
+                        -q --tb=short
+                """
+            }
+            post {
+                always {
+                    junit(
+                        testResults: ".qa_home/artifacts/pytest_*.xml",
+                        allowEmptyResults: false
+                    )
+                }
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────────
+        // Stage 2.5: Dify API 준비 대기 + credential/model health probe
+        // /console/api/setup readiness 후, app API key 로 /v1/parameters 를
+        // 호출해 endpoint / credential 정합성을 확인한다. 필요 시
+        // DIFY_HEALTH_CHAT_PROBE=1 로 최소 chat-messages probe 도 수행.
+        // ──────────────────────────────────────────────────────────────────
+        stage('2.5. Dify API 준비 대기') {
+            steps {
+                sh """
+                    set -eu
+
+                    echo "[HealthCheck] Dify API 준비 상태 확인 시작..."
+                    HEALTH_URL="http://localhost:18081/console/api/setup"
+                    MAX_WAIT=180
+                    INTERVAL=10
+                    ELAPSED=0
+
+                    while true; do
+                        STATUS=\$(curl -s -o /dev/null -w '%{http_code}' "\$HEALTH_URL" 2>/dev/null || echo "000")
+                        if [ "\$STATUS" = "200" ]; then
+                            echo "[HealthCheck] Dify API 준비 완료 (HTTP \$STATUS, \${ELAPSED}초 경과)"
+                            break
+                        fi
+                        if [ \$ELAPSED -ge \$MAX_WAIT ]; then
+                            echo "======================================================"
+                            echo "[ERROR] Dify API 가 \${MAX_WAIT}초 내에 응답하지 않았습니다."
+                            echo "  마지막 HTTP 상태: \$STATUS"
+                            echo "  확인 URL: \$HEALTH_URL"
+                            echo ""
+                            echo "  해결: docker compose ps 로 컨테이너 상태를 확인하십시오."
+                            echo "  참고: GUIDE.md §11 의 502 섹션"
+                            echo "======================================================"
+                            exit 1
+                        fi
+                        echo "[HealthCheck] 대기 중... (HTTP \$STATUS, \${ELAPSED}/\${MAX_WAIT}초)"
+                        sleep \$INTERVAL
+                        ELAPSED=\$((ELAPSED + INTERVAL))
+                    done
+
+                    if [ -z "\${DIFY_BASE_URL:-}" ]; then
+                        echo "[ERROR] DIFY_BASE_URL 이 비어 있습니다."
+                        exit 1
+                    fi
+                    if [ -z "\${DIFY_API_KEY:-}" ]; then
+                        echo "[ERROR] DIFY_API_KEY credential 이 비어 있습니다."
+                        exit 1
+                    fi
+
+                    PARAM_URL="\${DIFY_BASE_URL%/}/parameters?user=mac-agent"
+                    PARAM_STATUS=\$(curl -sS -o '${AGENT_HOME}/artifacts/dify_parameters_probe.json' \\
+                        -w '%{http_code}' \\
+                        -H "Authorization: Bearer \${DIFY_API_KEY}" \\
+                        "\$PARAM_URL" 2>/dev/null || echo "000")
+                    if [ "\$PARAM_STATUS" != "200" ]; then
+                        echo "======================================================"
+                        echo "[ERROR] Dify app API credential / endpoint health check 실패"
+                        echo "  URL: \$PARAM_URL"
+                        echo "  HTTP: \$PARAM_STATUS"
+                        echo "  응답: ${AGENT_HOME}/artifacts/dify_parameters_probe.json"
+                        echo "======================================================"
+                        exit 1
+                    fi
+                    echo "[HealthCheck] Dify app API credential 확인 완료 (/parameters HTTP \$PARAM_STATUS)"
+
+                    if [ "\${DIFY_HEALTH_CHAT_PROBE:-0}" = "1" ]; then
+                        echo "[HealthCheck] Dify chat-messages 최소 probe 시작..."
+                        CHAT_PAYLOAD='{"inputs":{"run_mode":"chat","srs_text":"health check only","target_url":"about:blank","api_docs":""},"query":"health check","response_mode":"blocking","user":"mac-agent-health"}'
+                        CHAT_STATUS=\$(curl -sS -o '${AGENT_HOME}/artifacts/dify_chat_probe.json' \\
+                            -w '%{http_code}' \\
+                            -H "Authorization: Bearer \${DIFY_API_KEY}" \\
+                            -H "Content-Type: application/json" \\
+                            -X POST "\${DIFY_BASE_URL%/}/chat-messages" \\
+                            --data "\$CHAT_PAYLOAD" 2>/dev/null || echo "000")
+                        if [ "\$CHAT_STATUS" != "200" ]; then
+                            echo "======================================================"
+                            echo "[ERROR] Dify chat-messages model health probe 실패"
+                            echo "  HTTP: \$CHAT_STATUS"
+                            echo "  응답: ${AGENT_HOME}/artifacts/dify_chat_probe.json"
+                            echo "======================================================"
+                            exit 1
+                        fi
+                        echo "[HealthCheck] Dify chat-messages probe 완료 (HTTP \$CHAT_STATUS)"
+                    else
+                        echo "[HealthCheck] DIFY_HEALTH_CHAT_PROBE != 1 — model 생성 probe 생략"
+                    fi
+                """
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────────
+        // Stage 3: Zero-Touch QA 엔진 실행
+        // PYTHONPATH = SCRIPTS_HOME (노드 환경변수) → zero_touch_qa 패키지 탐색
+        // ──────────────────────────────────────────────────────────────────
+        stage('3. Zero-Touch QA 엔진 가동') {
+            steps {
+                sh """
+                    . '${AGENT_HOME}/venv/bin/activate'
+
+                    export PYTHONPATH="\${SCRIPTS_HOME}"
+                    export PYTHONDONTWRITEBYTECODE=1
+                    # WSL2 ↔ Windows 간 .pyc 타임스탬프 불일치 방지: 기존 캐시 삭제
+                    find "\${SCRIPTS_HOME}" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+                    export ARTIFACTS_DIR='${AGENT_HOME}/artifacts'
+                    export TARGET_URL='${params.TARGET_URL}'
+                    export SRS_TEXT='${params.SRS_TEXT}'
+                    export API_DOCS='${params.API_DOCS}'
+                    # gemma4:e4b 가 <think> 블록 포함해 장문 heal 응답을 내느라
+                    # 기본 60s timeout 안에 못 끝내는 사례 반복 → 180s 상향.
+                    export HEAL_TIMEOUT_SEC=180
+
+                    BROWSER_FLAG="${params.HEADLESS ? '--headless' : '--headed'}"
+
+                    # 모든 모드 공통: executor 의 upload action default fallback 더미.
+                    # LLM 이 placeholder file path 를 emit 해도 결정적으로 PASS 가능.
+                    mkdir -p "\$ARTIFACTS_DIR"
+                    printf 'ZTQA upload sample\\n' > "\$ARTIFACTS_DIR/upload_sample.txt"
+
+                    case "${params.RUN_MODE}" in
+                        chat)
+                            echo "[Engine] Chat 모드"
+                            python3 -m zero_touch_qa --mode chat \$BROWSER_FLAG
+                            ;;
+                        doc)
+                            echo "[Engine] Doc 모드"
+                            python3 -m zero_touch_qa --mode doc --file '${AGENT_HOME}/upload.pdf' \$BROWSER_FLAG
+                            ;;
+                        convert)
+                            echo "[Engine] Convert 모드"
+                            python3 -m zero_touch_qa --mode convert --file '${AGENT_HOME}/upload.py' \$BROWSER_FLAG
+                            ;;
+                        execute)
+                            # DOC_FILE 미업로드 / 빈 파일 / invalid JSON 인 경우 14대 액션 통합 시연
+                            # default 시나리오 fallback. LLM 비결정성을 우회한 결정적 검증 경로.
+                            SCENARIO='${AGENT_HOME}/upload.json'
+                            if ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d, list) and d" "\$SCENARIO" 2>/dev/null; then
+                                SCENARIO="\${SCRIPTS_HOME}/test/fixtures/scenario_14.json"
+                                echo "[Engine] Execute 모드 — DOC_FILE 누락/무효, default 14대 시나리오 사용: \$SCENARIO"
+                            else
+                                echo "[Engine] Execute 모드 — 업로드된 시나리오: \$SCENARIO"
+                            fi
+                            python3 -m zero_touch_qa --mode execute --scenario "\$SCENARIO" \$BROWSER_FLAG
+                            ;;
+                    esac
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            sh """
+                mkdir -p 'qa_reports/build-${BUILD_NUMBER}'
+                cp -r '${AGENT_HOME}/artifacts/'* 'qa_reports/build-${BUILD_NUMBER}/' || true
+            """
+
+            publishHTML([
+                allowMissing: true,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: "qa_reports/build-${BUILD_NUMBER}",
+                reportFiles: 'index.html',
+                reportName: 'Zero-Touch QA Report'
+            ])
+
+            archiveArtifacts(
+                artifacts: "qa_reports/build-${BUILD_NUMBER}/**/*",
+                fingerprint: true,
+                allowEmptyArchive: true
+            )
+
+            script {
+                def browserMode = params.HEADLESS ? 'headless' : 'headed'
+                currentBuild.description = "ZT-QA | ${params.RUN_MODE} | ${browserMode} | ${params.TARGET_URL}"
+            }
+
+            echo "테스트 종료. Jenkins 빌드 결과에서 Artifacts 를 확인하십시오."
+        }
+
+        failure {
+            archiveArtifacts(
+                artifacts: "qa_reports/build-${BUILD_NUMBER}/**/*",
+                allowEmptyArchive: true
+            )
+        }
+    }
+}

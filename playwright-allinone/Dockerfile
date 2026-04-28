@@ -5,7 +5,7 @@
 # 설계다. Mac 과 Windows (WSL2 Ubuntu) 환경의 공통 요구 때문에 이렇게 나왔다:
 #
 #   - Docker Desktop on Mac: Linux 컨테이너에 Metal GPU passthrough 미지원 →
-#     컨테이너 내 Ollama 가 CPU 모드 (gemma4:e4b 기준 1-2 tok/s) → 타임아웃.
+#     컨테이너 내 Ollama 가 CPU 모드 (gemma4:26b 기준 1-2 tok/s) → 타임아웃.
 #   - Playwright headed Chromium 은 컨테이너 안에서 호스트 데스크탑에 창을
 #     띄울 수 없음 (컨테이너에 X/Wayland 소켓 마운트해도 경험이 일관되지 않음).
 #
@@ -25,7 +25,7 @@
 #
 # ⚠️ 본 이미지는 호스트에 Ollama 데몬이 설치·기동된 상태에서만 동작한다.
 #   docker run -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
-#              -e OLLAMA_MODEL=gemma4:e4b (또는 호스트에 pull 된 모델) ... 필수.
+#              -e OLLAMA_MODEL=gemma4:26b (또는 호스트에 pull 된 모델) ... 필수.
 #   호스트 agent 스크립트: mac-agent-setup.sh (Mac) / wsl-agent-setup.sh (WSL2)
 #   자세한 가이드: README §4 (Mac), §5 (Windows 11 / WSL2 Ubuntu).
 #
@@ -148,7 +148,7 @@ RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
 RUN python3 -m playwright install --with-deps chromium
 
 # -- Zero-Touch QA 전용 venv (Jenkins Pipeline 이 참조) --
-# Jenkins Pipeline(DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline Stage 1) 은
+# Jenkins Pipeline(ZeroTouch-QA.jenkinsPipeline Stage 1) 은
 # ${WORKSPACE}/.qa_home/venv/bin/activate 를 요구한다. 워크스페이스는 런타임에만
 # 생기므로, 이미지 빌드 시에는 전역 venv 를 /opt/qa-venv 에 만들고 provision.sh
 # 가 워크스페이스의 .qa_home/venv 를 이 경로로 심볼릭 링크한다.
@@ -233,8 +233,13 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY entrypoint.sh  /entrypoint.sh
 COPY provision.sh       /opt/provision.sh
 COPY zero_touch_qa                   /opt/zero_touch_qa
+COPY test/fixtures                   /opt/seed/fixtures
 COPY dify-chatflow.yaml              /opt/dify-chatflow.yaml
-COPY DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline /opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline
+COPY test-planning-chatflow.yaml     /opt/test-planning-chatflow.yaml
+# Test Planning RAG 트랙의 KB seed 문서. provision.sh 가 첫 부팅 시 자동으로 두 KB 에 업로드.
+# 폐쇄망 반입 시 image 단독으로도 비어 있지 않은 KB 로 시작 가능 (volume restore 미수행 시).
+COPY examples/test-planning-samples  /opt/seed/kb-docs
+COPY ZeroTouch-QA.jenkinsPipeline /opt/ZeroTouch-QA.jenkinsPipeline
 COPY jenkins-init                    /opt/jenkins-init
 
 # -- Jenkins 관리자 계정 그루비 스크립트를 seed 디렉토리에 배치 --
