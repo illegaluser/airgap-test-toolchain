@@ -127,6 +127,7 @@ JENKINS_PLUGINS=(
   htmlpublisher
   junit
   plain-credentials
+  sidebar-link
 )
 # Jenkins base 는 최신 LTS exact tag 로 고정한다.
 # 플러그인 매니저의 --jenkins-version 도 같은 이미지에서 직접 추출해 맞춘다.

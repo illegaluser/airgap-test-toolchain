@@ -46,6 +46,12 @@ def convert_playwright_to_dsl(file_path: str, output_dir: str) -> list[dict]:
             continue
         if any(line.startswith(k) for k in skip_keywords):
             continue
+        # codegen 은 `with page.expect_popup() as page1_info` → `page1.click(...)` 식으로
+        # popup/새 탭 액션을 page1, page2, … 변수에 바인딩한다. executor 는 매 스텝 후
+        # context.pages 변화로 활성 page 를 자동 전환하므로(executor.py:166-201) 시나리오는
+        # 단일 page 시퀀스로 평탄화해도 동작이 일치한다. 정규화 안 하면 popup 탭 액션이
+        # 통째로 누락된다.
+        line = re.sub(r"\bpage\d+\.", "page.", line)
         if not (line.startswith("page.") or line.startswith("expect(")):
             continue
 

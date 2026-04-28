@@ -82,9 +82,10 @@ def run_convert(
 
     cmd = [
         "docker", "exec",
+        "-w", "/opt",
         "-e", f"ARTIFACTS_DIR={container_session_dir}",
         container_name,
-        "python", "-m", "zero_touch_qa",
+        "/opt/qa-venv/bin/python", "-m", "zero_touch_qa",
         "--mode", "convert",
         "--convert-only",
         "--file", f"{container_session_dir}/original.py",
