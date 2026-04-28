@@ -99,6 +99,7 @@ def start_codegen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as e:
         raise CodegenError(f"codegen subprocess 실행 실패: {e}") from e
@@ -113,32 +114,62 @@ def start_codegen(
     )
 
 
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    """Process group 에 신호. group 권한 없거나 이미 죽었으면 단일 PID fallback."""
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.send_signal(sig)
+        except ProcessLookupError:
+            pass
+
+
+def _close_pipes(proc: subprocess.Popen) -> None:
+    """stdout/stderr pipe 를 닫는다. 자식이 잡고 있던 FD 의 EOF 를 기다리지 않는다."""
+    for p in (proc.stdout, proc.stderr):
+        if p is None:
+            continue
+        try:
+            p.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _terminate_proc(proc: subprocess.Popen, grace_sec: float) -> None:
+    """SIGTERM → 유예 → SIGKILL. process group 단위 (자식 Chromium 포함)."""
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace_sec)
+        return
+    except subprocess.TimeoutExpired:
+        log.warning("[codegen] SIGKILL (유예 %.1fs 초과)", grace_sec)
+    _signal_group(proc, signal.SIGKILL)
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        log.error("[codegen] SIGKILL 후에도 종료되지 않음 — handle 만 닫음")
+
+
 def stop_codegen(handle: CodegenHandle, *, grace_sec: float = 5.0) -> CodegenHandle:
     """SIGTERM → 유예 후 SIGKILL. handle 에 결과 기록 후 그대로 반환.
 
     이미 종료된 프로세스에는 신호를 안 보내고 즉시 returncode 만 회수.
+
+    Process group 단위로 신호 전송: Playwright codegen 의 자식 Chromium 까지
+    포함해 한 번에 종료. 자식이 stdout/stderr pipe 를 잡고 있으면 EOF 가
+    오지 않아 _read_pipe 가 영구 블록되는 것을 방지.
     """
     proc = handle.process
-
     if proc.poll() is None:
         log.info("[codegen] SIGTERM PID=%d (elapsed=%.1fs)", proc.pid, handle.elapsed_sec())
-        try:
-            proc.send_signal(signal.SIGTERM)
-        except ProcessLookupError:
-            # 신호 보내기 직전 알아서 종료된 경우 — 정상 흐름
-            pass
-        try:
-            proc.wait(timeout=grace_sec)
-        except subprocess.TimeoutExpired:
-            log.warning("[codegen] SIGKILL (유예 %.1fs 초과)", grace_sec)
-            proc.kill()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                log.error("[codegen] SIGKILL 후에도 종료되지 않음 — handle 만 닫음")
+        _terminate_proc(proc, grace_sec)
 
-    handle.stdout = _read_pipe(proc.stdout)
-    handle.stderr = _read_pipe(proc.stderr)
+    # pipe read 는 자식 Chromium 들이 FD 를 안 닫으면 무기한 블록된다.
+    # handle.stdout/stderr 는 어디서도 사용되지 않으므로 그냥 닫고 빈 값으로 둔다.
+    _close_pipes(proc)
+    handle.stdout = ""
+    handle.stderr = ""
     handle.returncode = proc.returncode if proc.returncode is not None else -1
     return handle
 

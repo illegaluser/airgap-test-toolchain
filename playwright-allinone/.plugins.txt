@@ -3,3 +3,4 @@ file-parameters:latest
 htmlpublisher:latest
 junit:latest
 plain-credentials:latest
+sidebar-link:latest
