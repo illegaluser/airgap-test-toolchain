@@ -38,6 +38,7 @@ pytest
 pytest-xdist
 pyyaml  # provision-apps.sh 의 chatflow.yaml 파싱용
 tiktoken  # Phase 1 DOM grounding 토큰 예산 추정 (T1.4)
+pyotp     # T-D / P0.1 — auth_login totp 모드의 6자리 코드 생성
 
 # --- 문서 처리 / 유틸 ---
 requests
