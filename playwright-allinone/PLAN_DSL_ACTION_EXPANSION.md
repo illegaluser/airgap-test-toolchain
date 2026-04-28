@@ -20,6 +20,8 @@
 | 2026-04-27 | Sprint 4C closure | S4C-03 convert 14대 E2E (`test_convert_14_e2e.py` 2 tests — convert→validate→execute 풀 사슬, full_dsl.html 14/14 PASS), S4C-05 build trend (Jenkinsfile v2.4 + `aggregate_llm_sla()` 빌드별 자동 집계, JUnit XML 추세 + 30 일 retention 자동화), S4C-06 운영 매뉴얼 (`README.md §3.9` v4.1 SLA / mock 안전장치 / DIFY_API_KEY / convert 14대 / agent 동시성), S4C-07 v4.1 출시 선언. Sprint 1 (S1-23/S1-25) Sprint 4B 회귀로 동시 closure. 통합 회귀 `test --ignore=test/native` **77 PASS** + `test/native` **30 PASS** = **107/107 PASS** | §8.4 / §8.6 / §9 |
 | 2026-04-27 | v4.1 실환경 출시 검증 | 호스트 하이브리드 fresh rebuild (image+volume 파괴 → `build.sh --redeploy --fresh` → Dify provisioning + Jenkins agent 재연결) 후 Jenkins pipeline **4 모드 모두** 실 검증. Build #2 `RUN_MODE=execute` 14/14 PASS @64s (LLM-bypass scenario_14.json). Build #5 `RUN_MODE=convert` 14/14 PASS @59s (recorded-14actions.py → 14대 DSL 변환 → 실행, S4C-03 운영 검증). Build #6 `RUN_MODE=chat` 6/6 PASS @222s (실 Dify gemma4:26b, llm_sla.json planner p50=82.9s p95=90.4s — Sprint 5 §10.5 의 의미 압축 동작 재확인). Build #7 `RUN_MODE=doc` 20/20 PASS @70s (`playwright_dev_test_scenario.pdf` ZTQA_STEP marker 로컬 파서 → 실 playwright.dev 사이트, S4B-05 closure). 빌드별 `llm_sla.json` 자동 집계 hook (S4C-05) 운영 환경에서 정상 작동 확인. 발견된 결함 — `build.sh` / `provision.sh` 의 OLLAMA_MODEL 기본값이 `gemma4:e4b` 인데 chatflow YAML 은 `gemma4:26b` 를 강제 → fresh build 시 chat 모드 400 에러. 양 스크립트 기본값을 `gemma4:26b` 로 영구 수정 | §9 |
 | 2026-04-28 | 정밀 재검증 + CLI 계약 보강 | 계획 기반 로컬 정밀 테스트 수행 중 `chat --convert-only` 오용이 Dify retry 경로로 들어가는 결함 발견. `__main__.py` 에 early guard 를 추가해 `convert` 외 모드에서는 Dify 호출 전 즉시 exit 1. `test_sprint2_runtime.py` 에 subprocess 회귀 추가. 전체 회귀 `test --ignore=test/native` 169 PASS + `test/native` 30 PASS, compileall/bash -n/convert-only/execute/regression 산출물 smoke 모두 PASS | `__main__.py`, `test_sprint2_runtime.py`, README / Grounding-Recording plan |
+| 2026-04-29 | T-A (P0.4) — converter AST | line-based converter 의 popup/`.nth(N)`/`.first`/`.filter(has_text=...)`/`frame_locator` chain 손실 문제 해소. `zero_touch_qa/converter_ast.py` 신설 (`_AstConverter` NodeVisitor + page 변수 스코프 추적 + popup_info → page 승격). `converter.py` 를 AST 우선 + line fallback 으로 라우팅. `locator_resolver.py` 에 `_split_modifiers`/`_resolve_raw`/`_apply_modifiers` 추가해 receiver-side 도 nth/has_text 처리. **DSL `target` 의 후미 modifier 문법 추가** — `, nth=N` (정수, .nth(N).first 회피) / `, has_text=T` (.filter(has_text=T)). corpus 8 fixture + 42 단위 테스트, 회귀 0 (208 → 250 passed) | `converter_ast.py`, `converter.py`, `locator_resolver.py`, `test/fixtures/codegen_corpus/`, `test/test_converter_ast.py` |
+| 2026-04-29 | T-D (P0.1) Phase 1~4,7 — auth_login DSL | **15번째 표준 액션 `auth_login` 도입** — form/totp/oauth 모드 분기 (oauth 는 mock 서버 follow-up 까지 FAIL). credential 은 env var lookup (`AUTH_CRED_<ALIAS>_USER/_PASS/_TOTP_SECRET`), TOTP 는 `pyotp` 위임. `BrowserContext` 의 storage_state dump/restore (CLI `--storage-state-in/out` + env `AUTH_STORAGE_STATE_IN/OUT`) 로 인증 후 세션 재사용. fixture: auth_form / auth_totp. 31 테스트 (단위 23 + 통합 5 + caplog 마스킹 회귀 3). pyotp 를 requirements.txt + agent setup REQ_PKGS 에 추가. 회귀 0 (250 → 281 passed). OAuth mock 컨테이너 + Jenkins Credentials seed 는 follow-up commit | `zero_touch_qa/auth.py`, `zero_touch_qa/executor.py`, `zero_touch_qa/__main__.py`, `test/test_auth.py`, `test/fixtures/auth_form.html`, `auth_totp.html`, `mac/wsl-agent-setup.sh`, `requirements.txt` |
 
 상세 의사결정 근거는 §6.2 / §6.3 (Sprint 2 리뷰), §7.2 / §7.3 (Sprint 3 리뷰), §8.2 / §8.3 (Sprint 4 리뷰) 참조.
 
@@ -87,6 +89,54 @@
 - **가시성 검증**: `{"action": "verify", "target": "#modal", "condition": "visible"}` ➔ `expect().to_be_visible()`
 - **비활성화 검증**: `{"action": "verify", "target": "#submit-btn", "condition": "disabled"}` ➔ `expect().to_be_disabled()`
 - **속성 검증**: `{"action": "verify", "target": "input", "value": "test@test.com", "condition": "value"}` ➔ `expect().to_have_value("test@test.com")`
+
+### 2.4 인증(Authentication) 액션 — `auth_login` *(T-D / P0.1, 2026-04-29)*
+
+**15 번째 표준 액션** — form 로그인 / TOTP / OAuth 의 다단계 흐름을 단일 DSL 스텝
+으로 추상화. credential 은 env var lookup, TOTP 는 `pyotp` 자동 생성. 자세한 사용법은
+[docs/auth-login-usage.md](docs/auth-login-usage.md).
+
+| 모드 | JSON 명세 예시 | 동작 |
+| --- | --- | --- |
+| form | `{"action": "auth_login", "target": "form", "value": "<alias>"}` | email/password/submit 자동 탐지 → fill + click |
+| form (explicit) | `{"action": "auth_login", "target": "form, email_field=#email, password_field=#pw, submit=#login", "value": "<alias>"}` | selector 명시 — 자동 탐지 우회 |
+| totp | `{"action": "auth_login", "target": "totp", "value": "<alias>"}` | `pyotp.TOTP(secret).now()` 6자리 → fill + (있으면) submit |
+| oauth | `{"action": "auth_login", "target": "oauth, provider=mock", "value": "<alias>"}` | **T-D Phase 5 미완료 — mock 서버 도입 후 활성화** (현재는 FAIL) |
+
+**credential alias 환경변수**:
+
+- `AUTH_CRED_<ALIAS>_USER` — 이메일/사용자명
+- `AUTH_CRED_<ALIAS>_PASS` — 비밀번호
+- `AUTH_CRED_<ALIAS>_TOTP_SECRET` — Base32 인코딩된 TOTP 시크릿
+
+ALIAS 의 비-영숫자 문자는 `_` 로 정규화. 셋 다 비어 있으면 `CredentialError`.
+
+**로그 마스킹 계약** — executor 가 자동으로 끝 2자만 평문 노출, 나머지 `*` 마스킹.
+caplog 회귀로 평문 password / TOTP 시크릿 / email 미노출 보장.
+
+**storage_state 통합** — `auth_login` 후 `--storage-state-out PATH` (또는 env
+`AUTH_STORAGE_STATE_OUT`) 로 인증 결과 덤프 → 후속 시나리오 `--storage-state-in`
+으로 재사용해 로그인 스킵.
+
+### 2.5 Locator target 의 후미 modifier 문법 *(T-A / P0.4, 2026-04-29)*
+
+기존 `target` 문자열 (`role=...`, `text=...`, CSS selector 등) 의 **끝에 `,` 로 구분된
+modifier 옵션** 추가:
+
+| modifier | 의미 | 예시 |
+| --- | --- | --- |
+| `nth=N` | N 번째 매칭 (`.nth(N)`) | `role=link, name=Read more, nth=2` → 3 번째 "Read more" 링크 |
+| `has_text=T` | 자식에 T 텍스트가 있는 요소 (`.filter(has_text=T)`) | `role=listitem, has_text=Premium` |
+
+`>>` 로 selector chain (`#sidebar >> role=button, name=Settings`) — Playwright native
+syntax.
+
+`frame=#iframe>>...` prefix 는 codegen 의 `page.frame_locator(...)` 보존용 — 실 실행은
+T-C (P0.2) 의 frame_locator traversal 후 활성화.
+
+이 modifier 들은 codegen AST 변환기 (`zero_touch_qa/converter_ast.py`) 가
+`.nth(N)` / `.first` / `.filter(has_text=T)` 를 손실 없이 14-DSL `target` 으로
+보존하기 위해 도입됨. 사용자 작성 시나리오에서도 동일 문법 사용 가능.
 
 ---
 
