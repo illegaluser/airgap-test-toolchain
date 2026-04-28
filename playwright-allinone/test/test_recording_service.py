@@ -701,6 +701,380 @@ def test_absorb_disk_sessions_marks_orphan_recording(temp_host_root):
     assert "orphan" in (sess.error or "").lower()
 
 
+# ── TR.5 R-Plus — enricher (Recording → IEEE 829-lite 역추정) ───────────────
+
+def test_enrich_404_for_unknown_session(client):
+    r = client.post("/recording/sessions/nope/enrich", json={})
+    assert r.status_code == 404
+
+
+def test_enrich_409_when_session_not_done(client, patched_codegen):
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    r2 = client.post(f"/recording/sessions/{sid}/enrich", json={})
+    assert r2.status_code == 409
+
+
+def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_root):
+    """fake Ollama 응답을 monkeypatch 로 주입해 흐름 검증."""
+    import time
+    from pathlib import Path
+    from recording_service import server as srv
+    from recording_service.enricher import EnrichResult
+
+    # done 세션 직접 주입 (codegen·convert 우회)
+    srv._reset_for_tests()
+    sess = srv._registry.create("https://app.example.com/login")
+    sess.state = "done"
+    Path(temp_host_root, sess.id).mkdir(parents=True, exist_ok=True)
+    Path(temp_host_root, sess.id, "scenario.json").write_text(
+        '[{"step":1,"action":"navigate","target":"","value":"https://app.example.com/login"}]',
+        encoding="utf-8",
+    )
+
+    fake_md = (
+        "## 목적\n로그인 흐름.\n\n"
+        "## 범위\n인증 페이지.\n\n"
+        "## 사전조건\n- 자격증명.\n\n"
+        "## 단계\n1. 진입.\n\n"
+        "## 예상 결과\n진입 성공.\n\n"
+        "## 검증 기준\nURL 매칭.\n"
+    )
+
+    def fake_enrich(*, scenario, target_url, page_title=None, inventory_block=None):
+        return EnrichResult(
+            markdown=fake_md, elapsed_ms=42.0, model="gemma4:26b",
+            prompt_tokens_estimate=420,
+        )
+
+    monkeypatch.setattr(srv, "_run_enrich_impl", fake_enrich)
+
+    r = client.post(f"/recording/sessions/{sess.id}/enrich", json={})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["model"] == "gemma4:26b"
+    assert body["markdown"] == fake_md
+    assert body["char_count"] == len(fake_md)
+    # 디스크에 저장됐는지
+    enriched = Path(temp_host_root) / sess.id / "doc_enriched.md"
+    assert enriched.is_file()
+    assert enriched.read_text(encoding="utf-8") == fake_md
+
+
+def test_enrich_502_when_ollama_fails(client, monkeypatch, temp_host_root):
+    from pathlib import Path
+    from recording_service import server as srv
+    from recording_service.enricher import EnrichError
+
+    srv._reset_for_tests()
+    sess = srv._registry.create("https://x.test")
+    sess.state = "done"
+    Path(temp_host_root, sess.id).mkdir(parents=True, exist_ok=True)
+    Path(temp_host_root, sess.id, "scenario.json").write_text("[{}]", encoding="utf-8")
+
+    def fake_enrich(*a, **kw):
+        raise EnrichError("Ollama 호출이 180s 안에 끝나지 않았습니다.")
+
+    monkeypatch.setattr(srv, "_run_enrich_impl", fake_enrich)
+    r = client.post(f"/recording/sessions/{sess.id}/enrich", json={})
+    assert r.status_code == 502
+    assert "Ollama" in r.json()["detail"]
+
+
+def test_enricher_module_few_shot_count():
+    from recording_service.enricher import FEW_SHOT_EXAMPLES
+    assert len(FEW_SHOT_EXAMPLES) == 3
+
+
+def test_enricher_module_system_prompt_contains_required_sections():
+    from recording_service.enricher import _build_system_prompt
+    sp = _build_system_prompt()
+    # 6 섹션 명이 시스템 프롬프트에 포함되어야 LLM 이 따름
+    for section in ("목적", "범위", "사전조건", "단계", "예상 결과", "검증 기준"):
+        assert section in sp
+
+
+def test_enricher_module_raises_on_empty_scenario():
+    from recording_service import enricher
+    from recording_service.enricher import EnrichError
+    with pytest.raises(EnrichError):
+        enricher.enrich_recording(scenario=[], target_url="https://x.test")
+
+
+# ── TR.6 R-Plus — comparator (Doc ↔ Recording 의미 비교) ────────────────────
+
+def _setup_done_session(client_or_temp, sid_prefix="doc", scenario=None):
+    """compare/enrich 테스트용 done 세션 직접 주입."""
+    from pathlib import Path
+    from recording_service import server as srv
+    srv._reset_for_tests()
+    sess = srv._registry.create("https://app.example.com")
+    sess.state = "done"
+    if scenario is not None:
+        Path(client_or_temp, sess.id).mkdir(parents=True, exist_ok=True)
+        import json as _j
+        Path(client_or_temp, sess.id, "scenario.json").write_text(
+            _j.dumps(scenario), encoding="utf-8",
+        )
+    return sess.id
+
+
+def test_comparator_split_alignable_separates_intent():
+    from recording_service.comparator import normalize, split_alignable
+
+    sc = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "click", "target": "#btn", "value": ""},
+        {"action": "verify", "target": "#status", "value": "OK"},
+        {"action": "mock_status", "target": "https://api.test/x", "value": "500"},
+    ]
+    aligned, intent = split_alignable(normalize(sc))
+    assert [s.action for s in aligned] == ["navigate", "click"]
+    assert {s.action for s in intent} == {"verify", "mock_status"}
+
+
+def test_comparator_exact_match():
+    from recording_service.comparator import compare
+
+    seq = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "click", "target": "#btn", "value": ""},
+    ]
+    res = compare(seq, seq)
+    assert res.counts["exact"] == 2
+    assert res.counts["missing"] == 0
+    assert res.counts["extra"] == 0
+
+
+def test_comparator_value_diff():
+    from recording_service.comparator import compare
+
+    doc = [{"action": "fill", "target": "#email", "value": "user@a.com"}]
+    rec = [{"action": "fill", "target": "#email", "value": "user@b.com"}]
+    res = compare(doc, rec)
+    assert res.counts["value_diff"] == 1
+    assert res.counts["exact"] == 0
+
+
+def test_comparator_missing_and_extra():
+    from recording_service.comparator import compare
+
+    doc = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "click", "target": "#btn-A", "value": ""},
+        {"action": "fill", "target": "#email", "value": "u@x"},
+    ]
+    rec = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "fill", "target": "#email", "value": "u@x"},
+        {"action": "press", "target": "#email", "value": "Enter"},
+    ]
+    res = compare(doc, rec)
+    assert res.counts["missing"] == 1   # click #btn-A 만 doc 에
+    assert res.counts["extra"] == 1     # press 만 recording 에
+    assert res.counts["exact"] >= 2     # navigate + fill
+
+
+def test_comparator_intent_only_doc_verify_separated():
+    from recording_service.comparator import compare
+
+    doc = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "click", "target": "#btn", "value": ""},
+        {"action": "verify", "target": "#status", "value": "OK"},
+        {"action": "mock_status", "target": "https://api.test/x", "value": "500"},
+    ]
+    rec = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "click", "target": "#btn", "value": ""},
+    ]
+    res = compare(doc, rec)
+    # navigate + click 정확 일치
+    assert res.counts["exact"] == 2
+    # verify / mock_status 는 intent_only
+    assert res.counts["intent_only"] == 2
+    # missing 0 (verify/mock 은 정렬 대상 외)
+    assert res.counts["missing"] == 0
+
+
+def test_comparator_html_renders_5_categories():
+    from recording_service.comparator import compare, render_html
+
+    doc = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "verify", "target": "#x", "value": "OK"},
+    ]
+    rec = [
+        {"action": "navigate", "target": "", "value": "https://x.test"},
+        {"action": "click", "target": "#extra", "value": ""},
+    ]
+    res = compare(doc, rec)
+    html = render_html(res)
+    assert "<table>" in html
+    # 5분류 라벨 노출
+    assert "정확" in html
+    assert "녹화 외 의도" in html
+    # 비대칭 안내
+    assert "verify / mock_*" in html
+
+
+# ── /recording/sessions/{id}/compare endpoint ───────────────────────────────
+
+def test_compare_404_unknown(client):
+    r = client.post(
+        "/recording/sessions/nope/compare",
+        json={"doc_dsl": [{"action": "navigate", "target": "", "value": "x"}]},
+    )
+    assert r.status_code == 404
+
+
+def test_compare_400_empty_doc_dsl(client, temp_host_root):
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+    ])
+    r = client.post(f"/recording/sessions/{sid}/compare", json={"doc_dsl": []})
+    assert r.status_code == 400
+
+
+def test_compare_writes_html_and_returns_counts(client, temp_host_root):
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+        {"step": 2, "action": "click", "target": "#btn", "value": ""},
+    ])
+    doc = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+        {"step": 2, "action": "click", "target": "#btn", "value": ""},
+        {"step": 3, "action": "verify", "target": "#status", "value": "OK"},
+    ]
+    r = client.post(f"/recording/sessions/{sid}/compare", json={"doc_dsl": doc})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["counts"]["exact"] == 2
+    assert body["counts"]["intent_only"] == 1
+    # HTML 리포트 파일 존재
+    from pathlib import Path
+    html_path = Path(temp_host_root) / sid / "doc_comparison.html"
+    assert html_path.is_file()
+    assert "<table>" in html_path.read_text(encoding="utf-8")
+
+
+def test_compare_html_endpoint_serves_file(client, temp_host_root):
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+    ])
+    doc = [{"action": "navigate", "target": "", "value": "https://x.test"}]
+    r = client.post(f"/recording/sessions/{sid}/compare", json={"doc_dsl": doc})
+    assert r.status_code == 201
+    r2 = client.get(f"/recording/sessions/{sid}/comparison.html")
+    assert r2.status_code == 200
+    assert "<html" in r2.text.lower()
+
+
+def test_compare_html_endpoint_404_when_no_report(client, temp_host_root):
+    sid = _setup_done_session(temp_host_root, scenario=[{"action": "navigate", "target": "", "value": "x"}])
+    r = client.get(f"/recording/sessions/{sid}/comparison.html")
+    assert r.status_code == 404
+
+
+# ── TR.7 R-Plus — replay (docker exec --mode execute) ──────────────────────
+
+def test_replay_success_returns_counts(client, monkeypatch, temp_host_root):
+    """fake docker exec → executor 실행 결과 시뮬레이션."""
+    from pathlib import Path
+    import json as _j
+    from recording_service import server as srv
+    from recording_service.replay_proxy import ReplayResult
+
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+        {"step": 2, "action": "click", "target": "#btn", "value": ""},
+    ])
+
+    def fake_replay(*, container_session_dir, host_session_dir):
+        # run_log.json 시뮬레이션 — host 측에 작성
+        rlp = Path(host_session_dir) / "run_log.json"
+        rlp.write_text(_j.dumps([
+            {"step": 1, "status": "PASS"},
+            {"step": 2, "status": "PASS"},
+        ]), encoding="utf-8")
+        return ReplayResult(
+            returncode=0, stdout="", stderr="",
+            run_log_path=str(rlp), run_log_exists=True,
+            pass_count=2, fail_count=0, healed_count=0,
+            elapsed_ms=2345.0,
+        )
+
+    monkeypatch.setattr(srv, "_run_replay_impl", fake_replay)
+    r = client.post(f"/recording/sessions/{sid}/replay")
+    assert r.status_code == 201
+    body = r.json()
+    assert body["returncode"] == 0
+    assert body["pass_count"] == 2
+    assert body["fail_count"] == 0
+    assert body["step_count"] == 2
+    assert body["run_log_exists"] is True
+
+
+def test_replay_502_when_proxy_error(client, monkeypatch, temp_host_root):
+    from recording_service import server as srv
+    from recording_service.replay_proxy import ReplayProxyError
+
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+    ])
+
+    def fake_replay(*a, **kw):
+        raise ReplayProxyError("docker 실행 파일을 찾을 수 없습니다.")
+
+    monkeypatch.setattr(srv, "_run_replay_impl", fake_replay)
+    r = client.post(f"/recording/sessions/{sid}/replay")
+    assert r.status_code == 502
+
+
+def test_replay_proxy_module_no_docker(monkeypatch):
+    from recording_service import replay_proxy
+    from recording_service.replay_proxy import ReplayProxyError
+
+    monkeypatch.setattr(replay_proxy, "is_docker_available", lambda: False)
+    with pytest.raises(ReplayProxyError):
+        replay_proxy.run_replay(
+            container_session_dir="/recordings/x",
+            host_session_dir="/tmp/no",
+        )
+
+
+def test_replay_proxy_counts_run_log_statuses(monkeypatch, tmp_path):
+    """run_log.json 의 PASS/FAIL/HEALED 카운팅 검증."""
+    from recording_service import replay_proxy
+    from types import SimpleNamespace
+    import json as _j
+
+    monkeypatch.setattr(replay_proxy, "is_docker_available", lambda: True)
+
+    # subprocess.run fake
+    fake_completed = SimpleNamespace(
+        returncode=0, stdout=b"ok", stderr=b"",
+    )
+    monkeypatch.setattr(replay_proxy.subprocess, "run", lambda *a, **kw: fake_completed)
+
+    rlp = tmp_path / "run_log.json"
+    rlp.write_text(_j.dumps([
+        {"step": 1, "status": "PASS"},
+        {"step": 2, "status": "FAIL"},
+        {"step": 3, "status": "HEALED"},
+        {"step": 4, "status": "PASS"},
+    ]), encoding="utf-8")
+
+    res = replay_proxy.run_replay(
+        container_session_dir="/recordings/x",
+        host_session_dir=str(tmp_path),
+    )
+    assert res.pass_count == 2
+    assert res.fail_count == 1
+    assert res.healed_count == 1
+    assert res.run_log_exists is True
+
+
 # ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────
 
 def test_delete_terminates_active_codegen(client, patched_codegen):
@@ -745,12 +1119,16 @@ def test_codegen_runner_output_size_zero_for_missing_file(tmp_path):
 
 # ── /recording/sessions/{id}/replay (R-Plus only) ────────────────────────────
 
-def test_replay_returns_503_in_mvp(client, patched_codegen):
+def test_replay_404_unknown(client):
+    r = client.post("/recording/sessions/nope/replay")
+    assert r.status_code == 404
+
+
+def test_replay_409_when_session_not_done(client, patched_codegen):
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     r2 = client.post(f"/recording/sessions/{sid}/replay")
-    assert r2.status_code == 503
-    assert "R-Plus" in r2.json()["detail"]
+    assert r2.status_code == 409
 
 
 # ── DELETE /recording/sessions/{id} ──────────────────────────────────────────
