@@ -64,10 +64,15 @@ def _make_fake_handle(output_path: Path, *, write_actions: bool = True, returnco
 
 @pytest.fixture
 def patched_codegen(monkeypatch):
-    """server._start_codegen_impl 와 _stop_codegen_impl 을 fake 로 대체."""
-    from recording_service import server as srv
+    """server._start_codegen_impl, _stop_codegen_impl, _run_convert_impl 을 fake 로 대체.
 
-    captured: dict = {"started": [], "stopped": []}
+    /stop 까지 가는 정상 흐름을 위해 변환도 함께 patch — 컨테이너 측 변환을
+    시뮬레이션해 host_scenario_path 에 미니멀 scenario.json 을 만든다.
+    """
+    from recording_service import server as srv
+    from recording_service.converter_proxy import ConvertResult
+
+    captured: dict = {"started": [], "stopped": [], "converted": []}
 
     def fake_start(target_url, output_path, *, timeout_sec):
         captured["started"].append((target_url, str(output_path), timeout_sec))
@@ -77,8 +82,27 @@ def patched_codegen(monkeypatch):
         captured["stopped"].append(handle.pid)
         return handle
 
+    def fake_convert(*, container_session_dir, host_scenario_path):
+        # 컨테이너가 scenario.json 을 썼다고 시뮬레이션
+        Path(host_scenario_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(host_scenario_path).write_text(
+            '[{"step":1,"action":"navigate","target":"","value":"https://x.test"},'
+            '{"step":2,"action":"click","target":"button","value":""}]',
+            encoding="utf-8",
+        )
+        captured["converted"].append((container_session_dir, host_scenario_path))
+        return ConvertResult(
+            returncode=0,
+            stdout="[convert-only] 2 스텝 변환 + 검증 완료",
+            stderr="",
+            scenario_path=host_scenario_path,
+            scenario_exists=True,
+            elapsed_ms=12.3,
+        )
+
     monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
     monkeypatch.setattr(srv, "_stop_codegen_impl", fake_stop)
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert)
     return captured
 
 
@@ -230,17 +254,19 @@ def test_stop_409_when_no_active_handle(client):
 
 
 def test_stop_after_normal_recording(client, patched_codegen):
-    """start → stop 정상 흐름. state=converting, action_count > 0."""
+    """start → stop 정상 흐름. TR.3 후 state=done, scenario.json 생성."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     r2 = client.post(f"/recording/stop/{sid}")
     assert r2.status_code == 202
     body = r2.json()
-    assert body["state"] == "converting"
+    # TR.3: 변환까지 성공하면 state=done
+    assert body["state"] == "done"
+    assert body["step_count"] == 2  # fake_convert 가 2 스텝 시나리오 생성
     assert body["output_size_bytes"] > 0
-    assert body["action_count_estimate"] >= 1
-    assert body["returncode"] == 0
+    assert "scenario_path" in body
     assert len(patched_codegen["stopped"]) == 1
+    assert len(patched_codegen["converted"]) == 1
 
 
 def test_stop_with_empty_output(client, monkeypatch):
@@ -277,6 +303,165 @@ def test_stop_is_idempotent_returns_409_second_time(client, patched_codegen):
     assert r2.status_code == 202
     r3 = client.post(f"/recording/stop/{sid}")
     assert r3.status_code == 409
+
+
+# ── TR.3 — docker exec 위임 변환 ──────────────────────────────────────────────
+
+def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
+    """변환이 exit code != 0 → state=error + stderr 노출 + 원본 .py 보존."""
+    from recording_service import server as srv
+    from recording_service.converter_proxy import ConvertResult
+
+    def fake_start(target_url, output_path, *, timeout_sec):
+        return _make_fake_handle(Path(output_path), write_actions=True)
+
+    def fake_stop(handle):
+        return handle
+
+    def fake_convert(*, container_session_dir, host_scenario_path):
+        return ConvertResult(
+            returncode=1,
+            stdout="",
+            stderr="ScenarioValidationError: step[0].action 이 유효하지 않음",
+            scenario_path=host_scenario_path,
+            scenario_exists=False,
+            elapsed_ms=8.0,
+        )
+
+    monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
+    monkeypatch.setattr(srv, "_stop_codegen_impl", fake_stop)
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert)
+
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    r2 = client.post(f"/recording/stop/{sid}")
+    assert r2.status_code == 202
+    body = r2.json()
+    assert body["state"] == "error"
+    assert body["returncode"] == 1
+    assert "ScenarioValidationError" in body["stderr"]
+    assert "원본 original.py 는 보존" in body["error"]
+
+
+def test_stop_with_converter_proxy_error(client, monkeypatch):
+    """docker 미설치 / timeout → ConverterProxyError → state=error."""
+    from recording_service import server as srv
+    from recording_service.converter_proxy import ConverterProxyError
+
+    def fake_start(target_url, output_path, *, timeout_sec):
+        return _make_fake_handle(Path(output_path), write_actions=True)
+
+    def fake_stop(handle):
+        return handle
+
+    def fake_convert(*, container_session_dir, host_scenario_path):
+        raise ConverterProxyError("docker 실행 파일을 찾을 수 없습니다.")
+
+    monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
+    monkeypatch.setattr(srv, "_stop_codegen_impl", fake_stop)
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert)
+
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    r2 = client.post(f"/recording/stop/{sid}")
+    assert r2.status_code == 202
+    body = r2.json()
+    assert body["state"] == "error"
+    assert "docker" in body["error"]
+
+
+def test_stop_after_codegen_empty_skips_conversion(client, monkeypatch):
+    """codegen 출력 0 byte 시 변환 단계로 진입하지 않는다 (TR.2 가 먼저 가로챔)."""
+    from recording_service import server as srv
+
+    convert_calls = []
+
+    def fake_start(target_url, output_path, *, timeout_sec):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("", encoding="utf-8")
+        return _make_fake_handle(Path(output_path), write_actions=False)
+
+    def fake_stop(handle):
+        return handle
+
+    def fake_convert(*, container_session_dir, host_scenario_path):
+        convert_calls.append(1)
+        return None
+
+    monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
+    monkeypatch.setattr(srv, "_stop_codegen_impl", fake_stop)
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert)
+
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    r2 = client.post(f"/recording/stop/{sid}")
+    assert r2.status_code == 202
+    assert r2.json()["state"] == "error"
+    # 0 byte 가 먼저 가로채므로 변환은 호출 안 됨
+    assert convert_calls == []
+
+
+# ── converter_proxy 순수 함수 ────────────────────────────────────────────────
+
+def test_converter_proxy_run_convert_when_docker_missing(monkeypatch):
+    """docker 미설치 시 ConverterProxyError. subprocess 실행 안 함."""
+    from recording_service import converter_proxy
+    from recording_service.converter_proxy import ConverterProxyError
+
+    monkeypatch.setattr(converter_proxy, "is_docker_available", lambda: False)
+    with pytest.raises(ConverterProxyError) as excinfo:
+        converter_proxy.run_convert(
+            container_session_dir="/data/recordings/x",
+            host_scenario_path="/tmp/nonexistent/scenario.json",
+        )
+    assert "docker" in str(excinfo.value)
+
+
+def test_converter_proxy_run_convert_returns_result(monkeypatch, tmp_path):
+    """subprocess.run 을 fake 로 대체해 ConvertResult 형식 검증."""
+    from recording_service import converter_proxy
+
+    monkeypatch.setattr(converter_proxy, "is_docker_available", lambda: True)
+
+    fake_completed = SimpleNamespace(
+        returncode=0,
+        stdout=b"[convert-only] 5 \xec\x8a\xa4\xed\x85\x9d \xeb\xb3\x80\xed\x99\x98 \xec\x99\x84\xeb\xa3\x8c",
+        stderr=b"",
+    )
+    monkeypatch.setattr(converter_proxy.subprocess, "run", lambda *a, **kw: fake_completed)
+
+    # scenario.json 시뮬레이션
+    scenario = tmp_path / "scenario.json"
+    scenario.write_text("[]", encoding="utf-8")
+
+    result = converter_proxy.run_convert(
+        container_session_dir="/data/recordings/x",
+        host_scenario_path=str(scenario),
+    )
+    assert result.returncode == 0
+    assert result.scenario_exists is True
+    assert "변환 완료" in result.stdout
+    assert result.elapsed_ms >= 0
+
+
+def test_converter_proxy_timeout_raises(monkeypatch):
+    """subprocess.TimeoutExpired → ConverterProxyError."""
+    from recording_service import converter_proxy
+    from recording_service.converter_proxy import ConverterProxyError
+
+    monkeypatch.setattr(converter_proxy, "is_docker_available", lambda: True)
+
+    def fake_run(*a, **kw):
+        raise converter_proxy.subprocess.TimeoutExpired(cmd="docker exec", timeout=1)
+
+    monkeypatch.setattr(converter_proxy.subprocess, "run", fake_run)
+
+    with pytest.raises(ConverterProxyError) as excinfo:
+        converter_proxy.run_convert(
+            container_session_dir="/data/recordings/x",
+            host_scenario_path="/tmp/no.json",
+        )
+    assert "안에 끝나지 않았습니다" in str(excinfo.value)
 
 
 # ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────

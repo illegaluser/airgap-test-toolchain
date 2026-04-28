@@ -18,8 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import __version__
-from . import codegen_runner, session, storage
+from . import codegen_runner, converter_proxy, session, storage
 from .codegen_runner import CodegenError, CodegenHandle
+from .converter_proxy import ConverterProxyError
 
 log = logging.getLogger("recording_service")
 logging.basicConfig(
@@ -79,6 +80,16 @@ def _start_codegen_impl(target_url: str, output_path, *, timeout_sec: int) -> Co
 
 def _stop_codegen_impl(handle: CodegenHandle) -> CodegenHandle:
     return codegen_runner.stop_codegen(handle)
+
+
+def _run_convert_impl(
+    *, container_session_dir: str, host_scenario_path: str,
+):
+    """TR.3 변환 단계 monkeypatch hook."""
+    return converter_proxy.run_convert(
+        container_session_dir=container_session_dir,
+        host_scenario_path=host_scenario_path,
+    )
 
 
 # ── 요청/응답 모델 ────────────────────────────────────────────────────────────
@@ -231,36 +242,103 @@ def recording_stop(sid: str) -> dict:
     if handle.timed_out:
         log.warning("[/recording/stop] %s — codegen timeout (elapsed > %ds)", sid, handle.timeout_sec)
 
-    # TR.2 단계 마감 — TR.3 에서 여기서 docker exec --convert-only 호출
+    # 변환 직전 — state=converting 마킹 (TR.3)
     _registry.update(
         sid,
         state=session.STATE_CONVERTING,
         ended_at=_time.time(),
         action_count=action_count_estimate,
     )
+
+    # TR.3 — docker exec 위임 변환
+    container_dir = storage.container_path_for(sid)
+    host_scenario = str(storage.scenario_path(sid))
+
+    convert_error: Optional[str] = None
+    convert_result = None
+    try:
+        convert_result = _run_convert_impl(
+            container_session_dir=container_dir,
+            host_scenario_path=host_scenario,
+        )
+    except ConverterProxyError as e:
+        convert_error = str(e)
+        log.error("[/recording/stop] %s — converter_proxy 실패: %s", sid, e)
+
+    if convert_error is not None:
+        # docker 미설치 / timeout — state=error 마감
+        _registry.update(sid, state=session.STATE_ERROR, error=convert_error)
+        storage.save_metadata(sid, {
+            "id": sid,
+            "state": session.STATE_ERROR,
+            "error": convert_error,
+            "ended_at": storage.now_iso(),
+        })
+        return {
+            "id": sid,
+            "state": session.STATE_ERROR,
+            "error": convert_error,
+        }
+
+    if convert_result.returncode != 0 or not convert_result.scenario_exists:
+        # 컨테이너 변환 실패 — stderr 그대로 노출 + 원본 .py 보존
+        msg = (
+            f"변환 실패 (returncode={convert_result.returncode}). "
+            "원본 original.py 는 보존됩니다. stderr 일부 — "
+            + (convert_result.stderr[:500] if convert_result.stderr else "(stderr 없음)")
+        )
+        _registry.update(sid, state=session.STATE_ERROR, error=msg)
+        storage.save_metadata(sid, {
+            "id": sid,
+            "state": session.STATE_ERROR,
+            "error": msg,
+            "returncode": convert_result.returncode,
+            "ended_at": storage.now_iso(),
+        })
+        log.warning("[/recording/stop] %s — 변환 실패 (rc=%d)", sid, convert_result.returncode)
+        return {
+            "id": sid,
+            "state": session.STATE_ERROR,
+            "returncode": convert_result.returncode,
+            "stderr": convert_result.stderr,
+            "error": msg,
+        }
+
+    # 변환 성공 — scenario.json 로드해 step 수 정확히 산정
+    scenario = storage.load_scenario(sid)
+    final_step_count = len(scenario) if scenario else 0
+
+    _registry.update(
+        sid,
+        state=session.STATE_DONE,
+        action_count=final_step_count,
+    )
     storage.save_metadata(sid, {
         "id": sid,
         "target_url": sess.target_url,
-        "state": session.STATE_CONVERTING,
+        "state": session.STATE_DONE,
         "ended_at": storage.now_iso(),
         "output_size_bytes": output_size,
         "action_count_estimate": action_count_estimate,
-        "returncode": handle.returncode,
+        "step_count": final_step_count,
+        "codegen_returncode": handle.returncode,
+        "convert_returncode": convert_result.returncode,
+        "convert_elapsed_ms": convert_result.elapsed_ms,
         "timed_out": handle.timed_out,
     })
 
     log.info(
-        "[/recording/stop] %s — codegen 종료 (rc=%s, %d bytes, ~%d actions). 변환 대기.",
-        sid, handle.returncode, output_size, action_count_estimate,
+        "[/recording/stop] %s — 변환 성공 (%d 스텝, convert_elapsed=%.0fms)",
+        sid, final_step_count, convert_result.elapsed_ms,
     )
     return {
         "id": sid,
-        "state": session.STATE_CONVERTING,
+        "state": session.STATE_DONE,
+        "step_count": final_step_count,
+        "scenario_path": host_scenario,
         "output_size_bytes": output_size,
-        "action_count_estimate": action_count_estimate,
-        "returncode": handle.returncode,
+        "convert_elapsed_ms": convert_result.elapsed_ms,
         "timed_out": handle.timed_out,
-        "note": "TR.2 — 변환은 TR.3 에서 docker exec --convert-only 로 추가 예정",
     }
 
 
