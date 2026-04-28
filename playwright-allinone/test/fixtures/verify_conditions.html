@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>[fixture] verify_conditions</title>
+</head>
+<body>
+  <h1>verify.condition fixture</h1>
+
+  <!-- visible 검증용 -->
+  <div id="visible-box">visible content</div>
+
+  <!-- hidden 검증용 (display:none) -->
+  <div id="hidden-box" style="display:none">should be hidden</div>
+
+  <!-- disabled / enabled 검증용 -->
+  <button id="btn-disabled" disabled>disabled</button>
+  <button id="btn-enabled">enabled</button>
+
+  <!-- checked 검증용 -->
+  <input id="cb-checked" type="checkbox" checked />
+
+  <!-- value 검증용 (input form 값 정확 매칭) -->
+  <input id="text-input" type="text" value="exact-value-42" />
+
+  <!-- text 검증용 (substring contains) -->
+  <p id="contain-paragraph">총 가입자 수: 12,345 명</p>
+</body>
+</html>

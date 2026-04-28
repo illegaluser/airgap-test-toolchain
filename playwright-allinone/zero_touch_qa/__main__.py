@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -21,6 +22,7 @@ from .config import Config
 from .converter import convert_playwright_to_dsl
 from .dify_client import DifyClient, DifyConnectionError
 from .executor import QAExecutor
+from .metrics import aggregate_llm_sla
 from .report import build_html_report, save_run_log, save_scenario
 from .regression_generator import generate_regression_test
 from .utils import parse_structured_doc_steps
@@ -42,6 +44,7 @@ def main():
     parser.add_argument("--scenario", default=None, help="기존 scenario.json 경로 (execute 모드)")
     parser.add_argument("--target-url", default=None, help="테스트 시작 URL")
     parser.add_argument("--srs-text", default=None, help="자연어 요구사항 (chat 모드)")
+    parser.add_argument("--api-docs", default=None, help="API 엔드포인트 힌트 텍스트 (선택)")
     parser.add_argument("--headed", action="store_true", default=True, help="실제 브라우저 표시 (기본값)")
     parser.add_argument("--headless", action="store_true", help="헤드리스 모드")
     parser.add_argument("-v", "--verbose", action="store_true", help="상세 로그 출력")
@@ -61,18 +64,19 @@ def main():
     # 환경변수 폴백 (Jenkins에서 env로 전달하는 경우)
     target_url = args.target_url or os.getenv("TARGET_URL", "")
     srs_text = args.srs_text or os.getenv("SRS_TEXT", "")
+    api_docs = args.api_docs or os.getenv("API_DOCS", "")
 
     try:
-        scenario = _prepare_scenario(args, config, target_url, srs_text)
+        scenario = _prepare_scenario(args, config, target_url, srs_text, api_docs)
     except DifyConnectionError as e:
         log.error("Dify 연결 실패: %s", e)
         _generate_error_report(config.artifacts_dir, str(e))
         sys.exit(1)
     except ScenarioValidationError as e:
-        log.error("Dify 시나리오가 3 회 시도 후에도 유효하지 않음: %s", e)
+        log.error("시나리오 구조 검증 실패: %s", e)
         _generate_error_report(
             config.artifacts_dir,
-            f"시나리오 구조 검증 실패 (3 회 재시도 모두 실패): {e}",
+            f"시나리오 구조 검증 실패: {e}",
         )
         sys.exit(1)
     except FileNotFoundError as e:
@@ -95,6 +99,11 @@ def main():
             "value": target_url,
             "description": "대상 페이지 로드 (엔진 자동 보강)",
         })
+        # prepend 후 step 번호 1..N 으로 재정렬 — _validate_scenario 가 수행하는
+        # renumber 가 prepend 이전에 끝나므로, 여기서도 동일 정책을 다시 적용해
+        # 리포트에 "Step 1 navigate, Step 1 hover" 같이 중복 번호가 노출되지 않게 한다.
+        for idx, st in enumerate(scenario):
+            st["step"] = idx + 1
 
     # 원본 시나리오 저장
     save_scenario(scenario, config.artifacts_dir)
@@ -113,6 +122,9 @@ def main():
     # 산출물 생성
     save_run_log(results, config.artifacts_dir)
     save_scenario(scenario, config.artifacts_dir, suffix=".healed")
+    # llm_calls.jsonl → llm_sla.json 집계 (S4C-05). 빌드별 LLM SLA 가
+    # archiveArtifacts 와 HTML 리포트의 운영 지표 섹션에 자동 노출된다.
+    aggregate_llm_sla(config.artifacts_dir)
     build_html_report(
         results,
         config.artifacts_dir,
@@ -135,10 +147,174 @@ class ScenarioValidationError(ValueError):
     """Dify 가 반환한 scenario 가 구조적으로 무효."""
 
 
-# [9대 표준 액션] — dify-chatflow.yaml Planner system prompt 와 동기화
+# [14대 표준 액션] — dify-chatflow.yaml Planner system prompt 와 동기화
 _VALID_ACTIONS = frozenset(
-    {"navigate", "click", "fill", "press", "select", "check", "hover", "wait", "verify"}
+    {
+        "navigate",
+        "click",
+        "fill",
+        "press",
+        "select",
+        "check",
+        "hover",
+        "wait",
+        "verify",
+        "upload",
+        "drag",
+        "scroll",
+        "mock_status",
+        "mock_data",
+    }
 )
+
+# verify.condition 화이트리스트 — executor._perform_action 의 분기와 1:1 동기.
+# "" (빈 문자열) 은 "값이 들어 있으면 contains, 아니면 visible" 로 해석됨 → 허용.
+_VALID_VERIFY_CONDITIONS = frozenset(
+    {
+        "",
+        "visible",
+        "hidden",
+        "disabled",
+        "enabled",
+        "checked",
+        "value",
+        "text",
+        "contains_text",
+        "contains",
+    }
+)
+
+
+_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press")
+_VALUE_REQUIRED_ACTIONS = frozenset({"fill", "press", "select", "upload", "drag"})
+_SCROLL_VALID_VALUES = frozenset({"into_view", "into-view", "into view"})
+
+
+def _check_mock_times(i: int, step: dict) -> None:
+    """mock_* 의 선택적 ``times`` 가 양의 정수인지 검증한다."""
+    if "times" not in step:
+        return
+    try:
+        n = int(step["times"])
+    except (TypeError, ValueError) as e:
+        raise ScenarioValidationError(
+            f"step[{i}] action={step['action']} 의 times 가 정수 아님: {step['times']!r}"
+        ) from e
+    if n < 1:
+        raise ScenarioValidationError(
+            f"step[{i}] action={step['action']} 의 times 는 1 이상이어야 함 (={n})"
+        )
+
+
+def _check_step_shape(i: int, step) -> dict:
+    """list[dict] 가정과 action 화이트리스트만 검사하고 step 을 반환한다."""
+    if not isinstance(step, dict):
+        raise ScenarioValidationError(
+            f"step[{i}] 가 dict 아님 (타입={type(step).__name__})"
+        )
+    action = step.get("action")
+    if isinstance(action, str):
+        normalized = action.strip().strip("`'\" ").lower()
+        if normalized != action:
+            step["action"] = normalized
+            action = normalized
+    if action not in _VALID_ACTIONS:
+        raise ScenarioValidationError(f"step[{i}].action 이 유효하지 않음: {action!r}")
+    return step
+
+
+def _check_target_value_contract(i: int, step: dict) -> None:
+    """action 별 target/value 필수 여부를 검사한다."""
+    action = step["action"]
+    if action not in _TARGET_OPTIONAL_ACTIONS and not step.get("target"):
+        raise ScenarioValidationError(
+            f"step[{i}] action={action} 인데 target 이 비어 있음"
+        )
+    if action == "press" and not (step.get("target") or step.get("value")):
+        raise ScenarioValidationError(
+            f"step[{i}] action=press 인데 target/value 가 모두 비어 있음"
+        )
+    if action in _VALUE_REQUIRED_ACTIONS and not str(step.get("value", "")).strip():
+        raise ScenarioValidationError(
+            f"step[{i}] action={action} 인데 value 가 비어 있음"
+        )
+
+
+def _check_action_specific(i: int, step: dict) -> None:
+    """scroll/mock_*/verify 등 액션별 추가 계약을 검사한다."""
+    action = step["action"]
+    if action == "scroll":
+        scroll_value = str(step.get("value", "")).strip().lower()
+        if scroll_value not in _SCROLL_VALID_VALUES:
+            raise ScenarioValidationError(
+                f"step[{i}] action=scroll 인데 value 는 'into_view' 여야 함"
+            )
+        return
+    if action == "mock_status":
+        try:
+            int(str(step.get("value", "")).strip())
+        except ValueError as e:
+            raise ScenarioValidationError(
+                f"step[{i}] action=mock_status 인데 value 가 정수 아님"
+            ) from e
+        _check_mock_times(i, step)
+        return
+    if action == "mock_data":
+        if step.get("value") in ("", None):
+            raise ScenarioValidationError(
+                f"step[{i}] action=mock_data 인데 value 가 비어 있음"
+            )
+        _check_mock_times(i, step)
+        return
+    if action == "verify":
+        condition = str(step.get("condition", "")).strip().lower()
+        if condition not in _VALID_VERIFY_CONDITIONS:
+            # LLM 이 화이트리스트 밖의 자유 condition (empty / present / exists 등) 을 emit 하면
+            # reject 하지 말고 빈 문자열로 강등 — executor 의 default fallback ("value 있으면
+            # contains, 없으면 visible") 으로 안전 매핑한다. 시나리오 전체 폐기를 막는다.
+            step["condition"] = ""
+
+
+def _sanitize_scenario(scenario):
+    """LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 반환.
+
+    Planner LLM 이 14스텝 중 1개 step 의 action 키를 누락하거나 typos 가 섞이는 케이스
+    가 빈번. 시나리오 전체를 reject + retry 하는 비용 (gemma4:26b 추론 ~30s+) 보다
+    invalid step 만 drop 하고 진행하는 게 결정적이고 빠르다. 단, drop 사유는 WARNING
+    으로 남겨 사용자가 추적 가능.
+
+    빈 시나리오는 그대로 반환 — _validate_scenario 가 reject 처리.
+    """
+    if not isinstance(scenario, list):
+        return scenario
+    keep = []
+    for i, st in enumerate(scenario):
+        if not isinstance(st, dict):
+            log.warning("[Sanitize] step[%d] 가 dict 아님 — drop: %r", i, st)
+            continue
+        action = st.get("action")
+        if not isinstance(action, str):
+            log.warning("[Sanitize] step[%d] action 누락/None — drop: %r", i, st)
+            continue
+        normalized = action.strip().strip("`'\" ").lower()
+        if normalized not in _VALID_ACTIONS:
+            # LLM 이 action 필드에 meta-reasoning 을 섞어 emit 하는 케이스 회복.
+            # 예: "verify, target: id=status, value: ..." 또는 "`verify`, ..."
+            # 앞쪽 첫 토큰이 valid action 이면 그것을 채택, 그 외는 drop.
+            head = re.split(r"[\s,;:()`'\"*]", normalized, maxsplit=1)[0]
+            if head in _VALID_ACTIONS:
+                log.warning(
+                    "[Sanitize] step[%d] action=%r → 첫 토큰 %r 로 회복 (LLM meta-reasoning leak)",
+                    i, action, head,
+                )
+                st = {**st, "action": head}
+            else:
+                log.warning("[Sanitize] step[%d] 미지원 action=%r — drop", i, action)
+                continue
+        keep.append(st)
+    if len(keep) != len(scenario):
+        log.warning("[Sanitize] %d/%d step 유지", len(keep), len(scenario))
+    return keep
 
 
 def _validate_scenario(scenario) -> None:
@@ -147,32 +323,26 @@ def _validate_scenario(scenario) -> None:
     LLM 비결정성으로 인해 드물게 발생하는 다음 케이스를 조기에 탐지:
     - 빈 배열 / list 아닌 타입
     - step 요소가 dict 아님 (문자열 / null 혼입)
-    - action 이 9대 표준 밖이거나 누락
-    - navigate/wait 이외 action 에서 target 이 비어 있음 (실행 시 locator 실패 확정)
+    - action 이 14대 표준 밖이거나 누락
+    - navigate/wait/press 이외 action 에서 target 이 비어 있음 (실행 시 locator 실패 확정)
+    - 신규 액션의 최소 입력 계약(value/condition 등) 위반
 
     이 검증을 통과해도 시맨틱상 잘못된 시나리오 (예: SRS 와 무관한 작업) 는 막을 수
     없다. 그 경우는 executor 레벨의 Healer / Guard 가 후단에서 대응.
     """
     if not isinstance(scenario, list) or not scenario:
         raise ScenarioValidationError("시나리오 배열이 비어 있음")
-    for i, step in enumerate(scenario):
-        if not isinstance(step, dict):
-            raise ScenarioValidationError(
-                f"step[{i}] 가 dict 아님 (타입={type(step).__name__})"
-            )
-        action = step.get("action")
-        if action not in _VALID_ACTIONS:
-            raise ScenarioValidationError(
-                f"step[{i}].action 이 유효하지 않음: {action!r}"
-            )
-        if action not in ("navigate", "wait") and not step.get("target"):
-            raise ScenarioValidationError(
-                f"step[{i}] action={action} 인데 target 이 비어 있음"
-            )
+    for i, raw_step in enumerate(scenario):
+        step = _check_step_shape(i, raw_step)
+        _check_target_value_contract(i, step)
+        _check_action_specific(i, step)
+        # LLM 이 emit 한 step 번호는 비순차·누락이 잦다 (예: 1, 18). list 순서 자체가
+        # 진짜 ordering 이므로 1..N 으로 강제 정렬해 리포트 가독성을 보장한다.
+        step["step"] = i + 1
 
 
 def _prepare_scenario(
-    args, config: Config, target_url: str, srs_text: str
+    args, config: Config, target_url: str, srs_text: str, api_docs: str
 ) -> list[dict]:
     """모드에 따라 시나리오를 준비한다."""
     if args.mode == "execute":
@@ -180,6 +350,10 @@ def _prepare_scenario(
             raise FileNotFoundError("execute 모드에는 --scenario 인자가 필요합니다.")
         with open(args.scenario, "r", encoding="utf-8") as f:
             scenario = json.load(f)
+        # 외부에서 들어온 시나리오도 chat/doc 과 동일한 14대 DSL 계약을 강제한다.
+        # 손으로 작성한 scenario.json 의 mock_status value 정수성 같은 계약 위반이
+        # 런타임 ValueError 로 흘러들어가 자가치유에 의해 가려지는 것을 막는다.
+        _validate_scenario(scenario)
         log.info("[Scenario] %s 로드 (%d스텝)", args.scenario, len(scenario))
         return scenario
 
@@ -236,8 +410,12 @@ def _prepare_scenario(
                 run_mode=args.mode,
                 srs_text=srs_text,
                 target_url=target_url,
+                api_docs=api_docs,
                 file_id=file_id,
             )
+            # LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 검증.
+            # 정상 step 만 ≥1개 남으면 retry 비용을 아끼고 그대로 진행.
+            scenario = _sanitize_scenario(scenario)
             _validate_scenario(scenario)
             log.info(
                 "[Dify] 시나리오 수신 (%d스텝) — attempt %d/3 성공",

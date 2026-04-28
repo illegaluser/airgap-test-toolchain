@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>[fixture] drag</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .col { width: 200px; height: 120px; border: 2px dashed #888; padding: 12px; margin: 10px; display: inline-block; vertical-align: top; }
+    .item { padding: 8px; background: #cef; border: 1px solid #06c; cursor: grab; }
+  </style>
+</head>
+<body>
+  <h1>drag fixture</h1>
+  <div id="src" class="col">
+    <div id="card" class="item" draggable="true">CARD</div>
+  </div>
+  <div id="dst" class="col">drop here</div>
+
+  <script>
+    var card = document.getElementById("card");
+    var dst = document.getElementById("dst");
+    var src = document.getElementById("src");
+
+    card.addEventListener("dragstart", function (e) {
+      e.dataTransfer.setData("text/plain", "card");
+    });
+
+    [src, dst].forEach(function (zone) {
+      zone.addEventListener("dragover", function (e) { e.preventDefault(); });
+      zone.addEventListener("drop", function (e) {
+        e.preventDefault();
+        zone.appendChild(card);
+        zone.dataset.dropped = "yes";
+      });
+    });
+  </script>
+</body>
+</html>

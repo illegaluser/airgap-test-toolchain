@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>[fixture] upload</title>
+</head>
+<body>
+  <h1>upload fixture</h1>
+  <input id="file-input" type="file" />
+  <button id="show-name" type="button">show</button>
+  <div id="result" data-empty="yes"></div>
+  <script>
+    document.getElementById("file-input").addEventListener("change", function (e) {
+      var f = e.target.files && e.target.files[0];
+      var box = document.getElementById("result");
+      if (f) {
+        box.textContent = "uploaded:" + f.name;
+        box.dataset.empty = "no";
+      }
+    });
+  </script>
+</body>
+</html>

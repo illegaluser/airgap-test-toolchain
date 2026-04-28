@@ -94,6 +94,21 @@ fi
 # ────────────────────────────────────────────────────────────────────────────
 log "supervisord 기동..."
 mkdir -p "$DATA/logs"
+
+# DIFY_PUBLIC_URL — Dify 가 절대경로 URL (앱 share URL, embed iframe, 공개 chat URL)
+# 을 렌더링할 때 사용한다. 미설정 시 README 표준 (:18081) 사용. 다른 호스트/포트로
+# 노출한다면 `docker run -e DIFY_PUBLIC_URL=http://qa.example.com:18081 ...` 로 덮어쓴다.
+# supervisord.conf 가 컴파일 타임에 http://localhost:18081 로 박혀있고, 여기서
+# in-place sed 로 치환한다 (supervisord 의 %(ENV_*)s 는 supervisord 자체 환경에만
+# 의존하므로 봉합 부담을 피해 정적 치환을 선택).
+export DIFY_PUBLIC_URL="${DIFY_PUBLIC_URL:-http://localhost:18081}"
+if [ "$DIFY_PUBLIC_URL" != "http://localhost:18081" ]; then
+  log "  Dify 공개 URL 오버라이드: ${DIFY_PUBLIC_URL}"
+  sed -i "s|http://localhost:18081|${DIFY_PUBLIC_URL}|g" /etc/supervisor/supervisord.conf
+else
+  log "  Dify 공개 URL: ${DIFY_PUBLIC_URL} (default)"
+fi
+
 /usr/bin/supervisord -c /etc/supervisor/supervisord.conf &
 SUPERVISOR_PID=$!
 
@@ -176,7 +191,9 @@ if [ ! -f "$DATA/.app_provisioned" ]; then
   fi
   export OFFLINE_DIFY_PLUGIN_DIR="$SEED/dify-plugins"
   export OFFLINE_DIFY_CHATFLOW_YAML="/opt/dify-chatflow.yaml"
-  export OFFLINE_JENKINS_PIPELINE="/opt/DSCORE-ZeroTouch-QA-Docker.jenkinsPipeline"
+  export OFFLINE_TEST_PLANNING_CHATFLOW_YAML="/opt/test-planning-chatflow.yaml"
+  export OFFLINE_KB_SEED_DIR="/opt/seed/kb-docs"
+  export OFFLINE_JENKINS_PIPELINE="/opt/ZeroTouch-QA.jenkinsPipeline"
 
   if bash /opt/provision.sh; then
     touch "$DATA/.app_provisioned"

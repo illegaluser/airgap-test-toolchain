@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>[fixture] mock_status</title>
+</head>
+<body>
+  <h1>mock_status fixture</h1>
+  <button id="load-btn" type="button">load</button>
+  <div id="error" style="display:none; color:#c00;"></div>
+  <div id="data"></div>
+  <div id="counter">calls:0</div>
+
+  <script>
+    var calls = 0;
+    document.getElementById("load-btn").addEventListener("click", async function () {
+      calls += 1;
+      document.getElementById("counter").textContent = "calls:" + calls;
+      try {
+        // 절대 URL 사용 — file:// 페이지는 상대 fetch 가 mock route 패턴과
+        // 매칭되지 않으므로 명시적 절대 URL 로 호출. 실제 호스트는 mock 이
+        // 가로채므로 네트워크에 안 나간다.
+        var res = await fetch("https://api.example.test/api/users/1");
+        if (!res.ok) {
+          var err = document.getElementById("error");
+          err.style.display = "block";
+          err.textContent = "서버 에러가 발생했습니다 (" + res.status + ")";
+          return;
+        }
+        var body = await res.json();
+        document.getElementById("data").textContent = JSON.stringify(body);
+      } catch (e) {
+        var err = document.getElementById("error");
+        err.style.display = "block";
+        err.textContent = "네트워크 오류";
+      }
+    });
+  </script>
+</body>
+</html>

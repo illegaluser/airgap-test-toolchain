@@ -6,6 +6,7 @@ import time
 import requests
 
 from .config import Config
+from .metrics import append_jsonl
 from .utils import extract_json_safely
 
 log = logging.getLogger(__name__)
@@ -32,6 +33,11 @@ class DifyClient:
         self.scenario_timeout_sec = getattr(config, "scenario_timeout_sec", 300)
         # 파싱 실패 시 raw 응답 덤프 경로 (사후 진단)
         self.artifacts_dir = getattr(config, "artifacts_dir", None)
+        self.llm_calls_path = (
+            os.path.join(self.artifacts_dir, "llm_calls.jsonl")
+            if self.artifacts_dir
+            else None
+        )
 
     def _request_with_retry(
         self,
@@ -70,6 +76,7 @@ class DifyClient:
         for attempt in range(max_retries + 1):
             try:
                 res = requests.request(method, url, timeout=timeout, **kwargs)
+                setattr(res, "_ztqa_retry_count", attempt)
                 if res.status_code not in self._RETRYABLE_STATUS_CODES:
                     return res
                 last_exc = requests.HTTPError(
@@ -201,6 +208,7 @@ class DifyClient:
         run_mode: str,
         srs_text: str,
         target_url: str,
+        api_docs: str = "",
         file_id: str | None = None,
     ) -> list[dict]:
         """Dify Chatflow 에 시나리오 생성을 요청하고 DSL 스텝 배열을 반환한다.
@@ -209,6 +217,7 @@ class DifyClient:
             run_mode: 실행 모드 (``"chat"`` 또는 ``"doc"``).
             srs_text: 자연어 요구사항 텍스트.
             target_url: 테스트 대상 URL.
+            api_docs: 네트워크 모킹 힌트용 API 엔드포인트 요약 텍스트.
             file_id: Doc 모드에서 ``upload_file()`` 이 반환한 파일 ID. 없으면 None.
 
         Returns:
@@ -222,6 +231,7 @@ class DifyClient:
                 "run_mode": run_mode,
                 "srs_text": srs_text,
                 "target_url": target_url,
+                "api_docs": api_docs,
             },
             "query": "실행을 요청합니다.",
             "response_mode": "blocking",
@@ -243,6 +253,7 @@ class DifyClient:
             payload,
             timeout=self.scenario_timeout_sec,
             max_retries=1,
+            call_kind="planner",
         )
         log.info("Dify 응답 길이: %d자, <think> 포함: %s", len(answer), "<think>" in answer)
         scenario = extract_json_safely(answer)
@@ -283,6 +294,7 @@ class DifyClient:
         error_msg: str,
         dom_snapshot: str,
         failed_step: dict,
+        strategy_trace: list[dict] | None = None,
     ) -> dict | None:
         """실패한 스텝의 치유를 LLM 에 요청하고 새 target 정보를 반환한다.
 
@@ -290,16 +302,24 @@ class DifyClient:
             error_msg: 실패 원인 에러 메시지.
             dom_snapshot: 현재 페이지의 HTML DOM (잘린 길이).
             failed_step: 실패한 DSL 스텝 dict.
+            strategy_trace: executor 가 시도한 multi-strategy 결과 리스트. 각 항목
+                ``{"strategy": <name>, "error": <msg or "ok">}``. healer 가 "selector
+                만 바꿔봐야 같은 timeout" 같은 정보를 알 수 있게 한다.
 
         Returns:
-            새 target 이 포함된 dict. 파싱 실패 시 ``None``.
+            새 target/value/condition 이 포함된 dict. 파싱 실패 시 ``None``.
         """
+        # B: strategy_trace 를 chatflow inputs 에 주입. chatflow yaml 의 healer 노드
+        # prompt 가 ``{{strategy_trace}}`` placeholder 로 받아 사용한다.
         payload = {
             "inputs": {
                 "run_mode": "heal",
                 "error": error_msg,
                 "dom": dom_snapshot,
                 "failed_step": json.dumps(failed_step, ensure_ascii=False),
+                "strategy_trace": json.dumps(
+                    strategy_trace or [], ensure_ascii=False
+                ),
             },
             "query": "실행을 요청합니다.",
             "response_mode": "blocking",
@@ -311,6 +331,7 @@ class DifyClient:
             payload,
             timeout=self.heal_timeout_sec,
             max_retries=0,
+            call_kind="healer",
         )
         return extract_json_safely(answer)
 
@@ -321,6 +342,7 @@ class DifyClient:
         *,
         timeout: int = 120,
         max_retries: int = 3,
+        call_kind: str = "unknown",
     ) -> str:
         """Dify /chat-messages 엔드포인트에 blocking 요청을 보내고 answer 를 반환한다.
 
@@ -328,10 +350,17 @@ class DifyClient:
             payload: 요청 본문.
             timeout: 단일 요청 timeout(초).
             max_retries: 재시도 횟수. heal 호출은 0 (모델 느림은 일시 장애 아님).
+            call_kind: metric 구분자. ``planner`` 또는 ``healer``.
 
         Raises:
             DifyConnectionError: HTTP 에러, 타임아웃, 네트워크 실패 시.
         """
+        started = time.time()
+        status_code: int | None = None
+        retry_count = 0
+        answer = ""
+        error_msg = ""
+        timeout_hit = False
         try:
             res = self._request_with_retry(
                 "POST",
@@ -344,7 +373,60 @@ class DifyClient:
                 timeout=timeout,
                 max_retries=max_retries,
             )
+            status_code = res.status_code
+            retry_count = int(getattr(res, "_ztqa_retry_count", 0) or 0)
             res.raise_for_status()
-            return res.json().get("answer", "")
+            answer = res.json().get("answer", "")
+            return answer
         except requests.RequestException as e:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            retry_count = max_retries
+            timeout_hit = isinstance(e, requests.Timeout)
+            error_msg = str(e)
             raise DifyConnectionError(f"Dify API 통신 실패: {e}") from e
+        finally:
+            self._record_llm_call_metric(
+                kind=call_kind,
+                started_at=started,
+                elapsed_ms=round((time.time() - started) * 1000, 2),
+                timeout_sec=timeout,
+                retry_count=retry_count,
+                status_code=status_code,
+                timeout=timeout_hit,
+                answer_chars=len(answer),
+                error=error_msg,
+            )
+
+    def _record_llm_call_metric(
+        self,
+        *,
+        kind: str,
+        started_at: float,
+        elapsed_ms: float,
+        timeout_sec: int,
+        retry_count: int,
+        status_code: int | None,
+        timeout: bool,
+        answer_chars: int,
+        error: str,
+    ) -> None:
+        """Append one Dify LLM call metric to artifacts/llm_calls.jsonl."""
+        if not self.llm_calls_path:
+            return
+        record = {
+            "kind": kind,
+            "started_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%S%z", time.localtime(started_at)
+            ),
+            "elapsed_ms": elapsed_ms,
+            "timeout_sec": timeout_sec,
+            "retry_count": retry_count,
+            "status_code": status_code,
+            "timeout": timeout,
+            "answer_chars": answer_chars,
+            "error": error,
+        }
+        try:
+            append_jsonl(self.llm_calls_path, record)
+        except OSError as e:
+            log.warning("[Metrics] LLM 호출 metric 기록 실패: %s", e)

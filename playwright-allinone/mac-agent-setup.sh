@@ -25,7 +25,7 @@ AGENT_DIR="${MAC_AGENT_WORKDIR:-$HOME/.dscore.ttc.playwright-agent}"
 JENKINS_URL="${JENKINS_URL:-http://localhost:18080}"
 AGENT_NAME="${AGENT_NAME:-mac-ui-tester}"
 PY_VERSION_MIN="${PY_VERSION_MIN:-3.11}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-false}"
 # NODE_SECRET 자동 추출 시 읽을 컨테이너 이름 (env override 가능)
 CONTAINER_NAME="${CONTAINER_NAME:-dscore.ttc.playwright}"
@@ -37,6 +37,18 @@ log()  { printf '[mac-agent-setup] %s\n' "$*"; }
 err()  { printf '[mac-agent-setup] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[mac-agent-setup] WARN:  %s\n' "$*" >&2; }
 
+session_id_of() {
+  local pid="$1" sid
+  for key in sid sess pgid; do
+    sid=$(ps -p "$pid" -o "$key=" 2>/dev/null | awk '/^[[:space:]]*[0-9]+[[:space:]]*$/ {print $1; exit}' || true)
+    if [ -n "$sid" ]; then
+      echo "$sid"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ── 0. 사전 검증 ────────────────────────────────────────────────────────────
 [[ "$(uname -s)" == "Darwin" ]] || err "macOS 전용 스크립트. 현재 OS: $(uname -s)"
 
@@ -45,7 +57,7 @@ warn() { printf '[mac-agent-setup] WARN:  %s\n' "$*" >&2; }
 # 있어 **session id (SID) 기준**으로 자기 세션을 제외. pkill -f 는 자기 자신까지
 # 죽일 수 있어 사용 금지 — 반드시 PID 지정 kill.
 MY_PID=$$
-MY_SID=$({ ps -o sid= -p "$MY_PID" 2>/dev/null || true; } | tr -d ' ')
+MY_SID=$(session_id_of "$MY_PID" || true)
 [ -z "$MY_SID" ] && MY_SID="$MY_PID"
 log "[0-A] 기존 agent / setup 프로세스 정리 (my_sid=$MY_SID)"
 
@@ -65,7 +77,7 @@ fi
 OTHER_SETUP_PIDS=""
 _setup_pids=$(pgrep -f "mac-agent-setup.sh" 2>/dev/null || true)
 for _pid in $_setup_pids; do
-  _sid=$({ ps -o sid= -p "$_pid" 2>/dev/null || true; } | tr -d ' ')
+  _sid=$(session_id_of "$_pid" || true)
   if [ -n "$_sid" ] && [ "$_sid" != "$MY_SID" ]; then
     OTHER_SETUP_PIDS="$OTHER_SETUP_PIDS $_pid"
   fi
@@ -313,7 +325,7 @@ fi
 # pip / playwright 를 console script 대신 `python -m` 으로 호출 — shebang 깨짐 회피
 VENV_PY="$VENV_DIR/bin/python3"
 "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-REQ_PKGS=(requests playwright pillow pymupdf)
+REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright)
 log "  pip install: ${REQ_PKGS[*]}"
 "$VENV_PY" -m pip install --quiet "${REQ_PKGS[@]}"
 
@@ -333,7 +345,7 @@ fi
 #
 # 또한 Pipeline Stage 1 이 ${WORKSPACE}/.qa_home/venv/bin/activate 를 요구하므로,
 # 우리가 만든 AGENT_DIR/venv 를 해당 워크스페이스에 미리 심볼릭 링크.
-ABS_WORKSPACE="$AGENT_DIR/workspace/DSCORE-ZeroTouch-QA-Docker"
+ABS_WORKSPACE="$AGENT_DIR/workspace/ZeroTouch-QA"
 log "[5/7] Jenkins Node remoteFS 절대경로 갱신 + workspace venv 사전 링크"
 
 # (a) Node remoteFS 를 절대경로로 (Groovy)

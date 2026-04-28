@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>[fixture] full_dsl</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .col { width: 200px; height: 100px; border: 2px dashed #888; padding: 12px; margin: 10px; display: inline-block; vertical-align: top; }
+    .item { padding: 8px; background: #cef; border: 1px solid #06c; cursor: grab; }
+    .spacer { height: 1500px; }
+    #footer { height: 100px; background: #f0f; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>full_dsl fixture — 14대 액션 통합</h1>
+
+  <!-- click / hover -->
+  <button id="primary-btn" type="button" aria-label="primary">primary</button>
+  <span id="status">idle</span>
+
+  <!-- fill / press -->
+  <input id="search-input" type="text" />
+  <span id="echo">echo:</span>
+
+  <!-- select -->
+  <label for="lang">언어</label>
+  <select id="lang">
+    <option value="">선택</option>
+    <option value="ko">한국어</option>
+    <option value="en">English</option>
+  </select>
+
+  <!-- check -->
+  <input id="agree" type="checkbox" />
+
+  <!-- upload -->
+  <input id="file-input" type="file" />
+  <span id="file-name"></span>
+
+  <!-- drag -->
+  <div id="src-zone" class="col">
+    <div id="card" class="item" draggable="true">CARD</div>
+  </div>
+  <div id="dst-zone" class="col">drop</div>
+
+  <!-- mock_data 결과 -->
+  <button id="load-btn" type="button">load</button>
+  <ul id="list"></ul>
+
+  <!-- scroll target -->
+  <div class="spacer"></div>
+  <div id="footer">FOOTER</div>
+
+  <script>
+    document.getElementById("primary-btn").addEventListener("click", function () {
+      document.getElementById("status").textContent = "clicked";
+    });
+    document.getElementById("primary-btn").addEventListener("mouseenter", function () {
+      document.getElementById("status").textContent = "hovered";
+    });
+    document.getElementById("search-input").addEventListener("input", function (e) {
+      document.getElementById("echo").textContent = "echo:" + e.target.value;
+    });
+    document.getElementById("search-input").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        document.getElementById("echo").textContent = "submitted:" + e.target.value;
+      }
+    });
+    document.getElementById("file-input").addEventListener("change", function (e) {
+      var f = e.target.files && e.target.files[0];
+      if (f) document.getElementById("file-name").textContent = f.name;
+    });
+
+    var card = document.getElementById("card");
+    card.addEventListener("dragstart", function (e) {
+      e.dataTransfer.setData("text/plain", "card");
+    });
+    [document.getElementById("src-zone"), document.getElementById("dst-zone")].forEach(function (z) {
+      z.addEventListener("dragover", function (e) { e.preventDefault(); });
+      z.addEventListener("drop", function (e) {
+        e.preventDefault();
+        z.appendChild(card);
+      });
+    });
+
+    document.getElementById("load-btn").addEventListener("click", async function () {
+      var ul = document.getElementById("list");
+      ul.innerHTML = "";
+      var res = await fetch("https://api.example.test/api/list");
+      var body = await res.json();
+      ((body && body.items) || []).forEach(function (it) {
+        var li = document.createElement("li");
+        li.textContent = it.name;
+        ul.appendChild(li);
+      });
+    });
+  </script>
+</body>
+</html>

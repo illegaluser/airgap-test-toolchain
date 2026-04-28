@@ -33,7 +33,7 @@
 #
 # 환경변수:
 #   OLLAMA_PING_URL  - 호스트 Ollama 확인 URL 강제 지정 (기본: 자동 탐색)
-#   OLLAMA_MODEL     - 존재 확인 대상 모델 (정보성, 기본 gemma4:e4b)
+#   OLLAMA_MODEL     - 존재 확인 대상 모델 (정보성, 기본 gemma4:26b)
 #
 # 재실행은 idempotent — 이미 설치된 것은 스킵.
 # ============================================================================
@@ -43,7 +43,7 @@ AGENT_DIR="${WSL_AGENT_WORKDIR:-$HOME/.dscore.ttc.playwright-agent}"
 JENKINS_URL="${JENKINS_URL:-http://localhost:18080}"
 AGENT_NAME="${AGENT_NAME:-wsl-ui-tester}"
 PY_VERSION_MIN="${PY_VERSION_MIN:-3.11}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-false}"
 # NODE_SECRET 자동 추출 시 읽을 컨테이너 (docker logs) — 이름 override 가능
 CONTAINER_NAME="${CONTAINER_NAME:-dscore.ttc.playwright}"
@@ -381,7 +381,7 @@ fi
 
 VENV_PY="$VENV_DIR/bin/python3"
 "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-REQ_PKGS=(requests playwright pillow pymupdf)
+REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright)
 log "  pip install: ${REQ_PKGS[*]}"
 "$VENV_PY" -m pip install --quiet "${REQ_PKGS[@]}"
 
@@ -421,7 +421,7 @@ fi
 #
 # Pipeline Stage 1 이 ${WORKSPACE}/.qa_home/venv/bin/activate 를 요구하므로,
 # 우리가 만든 AGENT_DIR/venv 를 해당 워크스페이스에 미리 심볼릭 링크.
-ABS_WORKSPACE="$AGENT_DIR/workspace/DSCORE-ZeroTouch-QA-Docker"
+ABS_WORKSPACE="$AGENT_DIR/workspace/ZeroTouch-QA"
 log "[5/7] Jenkins Node remoteFS 절대경로 갱신 + workspace venv 사전 링크"
 
 # PoC 2026-04-20: Jenkins 2.555 의 /crumbIssuer/api/json 은 404 HTML 을 반환함 (엔드포인트 자체 부재).
