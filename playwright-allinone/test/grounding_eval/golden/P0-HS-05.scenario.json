@@ -1,0 +1,11 @@
+{
+  "catalog_id": "P0-HS-05",
+  "target_url": "http://localhost:18081/explore/apps",
+  "description": "Dify 챗봇 공개 채팅 페이지 — 비인증 진입",
+  "notes": "운영 호스트에서 컨테이너 가동 시점에만 접근 가능. extractor 가 networkidle 옵션으로 SPA 로딩 대기 필요.",
+  "steps": [
+    {"step": 1, "action": "navigate", "target": "", "value": "http://localhost:18081/explore/apps", "description": "Dify explore 진입"},
+    {"step": 2, "action": "wait",     "target": "", "value": "2000", "description": "SPA 렌더 대기"},
+    {"step": 3, "action": "verify",   "target": "getByRole('heading')", "value": "true", "condition": "visible", "description": "메인 영역 제목 가시성"}
+  ]
+}

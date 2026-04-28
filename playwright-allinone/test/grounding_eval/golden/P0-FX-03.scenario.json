@@ -1,0 +1,11 @@
+{
+  "catalog_id": "P0-FX-03",
+  "target_url": "file:///app/test/fixtures/select.html",
+  "description": "드롭다운 선택 — getByRole('combobox', name). 실 AX 트리는 label trailing-colon 포함",
+  "steps": [
+    {"step": 1, "action": "navigate", "target": "", "value": "file:///app/test/fixtures/select.html", "description": "select fixture 로드"},
+    {"step": 2, "action": "select",   "target": "getByRole('combobox', { name: 'Country:' })",  "value": "kr",      "description": "Country=kr 선택"},
+    {"step": 3, "action": "select",   "target": "getByRole('combobox', { name: 'Language:' })", "value": "ko",      "description": "Language=ko 선택"},
+    {"step": 4, "action": "verify",   "target": "#country", "value": "kr", "condition": "value", "description": "Country 값 검증"}
+  ]
+}
