@@ -4,7 +4,7 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 
 ## 현재 구현 상태
 
-2026-04-27 기준 현재 구현은 아래와 같다.
+2026-04-28 기준 현재 구현은 아래와 같다.
 
 | 항목 | 현재 상태 |
 |------|-----------|
@@ -12,12 +12,12 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 | 컨테이너 기동 결과 | `dscore.ttc.playwright` 1개 컨테이너에 Jenkins, Dify, PostgreSQL, Redis, Qdrant, nginx 통합 |
 | 자동 프로비저닝 결과 | Dify 관리자 계정, Ollama plugin/provider, `ZeroTouch QA Brain` publish, Jenkins credential `dify-qa-api-token`, Job `ZeroTouch-QA`, Jenkins Node `mac-ui-tester`/`wsl-ui-tester` 자동 등록 |
 | 완료 마커 | `/data/.app_provisioned` 생성 시 재기동부터 provision 생략 |
-| 최근 실측 검증 | Jenkins `http://localhost:18080/login` → `200`, Dify `http://localhost:18081/` → `307`. v4.1 실환경 출시 검증 (4 모드): execute 14/14, convert 14/14, chat 6/6, doc 20/20 모두 PASS. Sprint 6 chat 모드 3 회 연속 17/17 PASS, 0 retry, 평균 dur 101s |
+| 최근 실측 검증 | Jenkins `http://localhost:18080/login` → `200`, Dify `http://localhost:18081/` → `307`. v4.1 실환경 출시 검증 (4 모드): execute 14/14, convert 14/14, chat 6/6, doc 20/20 모두 PASS. Sprint 6 chat 모드 3 회 연속 17/17 PASS, 0 retry, 평균 dur 101s. 2026-04-28 로컬 정밀 재검증에서 convert-only/execute/regression 산출물 smoke PASS |
 | Action DSL 런타임 | 14대 DSL (`navigate`, `click`, `fill`, `press`, `select`, `check`, `hover`, `wait`, `verify`, `upload`, `drag`, `scroll`, `mock_status`, `mock_data`) 실행기 구현 완료. Sprint 5 multi-strategy chain + post-condition. Sprint 6 press heuristic localhost/file:// 제외 |
 | 자가 치유 구조 | A 단 (executor multi-strategy chain) + B 단 (Healer mutate). Sprint 6 에서 Healer 의 action mutation 을 whitelisted 의미 등가 전이 4쌍 (`select↔fill`, `check↔click`, `click↔press`, `upload↔click`) 으로 확장 — 그룹간 변경은 거절해 false-PASS 차단. healer 호출 시 strategy_trace 주입 |
-| Convert 14대 확장 | `zero_touch_qa/converter.py` 가 `set_input_files`/`drag_to`/`scroll_into_view_if_needed`/`page.route` 를 upload/drag/scroll/mock_* 로 변환. Sprint 4C closure |
+| Convert 14대 확장 | `zero_touch_qa/converter.py` 가 `set_input_files`/`drag_to`/`scroll_into_view_if_needed`/`page.route` 를 upload/drag/scroll/mock_* 로 변환. `--mode convert --convert-only` 는 변환+검증+`scenario.json` 저장 후 executor 없이 종료하며, `convert` 외 모드에서 쓰면 Dify 호출 전에 즉시 실패 |
 | Sprint 6 chat 결정성 | `<think>` 출력 금지 prompt 룰 + max_tokens 4096 → 8192 + OLLAMA_CONTEXT_SIZE 8192 → 12288 + sanitizer leading-token 회복 + atomic 16 항목 default SRS_TEXT. chat 모드가 17/17 결정론적 PASS (Sprint 5 §10.5 의 best-effort 위치 폐기) |
-| 로컬 회귀 테스트 | integration 단위 82건 + 9대 native 회귀 30건 = 총 **112건 PASS, flake 0** |
+| 로컬 회귀 테스트 | integration 단위 169건 + 9대 native 회귀 30건 = 총 **199건 PASS, flake 0** (2026-04-28 재검증) |
 | Jenkins 회귀 단계 | Stage `2.4. pytest 회귀 (Sprint 2/3)` 에서 integration/native pytest 를 분리 실행하고 JUnit XML 보존 |
 | Sprint 4 운영 기반 | Jenkins agent preflight, Dify credential/model health probe, 30일 artifact retention, Dify 호출 metric(`llm_calls.jsonl`) 계측, Zero Touch QA Report 운영 지표 섹션, `aggregate_llm_sla()` 자동 집계 |
 
@@ -31,6 +31,7 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 - 리포트 "첨부 문서" 섹션은 `doc`/`convert`/`execute` 모드처럼 실제 파일이 업로드됐을 때만 노출. `chat` 모드는 자연어 SRS 가 입력이라 첨부 섹션이 뜨지 않는다.
 - chat 모드 SRS 작성 가이드 (Sprint 6): **각 SRS 항목은 정확히 하나의 액션** (atomic). "X 한 뒤 Y" 같은 compound 항목은 첫 액션만 emit 되어 후속 verify 가 false-fail 가능. 기본 SRS_TEXT 는 16 atomic 항목으로 작성됐다.
 - Sprint 5/6 변경 상세는 `PLAN_DSL_ACTION_EXPANSION.md` §10/§11 참조.
+- 2026-04-28 재검증에서 `chat --convert-only` 오용 시 Dify retry 로 빠지던 결함을 수정했다. 이제 `--convert-only` 는 `--mode convert` 와 함께 사용할 때만 허용된다.
 
 로컬 회귀 확인:
 
@@ -41,6 +42,8 @@ python3 -m playwright install chromium
 python3 -m pytest test/test_sprint2_runtime.py -q
 python3 -m pytest test --ignore=test/native -q
 python3 -m pytest test/native -q
+python3 -m compileall -q zero_touch_qa recording_service
+bash -n build.sh entrypoint.sh mac-agent-setup.sh wsl-agent-setup.sh backup-volume.sh restore-volume.sh provision.sh pg-init.sh
 ```
 
 운영 메모:
@@ -1390,6 +1393,9 @@ Web UI. `mac-agent-setup.sh` / `wsl-agent-setup.sh` 가 Jenkins agent 와 함께
    `~/.dscore.ttc.playwright-agent/recordings/<id>/scenario.json` 에 저장.
 5. 필요 시 **Assertion 추가** 영역에서 `verify` / `mock_status` / `mock_data`
    step 을 수동 추가 (codegen 이 emit 하지 않는 14-DSL 액션 보충).
+
+`--convert-only` 는 Recording 변환 전용 플래그다. CLI 는 `--mode convert`
+외의 모드에서 이 플래그가 들어오면 Dify 호출·재시도 없이 즉시 exit 1 로 종료한다.
 
 #### 운영 명령
 
