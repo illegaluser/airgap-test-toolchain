@@ -1164,13 +1164,23 @@ fi
 # 3-3. Pipeline Job 생성
 if [ -f "$OFFLINE_JENKINS_PIPELINE" ]; then
   log "3-3. Pipeline Job 생성: ZeroTouch-QA"
+  # Phase R-MVP TR.10 — 잡 description 을 HTML 로. jenkins-init/markup-formatter.groovy
+  # 가 Markup Formatter 를 Safe HTML 로 전환했으므로 a 태그·이모지 통과.
+  # Recording UI(18092) 와 세션 목록 두 링크를 잡 페이지 상단에 노출한다.
   JOB_XML=$($PY - << PYEOF 2>/dev/null
 import xml.sax.saxutils as sax
 with open('${OFFLINE_JENKINS_PIPELINE}', encoding='utf-8') as f:
     script = f.read()
+description_html = sax.escape(
+    '<p>📹 <a href="http://localhost:18092/" target="_blank">Recording UI</a>'
+    ' — 사용자 행동을 녹화해 14-DSL 시나리오로 자동 변환합니다.</p>'
+    '<p>🎬 <a href="http://localhost:18092/recording/sessions" target="_blank">최근 세션 목록</a></p>'
+    '<p style="color:#888;font-size:0.9em">DSCORE Zero-Touch QA Docker Pipeline'
+    ' · provision.sh auto-created · Markup Formatter 가 Safe HTML 이어야 위 링크가 동작합니다.</p>'
+)
 print("""<?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
-  <description>DSCORE Zero-Touch QA Docker Pipeline (provision-apps.sh auto-created)</description>
+  <description>{}</description>
   <keepDependencies>false</keepDependencies>
   <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
@@ -1179,7 +1189,7 @@ print("""<?xml version='1.1' encoding='UTF-8'?>
   </definition>
   <triggers/>
   <disabled>false</disabled>
-</flow-definition>""".format(sax.escape(script)))
+</flow-definition>""".format(description_html, sax.escape(script)))
 PYEOF
 )
   if [ -z "$JOB_XML" ]; then
