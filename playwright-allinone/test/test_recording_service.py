@@ -14,7 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 
-# 의존성 미설치 환경에서 collection 실패 안 하도록 graceful skip
+# 의존성 미설치 환경에서 collection 실패 안 하도록 graceful skip.
+# starlette.testclient 는 httpx 미설치 시 ImportError 가 아닌 RuntimeError 를
+# 던져 importorskip 의 ImportError 핸들링을 우회한다 → httpx 를 먼저 게이트해야
+# fastapi.testclient import 가 실제로 안전하게 skip.
+pytest.importorskip("httpx")
 fastapi = pytest.importorskip("fastapi")
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
