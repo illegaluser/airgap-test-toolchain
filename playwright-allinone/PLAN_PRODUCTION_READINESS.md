@@ -810,14 +810,35 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 
 ---
 
+## 현재 진행 상태 (2026-04-29 기준)
+
+| 태스크 | 상태 | 참조 |
+|---|---|---|
+| T-A (P0.4 converter AST 화) | ✅ **완료** | commit 0cc419f, 250 → 회귀 0 |
+| T-D (P0.1 인증) Phase 1~4,7 + form/TOTP fixture | ✅ **부분 완료** | commit 52477d1, 281 passed |
+| T-D Phase 5 (OAuth mock 컨테이너) | ⏸ 연기 | follow-up commit |
+| T-D Jenkins Credentials seed | ⏸ 연기 | follow-up commit |
+| T-D 실 IdP 검증 (Google OAuth) | ⏸ 운영 검증 단계 | 별도 |
+| T-B (P0.3-A 클라이언트 격리) | ⏳ 대기 | T-D Phase 5 후 또는 병행 |
+| T-C (P0.2 iframe / open shadow) | ⏳ 대기 | T-D 완료 후 |
+| T-E (P0.5 빌드 CI) | ⏳ 대기 | self-hosted runner 인프라 의존 |
+| T-F (P1.5 orphan watchdog) | ⏳ 대기 | P0 완료 후 |
+| T-G (P1.3 retention GC) | ⏳ 대기 | T-F 후 |
+
+**현 시점 P0 완료율**: 100% (T-A) + 80% (T-D, OAuth mock 만 미완료) + 0% (T-B / T-C / T-E)
+≈ 5 P0 태스크 중 1.8 완료. 영업일 환산 약 8/33 (24%).
+
 ## 다음 액션
 
-1. 본 로드맵에 대한 사용자 승인/우선순위 재조정
-2. **§"당장 착수 가능한 상세 태스크"** 의 T-A (converter AST 화) 부터 착수 권고
-   — 비용 적고 P0.1 의 전제, 외부 의존성 0
-3. T-A 완료 후 T-C (orphan watchdog, 2일) + T-D (retention GC, 2일) 을 백그라운드
-   small task 로 동시 진행
-4. 그 다음 T-B (P0.3-A 클라이언트 격리, 1주)
+1. **T-D Phase 5 마무리** — OAuth mock 컨테이너 (oauth2-mock-server Docker
+   stage + supervisord program + auth_oauth_client.html fixture) 도입.
+   원안 Day 12~13 분량 (2 영업일).
+2. T-D 마무리 후 **T-B (P0.3-A 클라이언트 격리, 5d) + T-E (P0.5 빌드 CI, 3d)**
+   병행 착수.
+3. T-B/T-E 완료 후 **T-C (P0.2 iframe/shadow, 10d)**.
+4. T-C 완료 후 P0 클로저 → **T-F + T-G** 백그라운드 small task.
+
+또는 P0 우선순위 변경 시 사용자 지시에 따라 재조정.
 
 ---
 
@@ -829,3 +850,4 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 | 2026-04-29 | Claude (feat/grounding-recording-agent) | P0.1/P0.2/P0.3 범위·완료조건을 현실 가능 범위로 보정 (form+OAuth+TOTP / 단일 iframe + open shadow / 클라이언트 vs 백엔드 분리) + §"당장 착수 가능한 상세 태스크" 신설 (T-A/B/C/D 4 개 태스크의 단계·변경파일·테스트·수락기준·예상시간) |
 | 2026-04-29 | Claude (feat/grounding-recording-agent) | **T-A 완료** — converter_ast.py 신설 (AST visitor + page 변수 스코프 + popup chain 추적 + .nth/.first/.filter/frame_locator chain 보존), converter.py 를 AST 우선 + line fallback 으로 라우팅, locator_resolver.py 에 `_split_modifiers` / `_resolve_raw` / `_apply_modifiers` 추가해 receiver-side 도 nth/has_text 처리. 8 corpus fixture + 42 단위 테스트, 회귀 0 (208 → 250 passed). docs/recording-troubleshooting.md §4-2 의 .nth backlog 항목 closed. |
 | 2026-04-29 | Claude (feat/grounding-recording-agent) | **T-D 부분 완료 (Phase 1~4, 7 + form/TOTP fixture)** — zero_touch_qa/auth.py 신설 (Credential / AuthOptions / mask_secret / resolve_credential / parse_auth_target / generate_totp_code + 4 분야 후보 selector). executor.py 에 `_execute_auth_login` / `_auth_login_form` / `_auth_login_totp` / `_find_auth_field` 추가. execute() 에 `storage_state_in/out` 매개변수 + AUTH_STORAGE_STATE_IN/OUT env. __main__.py CLI 플래그 `--storage-state-in/out`. fixture: auth_form.html + auth_totp.html. test_auth.py 31 테스트 (mask_secret / resolve_credential / parse_auth_target / generate_totp_code / executor 통합 5 + caplog 마스킹 회귀 3). pyotp 를 requirements.txt + mac/wsl-agent-setup.sh REQ_PKGS 에 추가. 회귀 0 (250 → 281 passed). **OAuth mock 서버 (원안 Phase 5) 와 Jenkins Credentials seed 는 follow-up commit 으로 연기.** |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | 문서 갱신 — §"현재 진행 상태" 표 신설 (10 태스크 status + 영업일 환산), §"다음 액션" 을 T-D Phase 5 마무리 우선으로 재정렬. PLAN_DSL_ACTION_EXPANSION.md §2.4 (auth_login 신규 액션) + §2.5 (locator target 후미 modifier 문법 nth/has_text) 추가, 변경 이력에 T-A / T-D 두 줄 추가. docs/auth-login-usage.md 신설 — 사용자 가이드 (env vars / 모드별 사용법 / storage_state 재사용 / 마스킹 계약 / 디버깅 / 보안 체크리스트 / 9 절). |
