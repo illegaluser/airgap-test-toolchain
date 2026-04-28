@@ -67,6 +67,11 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # Recording 서비스 계약상 convert-only 오용은 Dify retry 전에 즉시 실패해야 한다.
+    if args.convert_only and args.mode != "convert":
+        log.error("--convert-only 는 --mode convert 와 함께만 사용한다.")
+        sys.exit(1)
+
     config = Config.from_env()
     headed = not args.headless
 
@@ -101,9 +106,6 @@ def main():
     # convert 분기에서 이미 _validate_scenario 통과한 시나리오만 도달하므로
     # scenario.json 만 저장하고 빠진다.
     if args.convert_only:
-        if args.mode != "convert":
-            log.error("--convert-only 는 --mode convert 와 함께만 사용한다.")
-            sys.exit(1)
         save_scenario(scenario, config.artifacts_dir)
         log.info(
             "[convert-only] %d 스텝 변환 + 검증 완료 → %s/scenario.json",
