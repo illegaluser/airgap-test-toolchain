@@ -442,6 +442,7 @@ def _prepare_scenario(
                 target_url=target_url,
                 api_docs=api_docs,
                 file_id=file_id,
+                enable_grounding=os.getenv("ENABLE_DOM_GROUNDING", "0") == "1",
             )
             # LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 검증.
             # 정상 step 만 ≥1개 남으면 retry 비용을 아끼고 그대로 진행.
