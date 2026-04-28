@@ -1,0 +1,176 @@
+/* DSCORE Recording Service — minimal stylesheet (TR.4) */
+
+* { box-sizing: border-box; }
+:root {
+  --bg: #f5f5f7;
+  --card: #ffffff;
+  --border: #e1e4e8;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --accent: #0066cc;
+  --ok: #007a3a;
+  --warn: #b86e00;
+  --err: #c92a2a;
+  --code-bg: #f0f0f2;
+  --pill-bg: #e8e8ea;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+    "Noto Sans KR", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  padding: 0;
+  line-height: 1.55;
+}
+
+header {
+  padding: 16px 24px;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+header h1 { margin: 0; font-size: 1.5rem; }
+header .meta { display: flex; gap: 12px; align-items: center; }
+
+main {
+  max-width: 980px;
+  margin: 24px auto;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+}
+.card h2 { margin: 0 0 12px; font-size: 1.15rem; }
+.card.r-plus { background: #fafafa; border-style: dashed; }
+
+form { display: flex; flex-direction: column; gap: 10px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.92rem; }
+label > span { color: var(--muted); }
+label > span em { color: #999; font-style: italic; font-size: 0.85em; }
+label.optional > span { color: #999; }
+
+input[type="text"], select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: #fff;
+}
+input[type="text"]:focus, select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+button {
+  padding: 8px 14px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  align-self: flex-start;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled, button.disabled {
+  background: #d2d2d7;
+  border-color: #d2d2d7;
+  color: #888;
+  cursor: not-allowed;
+}
+button.danger { background: var(--err); border-color: var(--err); }
+button[data-act="open"] { background: #fff; color: var(--accent); }
+
+.plus-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+
+.json-preview {
+  background: var(--code-bg);
+  padding: 12px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  max-height: 400px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+code {
+  background: var(--code-bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+
+.muted { color: var(--muted); }
+.ok { color: var(--ok); font-weight: 600; }
+.warn { color: var(--warn); font-weight: 600; }
+.err { color: var(--err); font-weight: 600; }
+
+.state-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.state-pending { background: #e8e8ea; color: #555; }
+.state-recording { background: #fde7e6; color: var(--err); }
+.state-converting { background: #fff3cd; color: var(--warn); }
+.state-done { background: #d4edda; color: var(--ok); }
+.state-error { background: #f8d7da; color: var(--err); }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+th, td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+th { color: var(--muted); font-weight: 500; }
+.ellipsis {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-actions { display: flex; gap: 6px; }
+.row-actions button { padding: 4px 10px; font-size: 0.85rem; }
+
+.badge {
+  background: #ddd;
+  color: #555;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+
+footer {
+  text-align: center;
+  padding: 24px;
+  font-size: 0.85rem;
+}

@@ -10,4 +10,4 @@
 설계: PLAN_GROUNDING_RECORDING_AGENT.md §"Phase R" / §"T0.3"
 """
 
-__version__ = "0.1.0-tr1"
+__version__ = "0.1.0-tr4"

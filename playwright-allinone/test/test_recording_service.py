@@ -464,6 +464,158 @@ def test_converter_proxy_timeout_raises(monkeypatch):
     assert "안에 끝나지 않았습니다" in str(excinfo.value)
 
 
+# ── TR.4 — Web UI 정적 서빙 ─────────────────────────────────────────────────
+
+def test_root_returns_html(client):
+    """/ → index.html 반환."""
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "DSCORE Recording Service" in r.text or "Recording Service" in r.text
+    assert "<html" in r.text.lower()
+
+
+def test_static_app_js_served(client):
+    r = client.get("/static/app.js")
+    assert r.status_code == 200
+    # 키워드 한 두 개로 정합성만 확인
+    assert "recording" in r.text.lower()
+
+
+def test_static_style_css_served(client):
+    r = client.get("/static/style.css")
+    assert r.status_code == 200
+    assert ".card" in r.text or "state-pill" in r.text
+
+
+# ── TR.4 — Assertion 추가 endpoint ──────────────────────────────────────────
+
+def _create_done_session(client, patched_codegen):
+    """assertion 테스트용 fixture — start → stop → state=done 까지."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    client.post(f"/recording/stop/{sid}")
+    return sid
+
+
+def test_assertion_404_for_unknown_session(client):
+    r = client.post(
+        "/recording/sessions/nope/assertion",
+        json={"action": "verify", "target": "#x", "value": "y"},
+    )
+    assert r.status_code == 404
+
+
+def test_assertion_409_when_session_not_done(client, patched_codegen):
+    """state != done 인 세션엔 assertion 추가 불가."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    # stop 호출 안 함 → state=recording
+    r2 = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "verify", "target": "#x", "value": "y"},
+    )
+    assert r2.status_code == 409
+
+
+def test_assertion_400_invalid_action(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "click", "target": "#x", "value": "y"},
+    )
+    assert r.status_code == 400
+    assert "verify" in r.json()["detail"]
+
+
+def test_assertion_400_empty_target(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "verify", "target": "  ", "value": "y"},
+    )
+    assert r.status_code == 400
+
+
+def test_assertion_400_empty_value(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "verify", "target": "#x", "value": ""},
+    )
+    assert r.status_code == 400
+
+
+def test_assertion_appends_verify_step(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    # patched_codegen 의 fake_convert 가 2 스텝 시나리오를 만들었음
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={
+            "action": "verify",
+            "target": "#status",
+            "value": "clicked",
+            "condition": "text",
+        },
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["step_added"] == 3
+    assert body["step_count"] == 3
+    added = body["added_step"]
+    assert added["action"] == "verify"
+    assert added["target"] == "#status"
+    assert added["value"] == "clicked"
+    assert added["condition"] == "text"
+    assert added["step"] == 3
+
+
+def test_assertion_appends_mock_status_and_mock_data(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r1 = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={
+            "action": "mock_status",
+            "target": "https://api.example.test/api/list",
+            "value": "500",
+        },
+    )
+    assert r1.status_code == 201
+    r2 = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={
+            "action": "mock_data",
+            "target": "https://api.example.test/api/list",
+            "value": '{"items":[]}',
+        },
+    )
+    assert r2.status_code == 201
+    # 4번째 step 이 mock_data
+    assert r2.json()["step_added"] == 4
+    assert r2.json()["added_step"]["action"] == "mock_data"
+
+
+def test_assertion_persists_to_scenario_json(client, patched_codegen, temp_host_root):
+    """추가된 step 이 scenario.json 파일에 실제로 저장되는지."""
+    import json
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "verify", "target": "#x", "value": "y"},
+    )
+    assert r.status_code == 201
+    # 파일 직접 읽기
+    scenario_file = Path(temp_host_root) / sid / "scenario.json"
+    assert scenario_file.is_file()
+    data = json.loads(scenario_file.read_text(encoding="utf-8"))
+    assert isinstance(data, list)
+    assert any(
+        s.get("action") == "verify" and s.get("target") == "#x"
+        for s in data
+    )
+
+
 # ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────
 
 def test_delete_terminates_active_codegen(client, patched_codegen):
