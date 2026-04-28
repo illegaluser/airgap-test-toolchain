@@ -616,6 +616,91 @@ def test_assertion_persists_to_scenario_json(client, patched_codegen, temp_host_
     )
 
 
+# ── TR.8 — 영속화 / 마운트 / 디스크 세션 흡수 ────────────────────────────────
+
+def test_storage_container_path_for_default_is_recordings(monkeypatch):
+    """nested bind 위험 회피 — default 가 /recordings 이어야 함."""
+    monkeypatch.delenv("RECORDING_CONTAINER_ROOT", raising=False)
+    from recording_service import storage
+    assert storage.container_path_for("abc") == "/recordings/abc"
+
+
+def test_storage_container_path_for_env_override(monkeypatch):
+    monkeypatch.setenv("RECORDING_CONTAINER_ROOT", "/custom/path")
+    from recording_service import storage
+    assert storage.container_path_for("abc") == "/custom/path/abc"
+
+
+def test_storage_list_session_dirs(temp_host_root):
+    from pathlib import Path
+    from recording_service import storage
+    # 임시 루트 안에 가짜 세션 디렉토리 3개
+    for sid in ("aaa", "bbb", "ccc"):
+        (Path(temp_host_root) / sid).mkdir()
+    # 정렬된 목록
+    assert storage.list_session_dirs() == ["aaa", "bbb", "ccc"]
+
+
+def test_storage_list_session_dirs_when_root_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("RECORDING_HOST_ROOT", str(tmp_path / "missing"))
+    from recording_service import storage
+    assert storage.list_session_dirs() == []
+
+
+def test_absorb_disk_sessions_recovers_done_state(temp_host_root, monkeypatch):
+    """server 재시작 시뮬레이션 — metadata.json 만 있어도 done 세션 복원."""
+    import json
+    from pathlib import Path
+    from recording_service import server as srv
+    from recording_service import session as sess_mod
+
+    # 가짜 디스크 세션 만들기
+    sid = "diskonly42xy"
+    sdir = Path(temp_host_root) / sid
+    sdir.mkdir()
+    (sdir / "metadata.json").write_text(json.dumps({
+        "id": sid,
+        "target_url": "https://recovered.test",
+        "state": "done",
+        "step_count": 7,
+    }), encoding="utf-8")
+    (sdir / "scenario.json").write_text("[]", encoding="utf-8")
+
+    # registry 비우고 startup hook 직접 호출
+    srv._reset_for_tests()
+    srv._absorb_disk_sessions()
+
+    sess = srv._registry.get(sid)
+    assert sess is not None
+    assert sess.state == "done"
+    assert sess.target_url == "https://recovered.test"
+    assert sess.action_count == 7
+
+
+def test_absorb_disk_sessions_marks_orphan_recording(temp_host_root):
+    """state=recording 세션은 orphan(error) 으로 표시 (codegen 끊겼음)."""
+    import json
+    from pathlib import Path
+    from recording_service import server as srv
+
+    sid = "orphan9999ab"
+    sdir = Path(temp_host_root) / sid
+    sdir.mkdir()
+    (sdir / "metadata.json").write_text(json.dumps({
+        "id": sid,
+        "target_url": "https://x.test",
+        "state": "recording",
+    }), encoding="utf-8")
+
+    srv._reset_for_tests()
+    srv._absorb_disk_sessions()
+
+    sess = srv._registry.get(sid)
+    assert sess is not None
+    assert sess.state == "error"
+    assert "orphan" in (sess.error or "").lower()
+
+
 # ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────
 
 def test_delete_terminates_active_codegen(client, patched_codegen):
