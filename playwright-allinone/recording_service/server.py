@@ -13,8 +13,12 @@ import logging
 import threading
 from typing import Optional
 
+from pathlib import Path as _Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -398,6 +402,106 @@ def replay_session(sid: str):
     )
 
 
+# ── /recording/sessions/{id}/assertion (TR.4 — codegen 미생성 액션 보충) ───
+
+ASSERTION_ALLOWED_ACTIONS = {"verify", "mock_status", "mock_data"}
+
+
+class AssertionAddReq(BaseModel):
+    action: str = Field(
+        ...,
+        description="verify / mock_status / mock_data 중 하나. codegen 이 emit 하지 않는 14-DSL 액션을 사용자가 수동 추가.",
+    )
+    target: str = Field(..., description="CSS 셀렉터 또는 URL 패턴")
+    value: str = Field(..., description="기대값 / status code / JSON body")
+    description: str = ""
+    condition: Optional[str] = Field(
+        None, description="verify 의 조건 (예: text / visible / url)",
+    )
+
+
+@app.post("/recording/sessions/{sid}/assertion", status_code=201)
+def add_assertion(sid: str, req: AssertionAddReq) -> dict:
+    """녹화 후 사용자가 verify / mock_status / mock_data step 을 수동 추가.
+
+    PLAN §"TR.4 Assertion 추가 영역" 의 비대칭 보완. codegen 은 page.route /
+    expect 를 emit 하지 않으므로 운영자가 직접 입력해 14-DSL 풀 시나리오로
+    완성한다.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    if sess.state != session.STATE_DONE:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Assertion 추가는 변환 완료(state=done) 세션만 가능합니다. "
+                f"현재 state={sess.state}"
+            ),
+        )
+    if req.action not in ASSERTION_ALLOWED_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"action 은 {sorted(ASSERTION_ALLOWED_ACTIONS)} 중 하나여야 합니다. "
+                f"받은 값: {req.action!r}"
+            ),
+        )
+    if not req.target.strip():
+        raise HTTPException(status_code=400, detail="target 이 비어있습니다.")
+    if not req.value.strip():
+        raise HTTPException(status_code=400, detail="value 가 비어있습니다.")
+
+    scenario = storage.load_scenario(sid)
+    if scenario is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"세션 {sid} 의 scenario.json 이 없습니다. 먼저 변환을 완료하세요.",
+        )
+
+    next_step = max((s.get("step", 0) for s in scenario), default=0) + 1
+    new_step: dict = {
+        "step": next_step,
+        "action": req.action,
+        "target": req.target,
+        "value": req.value,
+        "description": req.description or _default_description(req.action, req.target, req.value),
+    }
+    if req.action == "verify" and req.condition:
+        new_step["condition"] = req.condition
+
+    scenario.append(new_step)
+
+    # 호스트 측 가벼운 sanity 만 — 깊은 _validate_scenario 는 다음 변환/실행 시점에.
+    import json as _json
+    storage.scenario_path(sid).write_text(
+        _json.dumps(scenario, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _registry.update(sid, action_count=len(scenario))
+
+    log.info(
+        "[/assertion] %s — step %d 추가 (action=%s target=%s)",
+        sid, next_step, req.action, req.target,
+    )
+    return {
+        "id": sid,
+        "step_added": next_step,
+        "step_count": len(scenario),
+        "added_step": new_step,
+    }
+
+
+def _default_description(action: str, target: str, value: str) -> str:
+    if action == "verify":
+        return f"verify {target} = {value}"
+    if action == "mock_status":
+        return f"{target} → status {value}"
+    if action == "mock_data":
+        return f"{target} → mock body"
+    return ""
+
+
 # ── 진단/내부용 (테스트 친화) ────────────────────────────────────────────────
 
 def _reset_for_tests() -> None:
@@ -405,3 +509,27 @@ def _reset_for_tests() -> None:
     _registry.clear()
     with _handles_lock:
         _handles.clear()
+
+
+# ── 정적 파일 / Web UI (TR.4) ────────────────────────────────────────────────
+
+_WEB_DIR = _Path(__file__).resolve().parent / "web"
+
+
+@app.get("/", include_in_schema=False)
+def root_index() -> FileResponse:
+    """`/` 진입 시 index.html 반환 (TR.4 Web UI)."""
+    index_path = _WEB_DIR / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Web UI 정적 파일을 찾을 수 없습니다 — recording_service/web/index.html 누락."
+            ),
+        )
+    return FileResponse(str(index_path))
+
+
+# /static/* 로 app.js / style.css 등 서빙. /healthz 와 /recording/* API 와 분리.
+if _WEB_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_WEB_DIR)), name="static")
