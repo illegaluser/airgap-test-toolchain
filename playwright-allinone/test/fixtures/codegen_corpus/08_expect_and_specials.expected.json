@@ -1,0 +1,10 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/full", "description": "https://example.com/full로 이동", "fallback_targets": []},
+  {"step": 2, "action": "upload", "target": "label=file", "value": "artifacts/sample.txt", "description": "'artifacts/sample.txt' 파일 업로드", "fallback_targets": []},
+  {"step": 3, "action": "drag", "target": "#src", "value": "#dst", "description": "드래그 앤 드롭", "fallback_targets": []},
+  {"step": 4, "action": "scroll", "target": "#footer", "value": "into_view", "description": "요소 위치로 스크롤", "fallback_targets": []},
+  {"step": 5, "action": "mock_status", "target": "**/api/list", "value": "500", "description": "**/api/list 응답 상태 500 모킹", "fallback_targets": []},
+  {"step": 6, "action": "mock_data", "target": "**/api/items", "value": "{\"items\":[]}", "description": "**/api/items 응답 본문 모킹", "fallback_targets": []},
+  {"step": 7, "action": "verify", "target": "h1", "value": "Welcome", "description": "텍스트 'Welcome' 확인", "fallback_targets": []},
+  {"step": 8, "action": "verify", "target": "role=button, name=Submit", "value": "", "description": "요소 표시 확인", "fallback_targets": []}
+]

@@ -193,11 +193,22 @@ docker exec -w /opt -e ARTIFACTS_DIR=/recordings/<sid> dscore.ttc.playwright \
 부터 컨테이너 baked-in. 핫패치만 한 경우 컨테이너 재기동 시 사라지므로
 주의.
 
-### 알려진 후속 이슈 (TR.x backlog)
+### 알려진 후속 이슈 (TR.x backlog) — **2026-04-29 closed (T-A 완료)**
 
-`.nth(N)` (같은 텍스트의 N 번째 매칭) 정보는 정규화 후에도 보존되지 않음 —
-converter 는 첫 번째 `get_by_role(...)` 만 추출. 동일 텍스트 중복 시 disambiguation
-필요하면 별도 fix.
+~~`.nth(N)` (같은 텍스트의 N 번째 매칭) 정보는 정규화 후에도 보존되지 않음~~ →
+T-A (P0.4 / `zero_touch_qa/converter_ast.py` 신설) 로 해소. AST 기반 converter
+가 `.nth(N)` / `.first` / `.filter(has_text=...)` / `frame_locator` chain /
+nested locator 를 모두 14-DSL `target` 의 후미 modifier (`, nth=N` /
+`, has_text=T`) 또는 `>>` chain 으로 손실 없이 보존한다. 동일 텍스트 다중 매칭
+disambiguation 도 자동 해결.
+
+resolver 측 (`zero_touch_qa/locator_resolver.py`) 도 `_split_modifiers` /
+`_apply_modifiers` 로 receiver-side 에서 동일하게 해석. `_resolve_raw` 헬퍼는
+`.first` 미적용 multi-element locator 를 반환해 `.nth(N).first` race 회피.
+
+**남은 후속 이슈 (T-C 범위)**: `frame=...>>...` chain 의 executor 측
+frame_locator traversal 은 T-C (P0.2) 범위 — converter 는 target 문자열에
+정확히 보존하지만 실 실행은 T-C 의 resolver 확장 후 가능.
 
 ## 5. 마운트 — 호스트 ↔ 컨테이너 경로 불일치
 

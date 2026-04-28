@@ -1,0 +1,5 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/checkout", "description": "https://example.com/checkout로 이동", "fallback_targets": []},
+  {"step": 2, "action": "fill", "target": "frame=#payment-iframe >> role=textbox, name=Card number", "value": "4242424242424242", "description": "'4242424242424242' 입력", "fallback_targets": []},
+  {"step": 3, "action": "click", "target": "frame=#payment-iframe >> role=button, name=Pay", "value": "", "description": "클릭", "fallback_targets": []}
+]
