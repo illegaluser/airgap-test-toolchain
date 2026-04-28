@@ -66,19 +66,35 @@ recording 라운드트립 6/6 스텝, Jenkins 파이프라인 stage 1~2.4 그린
 
 #### P0.1 — 로그인/인증 시나리오 처리 *(B1 해소)*
 
-**범위**
+**범위 (보정 — 현실 가능 범위로 한정)**
+
+대상에 포함:
 
 - credential 주입 액션 신설 (DSL: `auth_login`, value=계정 alias)
 - credential 저장소 (Jenkins Credentials + 컨테이너 안전 노출)
-- OAuth 흐름 핸들러 (redirect → callback)
+- **Form 로그인** (id/pw)
+- **OAuth (Google/GitHub form 부분까지)** — redirect/callback 자체 추적
+- **TOTP** — 시크릿 보관 + `pyotp` 6자리 자동 생성
 - 인증 후 세션 쿠키를 `storage_state` 로 dump → 후속 시나리오 재사용
 
-**완료 조건**
+대상에서 제외 (도메인별 별도 PoC 또는 영구 OUT):
 
-- 사내 SSO 1개 + OAuth 외부 1개 (Google) 흐름 시나리오 자동 통과
+- ❌ **SMS OTP** — 전용 SMS gateway / mock 서비스 인프라 필요. 별도 트랙
+- ⚠️ **WebAuthn / Passkey** — Playwright `virtualAuthenticator` API 가능하나
+  prod IdP 가 virtual authenticator 거부할 수 있음. 도메인별 사전 협의 필요
+- ❌ **reCAPTCHA / hCaptcha** — 봇 차단 의도라 우회 비추천. 테스트 환경에서
+  disable 또는 test key 발급 (도메인 협조)
+- ⚠️ **SAML / OIDC 사내 IdP** — 가능하나 IdP 화면이 회사별 → 도메인별 selector
+  작성 필요. 첫 PoC 범위에서 제외
+- ❌ **Magic Link (이메일)** — 메일박스 polling 인프라 필요. 별도 트랙
+
+**완료 조건 (보정)**
+
+- Form 로그인 + OAuth (Google) + TOTP, 3 가지 시나리오 자동 통과
 - credential 이 로그/스크린샷에 노출 안 됨 (마스킹 검증)
+- SMS / WebAuthn / SAML / Magic Link 는 본 P0.1 외 별도 PoC 트랙으로 명시
 
-**비용**: 중-대 (2~3 주)
+**비용**: 중-대 (2~3 주, 보정 범위 기준)
 
 **의존성**: P0.4 (converter AST 화) 권장 — auth flow 는 popup/redirect 가 잦아
 정확한 변환 필요
@@ -87,20 +103,34 @@ recording 라운드트립 6/6 스텝, Jenkins 파이프라인 stage 1~2.4 그린
 
 #### P0.2 — iframe / Shadow DOM 지원 *(B2 해소)*
 
-**범위**
+**범위 (보정 — 현실 가능 범위로 한정)**
+
+대상에 포함:
 
 - 14-DSL 의 `target` 문법에 frame/shadow path 옵션 추가 (예: `frame=#iframe1>>role=button, name=확인`)
 - `locator_resolver` 에 `frame_locator` 자동 traversal
-- shadow root 통과 selector — Playwright 의 `:light()` / piercing selector 활용
+- **단일 iframe** (Stripe / Toss 결제 위젯 등)
+- **Open mode Shadow DOM** — Playwright 가 자동 piercing 하므로 기본 selector
+  로 통과
 - recording 측 codegen 도 frame 진입 라인 (`page.frame_locator(...).get_by_role(...)`) 보존
 
-**완료 조건**
+대상에서 제외 (영구 OUT 또는 별도 트랙):
 
-- 결제 위젯 (Stripe/Toss) 1종 + 디자인 시스템 (예: Material Web Components) 1종에서
-  fill/click/verify 동작 확인
+- ❌ **Closed mode Shadow DOM** (Salesforce LWC 일부) — **브라우저 정책상 영구
+  접근 불가**. 본 P0.2 의 OUT 으로 명시. 대상 시스템이 closed shadow 면 다른
+  자동화 전략 (백엔드 API 호출 등) 으로 우회
+- ⚠️ **깊게 중첩된 nested frame chain** — 가능하나 codegen 변환 복잡도 + healer
+  신뢰도 저하. 별도 운영 데이터 기반 의사결정 (P2.3 벤치 통과 후 재평가)
+
+**완료 조건 (보정)**
+
+- 단일 iframe 결제 위젯 1종 + open shadow DOM 디자인 시스템 1종에서 fill/click/verify
+  동작 확인
 - frame_locator 진입 시 healer 도 같은 frame 안에서 fallback 수행
+- closed shadow 만나면 명확한 에러 메시지 (`closed shadow root — automation 불가`)
+  + 시나리오 즉시 FAIL 로 마감
 
-**비용**: 중 (2 주)
+**비용**: 중 (2 주, 보정 범위 기준)
 
 **의존성**: 없음 (executor + converter 양쪽 동시 작업)
 
@@ -108,21 +138,32 @@ recording 라운드트립 6/6 스텝, Jenkins 파이프라인 stage 1~2.4 그린
 
 #### P0.3 — 세션 / 데이터 격리 *(B4 해소)*
 
-**범위**
+**범위 (보정 — 클라이언트/백엔드 분리)**
+
+P0.3-A — 클라이언트 측 격리 (확실히 가능, 도메인 무관):
 
 - 시나리오 단위 `BrowserContext` 분리 (현재는 단일 page 재사용 가능성 점검)
-- 백엔드 fixture seed/reset hook — 시나리오 메타데이터에 `setup_url` / `teardown_url`
-  필드 추가, executor 가 step 0 / step ∞ 에서 호출
 - localStorage / IndexedDB / cookie 명시적 reset 액션 (DSL: `reset_state`)
+- `BrowserContext.clear_cookies()` / `storage_state` dump+restore 활용
 
-**완료 조건**
+P0.3-B — 백엔드 fixture seed/reset hook (도메인 의존):
 
-- 동일 시나리오 100회 연속 실행 시 통과율 95% 이상 (현재는 측정 데이터 없음)
-- 시나리오 A 가 시나리오 B 결과를 오염시키지 않음을 회귀 케이스로 증명
+- 시나리오 메타데이터에 `setup_url` / `teardown_url` 필드 추가, executor 가
+  step 0 / step ∞ 에서 호출
+- 사내 앱: 가능 — admin API 노출 시키거나 DB seed 스크립트 작성
+- ⚠️ 외부 SaaS: **거의 불가능** (Salesforce 등은 회귀용 reset API 미제공) →
+  "스테이징 계정 분리 + 사람 주기 reset" 운영 절차로 보완 (P2.3 벤치 시 합의)
 
-**비용**: 중 (1.5 주)
+**완료 조건 (보정)**
 
-**의존성**: 없음
+- P0.3-A: 동일 시나리오 100회 연속 실행 (fixture HTML + 사내 앱) 통과율 95% 이상
+- P0.3-A: 시나리오 A 가 시나리오 B 결과를 오염시키지 않음을 회귀 케이스로 증명
+- P0.3-B: 사내 앱 1종에서 setup/teardown hook 동작 + 외부 SaaS 는 운영 절차
+  문서화 (자동화 OUT 명시)
+
+**비용**: 중 (P0.3-A 1주 + P0.3-B 사내 앱 1종 0.5주, 외부 SaaS 운영 절차 별도)
+
+**의존성**: 없음 (P0.3-A 는 즉시 착수 가능 — 아래 §"당장 착수 가능한 상세 태스크" 참조)
 
 ---
 
@@ -213,6 +254,253 @@ AST 변환 후로 이동만 하면 됨)
 
 ---
 
+## 당장 착수 가능한 상세 태스크
+
+본 절의 4 개 태스크는 **외부 인프라/도메인 의존성 없음** + **현 코드베이스 안에서
+완결** 으로, 이번 브랜치에서 즉시 착수 가능하다. 각 태스크는 **단계 / 변경 파일 /
+단위 테스트 / 수락 기준 / 예상 시간** 을 명시한다. 우선 추천 순서: T-A → T-C → T-D → T-B.
+
+---
+
+### T-A — converter AST 화 (P0.4 본체)
+
+**목표**: line-based regex 를 `ast.parse` 기반 정확 파싱으로 교체. popup/`.nth`/
+`.first`/`.filter`/frame_locator chain 등 codegen 의 모든 변형을 손실 없이 14-DSL
+로 전환.
+
+**예상 시간**: 5 영업일 (1 주)
+
+**의존성**: 없음
+
+**단계**
+
+1. **Day 1 — 측정 baseline**
+   - 현 line-based converter 의 손실 패턴 8 개 (popup/.nth/.first/.filter/nested
+     locator/frame_locator/expect_navigation/page2 chain) 을 fixture 로 codegen
+     출력 샘플 8 개 수집
+   - 각 샘플에 대해 현 converter 결과 + 기대 결과를 표로 정리 → `test/fixtures/codegen_corpus/`
+2. **Day 2~3 — AST visitor 구현**
+   - 신규 파일 `zero_touch_qa/converter_ast.py`:
+     - `ast.NodeVisitor` 서브클래스 — top-level `def run(playwright)` body 를 순회
+     - page 변수 스코프 추적 (dict[str, PageContext]) — `page = context.new_page()`
+       / `page1 = page1_info.value` / `with page.expect_popup() as page1_info:`
+       전부 처리
+     - call chain 평탄화: `page.locator("a").nth(1).click()` → `(target, action)` 튜플
+     - frame_locator chain 누적 (`page.frame_locator("#f").get_by_role("button")`)
+   - `_extract_target_from_node` — `Call` 노드를 받아 14-DSL `target` 문자열 생성
+3. **Day 3~4 — converter 라우팅**
+   - 기존 `convert_playwright_to_dsl` 의 라인 루프를 AST 우선 + 실패 시 line fallback
+     으로 교체:
+
+     ```python
+     try:
+         scenario = _convert_via_ast(file_path, output_dir)
+     except Exception as e:
+         log.warning("[Convert] AST 변환 실패 — line fallback. 사유: %s", e)
+         scenario = _convert_via_lines(file_path, output_dir)  # 현 함수
+     ```
+
+   - line fallback 은 그대로 유지 — 비표준 codegen 출력에 대한 안전망
+4. **Day 4 — `.nth(N)` / `.filter(...)` 보존 → DSL 확장**
+   - 14-DSL `target` 에 `, nth=1` / `, has_text=...` 옵션 추가
+   - executor 의 `locator_resolver` 에서 nth/filter 옵션 처리
+5. **Day 5 — 테스트 + 문서**
+   - `test/test_converter_ast.py` 30 케이스 — 8 fixture × 평균 4 단계
+   - 기존 [zero_touch_qa/converter.py:51-57](zero_touch_qa/converter.py#L51-L57) 의 정규화 hotfix 는 AST
+     visitor 도입 시 **자동 무력화** (제거하지 않고 line fallback 에 그대로 둠)
+   - `docs/recording-troubleshooting.md` §4-2 의 ".nth backlog" 항목 closed 처리
+
+**변경 파일**
+
+- 신규: `zero_touch_qa/converter_ast.py` (~400 라인 예상)
+- 신규: `test/test_converter_ast.py`
+- 신규: `test/fixtures/codegen_corpus/` (8 샘플 + 각 expected.json)
+- 수정: `zero_touch_qa/converter.py` — entry point 가 AST 우선 + line fallback
+- 수정: `zero_touch_qa/locator_resolver.py` — nth/filter 옵션 추가
+- 수정: `docs/recording-troubleshooting.md` §4-2
+
+**단위 테스트 (필수 통과)**
+
+- 기존 18 fixture 의 codegen 출력 손실 0
+- `.nth(1)` / `.first` / `.filter(has_text="...")` 보존 확인 (3 케이스)
+- popup chain (`with page.expect_popup() as p1_info` → `page1.click(...)`) 정확히
+  click 액션으로 변환 + page 컨텍스트 정보 메타에 보존 (1 케이스)
+- frame_locator chain (`page.frame_locator("#f").get_by_role("button").click()`)
+  → DSL `target=frame=#f>>role=button` (2 케이스)
+- 비표준 패턴 (lambda, 변수 별칭) → line fallback 으로 자연스러운 degrade (3 케이스)
+
+**수락 기준**
+
+- naver popup 시나리오 (이번 세션 6 스텝) 정확 변환 + nth 정보 메타에 보존
+- 8 fixture 에서 변환 손실 0
+- pytest 전체 스위트 208 → 238 passed (30 신규 케이스 추가)
+
+---
+
+### T-B — 클라이언트 측 세션 격리 (P0.3-A)
+
+**목표**: 시나리오 단위 BrowserContext 분리 + `reset_state` DSL 액션 추가.
+백엔드 hook 없는 자체 완결.
+
+**예상 시간**: 5 영업일
+
+**의존성**: 없음
+
+**단계**
+
+1. **Day 1 — BrowserContext per scenario 검증**
+   - 현 [zero_touch_qa/executor.py:120-130](zero_touch_qa/executor.py#L120-L130) 의
+     context 생성 흐름 추적 — 시나리오 1개당 1 context 인지, 여러 시나리오 batch
+     실행 시 context 재사용 가능성 있는지 확인
+   - regression: 동일 시나리오 100회 연속 → 통과율 측정 (baseline)
+2. **Day 2 — `reset_state` DSL 액션 신설**
+   - `zero_touch_qa/converter.py` 의 14-DSL 액션 매핑에 `reset_state` 추가:
+     - `value=cookie` — `context.clear_cookies()`
+     - `value=storage` — `page.evaluate("() => localStorage.clear(); sessionStorage.clear();")`
+     - `value=indexeddb` — `page.evaluate(deleteAllIDB)`
+     - `value=all` — 위 3 개 + permissions reset
+   - `zero_touch_qa/executor.py` 에 `_handle_reset_state` 추가
+3. **Day 3 — `storage_state` dump/restore**
+   - 시나리오 메타데이터에 `storage_state_in` / `storage_state_out` (선택) 필드
+   - executor 가 시작 시 restore, 끝나면 dump
+4. **Day 4 — 멱등성 회귀 케이스**
+   - `test/test_isolation.py` 신설:
+     - fixture HTML 에서 시나리오 A (localStorage 에 값 쓰기) 실행 후 시나리오 B
+       (해당 값이 없음을 verify) 가 100회 연속 통과해야 함
+     - cookie / IndexedDB 도 동일
+5. **Day 5 — 측정**
+   - 동일 시나리오 100회 연속 → 통과율 측정 (post-fix). 95% 이상이면 수락
+
+**변경 파일**
+
+- 수정: `zero_touch_qa/executor.py` — `_handle_reset_state` + storage_state 처리
+- 수정: `zero_touch_qa/converter.py` — `reset_state` DSL 매핑 + 18 fixture 의
+  `metadata` 스펙 갱신
+- 수정: `zero_touch_qa/__main__.py` — `storage_state_in/out` CLI 옵션 (선택)
+- 신규: `test/test_isolation.py`
+- 신규: `test/fixtures/isolation_a.html`, `isolation_b.html`
+
+**단위 테스트**
+
+- `reset_state value=cookie` 후 cookie 비어 있음 (1)
+- `reset_state value=storage` 후 localStorage 비어 있음 (1)
+- 동일 시나리오 100회 연속 통과율 ≥95%
+- A → B 격리 회귀 (10 케이스)
+
+**수락 기준**
+
+- 100회 연속 통과율 ≥95% 측정 데이터 첨부
+- A→B 오염 0 건
+
+---
+
+### T-C — orphan codegen 자동 정리 (P1.5)
+
+**목표**: codegen 이 외부 요인(브라우저 직접 닫기/크래시)으로 죽었을 때 즉시
+세션을 `state=error` 로 마킹. 서버 재시작에 의존하지 않음.
+
+**예상 시간**: 2 영업일
+
+**의존성**: 없음
+
+**단계**
+
+1. **Day 1 오전 — heartbeat 스레드**
+   - `recording_service/server.py` 에 `_handle_watchdog` 모듈 신설:
+     - `threading.Thread(daemon=True)` 가 5 초 간격으로 `_handles` 순회
+     - 각 handle 의 `proc.poll()` 호출, `not None` (즉 종료됨) 이면 즉시 cleanup:
+       - `_pop_handle(sid)` 로 dict 에서 제거
+       - 출력 파일 크기 검사 → 0 이면 `state=error, error="codegen 외부 종료 + 액션 0"`,
+         >0 이면 `state=error, error="codegen 외부 종료 (자동 변환 미수행)"`
+       - storage.save_metadata(sid, ...) 로 디스크 동기화
+2. **Day 1 오후 — startup hook 통합**
+   - 기존 `_absorb_disk_sessions` 직후 watchdog 시작
+   - `@app.on_event("shutdown")` 에서 watchdog stop
+3. **Day 2 — 단위 테스트**
+   - `test/test_recording_service.py` 에 케이스 추가:
+     - codegen subprocess fake (sleep 1초 후 자살) → 5초 polling 후 state=error 확인
+     - 정상 codegen + Stop & Convert 호출 → watchdog 와 race 안 발생
+4. **Day 2 후 — 문서 갱신**
+   - `docs/recording-troubleshooting.md` §4-1 임시 우회 절 → "watchdog 가 자동 마킹"
+     으로 갱신
+
+**변경 파일**
+
+- 신규: `recording_service/watchdog.py` (~80 라인)
+- 수정: `recording_service/server.py` — startup/shutdown hook 통합
+- 수정: `test/test_recording_service.py` — 2 케이스 추가
+- 수정: `docs/recording-troubleshooting.md` §4-1
+
+**단위 테스트**
+
+- 외부 SIGKILL 후 10초 이내 state=error 마킹 (1)
+- 정상 stop 흐름과 watchdog race 없음 (1)
+
+**수락 기준**
+
+- 외부 codegen kill 시 10초 안에 세션 `state=error`
+- 기존 stop endpoint 동작 변동 없음 (회귀 0)
+
+---
+
+### T-D — recording 세션 retention GC (P1.3)
+
+**목표**: `~/.dscore.ttc.playwright-agent/recordings/` 의 오래된 세션 자동 정리.
+디스크 무한 증가 방지.
+
+**예상 시간**: 2 영업일
+
+**의존성**: 없음
+
+**단계**
+
+1. **Day 1 — GC 로직**
+   - `recording_service/storage.py` 에 `gc_old_sessions(retention_days: int)` 추가:
+     - 각 세션 디렉토리의 metadata.json 의 `created_at` 기준 retention 초과 제거
+     - state=recording (활성) 은 제외 — watchdog 가 cleanup 후 GC 가 처리
+     - 디스크 한도 (`RECORDING_DISK_LIMIT_MB` 기본 5000) 초과 시 가장 오래된 세션
+       부터 추가 삭제
+   - `RECORDING_RETENTION_DAYS` 기본 30, env 로 조정
+2. **Day 1 후 — startup hook + 일별 스케줄**
+   - startup 에서 1회 GC, 이후 24시간마다 backgound thread 로 반복
+3. **Day 2 — 테스트**
+   - 임시 디렉토리에 가짜 세션 5 개 (각각 1/15/31/45/60 일 전 created_at) 생성
+   - retention=30 으로 GC → 31/45/60 일 전 세션만 삭제 확인
+   - 디스크 한도 초과 시뮬레이션 → 가장 오래된 세션부터 삭제 확인
+
+**변경 파일**
+
+- 수정: `recording_service/storage.py` — `gc_old_sessions` 추가
+- 수정: `recording_service/server.py` — startup + 24h 주기
+- 수정: `test/test_recording_service.py` — 3 케이스 추가
+- 수정: `docs/recording-troubleshooting.md` §9 (로그 위치) 다음에 GC 정책 추가
+
+**단위 테스트**
+
+- retention=30 일 경계 케이스 (3)
+- 디스크 한도 초과 시 LRU 삭제 (1)
+- 활성 세션 (state=recording) 보존 (1)
+
+**수락 기준**
+
+- 30일 초과 세션 자동 삭제 + GC 로그 출력
+- 디스크 사용량 한도 가시화
+
+---
+
+### 즉시 착수 권고 순서
+
+T-A 부터 시작 권고. 이유:
+
+1. **블로커 해소 효과 가장 큼** — popup 누락 fix 의 정식 후속, 다른 P0 (P0.1
+   인증 흐름의 popup/redirect 정확 변환) 의 전제
+2. **외부 의존성 0** — 코드베이스 + pytest 만으로 완결
+3. **회귀 안전망 확보됨** — 208 passing 스위트 + 8 corpus fixture 로 손실 측정 가능
+
+T-A 끝나면 T-C / T-D (각각 2일, 백그라운드 가능) → T-B (1주, P0.3-A 본체).
+
+---
+
 ### P2 — LLM 자율도 향상 (Phase 2 진입, 예상 8~12주)
 
 본 항목들은 [PLAN_GROUNDING_RECORDING_AGENT.md](PLAN_GROUNDING_RECORDING_AGENT.md)
@@ -288,9 +576,11 @@ AST 변환 후로 이동만 하면 됨)
 ## 다음 액션
 
 1. 본 로드맵에 대한 사용자 승인/우선순위 재조정
-2. P0.4 (converter AST 화) 부터 착수 권고 — 비용 적고 P0.1 의 전제
-3. P0.5 (이미지 빌드 자동화) 와 P1.5 (orphan 정리) 는 백그라운드 small task 로
-   동시 진행 가능
+2. **§"당장 착수 가능한 상세 태스크"** 의 T-A (converter AST 화) 부터 착수 권고
+   — 비용 적고 P0.1 의 전제, 외부 의존성 0
+3. T-A 완료 후 T-C (orphan watchdog, 2일) + T-D (retention GC, 2일) 을 백그라운드
+   small task 로 동시 진행
+4. 그 다음 T-B (P0.3-A 클라이언트 격리, 1주)
 
 ---
 
@@ -299,3 +589,4 @@ AST 변환 후로 이동만 하면 됨)
 | 일자 | 작성자 | 내용 |
 | --- | --- | --- |
 | 2026-04-29 | Claude (feat/grounding-recording-agent) | 초안 작성 — 직접 검증 결과 + 6 블로커 / 5 취약점 / P0~P3 로드맵 |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | P0.1/P0.2/P0.3 범위·완료조건을 현실 가능 범위로 보정 (form+OAuth+TOTP / 단일 iframe + open shadow / 클라이언트 vs 백엔드 분리) + §"당장 착수 가능한 상세 태스크" 신설 (T-A/B/C/D 4 개 태스크의 단계·변경파일·테스트·수락기준·예상시간) |
