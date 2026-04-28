@@ -210,6 +210,7 @@ class DifyClient:
         target_url: str,
         api_docs: str = "",
         file_id: str | None = None,
+        enable_grounding: bool = False,
     ) -> list[dict]:
         """Dify Chatflow 에 시나리오 생성을 요청하고 DSL 스텝 배열을 반환한다.
 
@@ -219,6 +220,9 @@ class DifyClient:
             target_url: 테스트 대상 URL.
             api_docs: 네트워크 모킹 힌트용 API 엔드포인트 요약 텍스트.
             file_id: Doc 모드에서 ``upload_file()`` 이 반환한 파일 ID. 없으면 None.
+            enable_grounding: True 면 target_url 의 DOM 인벤토리를 srs_text 앞에
+                prepend 한다 (Phase 1 T1.5). env ``ENABLE_DOM_GROUNDING=1`` 로
+                기본값 토글 가능.
 
         Returns:
             DSL 스텝 dict 의 리스트.
@@ -226,6 +230,14 @@ class DifyClient:
         Raises:
             DifyConnectionError: API 통신 실패 또는 JSON 파싱 실패 시.
         """
+        # Phase 1 grounding: target_url 의 실제 DOM 인벤토리를 prepend.
+        # 추출 실패 시 graceful degradation — 기존 경로 유지.
+        grounding_meta = {"used": False}
+        if enable_grounding and target_url:
+            srs_text, grounding_meta = self._prepend_dom_inventory(
+                srs_text, target_url,
+            )
+
         payload = {
             "inputs": {
                 "run_mode": run_mode,
@@ -254,6 +266,7 @@ class DifyClient:
             timeout=self.scenario_timeout_sec,
             max_retries=1,
             call_kind="planner",
+            extra_metric=grounding_meta,
         )
         log.info("Dify 응답 길이: %d자, <think> 포함: %s", len(answer), "<think>" in answer)
         scenario = extract_json_safely(answer)
@@ -343,6 +356,7 @@ class DifyClient:
         timeout: int = 120,
         max_retries: int = 3,
         call_kind: str = "unknown",
+        extra_metric: dict | None = None,
     ) -> str:
         """Dify /chat-messages 엔드포인트에 blocking 요청을 보내고 answer 를 반환한다.
 
@@ -395,6 +409,7 @@ class DifyClient:
                 timeout=timeout_hit,
                 answer_chars=len(answer),
                 error=error_msg,
+                extra=extra_metric,
             )
 
     def _record_llm_call_metric(
@@ -409,6 +424,7 @@ class DifyClient:
         timeout: bool,
         answer_chars: int,
         error: str,
+        extra: dict | None = None,
     ) -> None:
         """Append one Dify LLM call metric to artifacts/llm_calls.jsonl."""
         if not self.llm_calls_path:
@@ -426,7 +442,56 @@ class DifyClient:
             "answer_chars": answer_chars,
             "error": error,
         }
+        if extra:
+            record.update(extra)
         try:
             append_jsonl(self.llm_calls_path, record)
         except OSError as e:
             log.warning("[Metrics] LLM 호출 metric 기록 실패: %s", e)
+
+    # ── DOM Grounding (Phase 1 T1.5) ──
+    def _prepend_dom_inventory(
+        self, srs_text: str, target_url: str,
+    ) -> tuple[str, dict]:
+        """Phase 1 grounding: target_url 의 인벤토리를 srs_text 앞에 prepend.
+
+        실패 시 graceful degradation — 원본 srs_text 그대로 반환 + meta 에 사유.
+        """
+        try:
+            from .grounding import fetch_inventory, serialize_block
+            from .grounding.pruner import prune
+            from .grounding.budget import fit_to_budget, estimate_tokens, DEFAULT_TOKEN_BUDGET
+        except ImportError as e:
+            log.warning("[grounding] 모듈 import 실패: %s", e)
+            return srs_text, {"used": False, "error": f"import: {e}"}
+
+        budget = int(os.environ.get("GROUNDING_TOKEN_BUDGET", str(DEFAULT_TOKEN_BUDGET)))
+        inv = fetch_inventory(target_url)
+        if inv.error:
+            return srs_text, {
+                "used": False, "error": inv.error,
+                "target_url": target_url,
+            }
+
+        prune(inv)
+        fit_to_budget(inv, budget=budget)
+        block = serialize_block(inv)
+        if not block:
+            return srs_text, {
+                "used": False, "error": "empty_block",
+                "target_url": target_url,
+            }
+
+        tokens = estimate_tokens(block)
+        merged = block + "\n" + srs_text if srs_text else block
+        log.info(
+            "[grounding] %s 인벤토리 prepend (요소 %d, %d 토큰, truncated=%s)",
+            target_url, len(inv.elements), tokens, inv.truncated,
+        )
+        return merged, {
+            "used": True,
+            "target_url": target_url,
+            "grounding_inventory_tokens": tokens,
+            "grounding_element_count": len(inv.elements),
+            "grounding_truncated": inv.truncated,
+        }
