@@ -5,6 +5,7 @@ DSCORE Zero-Touch QA v4.0 — CLI 엔트리포인트.
   python3 -m zero_touch_qa --mode chat
   python3 -m zero_touch_qa --mode doc --file upload.pdf
   python3 -m zero_touch_qa --mode convert --file recorded.py
+  python3 -m zero_touch_qa --mode convert --convert-only --file recorded.py
   python3 -m zero_touch_qa --mode execute --scenario scenario.json
 """
 
@@ -47,6 +48,14 @@ def main():
     parser.add_argument("--api-docs", default=None, help="API 엔드포인트 힌트 텍스트 (선택)")
     parser.add_argument("--headed", action="store_true", default=True, help="실제 브라우저 표시 (기본값)")
     parser.add_argument("--headless", action="store_true", help="헤드리스 모드")
+    parser.add_argument(
+        "--convert-only",
+        action="store_true",
+        help=(
+            "convert 모드에서 변환 + 검증 + scenario.json 저장 후 즉시 종료 (executor 미실행). "
+            "Recording 서비스 같은 외부 호출자가 변환 결과만 필요할 때 사용."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="상세 로그 출력")
     args = parser.parse_args()
 
@@ -86,6 +95,22 @@ def main():
     if not scenario:
         log.error("시나리오가 비어 있습니다.")
         sys.exit(1)
+
+    # --convert-only: Recording 서비스(또는 외부 호출자) 가 변환 결과만 필요한 경우
+    # 여기서 즉시 종료한다. executor 호출·navigate prepend·HTML 리포트 생성 전부 스킵.
+    # convert 분기에서 이미 _validate_scenario 통과한 시나리오만 도달하므로
+    # scenario.json 만 저장하고 빠진다.
+    if args.convert_only:
+        if args.mode != "convert":
+            log.error("--convert-only 는 --mode convert 와 함께만 사용한다.")
+            sys.exit(1)
+        save_scenario(scenario, config.artifacts_dir)
+        log.info(
+            "[convert-only] %d 스텝 변환 + 검증 완료 → %s/scenario.json",
+            len(scenario),
+            config.artifacts_dir,
+        )
+        sys.exit(0)
 
     # 방어: Planner LLM 이 step 1 navigate 를 drop 한 경우 자동 prepend.
     # gemma4:e4b 같은 작은 모델이 Chatflow 의 navigate-first 지시를 무시할 때
@@ -360,7 +385,12 @@ def _prepare_scenario(
     if args.mode == "convert":
         if not args.file:
             raise FileNotFoundError("convert 모드에는 --file 인자가 필요합니다.")
-        return convert_playwright_to_dsl(args.file, config.artifacts_dir)
+        scenario = convert_playwright_to_dsl(args.file, config.artifacts_dir)
+        # 14대 DSL 계약 검증을 convert 경로에서도 강제 — 기존엔 누락되어
+        # 손상된 DSL 이 executor 단계에서 ValueError 로 흘러들었다.
+        # Recording 서비스(--convert-only) 도 이 검증으로 즉시 실패를 받음.
+        _validate_scenario(scenario)
+        return scenario
 
     # chat / doc 모드: Dify 호출
     dify = DifyClient(config)
