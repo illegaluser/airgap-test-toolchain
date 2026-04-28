@@ -17,7 +17,8 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 | 자가 치유 구조 | A 단 (executor multi-strategy chain) + B 단 (Healer mutate). Sprint 6 에서 Healer 의 action mutation 을 whitelisted 의미 등가 전이 4쌍 (`select↔fill`, `check↔click`, `click↔press`, `upload↔click`) 으로 확장 — 그룹간 변경은 거절해 false-PASS 차단. healer 호출 시 strategy_trace 주입 |
 | Convert 14대 확장 | `zero_touch_qa/converter.py` 가 `set_input_files`/`drag_to`/`scroll_into_view_if_needed`/`page.route` 를 upload/drag/scroll/mock_* 로 변환. `--mode convert --convert-only` 는 변환+검증+`scenario.json` 저장 후 executor 없이 종료하며, `convert` 외 모드에서 쓰면 Dify 호출 전에 즉시 실패 |
 | Sprint 6 chat 결정성 | `<think>` 출력 금지 prompt 룰 + max_tokens 4096 → 8192 + OLLAMA_CONTEXT_SIZE 8192 → 12288 + sanitizer leading-token 회복 + atomic 16 항목 default SRS_TEXT. chat 모드가 17/17 결정론적 PASS (Sprint 5 §10.5 의 best-effort 위치 폐기) |
-| 로컬 회귀 테스트 | integration 단위 169건 + 9대 native 회귀 30건 = 총 **199건 PASS, flake 0** (2026-04-28 재검증) |
+| Phase 1 DOM Grounding | `zero_touch_qa/grounding/` (extractor + pruner + budget + serializer). `dify_client.generate_scenario(enable_grounding=True)` 가 srs_text 앞에 `=== DOM INVENTORY ===` 마커 블록 prepend. env `ENABLE_DOM_GROUNDING=1` 토글, `GROUNDING_TOKEN_BUDGET` 한도 (기본 1500). T1.7 페어 비교 하니스 (`test/grounding_eval/`) + 6 골든 시나리오. T1.8 파일럿에서 `fit_to_budget` 의 truncated 토큰 회계 결함 수정 (§3.12 참조) |
+| 로컬 회귀 테스트 | integration 단위 169건 + 9대 native 회귀 30건 = 총 **199건 PASS, flake 0** (2026-04-28 재검증). Phase 1 grounding 단위·페어 비교·파일럿 테스트 추가 후 정밀 재집계는 §3.12 운영 검증 절차 참조 |
 | Jenkins 회귀 단계 | Stage `2.4. pytest 회귀 (Sprint 2/3)` 에서 integration/native pytest 를 분리 실행하고 JUnit XML 보존 |
 | Sprint 4 운영 기반 | Jenkins agent preflight, Dify credential/model health probe, 30일 artifact retention, Dify 호출 metric(`llm_calls.jsonl`) 계측, Zero Touch QA Report 운영 지표 섹션, `aggregate_llm_sla()` 자동 집계 |
 
@@ -1418,6 +1419,71 @@ tail -f ~/.dscore.ttc.playwright-agent/recording-service.log
 
 Web UI 의 **Replay / Generate Doc / Compare with Doc-DSL** 버튼은 R-Plus
 게이트 통과 후 활성화. 본 R-MVP 단계에서는 회색 비활성 상태로 표시.
+
+### 3.12 DOM Grounding (Phase 1)
+
+Planner LLM 호출 직전 `target_url` 의 실제 DOM 인벤토리(accessibility tree와
+인터랙티브 요소) 를 추출해 `srs_text` 앞에 prepend 한다. LLM 의 작업이
+"셀렉터 추측" 에서 "주어진 인벤토리에서 선택" 으로 바뀐다. chatflow YAML 은
+미수정 — 기존 doc 모드의 prepend 패턴과 같은 채널 (`__main__.py:367-372`)
+재사용이라 chat/convert/execute 회귀 영향 0.
+
+#### 토글 및 옵션
+
+| env | 기본값 | 의미 |
+| --- | --- | --- |
+| `ENABLE_DOM_GROUNDING` | `0` | `1` 이면 chat/doc 모드에서 grounding 자동 활성화 |
+| `GROUNDING_TOKEN_BUDGET` | `1500` | prepend 블록 최대 토큰. 초과 시 `budget.py` 가 컨텍스트→비가시→option/menuitem→role별 상위 5개→head trim 순으로 단계별 축소 |
+
+```bash
+# 활성화
+export ENABLE_DOM_GROUNDING=1
+python3 -m zero_touch_qa --mode chat --srs-text "..." --target-url "https://..."
+
+# 한도 조정 (12288 컨텍스트 + RAG 동시 운영 시 보수적으로 1500 권장)
+export GROUNDING_TOKEN_BUDGET=3000
+```
+
+#### 효과 측정 (T1.7 페어 비교)
+
+`flag=off` vs `flag=on` 페어를 같은 카탈로그 (`docs/eval-page-catalog.md`
+의 P0-FX-01..05 + P0-HS-05 = 6 페이지) 에 실행해 selector accuracy +
+healer 호출 빈도 + planner elapsed 차이를 측정한다. **절대 baseline 미사용**
+— flag off/on 페어 비교만.
+
+```bash
+# off 페어 실행 (Dify 가동 상태 필요)
+FLAG=off ./test/grounding_eval/scripts/run_grounding_eval.sh artifacts/eval-off
+# on 페어
+FLAG=on  ./test/grounding_eval/scripts/run_grounding_eval.sh artifacts/eval-on
+# 비교 리포트 (HTML + JSON 메트릭)
+python3 -m grounding_eval.compare \
+    --golden test/grounding_eval/golden \
+    --off    artifacts/eval-off \
+    --on     artifacts/eval-on \
+    --out    artifacts/grounding-eval-report.html \
+    --json   artifacts/grounding-eval-report.json
+```
+
+리포트는 페이지별 selector accuracy, healer 호출수, grounding 인벤토리
+토큰을 표로 보여주고 DoD 자동 판정 (8 페이지 이상 75%+, healer ratio
+≤ 1/3, planner Δ ≤ +10초, 토큰 초과 페이지 ≤ 10%) 결과를 함께 출력한다.
+
+#### Grounding 트러블슈팅
+
+| 증상 | 진단 | 해결 |
+| --- | --- | --- |
+| `meta.used=False, error=timeout` | 페이지 로딩 15초 초과 | URL 가용 여부 확인. SPA 면 `wait_until=networkidle` 옵션 (extractor 인자) 검토 |
+| `meta.used=False, error=empty_block` | 인벤토리가 비었거나 한도 너무 작음 | `GROUNDING_TOKEN_BUDGET` 상향 (최소 200+, footer 가 ~131 토큰을 고정 점유) |
+| `grounding_truncated=True` 반복 | 페이지 요소가 너무 많음 | 한도 상향 또는 페이지별 sampling 정책 추가 (Phase 1.5+) |
+| 골든 role 셀렉터가 인벤토리 없음 | label 의 trailing-colon 같은 AX 노출명 차이 | `test/test_grounding_pilot.py` 가 자동 검출. 골든의 name 을 실 AX 노출값으로 정정 |
+
+상세 모듈 책임 분리:
+
+- `zero_touch_qa/grounding/extractor.py` — Playwright + CDP `Accessibility.getFullAXTree`
+- `zero_touch_qa/grounding/pruner.py` — drop_invisible / per-role limit / dedup
+- `zero_touch_qa/grounding/budget.py` — 5단계 단계별 축소
+- `zero_touch_qa/grounding/serializer.py` — `=== DOM INVENTORY ===` 마커 + GUIDE_FOOTER 가이드 (체이닝 우선순위 명시)
 
 ---
 

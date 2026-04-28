@@ -447,6 +447,15 @@ prepend 블록 안에 자연어 가이드를 함께 넣는다 (chatflow YAML 시
 | W1 D5 ~ W2 D1 | T1.7 평가 하니스 |
 | W2 D2-3 | T1.8 파일럿 + T1.9 문서 |
 
+### 진행 로그
+
+| 날짜 | 단계 | 비고 |
+| --- | --- | --- |
+| 2026-04-28 (오전) | T1.1~T1.6 | grounding 모듈 (`schema/extractor/pruner/budget/serializer`) + `dify_client._prepend_dom_inventory` + `__main__.py` env wiring + `test/test_grounding.py` 17 PASS |
+| 2026-04-28 (오후) | T1.7 | 골든 6종 (`P0-FX-01..05` + `P0-HS-05`) + comparator (`grounding_eval/classifier.py`, `compare.py`) + 러너 (`scripts/run_grounding_eval.sh`) + 단위 테스트 28 PASS |
+| 2026-04-28 (오후) | T1.8 | fixture 5종 결정론적 파일럿 (`test/test_grounding_pilot.py` 11건). fixture/AX 트리 검증으로 골든 정정 (`fill.html` label trailing-colon, `select.html` 동일, `full_dsl.html` search-input 라벨 부재 → CSS fallback). **결정론 버그 수정**: `fit_to_budget` 의 stage 1-4 `_within` 체크가 `truncated=False` 기준으로 토큰을 재 truncated 마커 줄(~30 토큰) 누락 → 한도 초과 채로 통과. 진입 시점에 `inv.truncated=True` 로 세팅해 일관성 확보 |
+| 2026-04-28 (오후) | T1.9 | README §3.12 추가 (토글/한도/효과 측정/트러블슈팅/모듈 책임). 현재 구현 상태 표에 Phase 1 행 추가 |
+
 ### 결정 게이트 — Phase 1 → Phase 1.5
 
 다음을 모두 충족해야 Phase 1.5 진입.

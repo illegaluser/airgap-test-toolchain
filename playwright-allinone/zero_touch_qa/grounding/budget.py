@@ -53,23 +53,24 @@ def fit_to_budget(
         used, budget,
     )
 
+    # 축소 경로에 들어왔으면 최종 렌더는 truncated=True 가 된다 (~30 토큰 추가).
+    # _within 체크가 그 오버헤드를 미리 반영하도록 즉시 플래그를 세운다.
+    inv.truncated = True
+
     # 1단계: 컨텍스트 role (heading/landmark) 제거
     inv.elements = [e for e in inv.elements if e.role not in CONTEXT_ROLES]
     if _within(inv, budget):
-        inv.truncated = True
         return inv
 
     # 2단계: 가시성 외 / disabled 요소 제거
     inv.elements = [e for e in inv.elements if e.visible and e.enabled]
     if _within(inv, budget):
-        inv.truncated = True
         return inv
 
     # 3단계: 우선순위 낮은 인터랙티브 (option / menuitem) 제거
     LOW_PRIO = {"option", "menuitem"}
     inv.elements = [e for e in inv.elements if e.role not in LOW_PRIO]
     if _within(inv, budget):
-        inv.truncated = True
         return inv
 
     # 4단계: role 별 상위 5개 만 유지
@@ -82,7 +83,6 @@ def fit_to_budget(
             seen[el.role] = c + 1
     inv.elements = keep
     if _within(inv, budget):
-        inv.truncated = True
         return inv
 
     # 5단계: 마지막 — 첫 N개만 유지하고 truncate flag
