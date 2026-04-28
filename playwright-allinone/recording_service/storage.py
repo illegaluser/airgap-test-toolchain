@@ -36,9 +36,13 @@ def session_dir(session_id: str) -> Path:
 def container_path_for(session_id: str) -> str:
     """컨테이너 내부에서 본 경로. docker exec 호출 시 사용.
 
-    bind-mount 가 `/data/recordings` 로 가정 (T0.3 계약).
+    TR.8 결정: `/data` named volume 위에 nested bind mount 를 하면 docker 보장이
+    약하므로, **별도 마운트 포인트 `/recordings`** 채택. build.sh 의 docker run
+    에 `-v <host_recordings>:/recordings:rw` 추가.
+
+    env `RECORDING_CONTAINER_ROOT` 로 override 가능 (운영 환경별 조정용).
     """
-    base = os.environ.get("RECORDING_CONTAINER_ROOT", "/data/recordings")
+    base = os.environ.get("RECORDING_CONTAINER_ROOT", "/recordings")
     return f"{base}/{session_id}"
 
 
@@ -95,3 +99,17 @@ def delete_session(session_id: str) -> bool:
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
+
+
+def list_session_dirs() -> list[str]:
+    """호스트 영속화 루트 안의 세션 ID 목록 (디렉토리 이름).
+
+    server 프로세스가 재시작되어도 디스크의 세션은 보존됨. UI 의 "최근 세션"
+    표가 startup 시점에 디스크 세션을 흡수하도록 사용.
+    """
+    root = host_root()
+    if not root.exists():
+        return []
+    return sorted(
+        [p.name for p in root.iterdir() if p.is_dir()],
+    )

@@ -511,6 +511,55 @@ def _reset_for_tests() -> None:
         _handles.clear()
 
 
+# ── 디스크 세션 흡수 (TR.8 영속화) ──────────────────────────────────────────
+
+@app.on_event("startup")
+def _absorb_disk_sessions() -> None:
+    """server 재시작 시 호스트 영속화 루트의 세션을 in-memory 레지스트리로 복원.
+
+    상태는 metadata.json 의 마지막 state 그대로. 활성 codegen 핸들은 복원하지
+    않음 (subprocess 가 server 와 함께 죽었으므로). state=recording 이었던
+    세션은 'orphan' 으로 마킹해 사용자에게 명시.
+    """
+    import time as _time
+    try:
+        ids = storage.list_session_dirs()
+    except Exception as e:  # noqa: BLE001
+        log.warning("[startup] 디스크 세션 흡수 실패: %s", e)
+        return
+
+    absorbed = 0
+    for sid in ids:
+        if _registry.get(sid) is not None:
+            continue  # 테스트 등에서 이미 있음
+        meta = storage.load_metadata(sid) or {}
+        target_url = meta.get("target_url", "")
+        state = meta.get("state", session.STATE_DONE)
+        if state == session.STATE_RECORDING:
+            # codegen 이 이미 죽었음 — orphan 으로 마킹
+            state = session.STATE_ERROR
+            error_msg = "server 재시작으로 codegen subprocess 가 끊겼습니다 (orphan)."
+        else:
+            error_msg = meta.get("error")
+
+        sess = _registry.create(target_url=target_url)
+        # uuid4 가 새로 생성됐으므로 id 를 디스크 sid 로 강제 교체
+        with _registry._lock:
+            del _registry._sessions[sess.id]
+            sess.id = sid
+            sess.state = state
+            sess.created_at = meta.get("created_at_ts", _time.time())
+            if error_msg:
+                sess.error = error_msg
+            sess.action_count = meta.get("step_count", meta.get("action_count_estimate", 0))
+            _registry._sessions[sid] = sess
+        absorbed += 1
+
+    if absorbed:
+        log.info("[startup] 디스크 세션 %d개 흡수 (host_root=%s)",
+                 absorbed, storage.host_root())
+
+
 # ── 정적 파일 / Web UI (TR.4) ────────────────────────────────────────────────
 
 _WEB_DIR = _Path(__file__).resolve().parent / "web"
