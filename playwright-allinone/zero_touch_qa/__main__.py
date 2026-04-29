@@ -5,6 +5,7 @@ DSCORE Zero-Touch QA v4.0 — CLI 엔트리포인트.
   python3 -m zero_touch_qa --mode chat
   python3 -m zero_touch_qa --mode doc --file upload.pdf
   python3 -m zero_touch_qa --mode convert --file recorded.py
+  python3 -m zero_touch_qa --mode convert --convert-only --file recorded.py
   python3 -m zero_touch_qa --mode execute --scenario scenario.json
 """
 
@@ -47,7 +48,25 @@ def main():
     parser.add_argument("--api-docs", default=None, help="API 엔드포인트 힌트 텍스트 (선택)")
     parser.add_argument("--headed", action="store_true", default=True, help="실제 브라우저 표시 (기본값)")
     parser.add_argument("--headless", action="store_true", help="헤드리스 모드")
+    parser.add_argument(
+        "--convert-only",
+        action="store_true",
+        help=(
+            "convert 모드에서 변환 + 검증 + scenario.json 저장 후 즉시 종료 (executor 미실행). "
+            "Recording 서비스 같은 외부 호출자가 변환 결과만 필요할 때 사용."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="상세 로그 출력")
+    # T-D / P0.1 — storage_state dump/restore (인증 후 세션 재사용).
+    # env AUTH_STORAGE_STATE_IN/OUT 도 동작 — CLI 인자가 우선.
+    parser.add_argument(
+        "--storage-state-in", default=None,
+        help="시작 시 복원할 storage_state JSON 경로 (인증 스킵용)",
+    )
+    parser.add_argument(
+        "--storage-state-out", default=None,
+        help="종료 후 덤프할 storage_state JSON 경로 (인증 결과 보존)",
+    )
     args = parser.parse_args()
 
     # 로깅 설정
@@ -57,6 +76,11 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Recording 서비스 계약상 convert-only 오용은 Dify retry 전에 즉시 실패해야 한다.
+    if args.convert_only and args.mode != "convert":
+        log.error("--convert-only 는 --mode convert 와 함께만 사용한다.")
+        sys.exit(1)
 
     config = Config.from_env()
     headed = not args.headless
@@ -86,6 +110,19 @@ def main():
     if not scenario:
         log.error("시나리오가 비어 있습니다.")
         sys.exit(1)
+
+    # --convert-only: Recording 서비스(또는 외부 호출자) 가 변환 결과만 필요한 경우
+    # 여기서 즉시 종료한다. executor 호출·navigate prepend·HTML 리포트 생성 전부 스킵.
+    # convert 분기에서 이미 _validate_scenario 통과한 시나리오만 도달하므로
+    # scenario.json 만 저장하고 빠진다.
+    if args.convert_only:
+        save_scenario(scenario, config.artifacts_dir)
+        log.info(
+            "[convert-only] %d 스텝 변환 + 검증 완료 → %s/scenario.json",
+            len(scenario),
+            config.artifacts_dir,
+        )
+        sys.exit(0)
 
     # 방어: Planner LLM 이 step 1 navigate 를 drop 한 경우 자동 prepend.
     # gemma4:e4b 같은 작은 모델이 Chatflow 의 navigate-first 지시를 무시할 때
@@ -117,7 +154,12 @@ def main():
     # 실행
     log.info("시나리오 실행 시작 (%d스텝, headed=%s)", len(scenario), headed)
     executor = QAExecutor(config)
-    results = executor.execute(scenario, headed=headed)
+    results = executor.execute(
+        scenario,
+        headed=headed,
+        storage_state_in=args.storage_state_in,
+        storage_state_out=args.storage_state_out,
+    )
 
     # 산출물 생성
     save_run_log(results, config.artifacts_dir)
@@ -147,7 +189,10 @@ class ScenarioValidationError(ValueError):
     """Dify 가 반환한 scenario 가 구조적으로 무효."""
 
 
-# [14대 표준 액션] — dify-chatflow.yaml Planner system prompt 와 동기화
+# [표준 액션] — 14 standard actions (Planner 가 emit) + 보조 액션
+# (auth_login, reset_state). 보조 액션은 LLM 이 emit 하지 않고 사용자가 작성한
+# 시나리오에 직접 들어오므로 dify-chatflow.yaml Planner prompt 와 동기화하지
+# 않는다 (executor 만 처리).
 _VALID_ACTIONS = frozenset(
     {
         "navigate",
@@ -164,6 +209,8 @@ _VALID_ACTIONS = frozenset(
         "scroll",
         "mock_status",
         "mock_data",
+        "auth_login",
+        "reset_state",
     }
 )
 
@@ -185,9 +232,20 @@ _VALID_VERIFY_CONDITIONS = frozenset(
 )
 
 
-_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press")
-_VALUE_REQUIRED_ACTIONS = frozenset({"fill", "press", "select", "upload", "drag"})
+_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state")
+# auth_login: target=mode (form/totp/oauth) 필수, value=credential alias 필수.
+# reset_state: target 무시, value=scope (cookie/storage/indexeddb/all) 필수.
+_VALUE_REQUIRED_ACTIONS = frozenset(
+    {"fill", "press", "select", "upload", "drag", "auth_login", "reset_state"}
+)
 _SCROLL_VALID_VALUES = frozenset({"into_view", "into-view", "into view"})
+_AUTH_LOGIN_MODES = frozenset({"form", "totp", "oauth"})
+# T-B (P0.3-A) — reset_state 의 value 화이트리스트.
+# cookie    → context.clear_cookies()
+# storage   → page.evaluate("localStorage.clear(); sessionStorage.clear();")
+# indexeddb → page.evaluate(deleteAllIDB)
+# all       → 위 3개 모두
+_RESET_STATE_VALID_VALUES = frozenset({"cookie", "storage", "indexeddb", "all"})
 
 
 def _check_mock_times(i: int, step: dict) -> None:
@@ -265,6 +323,25 @@ def _check_action_specific(i: int, step: dict) -> None:
                 f"step[{i}] action=mock_data 인데 value 가 비어 있음"
             )
         _check_mock_times(i, step)
+        return
+    if action == "auth_login":
+        # target = "form" | "totp" | "oauth" — 콤마 뒤에 ", email_field=#x, ..." 같은
+        # explicit selector 모디파이어가 따라올 수 있다. 첫 토큰만 모드로 취급.
+        head = str(step.get("target", "")).split(",", 1)[0].strip().lower()
+        if head not in _AUTH_LOGIN_MODES:
+            raise ScenarioValidationError(
+                f"step[{i}] action=auth_login 의 target 은 "
+                f"{sorted(_AUTH_LOGIN_MODES)} 중 하나여야 함 (={head!r})"
+            )
+        return
+    if action == "reset_state":
+        # value = "cookie" | "storage" | "indexeddb" | "all". target 은 무시.
+        scope = str(step.get("value", "")).strip().lower()
+        if scope not in _RESET_STATE_VALID_VALUES:
+            raise ScenarioValidationError(
+                f"step[{i}] action=reset_state 의 value 는 "
+                f"{sorted(_RESET_STATE_VALID_VALUES)} 중 하나여야 함 (={scope!r})"
+            )
         return
     if action == "verify":
         condition = str(step.get("condition", "")).strip().lower()
@@ -360,7 +437,12 @@ def _prepare_scenario(
     if args.mode == "convert":
         if not args.file:
             raise FileNotFoundError("convert 모드에는 --file 인자가 필요합니다.")
-        return convert_playwright_to_dsl(args.file, config.artifacts_dir)
+        scenario = convert_playwright_to_dsl(args.file, config.artifacts_dir)
+        # 14대 DSL 계약 검증을 convert 경로에서도 강제 — 기존엔 누락되어
+        # 손상된 DSL 이 executor 단계에서 ValueError 로 흘러들었다.
+        # Recording 서비스(--convert-only) 도 이 검증으로 즉시 실패를 받음.
+        _validate_scenario(scenario)
+        return scenario
 
     # chat / doc 모드: Dify 호출
     dify = DifyClient(config)
@@ -412,6 +494,7 @@ def _prepare_scenario(
                 target_url=target_url,
                 api_docs=api_docs,
                 file_id=file_id,
+                enable_grounding=os.getenv("ENABLE_DOM_GROUNDING", "0") == "1",
             )
             # LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 검증.
             # 정상 step 만 ≥1개 남으면 retry 비용을 아끼고 그대로 진행.

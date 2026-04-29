@@ -1,0 +1,22 @@
+{
+  "catalog_id": "P0-FX-05",
+  "target_url": "file:///app/test/fixtures/full_dsl.html",
+  "description": "14대 DSL 통합 — scenario_14.json 의 골든 (LLM-bypass 결정론 기준)",
+  "notes": "이 페이지는 14-DSL 결정론 보증용이라 골든이 곧 LLM 출력의 ground truth 다. mock_* 의 target 은 외부 URL 이라 selector 분류에서 제외되도록 mock_target=true 마커 사용. T1.8 파일럿 발견: full_dsl 의 search-input 은 라벨이 없어 AX 트리에 노출되지 않으므로 골든도 CSS 셀렉터 사용.",
+  "steps": [
+    {"step": 1,  "action": "navigate",    "target": "",                                   "value": "http://localhost:18081/fixtures/full_dsl.html", "description": "대상 페이지 로드"},
+    {"step": 2,  "action": "select",      "target": "getByRole('combobox', { name: '언어' })",   "value": "ko",                            "description": "언어 ko 선택"},
+    {"step": 3,  "action": "check",       "target": "#agree",                             "value": "true",                          "description": "동의 체크"},
+    {"step": 4,  "action": "hover",       "target": "getByRole('button', { name: 'primary' })", "value": "",                              "description": "primary 버튼 호버"},
+    {"step": 5,  "action": "click",       "target": "getByRole('button', { name: 'primary' })", "value": "",                              "description": "primary 버튼 클릭"},
+    {"step": 6,  "action": "verify",      "target": "#status",                            "value": "clicked", "condition": "text",  "description": "status 텍스트 = clicked"},
+    {"step": 7,  "action": "upload",      "target": "#file-input",                        "value": "upload_sample.txt",             "description": "파일 업로드"},
+    {"step": 8,  "action": "drag",        "target": "#card",                              "value": "#dst-zone",                     "description": "card → dst-zone 드래그"},
+    {"step": 9,  "action": "mock_data",   "target": "https://api.example.test/api/list",  "value": "{\"items\":[]}",                "description": "list API 빈 배열 모킹", "mock_target": true},
+    {"step": 10, "action": "mock_status", "target": "https://api.example.test/api/list",  "value": "500",                           "description": "list API 500 모킹", "mock_target": true},
+    {"step": 11, "action": "fill",        "target": "#search-input", "value": "DSCORE", "description": "검색 입력 (search-input 은 라벨이 없어 grounding 으로 의미 셀렉터 생성 불가 — CSS fallback 골든)"},
+    {"step": 12, "action": "press",       "target": "#search-input",                      "value": "Enter",                         "description": "엔터 제출"},
+    {"step": 13, "action": "scroll",      "target": "#footer",                            "value": "into_view",                     "description": "footer 스크롤"},
+    {"step": 14, "action": "wait",        "target": "",                                   "value": "1000",                          "description": "1초 대기"}
+  ]
+}

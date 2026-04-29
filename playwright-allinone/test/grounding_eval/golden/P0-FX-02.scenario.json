@@ -1,0 +1,12 @@
+{
+  "catalog_id": "P0-FX-02",
+  "target_url": "file:///app/test/fixtures/fill.html",
+  "description": "Name / Bio 입력 — getByRole('textbox', name) 우선. 실 AX 트리 기준 name 은 trailing-colon 포함",
+  "steps": [
+    {"step": 1, "action": "navigate", "target": "", "value": "file:///app/test/fixtures/fill.html", "description": "fill fixture 로드"},
+    {"step": 2, "action": "fill",     "target": "getByRole('textbox', { name: 'Name:' })", "value": "Kyungsuk", "description": "Name 입력"},
+    {"step": 3, "action": "fill",     "target": "getByRole('textbox', { name: 'Bio:' })",  "value": "Hello, world!", "description": "Bio 입력"},
+    {"step": 4, "action": "fill",     "target": "getByRole('textbox', { name: 'Special:' })", "value": "한글-😊-1234", "description": "특수문자 입력"},
+    {"step": 5, "action": "verify",   "target": "#input-name", "value": "Kyungsuk", "condition": "value", "description": "Name 값 검증"}
+  ]
+}

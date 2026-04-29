@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nested locator fixture</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    aside, main { padding: 10px; border: 1px solid #ddd; margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <aside id="sidebar">
+    <button type="button">Settings</button>
+    <button type="button">Profile</button>
+    <a href="#" data-testid="sidebar-help">Help</a>
+  </aside>
+
+  <main id="content">
+    <button type="button">Settings</button>
+    <p data-testid="content-greeting">welcome</p>
+    <div class="card">
+      <button type="button" class="confirm">Confirm</button>
+      <button type="button" class="cancel">Cancel</button>
+    </div>
+    <div class="card">
+      <button type="button" class="confirm">Confirm-2</button>
+    </div>
+  </main>
+
+  <iframe id="payment-iframe" srcdoc='
+    <!doctype html><html><body>
+      <label>Card number<input type="text" name="card"></label>
+      <button type="button">Pay</button>
+    </body></html>'>
+  </iframe>
+
+  <p id="last-clicked"></p>
+  <script>
+    document.addEventListener("click", (e) => {
+      if (e.target.tagName === "BUTTON" || e.target.tagName === "A") {
+        const scope = e.target.closest("aside, main, .card, body").id ||
+                      e.target.closest("aside, main, .card, body").className ||
+                      "root";
+        document.getElementById("last-clicked").textContent =
+          scope + ":" + e.target.textContent;
+      }
+    });
+  </script>
+</body>
+</html>

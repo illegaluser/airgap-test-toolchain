@@ -127,6 +127,7 @@ JENKINS_PLUGINS=(
   htmlpublisher
   junit
   plain-credentials
+  sidebar-link
 )
 # Jenkins base 는 최신 LTS exact tag 로 고정한다.
 # 플러그인 매니저의 --jenkins-version 도 같은 이미지에서 직접 추출해 맞춘다.
@@ -330,10 +331,17 @@ if [ "$REDEPLOY" = "true" ]; then
   esac
   # 사용자가 명시적으로 env 로 덮어쓴 경우 그대로 존중
   HOST_AGENT_NAME="${AGENT_NAME:-$HOST_AGENT_NAME}"
+  # Phase R-MVP TR.8 — 호스트 recordings 디렉토리를 컨테이너에 bind mount.
+  # /data 는 named volume 이라 그 위에 nested bind 는 docker 보장이 약함 →
+  # 별도 마운트 포인트 /recordings 채택.
+  HOST_RECORDINGS_DIR="${RECORDING_HOST_ROOT:-$HOME/.dscore.ttc.playwright-agent/recordings}"
+  mkdir -p "$HOST_RECORDINGS_DIR"
   log "  [5-2] docker run (Ollama 는 호스트 → host.docker.internal 로 경유, Jenkins Node = $HOST_AGENT_NAME)"
+  log "        recordings bind: $HOST_RECORDINGS_DIR → /recordings"
   docker run -d --name "$CONTAINER_NAME" \
     -p 18080:18080 -p 18081:18081 -p 50001:50001 \
     -v "$DATA_VOLUME":/data \
+    -v "$HOST_RECORDINGS_DIR":/recordings:rw \
     --add-host host.docker.internal:host-gateway \
     -e OLLAMA_BASE_URL="http://host.docker.internal:11434" \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \

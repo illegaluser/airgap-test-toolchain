@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Zero-height anchor — Playwright click rejected, JS click 가능</title>
+  <style>
+    /* ktds.com 패턴 모사 — anchor 의 computed height/line-height 가 0 이라
+       Playwright actionability 가 'not visible / outside viewport' 로 거부.
+       하지만 DOM click event 는 정상 발화되어 listener 작동. */
+    nav a.zero-height {
+      display: inline-block;
+      height: 0;
+      line-height: 0;
+      padding: 0;
+      overflow: visible;
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="#" class="zero-height" id="zero-link" data-tag="zero">회사소개</a>
+  </nav>
+  <p id="last-clicked">idle</p>
+  <script>
+    document.getElementById("zero-link").addEventListener("click", (e) => {
+      e.preventDefault();
+      document.getElementById("last-clicked").textContent =
+        e.target.dataset.tag || "clicked";
+    });
+  </script>
+</body>
+</html>

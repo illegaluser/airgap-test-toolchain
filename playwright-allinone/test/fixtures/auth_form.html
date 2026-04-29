@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>[fixture] auth_form</title>
+</head>
+<body>
+  <h1 id="page-title">로그인</h1>
+
+  <form id="login-form" autocomplete="off">
+    <label>
+      이메일
+      <input id="email" name="email" type="email" autocomplete="username" required>
+    </label>
+    <br>
+    <label>
+      비밀번호
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <br>
+    <button id="submit-btn" type="submit">로그인</button>
+  </form>
+
+  <div id="status">idle</div>
+
+  <script>
+    // fixture 용 valid credential — auth_form fixture 와 1:1
+    const VALID_USER = "tester@example.com";
+    const VALID_PASS = "S3cret-pass-1234";
+
+    document.getElementById("login-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      const u = document.getElementById("email").value.trim();
+      const p = document.getElementById("password").value;
+      const status = document.getElementById("status");
+      const title = document.getElementById("page-title");
+      if (u === VALID_USER && p === VALID_PASS) {
+        status.textContent = "auth_form_login_ok";
+        title.textContent = "환영합니다";
+      } else {
+        status.textContent = "auth_form_login_fail";
+        title.textContent = "로그인 실패";
+      }
+    });
+  </script>
+</body>
+</html>

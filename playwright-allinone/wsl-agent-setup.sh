@@ -381,7 +381,7 @@ fi
 
 VENV_PY="$VENV_DIR/bin/python3"
 "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright)
+REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright fastapi uvicorn httpx pyotp)
 log "  pip install: ${REQ_PKGS[*]}"
 "$VENV_PY" -m pip install --quiet "${REQ_PKGS[@]}"
 
@@ -465,6 +465,62 @@ else
     || err "agent.jar 다운로드 실패. Jenkins 가 $JENKINS_URL 에서 응답하는지 확인"
   log "  다운로드 완료: $(du -h "$AGENT_JAR" | cut -f1)"
 fi
+
+# ── 6.5 Recording 서비스 (Phase R-MVP TR.9) ────────────────────────────────
+# WSL2 환경에서도 mac 과 동일 패턴 — nohup 백그라운드 기동. systemd 사용자
+# 단위는 WSL distro 별 가용성이 들쭉날쭉이라 R-MVP 단계는 nohup 으로 통일.
+# 운영자가 WSL 재시작 시 본 setup 스크립트 재실행으로 복구.
+
+REC_PORT="${RECORDING_PORT:-18092}"
+REC_PID_FILE="$AGENT_DIR/recording-service.pid"
+REC_LOG_FILE="$AGENT_DIR/recording-service.log"
+REC_RUN_SCRIPT="$AGENT_DIR/run-recording-service.sh"
+
+if [ -f "$REC_PID_FILE" ]; then
+  OLD_PID=$(cat "$REC_PID_FILE" 2>/dev/null || true)
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    log "  [6.5] 기존 recording_service PID=$OLD_PID 정리"
+    kill "$OLD_PID" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f "$REC_PID_FILE"
+fi
+# 포트 점유 프로세스 정리 (안전망 — fuser / ss 우선, lsof fallback)
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k "$REC_PORT/tcp" 2>/dev/null || true
+elif command -v lsof >/dev/null 2>&1; then
+  lsof -nP -iTCP:"$REC_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 | xargs -r -I{} kill {} 2>/dev/null || true
+fi
+
+cat > "$REC_RUN_SCRIPT" <<REC_EOF
+#!/usr/bin/env bash
+# Phase R-MVP TR.9 — recording_service 기동 (WSL nohup 백그라운드)
+set -e
+export PYTHONPATH="$ROOT_DIR:\${PYTHONPATH:-}"
+export RECORDING_HOST_ROOT="\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}"
+mkdir -p "\$RECORDING_HOST_ROOT"
+exec "$VENV_PY" -m uvicorn recording_service.server:app \\
+  --host 127.0.0.1 --port $REC_PORT --workers 1 --log-level info
+REC_EOF
+chmod +x "$REC_RUN_SCRIPT"
+
+log "[6.5] Recording 서비스 백그라운드 기동: port=$REC_PORT"
+nohup "$REC_RUN_SCRIPT" > "$REC_LOG_FILE" 2>&1 &
+echo $! > "$REC_PID_FILE"
+
+_w=0
+while [ $_w -lt 10 ]; do
+  if curl -sS "http://127.0.0.1:$REC_PORT/healthz" >/dev/null 2>&1; then
+    log "  [6.5] ✓ /healthz 응답 — http://127.0.0.1:$REC_PORT/"
+    break
+  fi
+  _w=$((_w + 1))
+  sleep 1
+done
+if [ $_w -ge 10 ]; then
+  log "  [6.5] ⚠ recording_service 헬스체크 실패 — 로그 확인: $REC_LOG_FILE"
+fi
+
 
 # ── 7. 기동 스크립트 생성 + agent 연결 ─────────────────────────────────────
 # 기존 agent.jar 프로세스 정리는 이미 step 0-A 에서 수행됨 (스크립트 시작 시점).

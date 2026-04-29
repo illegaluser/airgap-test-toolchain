@@ -23,6 +23,10 @@ def generate_regression_test(
         log.info("[Regression] 실패 스텝 존재 — 생성 건너뜀")
         return None
 
+    needs_auth_imports = any(
+        s.get("action", "").lower() == "auth_login" for s in scenario
+    )
+
     lines = [
         '"""',
         "Auto-generated regression test from Zero-Touch QA scenario.",
@@ -30,14 +34,31 @@ def generate_regression_test(
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         '"""',
         "from playwright.sync_api import sync_playwright",
+    ]
+    if needs_auth_imports:
+        # auth_login 은 zero_touch_qa.auth 의 credential lookup + TOTP 생성을
+        # 재사용해야 자체 완결. 회귀 스크립트가 zero_touch_qa 패키지와 같은
+        # PYTHONPATH 에서 실행되는 것을 전제. (artifacts/ 위치 기본 가정.)
+        lines.append(
+            "from zero_touch_qa.auth import (\n"
+            "    EMAIL_FIELD_CANDIDATES, PASSWORD_FIELD_CANDIDATES,\n"
+            "    SUBMIT_BUTTON_CANDIDATES, TOTP_FIELD_CANDIDATES,\n"
+            "    generate_totp_code, parse_auth_target, resolve_credential,\n"
+            ")"
+        )
+    lines.extend([
         "",
         "",
         "def test_regression():",
         '    with sync_playwright() as p:',
         "        browser = p.chromium.launch(headless=True)",
-        '        page = browser.new_page(viewport={"width": 1440, "height": 900})',
+        "        context = browser.new_context(",
+        '            viewport={"width": 1440, "height": 900},',
+        '            locale="ko-KR",',
+        "        )",
+        "        page = context.new_page()",
         "        try:",
-    ]
+    ])
 
     for step in scenario:
         action = step["action"].lower()
@@ -54,6 +75,7 @@ def generate_regression_test(
 
     lines.extend([
         "        finally:",
+        "            context.close()",
         "            browser.close()",
         "",
         "",
@@ -192,6 +214,85 @@ def _emit_verify(target, value, step, locator_code):
     return [f"            assert {locator_code}.is_visible()"]
 
 
+def _emit_auth_login(target, value, step, locator_code):
+    """auth_login emitter — credential alias + mode 분기.
+
+    회귀 스크립트는 zero_touch_qa.auth 모듈을 import 해 fixture 통합과
+    동일한 흐름을 재현한다. resolve_credential / generate_totp_code 가
+    이미 검증된 path 라 1:1 매핑.
+    """
+    target_str = json.dumps(str(target))
+    alias = json.dumps(str(value))
+    return [
+        "            # auth_login (T-D / P0.1) — env var credential + form/totp/oauth",
+        f"            _opts = parse_auth_target({target_str})",
+        f"            _cred = resolve_credential({alias})",
+        '            if _opts.mode == "form":',
+        "                _email = page.locator(_opts.email_field) if _opts.email_field else None",
+        "                if _email is None or _email.count() == 0:",
+        "                    for _sel in EMAIL_FIELD_CANDIDATES:",
+        "                        if page.locator(_sel).count() > 0:",
+        "                            _email = page.locator(_sel); break",
+        "                _pwd = page.locator(_opts.password_field) if _opts.password_field else None",
+        "                if _pwd is None or _pwd.count() == 0:",
+        "                    for _sel in PASSWORD_FIELD_CANDIDATES:",
+        "                        if page.locator(_sel).count() > 0:",
+        "                            _pwd = page.locator(_sel); break",
+        "                _submit = page.locator(_opts.submit) if _opts.submit else None",
+        "                if _submit is None or _submit.count() == 0:",
+        "                    for _sel in SUBMIT_BUTTON_CANDIDATES:",
+        "                        if page.locator(_sel).count() > 0:",
+        "                            _submit = page.locator(_sel); break",
+        "                _email.first.fill(_cred.user, timeout=5000)",
+        "                _pwd.first.fill(_cred.password, timeout=5000)",
+        "                _submit.first.click(timeout=5000)",
+        '                page.wait_for_load_state("domcontentloaded", timeout=10000)',
+        '            elif _opts.mode == "totp":',
+        "                _code = generate_totp_code(_cred.totp_secret)",
+        "                _otp = page.locator(_opts.totp_field) if _opts.totp_field else None",
+        "                if _otp is None or _otp.count() == 0:",
+        "                    for _sel in TOTP_FIELD_CANDIDATES:",
+        "                        if page.locator(_sel).count() > 0:",
+        "                            _otp = page.locator(_sel); break",
+        "                _otp.first.fill(_code, timeout=5000)",
+    ]
+
+
+def _emit_reset_state(target, value, step, locator_code):
+    """reset_state emitter — cookie / storage / indexeddb / all (+ permissions).
+
+    executor `_execute_reset_state` 와 1:1 매핑. all 은 permissions 도 reset.
+    """
+    scope = str(value).strip().lower()
+    out = [f"            # reset_state value={scope}"]
+    if scope in ("cookie", "all"):
+        out.append("            page.context.clear_cookies()")
+    if scope == "all":
+        out.extend([
+            "            try: page.context.clear_permissions()",
+            "            except Exception: pass",
+        ])
+    if scope in ("storage", "all"):
+        out.append(
+            "            page.evaluate(\"\"\"() => {"
+            " try { localStorage.clear(); } catch(e) {} "
+            " try { sessionStorage.clear(); } catch(e) {} "
+            "}\"\"\")"
+        )
+    if scope in ("indexeddb", "all"):
+        out.append(
+            "            page.evaluate(\"\"\"async () => { "
+            "if (!('indexedDB' in window) || !indexedDB.databases) return; "
+            "try { const dbs = await indexedDB.databases(); "
+            "await Promise.all(dbs.map(d => new Promise((res) => { "
+            "if (!d.name) return res(); "
+            "const r = indexedDB.deleteDatabase(d.name); "
+            "r.onsuccess = r.onerror = r.onblocked = () => res(); }))); } "
+            "catch(e) {} }\"\"\")"
+        )
+    return out
+
+
 _ACTION_EMITTERS = {
     "navigate": _emit_navigate,
     "maps": _emit_navigate,
@@ -208,11 +309,18 @@ _ACTION_EMITTERS = {
     "mock_status": _emit_mock_status,
     "mock_data": _emit_mock_data,
     "verify": _emit_verify,
+    "auth_login": _emit_auth_login,
+    "reset_state": _emit_reset_state,
 }
 
 
 def _target_to_playwright_code(target) -> str:
-    """DSL target을 독립 실행 가능한 Playwright 코드 스니펫으로 변환한다."""
+    """DSL target 을 독립 실행 가능한 Playwright 코드 스니펫으로 변환한다.
+
+    P0.1 #2 / T-C — ``>>`` 합성 chain (frame= / shadow= / role= / text= / ...
+    + 후미 modifier nth=/has_text=) 을 모두 지원한다. resolver 의 chain 처리와
+    동일 의미로 코드 스니펫을 누적한다.
+    """
     if not target:
         return 'page.locator("body")'
 
@@ -233,22 +341,112 @@ def _target_to_playwright_code(target) -> str:
 
     t = str(target).strip()
 
-    # role=button, name=로그인
-    m = re.match(r"role=(.+?),\s*name=(.+)", t)
+    # 후미 modifier 분리 — base_str 과 분리해 처리.
+    base_str, modifiers = _split_trailing_modifiers(t)
+
+    if " >> " in base_str:
+        return _chain_to_playwright_code(base_str, modifiers)
+
+    # 단일 segment — 기존 분기.
+    snippet = _segment_to_playwright_code(base_str, root="page")
+    return _apply_modifier_suffix(snippet, modifiers)
+
+
+def _split_trailing_modifiers(t: str) -> tuple[str, list[tuple[str, str]]]:
+    """``, nth=N`` / ``, has_text=T`` 후미 modifier 만 분리. resolver 의
+    `_split_modifiers` 와 동일 의미. base 안의 콤마 (`role=link, name=뉴스`)
+    는 보존."""
+    parts = t.split(", ")
+    mods: list[tuple[str, str]] = []
+    while parts:
+        last = parts[-1]
+        if "=" not in last:
+            break
+        key, _, value = last.partition("=")
+        if key.strip() not in ("nth", "has_text"):
+            break
+        mods.append((key.strip(), value.strip()))
+        parts.pop()
+    mods.reverse()
+    return ", ".join(parts), mods
+
+
+def _chain_to_playwright_code(base_str: str, modifiers) -> str:
+    """``>>`` chain 을 Playwright 메서드 chain 코드로 변환."""
+    segments = [s.strip() for s in base_str.split(" >> ") if s.strip()]
+    if not segments:
+        return 'page.locator("body")'
+
+    cur = "page"
+    for seg in segments:
+        if seg.startswith("frame="):
+            sel = seg[len("frame="):].strip()
+            cur = f"{cur}.frame_locator({json.dumps(sel)})"
+            continue
+        if seg.startswith("shadow="):
+            # Playwright 가 open shadow 자동 piercing — 일반 locator 로 충분.
+            sel = seg[len("shadow="):].strip()
+            cur = f"{cur}.locator({json.dumps(sel)})"
+            continue
+        cur = _segment_to_playwright_code(seg, root=cur, in_chain=True)
+
+    return _apply_modifier_suffix(cur, modifiers)
+
+
+def _segment_to_playwright_code(seg: str, *, root: str, in_chain: bool = False) -> str:
+    """단일 segment (role=/text=/label=/placeholder=/testid=/CSS) 를 Playwright 코드로.
+
+    ``in_chain=False`` 인 단일 segment 의 경우 ``.first`` 를 붙여 단일 element 로
+    축약 (기존 동작 보존). chain 안에서는 후속 segment 가 추가될 수 있으므로
+    ``.first`` 를 붙이지 않는다 — 마지막에 modifier 처리에서 단일 element 로 정리.
+    """
+    suffix = "" if in_chain else ".first"
+
+    m = re.match(r"role=(.+?),\s*name=(.+)", seg)
     if m:
         role = json.dumps(m.group(1).strip())
         name = json.dumps(m.group(2).strip())
-        return f"page.get_by_role({role}, name={name}).first"
+        return f"{root}.get_by_role({role}, name={name}){suffix}"
+
+    if seg.startswith("role="):
+        role_only = seg[len("role="):].strip()
+        if "," in role_only:
+            role_only = role_only.split(",", 1)[0].strip()
+        return f"{root}.get_by_role({json.dumps(role_only)}){suffix}"
 
     prefix_map = {
-        "text=": "page.get_by_text",
-        "label=": "page.get_by_label",
-        "placeholder=": "page.get_by_placeholder",
-        "testid=": "page.get_by_test_id",
+        "text=": "get_by_text",
+        "label=": "get_by_label",
+        "placeholder=": "get_by_placeholder",
+        "testid=": "get_by_test_id",
     }
     for prefix, method in prefix_map.items():
-        if t.startswith(prefix):
-            val = json.dumps(t.replace(prefix, "", 1).strip())
-            return f"{method}({val}).first"
+        if seg.startswith(prefix):
+            val = json.dumps(seg.replace(prefix, "", 1).strip())
+            return f"{root}.{method}({val}){suffix}"
 
-    return f"page.locator({json.dumps(t)}).first"
+    return f"{root}.locator({json.dumps(seg)}){suffix}"
+
+
+def _apply_modifier_suffix(code: str, modifiers) -> str:
+    """nth=N / has_text=T 후미 modifier 를 Playwright .nth(N)/.filter(has_text=T) 로 변환.
+
+    modifier 가 없으면 코드 끝이 이미 ``.first`` (단일 segment 경로) 인 상태로 반환.
+    chain 경로에서 modifier 도 없는 경우 마지막에 ``.first`` 를 추가해 단일 element 로
+    축약한다.
+    """
+    if not modifiers:
+        # chain 경로의 무-모디파이어 케이스 — .first 미적용 상태이므로 추가.
+        return code if code.endswith(".first") else f"{code}.first"
+
+    out = code
+    for key, value in modifiers:
+        if key == "nth":
+            try:
+                idx = int(value)
+            except ValueError:
+                continue
+            out = f"{out}.nth({idx})"
+        elif key == "has_text":
+            out = f"{out}.filter(has_text={json.dumps(value)})"
+    return out

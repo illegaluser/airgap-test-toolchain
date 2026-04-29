@@ -49,7 +49,12 @@ class LocalHealer:
         self.threshold = threshold
 
     def try_heal(self, step: dict) -> Locator | None:
-        """step의 target과 유사한 요소를 DOM에서 검색한다."""
+        """step의 target과 유사한 요소를 DOM에서 검색한다.
+
+        T-C (P0.2) — target 이 ``frame=<sel> >> ...`` chain 으로 시작하면
+        같은 FrameLocator 안에서만 fallback 을 시도해 frame 경계를 넘지 않는다.
+        그렇지 않으면 기존대로 page 전체 스캔.
+        """
         action = step["action"].lower()
         target = step.get("target", "")
 
@@ -58,10 +63,17 @@ class LocalHealer:
         if len(clean_target) <= 1:
             return None
 
+        scope, scope_label = self._frame_scope_for_target(target)
+
         best_match = None
         highest_ratio = 0.0
 
-        for el in self.page.locator(selector).all():
+        try:
+            candidates = scope.locator(selector).all()
+        except Exception:
+            return None
+
+        for el in candidates:
             text = self._extract_text(el)
             if not text:
                 continue
@@ -71,14 +83,68 @@ class LocalHealer:
                 best_match = el
 
         if best_match:
-            log.info("  [로컬복구 성공] 유사도 %.0f%% 매칭", highest_ratio * 100)
+            log.info(
+                "  [로컬복구 성공] 유사도 %.0f%% 매칭 (scope=%s)",
+                highest_ratio * 100, scope_label,
+            )
         return best_match
+
+    def _frame_scope_for_target(self, target):
+        """target 이 ``frame=<sel>`` 로 시작하면 해당 FrameLocator 반환, 아니면 page.
+
+        반환값 ``(scope, label)`` 의 ``scope`` 는 ``.locator(...)`` 가 가능한 객체
+        (Page 또는 FrameLocator). label 은 로그용.
+        """
+        if not isinstance(target, str):
+            return self.page, "page"
+        # 합성 chain 의 첫 segment 만 검사. 중첩 frame 은 두 번째 segment 도
+        # frame= 일 수 있으므로 누적.
+        chain = [s.strip() for s in target.split(" >> ") if s.strip()]
+        cur = self.page
+        consumed = 0
+        for seg in chain:
+            if seg.startswith("frame="):
+                sel = seg[len("frame="):].strip()
+                if not sel:
+                    break
+                try:
+                    cur = cur.frame_locator(sel)
+                except Exception:
+                    return self.page, "page"
+                consumed += 1
+                continue
+            break
+        if consumed == 0:
+            return self.page, "page"
+        return cur, f"frame[{consumed}]"
 
     @staticmethod
     def _clean_target(target) -> str:
-        """시맨틱 접두사를 제거하여 순수 텍스트를 추출한다."""
-        s = re.sub(r"^(text|role|label|placeholder|testid)=", "", str(target))
-        s = re.sub(r"role=.+?,\s*name=", "", s)
+        """시맨틱 접두사를 제거하여 순수 텍스트를 추출한다.
+
+        T-C (P0.2) — ``frame=...>>`` chain 일 때는 마지막 segment 만 사용한다.
+        healer 가 frame-scoped fallback 을 수행할 때 텍스트 매칭은 leaf
+        descriptor 기준이어야 의미 있다.
+
+        ``role=X, name=Y`` 패턴은 사람이 읽을 수 있는 ``Y`` 만 추출 (X 는
+        accessibility role 이라 텍스트 매칭에 의미 없음). 모디파이어
+        (``, nth=N`` / ``, has_text=T``) 는 검사 전에 떨어낸다 — converter
+        AST 가 emit 하는 실제 형태에 그대로 작동하도록 하기 위함.
+        """
+        s = str(target)
+        if " >> " in s:
+            s = s.split(" >> ")[-1]
+        # 후미 modifier (nth / has_text) — 텍스트 매칭에 noise.
+        s = re.sub(r",\s*(nth|has_text)=.*$", "", s).strip()
+        # `role=X, name=Y` → Y. accessibility role 자체는 텍스트 노이즈.
+        m = re.match(r"role=.+?,\s*name=(.+)$", s)
+        if m:
+            return m.group(1).strip()
+        # name 없는 단독 role= 은 텍스트 매칭 불가 — 빈 문자열 반환 (try_heal 에서 skip).
+        if s.startswith("role="):
+            return ""
+        # text/label/placeholder/testid/frame/shadow prefix 단독은 안전하게 strip.
+        s = re.sub(r"^(text|label|placeholder|testid|frame|shadow)=", "", s)
         return s.strip()
 
     @staticmethod

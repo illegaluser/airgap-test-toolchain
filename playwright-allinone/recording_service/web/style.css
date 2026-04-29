@@ -1,0 +1,527 @@
+/* DSCORE Recording Service — minimal stylesheet (TR.4) */
+
+* { box-sizing: border-box; }
+:root {
+  --bg: #f5f5f7;
+  --card: #ffffff;
+  --border: #e1e4e8;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --accent: #0066cc;
+  --ok: #007a3a;
+  --warn: #b86e00;
+  --err: #c92a2a;
+  --code-bg: #f0f0f2;
+  --pill-bg: #e8e8ea;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+    "Noto Sans KR", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  padding: 0;
+  line-height: 1.55;
+}
+
+header {
+  padding: 16px 24px;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+header h1 { margin: 0; font-size: 1.5rem; }
+header .meta { display: flex; gap: 12px; align-items: center; }
+header .header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.back-btn {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 6px 12px;
+  font-size: 0.92rem;
+  align-self: center;
+}
+.back-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  filter: none;
+}
+
+main {
+  max-width: 980px;
+  margin: 24px auto;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+}
+.card h2 { margin: 0 0 12px; font-size: 1.15rem; }
+.card.r-plus { background: #fafafa; border-style: dashed; }
+
+form { display: flex; flex-direction: column; gap: 10px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.92rem; }
+label > span { color: var(--muted); }
+label > span em { color: #999; font-style: italic; font-size: 0.85em; }
+label.optional > span { color: #999; }
+
+input[type="text"], select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: #fff;
+}
+input[type="text"]:focus, select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+button {
+  padding: 8px 14px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  align-self: flex-start;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled, button.disabled {
+  background: #d2d2d7;
+  border-color: #d2d2d7;
+  color: #888;
+  cursor: not-allowed;
+}
+button.danger { background: var(--err); border-color: var(--err); }
+button[data-act="open"] { background: #fff; color: var(--accent); }
+
+.plus-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+
+.json-preview {
+  background: var(--code-bg);
+  padding: 12px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  max-height: 400px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+code {
+  background: var(--code-bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+
+.muted { color: var(--muted); }
+
+/* ── 클립보드 복사 (항목 2) ─────────────────────────────────────────── */
+.copy-btn {
+  font-size: 0.85em;
+  padding: 2px 8px;
+  margin-left: 8px;
+  background: #f0f0f2;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.copy-btn:hover { background: #e6e6ea; }
+.copy-toast {
+  font-size: 0.82em;
+  margin-left: 6px;
+  color: var(--ok);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  vertical-align: middle;
+}
+.copy-toast.show { opacity: 1; }
+
+.hover-hint {
+  background: #fff8e1;
+  border-left: 3px solid #f9c846;
+  padding: 10px 14px;
+  margin: 10px 0 16px;
+  border-radius: 4px;
+  color: #5c4d1a;
+  line-height: 1.55;
+}
+.hover-hint strong { color: #3a2f10; }
+.hover-hint em { font-style: normal; color: #5c4d1a; opacity: 0.85; }
+.ok { color: var(--ok); font-weight: 600; }
+.warn { color: var(--warn); font-weight: 600; }
+.err { color: var(--err); font-weight: 600; }
+
+.state-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.state-pending { background: #e8e8ea; color: #555; }
+.state-recording { background: #fde7e6; color: var(--err); }
+.state-converting { background: #fff3cd; color: var(--warn); }
+.state-done { background: #d4edda; color: var(--ok); }
+.state-error { background: #f8d7da; color: var(--err); }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+th, td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+th { color: var(--muted); font-weight: 500; }
+.ellipsis {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-actions { display: flex; gap: 6px; }
+.row-actions button { padding: 4px 10px; font-size: 0.85rem; }
+
+.badge {
+  background: #ddd;
+  color: #555;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+
+footer {
+  text-align: center;
+  padding: 24px;
+  font-size: 0.85rem;
+}
+
+/* Compare 모달 */
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  min-width: 480px;
+  max-width: 720px;
+  background: #fff;
+}
+dialog::backdrop { background: rgba(0,0,0,0.4); }
+dialog h3 { margin: 0 0 8px; }
+dialog textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.badge.ok {
+  background: var(--ok);
+  color: #fff;
+}
+
+/* 항목 3 — R-Plus dropdown 그룹 (hover-open + click-stick) */
+.dropdown-group {
+  position: relative;
+  display: inline-block;
+}
+.dropdown-toggle {
+  /* Inherits global button style. caret 는 inline. */
+}
+.dropdown-toggle .caret {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 0.85em;
+}
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  padding: 4px;
+  margin-top: 2px;
+  min-width: 240px;
+  z-index: 10;
+  flex-direction: column;
+  gap: 2px;
+}
+.dropdown-group:hover .dropdown-menu,
+.dropdown-group.expanded .dropdown-menu {
+  display: flex;
+}
+.dropdown-menu button {
+  background: #fff;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 8px 10px;
+  text-align: left;
+  align-self: stretch;
+  font-size: 0.92rem;
+}
+.dropdown-menu button:hover {
+  background: #f0f0f2;
+  border-color: var(--border);
+  filter: none;
+}
+.dropdown-group.expanded .dropdown-toggle {
+  background: #004d99;
+  border-color: #004d99;
+}
+
+/* P3 (항목 7) — 세션 목록 검색/필터 */
+.session-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.session-filters input,
+.session-filters select {
+  flex: 1 1 auto;
+  min-width: 160px;
+  padding: 6px 10px;
+  font-size: 0.92rem;
+}
+.session-filters select {
+  flex: 0 0 auto;
+  min-width: 140px;
+}
+
+/* 항목 4 — LLM 분석 출력 */
+.analysis-output {
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 18px;
+  font-size: 0.93rem;
+  line-height: 1.55;
+  margin-bottom: 10px;
+}
+.analysis-output h2,
+.analysis-output h3,
+.analysis-output h4 {
+  margin: 14px 0 6px;
+}
+.analysis-output h3 { font-size: 1.05rem; color: var(--accent); }
+.analysis-output h4 { font-size: 0.98rem; color: #444; }
+.analysis-output ul {
+  padding-left: 22px;
+  margin: 4px 0 10px;
+}
+.analysis-output li { margin: 2px 0; }
+.analysis-output p { margin: 4px 0; }
+.analysis-output code {
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.analysis-output .md-code {
+  background: #f0f0f2;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: pre;
+  margin: 6px 0;
+}
+#btn-analyze-diff {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  margin-left: 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+#btn-analyze-diff:hover {
+  background: var(--accent);
+  color: #fff;
+  filter: none;
+}
+#btn-analyze-diff:disabled {
+  background: #d2d2d7;
+  color: #888;
+  border-color: #d2d2d7;
+  cursor: not-allowed;
+}
+#diff-raw-details summary {
+  cursor: pointer;
+  padding: 6px 0;
+  font-size: 0.88rem;
+}
+
+/* 항목 4 — codegen ↔ LLM healed regression diff */
+.diff-pre {
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre;
+}
+.diff-pre .diff-meta { color: #6e6e73; font-weight: 500; display: block; }
+.diff-pre .diff-hunk { color: #1f5377; background: #e6f0fa; display: block; padding: 0 4px; }
+.diff-pre .diff-add  { color: #007a3a; background: #e6ffed; display: block; padding: 0 4px; }
+.diff-pre .diff-del  { color: #c92a2a; background: #ffe6e6; display: block; padding: 0 4px; }
+.diff-pre .diff-ctx  { color: #1d1d1f; display: block; padding: 0 4px; }
+
+/* P2 (항목 6) — Play 진행 로그 스트리밍 */
+.play-progress {
+  background: #1d1d1f;
+  color: #e8e8ea;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  padding: 10px 12px;
+  border-radius: 6px;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 8px 0 0;
+}
+#play-progress-details summary {
+  cursor: pointer;
+  font-size: 0.88rem;
+  color: var(--muted);
+  padding: 6px 0;
+}
+
+/* TR.4+.1/.2 — 결과 카드 헤더의 다운로드 링크 */
+.dl-link {
+  font-size: 0.75rem;
+  font-weight: normal;
+  margin-left: 8px;
+  text-decoration: none;
+  color: var(--accent);
+  vertical-align: middle;
+}
+.dl-link:hover { text-decoration: underline; }
+
+/* ── P1 (항목 5) — Run-log 시각화 ─────────────────────────────────────── */
+.run-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.run-log-table th, .run-log-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #ececec;
+  text-align: left;
+  vertical-align: middle;
+}
+.run-log-table .step-no { width: 40px; color: var(--muted); }
+.run-log-table .step-action { width: 80px; }
+.run-log-table .step-target { max-width: 320px; word-break: break-all; }
+
+/* status pill — run-log 행의 상태 (executor 의 PASS/FAIL/HEALED) */
+.status-pass    { background: #d4edda; color: var(--ok); }
+.status-healed  { background: #fff3cd; color: #856404; }
+.status-fail    { background: #f8d7da; color: var(--err); }
+
+/* heal_stage pill — none / local / dify / visibility */
+.heal-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.heal-none        { background: #f0f0f2; color: #888; }
+.heal-local       { background: #fff3cd; color: #856404; }
+.heal-dify        { background: #fde7e6; color: var(--err); }
+.heal-visibility  { background: #d6e8f4; color: #1f5377; }
+
+.run-log-fail { background: #fff5f5; }
+
+.shot-link, .copy-step-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 0.85em;
+}
+.shot-link:hover, .copy-step-btn:hover { background: #f0f0f2; }
+
+/* 스크린샷 모달 (P1) */
+.shot-dialog {
+  border: none;
+  border-radius: 8px;
+  padding: 16px;
+  max-width: min(90vw, 1200px);
+  max-height: 90vh;
+}
+.shot-dialog::backdrop { background: rgba(0,0,0,0.6); }
+.shot-dialog img {
+  max-width: 100%;
+  max-height: 75vh;
+  display: block;
+  border: 1px solid #ddd;
+}
+.shot-caption {
+  margin: 8px 0 0;
+  text-align: center;
+  font-size: 0.88em;
+  color: var(--muted);
+}
+.shot-close {
+  float: right;
+  background: none;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}

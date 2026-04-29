@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Open shadow DOM fixture</title>
+</head>
+<body>
+  <h1>Open shadow Web Component</h1>
+  <my-form id="form-component"></my-form>
+  <p id="external-status">idle</p>
+  <script>
+    class MyForm extends HTMLElement {
+      constructor() {
+        super();
+        const shadow = this.attachShadow({ mode: "open" });
+        shadow.innerHTML = `
+          <style>label { display:block; margin: 4px 0; }</style>
+          <label>Name<input type="text" id="name-input"></label>
+          <button id="submit-btn" type="button">Submit</button>
+          <span id="status">pending</span>
+        `;
+        shadow.getElementById("submit-btn").addEventListener("click", () => {
+          const v = shadow.getElementById("name-input").value;
+          shadow.getElementById("status").textContent = v ? `hello ${v}` : "empty";
+          document.getElementById("external-status").textContent =
+            v ? "submitted" : "empty-submit";
+        });
+      }
+    }
+    customElements.define("my-form", MyForm);
+  </script>
+</body>
+</html>
