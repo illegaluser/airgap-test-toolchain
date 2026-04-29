@@ -318,11 +318,33 @@ def analyze_codegen_vs_regression(
     """codegen 원본 .py 와 LLM healed regression_test.py 를 LLM 으로 의미
     분석하여 변경 요약 + 위험 평가 + 채택 권고 markdown 반환.
 
+    환경변수 ``RECORDING_DIFF_ANALYSIS_STUB=1`` 이면 Ollama 호출 없이 결정론적
+    스텁 markdown 반환 — E2E 테스트 / Ollama 미가용 환경 회피용.
+
     Raises:
         EnrichError: Ollama HTTP/timeout/응답 파싱 실패.
     """
     if not regression_py.strip():
         raise EnrichError("regression_test.py 가 비어있어 분석 대상 없음.")
+
+    if os.environ.get("RECORDING_DIFF_ANALYSIS_STUB") == "1":
+        return DiffAnalysisResult(
+            markdown=(
+                "### 1. 핵심 변경 요약\n"
+                "- (stub) selector 1건 healed\n\n"
+                "### 2. 변경 라인 분석\n"
+                "- **L1**: stub 분석 결과 — 실제 Ollama 호출 우회\n"
+                "  유형: selector swap\n"
+                "  의미: 테스트 환경 결정성 확보\n\n"
+                "### 3. 위험 평가\n"
+                "- **결정성**: 본 stub 은 결정론적\n"
+                "- **의도 일치**: N/A (stub)\n\n"
+                "### 4. 회귀 채택 권고\n"
+                "✅ **권장** — stub 으로 정상 경로 검증 완료.\n"
+            ),
+            elapsed_ms=10.0,
+            model="stub:RECORDING_DIFF_ANALYSIS_STUB",
+        )
 
     user_prompt = (
         "## 입력 1 — codegen 원본 (original.py)\n"
