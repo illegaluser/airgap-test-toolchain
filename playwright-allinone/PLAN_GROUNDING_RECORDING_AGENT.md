@@ -618,15 +618,17 @@ Recording 결과 → "Compare with Doc-DSL" 버튼
 | POST | `/recording/stop/{id}` | 녹화 종료 + 변환 |
 | GET | `/recording/sessions` | 세션 목록 |
 | GET | `/recording/sessions/{id}` | 세션 상세 (메타데이터) |
-| GET | `/recording/sessions/{id}/scenario` | 변환된 14-DSL 본문 (state=done 시) — TR.4 프리뷰 |
+| GET | `/recording/sessions/{id}/scenario` | 변환된 14-DSL 본문 (state=done 시) — TR.4 프리뷰. `?download=1` 첨부 다운로드 |
+| GET | `/recording/sessions/{id}/original` | codegen 원본 `.py` 본문 — TR.4+.1. `?download=1` 첨부 다운로드 |
 | POST | `/recording/sessions/{id}/assertion` | verify/mock_* step 수동 추가 (TR.4) |
 | DELETE | `/recording/sessions/{id}` | 삭제 |
-| GET | `/healthz` | 헬스체크 (응답에 `rplus_enabled` 포함) |
-| POST | `/experimental/sessions/{id}/replay` | executor 재실행 — **R-Plus** (TR.7), `RPLUS_ENABLED=1` 필요 |
+| GET | `/healthz` | 헬스체크 |
+| POST | `/experimental/sessions/{id}/play-codegen` | codegen 원본 `.py` 호스트 직접 실행 (headed). annotated 본 우선 사용 — **R-Plus** (TR.7) |
+| POST | `/experimental/sessions/{id}/play-llm` | 변환된 14-DSL 을 zero_touch_qa executor 로 실행 (healing/verify/mock 동작, headed) — **R-Plus** (TR.7) |
+| POST | `/experimental/sessions/{id}/annotate` | codegen `.py` 정적 분석 후 `<ancestor>.hover()` 자동 주입한 `original_annotated.py` 생성 — **R-Plus** (TR.7+) |
 | POST | `/experimental/sessions/{id}/enrich` | Recording → Doc 역추정 — **R-Plus** (TR.5) |
 | POST | `/experimental/sessions/{id}/compare` | Doc ↔ Recording 비교 — **R-Plus** (TR.6) |
 | GET | `/experimental/sessions/{id}/comparison.html` | compare HTML 리포트 — **R-Plus** |
-| GET | `/experimental/` | 실험 도구 SPA 진입점 — **R-Plus** |
 
 - CORS 설정 — Web UI 가 호스트 브라우저에서 호출
 - 호스트의 systemd·launchd 등록 (선택)

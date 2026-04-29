@@ -826,12 +826,16 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 | T-D 실 IdP 검증 (Google OAuth) | ⏸ 운영 검증 단계 | 별도 |
 | T-B (P0.3-A 클라이언트 격리) | ✅ **완료** | reset_state DSL + storage_state in/out + test_isolation.py 12/12 (100%) |
 | T-C (P0.2 iframe / open shadow / closed shadow detect) | ✅ **완료** | frame= chain + shadow= segment + ShadowAccessError + healer frame-scoped fallback + test_iframe_shadow.py 10/10 |
+| T-H (hidden-click healing — 드롭다운/메뉴 자동 복구) | ✅ **완료** | 3-layer (Visibility Healer + Converter heuristic + Static Annotator). 13건 회귀 추가. test_visibility_healer / test_annotator |
+| TR.4+ (Recording Service UI 운영 보강) | ✅ **완료** | scenario.json/original.py 열람·다운로드, Play 2-mode (Codegen / LLM), Annotate hover, R-Plus 게이트 폐기, replay_proxy 호스트 직접 실행. 회귀 테스트 +20 |
 | T-E (P0.5 빌드 CI) | ⏳ 대기 | self-hosted runner 인프라 의존 |
 | T-F (P1.5 orphan watchdog) | ⏳ 대기 | P0 완료 후 |
 | T-G (P1.3 retention GC) | ⏳ 대기 | T-F 후 |
 
 **현 시점 P0 완료율**: 100% (T-A + 후속 패치) + 85% (T-D, OAuth mock 만 미완료) + 100% (T-B) + 100% (T-C) + 0% (T-E)
 ≈ 5 P0 태스크 중 3.85 완료. 영업일 환산 약 23.5/33 (71%).
+
+P0 외 추가 완료: T-H (드롭다운/메뉴 hidden-click 자동 복구 3-layer), TR.4+ (Recording Service UI 운영 보강). 운영 사용 도중 발견된 이슈에 대응한 follow-up. 본 표는 P0 본체 트랙 진척도만 표시.
 
 ### T-B 완료 기록 (2026-04-29)
 
@@ -881,15 +885,46 @@ P0.2 iframe / open shadow / closed shadow 자동화. `frame=<sel> >> ...` chain 
 - #2 chain segment 의 ambiguous role 거부 (`button`/`link` name 없는 광범위 매치) 는 chain 컨테이너로 좁혀진 경우 false-positive 위험이 충분히 낮아 적용 안 함 — `#sidebar >> role=button` 같은 합법 케이스가 통과되어야 하기 때문.
 - R-Plus URL prefix 는 `/experimental/`. 기존 `/recording/sessions/{sid}/replay|enrich|compare` 경로는 R-Plus 트랙의 평가 게이트 의도를 명확히 하기 위해 `/experimental/sessions/{sid}/...` 으로 이동 (테스트 16개 마이그레이션, 메인 UI 의 R-Plus 섹션이 새 경로로 호출).
 
+### TR.4+ 운영 보강 (2026-04-29)
+
+R-MVP TR.4 결과 화면 운영 사용 도중 5건의 사용자 피드백 + 1건의 무관 버그 (replay 가 docker exec 로 system python 호출해서 모듈 미발견) 일괄 처리.
+
+| 항목 | 변경 |
+|---|---|
+| Scenario JSON 다운로드 | `GET /recording/sessions/{sid}/scenario?download=1` 신규. ⬇ 링크 |
+| Original .py 열람·다운로드 | `GET /recording/sessions/{sid}/original[?download=1]` 신규. 결과 화면에 별도 카드 |
+| R-Plus 게이트 폐기 | `RPLUS_ENABLED` 환경변수 / `_require_rplus_enabled` Depends / `is_rplus_enabled` / healthz `rplus_enabled` 필드 모두 제거. URL prefix `/experimental/` 는 코드 조직 의미로 유지 |
+| Replay → Play 두 모드 분리 | `POST /experimental/sessions/{sid}/play-codegen` (codegen 원본 .py 호스트 직접 실행, headed) + `POST /experimental/sessions/{sid}/play-llm` (변환된 14-DSL 을 zero_touch_qa executor 로 실행, healing 동작) |
+| replay 실행 환경 | docker exec (headless) 폐기 → 호스트 venv python subprocess. Playwright Chromium 호스트 화면에 노출 |
+| ReplayResult → PlayResult | pass/fail/healed/run_log_* 필드 폐기 — codegen 원본은 14-DSL executor 가 아니라 의미 없음 |
+
+회귀 +20 (TR.4+: 8, Play 분리: 6, 게이트 폐기 회귀: 6).
+
+### T-H 완료 기록 (2026-04-29) — hidden-click 자동 복구 3-layer
+
+**문제**: codegen 이 hover-then-click sequence 의 hover 를 빠뜨려 드롭다운/메뉴 항목이 hidden 상태에서 click → 30s timeout. 운영 도중 발견 (`a2333961d7e7` "회사소개" 링크).
+
+3-layer 동시 적용 — 각 layer 가 다른 실행 경로를 보호:
+
+| Layer | 위치 | 적용 경로 | 메커니즘 |
+|---|---|---|---|
+| (1) Visibility Healer | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) `_heal_visibility` | Play with LLM (14-DSL executor) | 1차 시도 직전 element `is_visible()` 검사 → false 면 `evaluate(JS)` 로 ancestor chain 분석 → aria-haspopup / aria-expanded=false / role=menu/menubar/listbox / tag=nav/details/summary / data-state=closed / `:hover` CSS rule trigger 후보 추출 → 가장 root 에 가까운 5개까지 hover 시도 |
+| (4) Converter heuristic | [`zero_touch_qa/converter_ast.py`](zero_touch_qa/converter_ast.py) `_maybe_prepend_hover` + `_SEG_LOOKS_LIKE_HOVER_TRIGGER` | LLM 변환 시점 (codegen → 14-DSL) | click step 의 target chain 정적 분석. nav/menu/dropdown/gnb/aria-haspopup/aria-expanded/role=menu 패턴 매칭 시 click 앞 hover step 자동 prepend |
+| (2) Static Annotator | [`recording_service/annotator.py`](recording_service/annotator.py) | Codegen Output Replay (원본 .py 직접 실행) | `POST /experimental/sessions/{sid}/annotate` 엔드포인트. AST 분석으로 `<chain>.click()` 의 chain 안 hover-trigger ancestor 식별 → `ast.get_source_segment` 로 원본 구문 보존하며 `<segment>.hover()` 라인 click 직전 삽입 → `original_annotated.py` 생성. `play-codegen` 은 `prefer_annotated=True` 로 자동 우선 사용 |
+
+**검증**: `test_visibility_healer.py` (3) + `test_visibility_healer_scenario.py` (1) + `test_converter_ast.py +3` + `test_annotator.py` (5) + `test_recording_service.py +2` (annotate 엔드포인트). 회귀 영역 351 passed (이전 331 → +20).
+
+**보류한 (3)**: codegen recorder fork — TS fork / addInitScript sidecar / tracing 활용 모두 가능하나 Playwright 업그레이드마다 merge 비용 발생. 위 3-layer 만으로 실 운영 케이스 대부분 커버 추정.
+
 ## 다음 액션
 
 1. **T-D Phase 5 마무리** — OAuth mock 컨테이너 (oauth2-mock-server Docker
    stage + supervisord program + auth_oauth_client.html fixture) 도입.
    원안 Day 12~13 분량 (2 영업일).
-2. T-D 마무리 후 **T-B (P0.3-A 클라이언트 격리, 5d) + T-E (P0.5 빌드 CI, 3d)**
-   병행 착수.
-3. T-B/T-E 완료 후 **T-C (P0.2 iframe/shadow, 10d)**.
-4. T-C 완료 후 P0 클로저 → **T-F + T-G** 백그라운드 small task.
+2. T-D 마무리 후 **T-E (P0.5 빌드 CI, 3d)** — self-hosted runner 또는 GitHub Actions
+   기반 lint+pytest 자동화 + PR gate.
+3. T-E 완료 후 P0 5 태스크 모두 종료. **T-F (P1.5 orphan watchdog) + T-G (P1.3 retention GC)** 백그라운드 진행.
+4. 운영 사용 중 발견되는 추가 이슈는 본 PLAN 의 follow-up 절에 추가하며 즉시 처리.
 
 또는 P0 우선순위 변경 시 사용자 지시에 따라 재조정.
 

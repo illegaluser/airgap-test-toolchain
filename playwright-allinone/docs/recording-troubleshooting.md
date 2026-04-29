@@ -305,6 +305,31 @@ curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/original             # 
 curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/original?download=1  # 첨부
 ```
 
+## 8.5 hidden-click 자동 복구 (T-H, 2026-04-29)
+
+녹화한 .py 가 드롭다운/메뉴 안의 항목을 click 할 때 hover 가 누락되어 `element is not visible` timeout 으로 실패하는 케이스에 대응. 3개 layer 가 서로 다른 실행 경로를 보호:
+
+| Layer | 적용 경로 | 동작 |
+|---|---|---|
+| Visibility Healer | **Play with LLM** (executor) | 1차 click 시도 직전 element `is_visible()` 검사 → 숨겨져 있으면 ancestor chain 에서 `aria-haspopup` / `role=menu` / `:hover` CSS rule trigger 등 을 찾아 자동 hover 후 재시도. DOM 직접 분석이라 가장 강력. |
+| Converter heuristic | LLM 변환 시점 (codegen → 14-DSL) | chain 안에 `nav` / `menu` / `dropdown` / `gnb` / `aria-haspopup` 같은 신호가 보이면 click 앞에 hover step 자동 prepend. 정적이라 codegen 이 ancestor 를 chain 안에 emit 한 경우만 동작. |
+| Static Annotator (`/annotate` 엔드포인트) | **Codegen Output Replay** (원본 .py 직접 실행) | AST 분석으로 `<chain>.click()` 의 chain 안 hover-trigger ancestor 를 찾아 `<ancestor>.hover()` 라인을 click 직전에 삽입한 `original_annotated.py` 생성. play-codegen 이 자동 우선 사용. |
+
+### Annotate 가 `injected: 0` 을 반환할 때
+
+이는 **버그가 아니라 입력의 한계**다. annotate 는 codegen 이 emit 한 chain 의 selector 텍스트만 본다. 다음 경우 0 이 나오고 다른 layer 가 처리해야 한다:
+
+| codegen 출력 형태 | Annotate | 다른 layer |
+|---|---|---|
+| `page.locator('nav#gnb').locator('li')...click()` (chain 에 ancestor 보임) | ✅ hover prepend | converter heuristic 도 동일 prepend |
+| `page.get_by_role('link', name='회사소개').click()` (flat selector — chain 에 ancestor 없음) | ❌ anchor 0건 | Visibility Healer 가 runtime DOM 분석으로 처리 (Play with LLM 경로) |
+| 호버 메뉴인데 codegen 이 hover 도 emit 안 함 + flat selector | ❌ | Visibility Healer 만 가능 |
+
+따라서 운영 권장 흐름:
+
+1. Codegen Replay 가 실패하면 [▶ Play with LLM] 으로 재시도 — Visibility Healer 가 자동 발동.
+2. Play with LLM 도 실패하고 stderr 가 "element is not visible" 이면 사이트의 hover 이벤트가 JS 기반인 가능성 — 녹화를 다시 해서 hover 동작을 명시적으로 잡거나, scenario.json 을 직접 편집해 hover step 추가.
+
 ## 9. iframe / Shadow DOM 한계 (T-C / P0.2)
 
 ### iframe 접근
