@@ -115,8 +115,12 @@ async function addAssertion(sid, payload) {
 }
 
 // R-Plus — 백엔드는 /experimental/* 로 분리. UI 는 메인 결과 화면에 함께 노출.
-async function replaySession(sid) {
-  return api(`/experimental/sessions/${sid}/replay`, { method: "POST" });
+async function playCodegen(sid) {
+  return api(`/experimental/sessions/${sid}/play-codegen`, { method: "POST" });
+}
+
+async function playLLM(sid) {
+  return api(`/experimental/sessions/${sid}/play-llm`, { method: "POST" });
 }
 
 async function enrichSession(sid) {
@@ -309,15 +313,16 @@ function _currentRplusSid() {
   return $("#rplus-section").dataset.sid;
 }
 
-$("#btn-replay").addEventListener("click", async () => {
+async function _runPlay(label, btnSel, fn) {
   const sid = _currentRplusSid();
   if (!sid) return;
-  $("#btn-replay").disabled = true;
+  const btn = $(btnSel);
+  btn.disabled = true;
   _rplusOutputBox().textContent =
-    "⏳ Replay 진행 중... (호스트에 brower 창이 뜹니다 — 끝까지 닫지 마세요)";
+    `⏳ ${label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)`;
   try {
-    const data = await replaySession(sid);
-    const status = data.returncode === 0 ? "✓ Replay 완료" : "✗ Replay 실패";
+    const data = await fn(sid);
+    const status = data.returncode === 0 ? `✓ ${label} 완료` : `✗ ${label} 실패`;
     _rplusOutputBox().textContent =
       `${status}\n\n` +
       `returncode: ${data.returncode}\n` +
@@ -325,11 +330,19 @@ $("#btn-replay").addEventListener("click", async () => {
       (data.stdout_tail ? `\n--- stdout (tail) ---\n${data.stdout_tail}` : "") +
       (data.stderr_tail ? `\n--- stderr (tail) ---\n${data.stderr_tail}` : "");
   } catch (err) {
-    _rplusOutputBox().textContent = "✗ Replay 실패: " + err.message;
+    _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
   } finally {
-    $("#btn-replay").disabled = false;
+    btn.disabled = false;
   }
-});
+}
+
+$("#btn-play-codegen").addEventListener("click", () =>
+  _runPlay("Codegen Output Replay", "#btn-play-codegen", playCodegen),
+);
+
+$("#btn-play-llm").addEventListener("click", () =>
+  _runPlay("Play with LLM", "#btn-play-llm", playLLM),
+);
 
 $("#btn-enrich").addEventListener("click", async () => {
   const sid = _currentRplusSid();
