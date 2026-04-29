@@ -1,13 +1,13 @@
-"""Sprint 3 통합 테스트용 DSL 시나리오 빌더.
+"""DSL scenario builders for Sprint 3 integration tests.
 
-각 테스트가 동일한 navigate-step boilerplate 를 반복 작성하지 않도록 가장
-자주 쓰는 step 형태를 한 줄로 만들 수 있게 한다.
+Lets each test compose the most common step shapes in one line so they
+don't have to repeat the same navigate-step boilerplate.
 """
 
 from __future__ import annotations
 
 
-def navigate(url: str, *, step: int = 1, description: str = "대상 페이지 로드") -> dict:
+def navigate(url: str, *, step: int = 1, description: str = "load target page") -> dict:
     return {
         "step": step,
         "action": "navigate",

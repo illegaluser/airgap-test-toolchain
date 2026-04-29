@@ -1,24 +1,24 @@
-"""click 액션 — 4 케이스."""
+"""click action — 4 cases."""
 
 from playwright.sync_api import Page, expect
 
 
 def test_click_plain_button(page: Page, fixture_url):
-    """id selector 로 버튼 클릭 → 상태 업데이트."""
+    """Click a button by id selector → state updates."""
     page.goto(fixture_url("click.html"))
     page.locator("#btn-plain").click()
     expect(page.locator("#status-plain")).to_have_text("clicked")
 
 
 def test_click_by_role_and_name(page: Page, fixture_url):
-    """role=button, name=로그인 (aria-label) 셀렉터로 버튼 클릭."""
+    """Click a button via role=button, name=로그인 (aria-label) selector."""
     page.goto(fixture_url("click.html"))
     page.get_by_role("button", name="로그인").click()
     expect(page.locator("#status-login")).to_have_text("clicked")
 
 
 def test_click_link_navigates(page: Page, fixture_url):
-    """링크 클릭 → 다른 페이지로 이동."""
+    """Click a link → navigates to another page."""
     page.goto(fixture_url("click.html"))
     page.locator("#nav-link").click()
     page.wait_for_url("**/navigate.html", timeout=3000)
@@ -26,10 +26,10 @@ def test_click_link_navigates(page: Page, fixture_url):
 
 
 def test_click_with_fallback_selector(page: Page, fixture_url):
-    """첫 selector 가 매치 안 되면 fallback selector 로 성공."""
+    """Falls back to second selector when the first doesn't match."""
     page.goto(fixture_url("click.html"))
 
-    # zero_touch_qa 의 fallback_targets 동작을 모사: 첫 selector count==0 이면 다음 시도.
+    # Mirrors zero_touch_qa's fallback_targets behavior: try next when first selector count==0.
     primary = page.locator("#missing-btn")
     fallback = page.locator("#fallback-btn")
 

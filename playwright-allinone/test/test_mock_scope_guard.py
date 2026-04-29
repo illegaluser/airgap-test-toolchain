@@ -26,7 +26,7 @@ def test_mock_scope_guard_blocks_broad_pattern_when_target_url_set(monkeypatch):
     monkeypatch.delenv("MOCK_OVERRIDE", raising=False)
     monkeypatch.setenv("TARGET_URL", "https://staging.example.test")
 
-    with pytest.raises(ValueError, match="너무 넓어"):
+    with pytest.raises(ValueError, match="too broad"):
         QAExecutor._install_mock_route(_FakePage(), "**/*", status=500)
 
 
@@ -34,7 +34,7 @@ def test_mock_scope_guard_blocks_configured_host(monkeypatch):
     monkeypatch.delenv("MOCK_OVERRIDE", raising=False)
     monkeypatch.setenv("MOCK_BLOCKED_HOSTS", "api.prod.example")
 
-    with pytest.raises(ValueError, match="차단된 host"):
+    with pytest.raises(ValueError, match="blocked host"):
         QAExecutor._install_mock_route(
             _FakePage(), "https://api.prod.example/users", status=500
         )

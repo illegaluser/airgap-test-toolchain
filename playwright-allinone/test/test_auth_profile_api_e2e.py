@@ -1,25 +1,28 @@
 """auth-profile API End-to-End (Tier 2).
 
-설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §9 + 사용자 e2e 요구
+Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §9 + user e2e requirements
 
-전략:
-    실제 recording-service 데몬을 *별도 포트* (18094) 로 spawn 한 뒤 HTTP 로
-    auth-profile 5개 엔드포인트 + recording_start 통합을 검증.
+Strategy:
+    Spawn a real recording-service daemon on a *separate port* (18094)
+    and verify the 5 auth-profile endpoints + recording_start integration
+    over HTTP.
 
-    - PATH stub `playwright` 가 ``open`` / ``codegen`` / ``--version`` 호출을
-      가짜 동작으로 대체 — 실 외부 의존성 없이도 시드/녹화 흐름 동작.
-    - 로컬 fake 서비스 (login + mypage) 가 verify_profile 의 service-side
-      검증 대상.
-    - ``AUTH_PROFILE_VERIFY_HEADLESS=1`` 로 verify 단계 headless (CI 친화).
+    - A PATH stub `playwright` replaces ``open`` / ``codegen`` /
+      ``--version`` calls with fakes — seed/record flows work without any
+      real external dependency.
+    - A local fake service (login + mypage) is the target of
+      verify_profile's service-side check.
+    - ``AUTH_PROFILE_VERIFY_HEADLESS=1`` runs the verify step headless
+      (CI-friendly).
 
-검증 영역:
+Coverage:
     - GET    /auth/profiles                       (P3.2)
     - POST   /auth/profiles/seed                  (P3.3) — background thread + state
     - GET    /auth/profiles/seed/{sid}            (P3.4)
     - POST   /auth/profiles/{name}/verify         (P3.5)
     - DELETE /auth/profiles/{name}                (P3.6)
-    - POST   /recording/start { auth_profile }    (P3.7) — verify gate + 메타 박힘
-    - 만료 / not-found / 머신 불일치 분기
+    - POST   /recording/start { auth_profile }    (P3.7) — verify gate + meta stamped
+    - expiry / not-found / machine mismatch branches
 """
 
 from __future__ import annotations
@@ -51,12 +54,13 @@ VENV_PY = os.environ.get("E2E_PYTHON", sys.executable)
 # PATH stub `playwright` CLI
 # ─────────────────────────────────────────────────────────────────────────
 #
-# 데몬이 spawn 하는 ``playwright open`` / ``codegen`` 을 우리가 통제하기 위해
-# PATH 에 stub 디렉토리를 prepend. stub 은 ``--save-storage`` / ``--output``
-# 다음 인자에 지정된 경로에 fake 산출물을 쓰고 즉시 exit 0.
+# To control the ``playwright open`` / ``codegen`` calls the daemon spawns,
+# prepend a stub directory to PATH. The stub writes a fake artifact to
+# whatever path follows ``--save-storage`` / ``--output`` and exits 0.
 #
-# Note: ``sync_playwright`` 같은 Python API 는 PATH stub 의 영향을 받지 않으므로
-# verify_profile 단계는 *실제* Playwright 가 fake 서비스로 navigate.
+# Note: Python APIs like ``sync_playwright`` are unaffected by the PATH
+# stub, so verify_profile actually navigates *real* Playwright against
+# the fake service.
 
 _STUB_PLAYWRIGHT = """#!/usr/bin/env bash
 # tier2 e2e stub for `playwright` CLI
@@ -115,7 +119,7 @@ def stub_path_dir(tmp_path_factory):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Local fake "service with login" — verify_profile 대상
+# Local fake "service with login" — verify_profile target
 # ─────────────────────────────────────────────────────────────────────────
 
 _PAGE_LOGIN = """<!doctype html>
@@ -193,9 +197,9 @@ def _is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
 
 @pytest.fixture(scope="session")
 def daemon(stub_path_dir, tmp_path_factory):
-    """별도 포트 (18094) 로 데몬 spawn — Tier 3 의 18093 과 격리."""
+    """Spawn the daemon on a separate port (18094) — isolated from Tier 3's 18093."""
     if _is_port_listening(E2E_PORT):
-        pytest.skip(f"port {E2E_PORT} 가 이미 사용 중 — Tier 2 e2e 스킵")
+        pytest.skip(f"port {E2E_PORT} already in use — skipping Tier 2 e2e")
 
     rec_root = tmp_path_factory.mktemp("api_e2e_rec")
     auth_root = tmp_path_factory.mktemp("api_e2e_auth")
@@ -205,7 +209,7 @@ def daemon(stub_path_dir, tmp_path_factory):
     env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env["RECORDING_HOST_ROOT"] = str(rec_root)
     env["AUTH_PROFILES_DIR"] = str(auth_root)
-    env["AUTH_PROFILE_VERIFY_HEADLESS"] = "1"  # CI 친화 — verify 단계 headless
+    env["AUTH_PROFILE_VERIFY_HEADLESS"] = "1"  # CI-friendly — verify step headless
 
     cmd = [
         VENV_PY, "-m", "uvicorn",
@@ -225,7 +229,7 @@ def daemon(stub_path_dir, tmp_path_factory):
     while time.time() < deadline:
         if proc.poll() is not None:
             stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
-            pytest.skip(f"Tier 2 daemon spawn 실패 (rc={proc.returncode}): {stderr[:500]}")
+            pytest.skip(f"Tier 2 daemon spawn failed (rc={proc.returncode}): {stderr[:500]}")
         if _is_port_listening(E2E_PORT):
             break
         time.sleep(0.2)
@@ -234,7 +238,7 @@ def daemon(stub_path_dir, tmp_path_factory):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:  # noqa: BLE001
             pass
-        pytest.skip("Tier 2 daemon healthz 대기 timeout")
+        pytest.skip("Tier 2 daemon healthz wait timed out")
 
     yield {
         "base": E2E_BASE,
@@ -286,7 +290,7 @@ def _seed_payload(name: str, fake_url: str, *, naver_probe: bool = False) -> dic
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestAuthProfileApiLifecycle:
-    """전체 라이프사이클 (seed → list → verify → recording-start → delete)."""
+    """Full lifecycle (seed → list → verify → recording-start → delete)."""
 
     def test_initial_list_empty(self, daemon):
         r = httpx.get(f"{daemon['base']}/auth/profiles", timeout=5.0)
@@ -298,7 +302,7 @@ class TestAuthProfileApiLifecycle:
         name = "tier2-life"
         fake = fake_service["base"]
 
-        # 1. 시드 시작.
+        # 1. start seed.
         r = httpx.post(
             f"{base}/auth/profiles/seed",
             json=_seed_payload(name, fake),
@@ -308,14 +312,14 @@ class TestAuthProfileApiLifecycle:
         seed_sid = r.json()["seed_sid"]
         assert r.json()["state"] == "running"
 
-        # 2. 폴링 — stub 이 즉시 종료, verify 가 실 Playwright 로 fake 서비스 검증.
+        # 2. poll — stub exits immediately, then verify uses real Playwright against the fake service.
         final = _poll_seed_until_done(base, seed_sid)
         assert final["state"] == "ready", f"poll={final}"
         assert final["phase"] == "ready"
         assert "seed done" in final["message"]
         assert final["profile_name"] == name
 
-        # 3. 카탈로그에 등록되었는지.
+        # 3. confirm catalog registration.
         r = httpx.get(f"{base}/auth/profiles", timeout=5.0)
         profs = r.json()
         names = [p["name"] for p in profs]
@@ -324,7 +328,7 @@ class TestAuthProfileApiLifecycle:
         assert rec["chips_supported"] is True
         assert rec["last_verified_at"] is not None
 
-        # 4. 명시적 verify (positive).
+        # 4. explicit verify (positive).
         r = httpx.post(
             f"{base}/auth/profiles/{name}/verify",
             params={"naver_probe": "false"},
@@ -335,8 +339,8 @@ class TestAuthProfileApiLifecycle:
         assert body["ok"] is True
         assert body["service_ms"] is not None
 
-        # 5. /recording/start with auth_profile — verify gate 통과 후 codegen 시작.
-        # codegen stub 은 즉시 exit 라 stop 호출은 생략 (분리 검증 대상).
+        # 5. /recording/start with auth_profile — codegen starts after verify gate passes.
+        # codegen stub exits immediately, so the stop call is omitted (covered separately).
         r = httpx.post(
             f"{base}/recording/start",
             json={
@@ -348,20 +352,20 @@ class TestAuthProfileApiLifecycle:
         assert r.status_code == 201, r.text
         sid = r.json()["id"]
 
-        # 6. 세션 메타에 auth_profile 박혔는지.
+        # 6. confirm auth_profile is stamped onto the session metadata.
         r = httpx.get(f"{base}/recording/sessions/{sid}", timeout=5.0)
         assert r.json()["auth_profile"] == name
 
-        # 7. 삭제.
+        # 7. delete.
         r = httpx.delete(f"{base}/auth/profiles/{name}", timeout=5.0)
         assert r.status_code == 204
 
-        # 8. 사라진 것 확인.
+        # 8. confirm it's gone.
         r = httpx.get(f"{base}/auth/profiles", timeout=5.0)
         assert name not in [p["name"] for p in r.json()]
 
     def test_seed_without_verify_text_uses_url_access_check(self, daemon, fake_service):
-        """검증 텍스트 생략 시 검증 URL 접근 성공만으로 약한 verify 를 수행."""
+        """When verify text is omitted, fall back to weak-verify (only checks URL access)."""
         base = daemon["base"]
         name = "tier2-url-only"
         payload = _seed_payload(name, fake_service["base"])
@@ -385,7 +389,7 @@ class TestAuthProfileApiLifecycle:
 
 
 class TestErrorPaths:
-    """만료 / 미발견 / 잘못된 입력 분기."""
+    """expiry / not-found / invalid-input branches."""
 
     def test_recording_start_unknown_profile_404(self, daemon):
         r = httpx.post(
@@ -400,18 +404,21 @@ class TestErrorPaths:
         assert r.json()["detail"]["reason"] == "profile_not_found"
 
     def test_recording_start_failed_auth_leaves_no_orphan_session(self, daemon):
-        """post-review fix: auth 검증 실패 시 pending 세션이 registry 에 남지 않아야 함.
+        """post-review fix: when auth verification fails, no pending session
+        must remain in the registry.
 
-        이전 동작: registry.create() → auth 검증 → 실패하면 HTTPException 만 raise.
-                  세션은 state=pending 으로 남음 (GET /recording/sessions 에 노출).
-        수정 후 : auth 검증을 registry.create *전에* 수행 → 실패시 세션 생성 자체 안 함.
+        Old behavior: registry.create() → auth verify → on failure raise
+                      HTTPException only. Session lingered as state=pending
+                      (visible in GET /recording/sessions).
+        Fix         : run auth verify *before* registry.create → no session
+                      created at all on failure.
         """
         base = daemon["base"]
-        # 사전 상태 — 세션 카운트 baseline.
+        # Pre-condition — baseline session count.
         r0 = httpx.get(f"{base}/recording/sessions", timeout=5.0)
         before = len(r0.json())
 
-        # 실패 유도 — unknown profile.
+        # Force a failure — unknown profile.
         r = httpx.post(
             f"{base}/recording/start",
             json={
@@ -422,23 +429,23 @@ class TestErrorPaths:
         )
         assert r.status_code == 404
 
-        # 사후 — 세션 카운트 증가하지 않아야 함 (orphan 없음).
+        # Post-condition — session count must not increase (no orphan).
         r1 = httpx.get(f"{base}/recording/sessions", timeout=5.0)
         after = len(r1.json())
         assert after == before, (
-            f"orphan 세션 잔존 — before={before} after={after}. "
-            f"auth 검증 실패 시 세션이 생성되면 안 됨."
+            f"orphan session left behind — before={before} after={after}. "
+            f"No session must be created when auth verification fails."
         )
 
     def test_seed_invalid_name_completes_with_error(self, daemon, fake_service):
-        """잘못된 이름은 background thread 에서 InvalidProfileNameError → state=error."""
+        """A bad name raises InvalidProfileNameError on the background thread → state=error."""
         base = daemon["base"]
         r = httpx.post(
             f"{base}/auth/profiles/seed",
             json=_seed_payload("../traversal", fake_service["base"]),
             timeout=5.0,
         )
-        # POST 자체는 201 (background thread 시작). 폴링으로 error 확인.
+        # POST itself returns 201 (background thread started). Confirm error via polling.
         assert r.status_code == 201
         seed_sid = r.json()["seed_sid"]
         final = _poll_seed_until_done(base, seed_sid, timeout_sec=10.0)
@@ -463,7 +470,7 @@ class TestErrorPaths:
 
 
 class TestExpiryDetection:
-    """storage 파일 손상 → verify 가 실패 → recording_start 가 409."""
+    """Corrupt storage file → verify fails → recording_start returns 409."""
 
     def test_corrupted_storage_yields_409_on_recording_start(
         self, daemon, fake_service,
@@ -471,7 +478,7 @@ class TestExpiryDetection:
         base = daemon["base"]
         name = "tier2-expire"
 
-        # 1. 정상 시드.
+        # 1. normal seed.
         r = httpx.post(
             f"{base}/auth/profiles/seed",
             json=_seed_payload(name, fake_service["base"]),
@@ -481,15 +488,15 @@ class TestExpiryDetection:
         final = _poll_seed_until_done(base, seed_sid)
         assert final["state"] == "ready"
 
-        # 2. storage 파일 손상 — verify 시 service text 안 보이게.
+        # 2. corrupt the storage file — verify won't see service text.
         storage = daemon["auth_root"] / f"{name}.storage.json"
-        # 쿠키 모두 제거 → fake 서비스가 redirect 함 → "환영합니다" 미노출.
+        # Drop all cookies → fake service redirects → "환영합니다" never appears.
         storage.write_text(
             json.dumps({"cookies": [], "origins": []}),
             encoding="utf-8",
         )
 
-        # 3. recording_start → verify 게이트가 막아 409.
+        # 3. recording_start → verify gate blocks with 409.
         r = httpx.post(
             f"{base}/recording/start",
             json={
@@ -506,23 +513,23 @@ class TestExpiryDetection:
 
 
 class TestReplayExpiry:
-    """post-review fix — 재생 시 auth 만료 → 502 가 아니라 409 + 구조화 detail."""
+    """post-review fix — replay-time auth expiry returns 409 with structured detail (not 502)."""
 
     def test_play_codegen_with_expired_profile_returns_409(
         self, daemon, fake_service,
     ):
-        """``/experimental/sessions/{sid}/play-codegen`` 가 만료 시 409 반환.
+        """``/experimental/sessions/{sid}/play-codegen`` returns 409 on expiry.
 
-        시나리오:
-          1) 정상 시드 + 녹화 (codegen) → 세션 생성 + metadata.json 에 auth_profile.
-          2) storage 손상 (만료 시뮬레이션).
-          3) play-codegen 호출 → 502 (이전) 가 아니라 409 + reason="profile_expired".
+        Scenario:
+          1) normal seed + record (codegen) → session created + auth_profile in metadata.json.
+          2) corrupt storage (simulate expiry).
+          3) call play-codegen → 409 + reason="profile_expired" (was 502 before).
         """
         base = daemon["base"]
         name = "tier2-replay-expire"
         fake = fake_service["base"]
 
-        # 1) 시드.
+        # 1) seed.
         r = httpx.post(
             f"{base}/auth/profiles/seed",
             json=_seed_payload(name, fake),
@@ -532,8 +539,8 @@ class TestReplayExpiry:
         final = _poll_seed_until_done(base, seed_sid)
         assert final["state"] == "ready"
 
-        # 2) recording 시작 → codegen stub 이 즉시 종료, stop 까지 가서 세션이
-        #    state=done 으로 마감되도록 한다.
+        # 2) start recording → codegen stub exits immediately, then drive stop
+        #    so the session reaches state=done.
         r = httpx.post(
             f"{base}/recording/start",
             json={"target_url": f"{fake}/mypage", "auth_profile": name},
@@ -542,19 +549,19 @@ class TestReplayExpiry:
         assert r.status_code == 201
         sid = r.json()["id"]
 
-        # codegen subprocess 가 즉시 exit 하므로 stop 호출 시 output_size=0.
-        # 그래도 메타에 auth_profile 은 남는다 (start 시점에 박힌 것).
+        # codegen subprocess exits immediately, so stop sees output_size=0.
+        # Even so, auth_profile remains in metadata (stamped at start time).
         httpx.post(f"{base}/recording/stop/{sid}", timeout=15.0)
 
-        # 3) storage 손상 → fake 서비스 verify 실패 유도.
+        # 3) corrupt storage → force fake-service verify failure.
         storage = daemon["auth_root"] / f"{name}.storage.json"
         storage.write_text(
             json.dumps({"cookies": [], "origins": []}),
             encoding="utf-8",
         )
 
-        # 4) play-codegen 호출 — 메타의 auth_profile 자동 매칭 → verify 실패 →
-        #    ReplayAuthExpiredError → router 의 409 변환.
+        # 4) play-codegen call — meta's auth_profile is auto-matched →
+        #    verify fails → ReplayAuthExpiredError → router converts to 409.
         r = httpx.post(
             f"{base}/experimental/sessions/{sid}/play-codegen",
             timeout=20.0,

@@ -1,25 +1,25 @@
 """auth-profile UI End-to-End (Tier 3).
 
-설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §4 + 사용자 e2e 요구
+Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §4 + user e2e requirements
 
-전략:
-    별도 포트 (18095) 로 데몬 spawn. **사전에 카탈로그를 디스크에 작성** 해서
-    UI 가 드롭다운으로 노출하는지부터 만료 모달 분기까지 헤드리스 Chromium 으로
-    검증.
+Strategy:
+    Spawn the daemon on a separate port (18095). **Pre-write the catalog
+    to disk** and verify everything from "does the UI show the dropdown?"
+    through to the expiry-modal branch with headless Chromium.
 
-    Tier 2 가 *HTTP API* 를 검증하므로, Tier 3 는 *DOM + 이벤트 핸들러* 의 회귀
-    보호에 집중 (마크업 ID / class / 모달 dialog 동작).
+    Tier 2 covers the *HTTP API*; Tier 3 focuses on regression protection
+    for *DOM + event handlers* (markup IDs / classes / modal dialog behavior).
 
-검증:
-    - 인증 블록 + 모달 4개의 critical ID 존재
-    - 사전 등록 프로파일이 드롭다운에 노출 (P5.2)
-    - 선택 시 auth-status 갱신
-    - ↻ verify 버튼 (P5.3) — 통과 / 실패 분기
-    - + 새 세션 시드 → seed-dialog 열림 (P5.4)
-    - 취소 → seed-dialog 닫힘
-    - 만료된 프로파일로 Start → expiry modal (P5.6)
-    - sessionStorage 경고 라벨 노출 (P5.9)
-    - 결과 카드 + 세션 테이블 컬럼 (P5.8)
+Coverage:
+    - critical IDs for the auth block + 4 modals exist
+    - pre-registered profiles appear in the dropdown (P5.2)
+    - auth-status updates on selection
+    - ↻ verify button (P5.3) — pass / fail branches
+    - + new session seed → seed-dialog opens (P5.4)
+    - cancel → seed-dialog closes
+    - Start with an expired profile → expiry modal (P5.6)
+    - sessionStorage warning label visible (P5.9)
+    - result card + session-table columns (P5.8)
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ VENV_PY = os.environ.get("E2E_PYTHON", sys.executable)
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# PATH stub `playwright` (Tier 2 와 동일 패턴)
+# PATH stub `playwright` (same pattern as Tier 2)
 # ─────────────────────────────────────────────────────────────────────────
 
 _STUB_PLAYWRIGHT = """#!/usr/bin/env bash
@@ -98,11 +98,11 @@ def stub_path_dir(tmp_path_factory):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 사전 카탈로그 시드 (HTTP 우회 — 디스크에 직접 작성)
+# Pre-seed the catalog (bypass HTTP — write to disk directly)
 # ─────────────────────────────────────────────────────────────────────────
 
 def _write_storage(path: Path, *, valid: bool = True) -> None:
-    """가짜 storage_state. ``valid=False`` 면 만료 시뮬레이션 (쿠키 비움)."""
+    """Fake storage_state. ``valid=False`` simulates expiry (empty cookies)."""
     if valid:
         data = {
             "cookies": [
@@ -133,7 +133,7 @@ def _build_index_entry(
         "last_verified_at": last_verified_at,
         "ttl_hint_hours": 12,
         "verify": {
-            "service_url": "http://localhost:9999/mypage",  # 검증 안 됨 — Tier 3 는 verify 호출 X
+            "service_url": "http://localhost:9999/mypage",  # not actually verified — Tier 3 doesn't call verify
             "service_text": "qa-tester님 환영합니다",
         },
         "fingerprint": {
@@ -155,17 +155,17 @@ def _build_index_entry(
 
 @pytest.fixture(scope="session")
 def seeded_auth_dir(tmp_path_factory):
-    """사전에 3개 프로파일을 카탈로그에 등록한 격리 auth-profiles 디렉토리.
+    """An isolated auth-profiles dir pre-loaded with 3 profiles in the catalog.
 
-    - ``ui-valid``       : 정상, 머신 매치, 검증 OK
-    - ``ui-expired``     : storage 비어있음 → 만료 시뮬레이션
-    - ``ui-with-ss``     : sessionStorage 경고 라벨 표시용
+    - ``ui-valid``       : normal, machine matches, verify passes
+    - ``ui-expired``     : empty storage → expiry simulation
+    - ``ui-with-ss``     : for the sessionStorage warning label
     """
     d = tmp_path_factory.mktemp("ui_e2e_auth")
     d.chmod(0o700)
 
-    # auth_profiles 의 실제 machine_id 를 fixture 시점에 수집해 정상 프로파일 생성.
-    # (subprocess 띄우기 전이라 같은 호스트 → 같은 값)
+    # Capture auth_profiles' real machine_id at fixture time and use it in valid profiles.
+    # (Same host before subprocess spawn → same value.)
     sys.path.insert(0, str(PROJECT_ROOT))
     try:
         from zero_touch_qa.auth_profiles import current_machine_id
@@ -173,12 +173,12 @@ def seeded_auth_dir(tmp_path_factory):
     finally:
         sys.path.pop(0)
 
-    # storage 파일 작성.
+    # write storage files.
     _write_storage(d / "ui-valid.storage.json", valid=True)
     _write_storage(d / "ui-expired.storage.json", valid=False)
     _write_storage(d / "ui-with-ss.storage.json", valid=True)
 
-    # 카탈로그 _index.json 작성.
+    # write the catalog _index.json.
     index = {
         "version": 1,
         "profiles": [
@@ -222,7 +222,7 @@ def _is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
 @pytest.fixture(scope="session")
 def ui_daemon(stub_path_dir, seeded_auth_dir, tmp_path_factory):
     if _is_port_listening(E2E_PORT):
-        pytest.skip(f"port {E2E_PORT} 가 이미 사용 중 — Tier 3 e2e 스킵")
+        pytest.skip(f"port {E2E_PORT} already in use — skipping Tier 3 e2e")
 
     rec_root = tmp_path_factory.mktemp("ui_e2e_rec")
 
@@ -251,7 +251,7 @@ def ui_daemon(stub_path_dir, seeded_auth_dir, tmp_path_factory):
     while time.time() < deadline:
         if proc.poll() is not None:
             stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
-            pytest.skip(f"Tier 3 daemon spawn 실패 (rc={proc.returncode}): {stderr[:500]}")
+            pytest.skip(f"Tier 3 daemon spawn failed (rc={proc.returncode}): {stderr[:500]}")
         if _is_port_listening(E2E_PORT):
             break
         time.sleep(0.2)
@@ -260,7 +260,7 @@ def ui_daemon(stub_path_dir, seeded_auth_dir, tmp_path_factory):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:  # noqa: BLE001
             pass
-        pytest.skip("Tier 3 daemon healthz 대기 timeout")
+        pytest.skip("Tier 3 daemon healthz wait timed out")
 
     yield {"base": E2E_BASE, "auth_root": seeded_auth_dir}
 
@@ -278,13 +278,13 @@ def ui_daemon(stub_path_dir, seeded_auth_dir, tmp_path_factory):
 
 @pytest.fixture
 def page(ui_daemon):
-    """헤드리스 Chromium page — 페이지 로드 후 auth-profiles fetch 까지 완료된 상태."""
+    """Headless Chromium page — loaded and auth-profiles fetch complete."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context()
         page_ = ctx.new_page()
         page_.goto(ui_daemon["base"] + "/", wait_until="networkidle")
-        # 인증 블록 fetch 완료 대기.
+        # wait for the auth block fetch to finish.
         page_.wait_for_function(
             "document.querySelector('#auth-profile-select').options.length > 1",
             timeout=5000,
@@ -295,12 +295,12 @@ def page(ui_daemon):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Tests — DOM 마크업
+# Tests — DOM markup
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestAuthMarkup:
     def test_critical_ids_present(self, page: Page):
-        """인증 블록 + 4 모달의 critical ID 가 DOM 에 존재 (P5.1)."""
+        """Critical IDs for the auth block + 4 modals are present in the DOM (P5.1)."""
         for sel in [
             "#auth-profile-select",
             "#btn-auth-verify",
@@ -314,44 +314,44 @@ class TestAuthMarkup:
             assert page.locator(sel).count() == 1, f"missing element: {sel}"
 
     def test_result_card_has_auth_profile_field(self, page: Page):
-        """결과 카드 메타 (P5.8)."""
+        """Result-card meta (P5.8)."""
         assert page.locator("#result-auth-profile").count() == 1
 
     def test_session_table_has_auth_column(self, page: Page):
-        """세션 테이블 7 컬럼 (P5.8)."""
-        # auth 컬럼이 4번째 (id, state, target_url, auth, steps, created, actions).
+        """Session table has 7 columns (P5.8)."""
+        # auth column is the 4th (id, state, target_url, auth, steps, created, actions).
         headers = page.locator("#session-table thead th").all_text_contents()
         assert "auth" in [h.strip().lower() for h in headers]
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Tests — 드롭다운 + 상태 (P5.2)
+# Tests — dropdown + status (P5.2)
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestDropdown:
     def test_seeded_profiles_listed(self, page: Page):
         opts = page.locator("#auth-profile-select option").all_text_contents()
-        # "(없음 — 비로그인 녹화)" + 3개 시드 프로파일.
+        # "(none — record without login)" + 3 seeded profiles.
         joined = " ".join(opts)
         assert "ui-valid" in joined
         assert "ui-expired" in joined
         assert "ui-with-ss" in joined
 
     def test_session_storage_warning_label(self, page: Page):
-        """sessionStorage 경고 라벨 (P5.9) — 'ui-with-ss' 옵션에 ⚠sessionStorage 표시."""
+        """sessionStorage warning label (P5.9) — 'ui-with-ss' option shows ⚠sessionStorage."""
         opts = page.locator("#auth-profile-select option").all_text_contents()
         ss_opt = next(o for o in opts if "ui-with-ss" in o)
         assert "sessionStorage" in ss_opt or "⚠" in ss_opt
 
     def test_select_updates_status(self, page: Page):
         page.locator("#auth-profile-select").select_option("ui-valid")
-        # 상태 라벨이 갱신될 시간을 잠깐 줌.
+        # give the status label a moment to update.
         page.wait_for_timeout(200)
         status_text = page.locator("#auth-status").text_content() or ""
         assert "ui-valid" in status_text or "localhost" in status_text
 
     def test_verify_button_enabled_after_select(self, page: Page):
-        """프로파일 선택 전 verify 버튼 disabled, 선택 후 enabled (P5.2)."""
+        """verify button is disabled before selection, enabled after (P5.2)."""
         verify_btn = page.locator("#btn-auth-verify")
         assert verify_btn.is_disabled()
         page.locator("#auth-profile-select").select_option("ui-valid")
@@ -360,29 +360,29 @@ class TestDropdown:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Tests — 시드 모달 (P5.4)
+# Tests — seed modal (P5.4)
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestSeedDialog:
     def test_opens_and_closes(self, page: Page):
         dialog = page.locator("#auth-seed-dialog")
-        # 처음엔 닫혀있음.
+        # closed at first.
         assert not dialog.evaluate("el => el.open")
-        # 시드 버튼 클릭 → 열림.
+        # click seed button → opens.
         page.locator("#btn-auth-seed").click()
         page.wait_for_timeout(200)
         assert dialog.evaluate("el => el.open")
-        # 취소 버튼 (type="button") — required 필드가 비어있어도 즉시 닫힘.
+        # cancel button (type="button") — closes immediately even when required fields are empty.
         page.locator("#btn-auth-seed-cancel-input").click()
         page.wait_for_timeout(200)
         assert not dialog.evaluate("el => el.open")
 
     def test_form_has_required_fields(self, page: Page):
-        """시드 입력 폼의 필수 필드 (P5.4). 검증 텍스트는 선택."""
+        """Seed form's required fields (P5.4). Verify text is optional."""
         page.locator("#btn-auth-seed").click()
         page.wait_for_timeout(150)
         form = page.locator("#auth-seed-form")
-        # 필수: name, seed_url, verify_service_url.
+        # required: name, seed_url, verify_service_url.
         for field_name in ["name", "seed_url", "verify_service_url"]:
             inp = form.locator(f"input[name='{field_name}']")
             assert inp.count() == 1, f"missing field: {field_name}"
@@ -390,11 +390,11 @@ class TestSeedDialog:
         verify_text = form.locator("input[name='verify_service_text']")
         assert verify_text.count() == 1
         assert verify_text.get_attribute("required") is None
-        # 닫기.
+        # close.
         page.locator("#btn-auth-seed-cancel-input").click()
 
     def test_progress_dialog_explains_close_and_confirm(self, page: Page):
-        """진행 모달은 창 닫기 완료 조건과 최종 확인 버튼을 제공한다."""
+        """Progress modal explains the close-window completion condition and final confirm button."""
         progress = page.locator("#auth-seed-progress")
         assert "close the open browser window" in (progress.text_content() or "")
         assert "save the session" in (page.locator("#auth-seed-progress-hint").text_content() or "")
@@ -406,33 +406,33 @@ class TestSeedDialog:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Tests — 만료 모달 (P5.6)
+# Tests — expiry modal (P5.6)
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestExpiryModal:
     def test_start_with_expired_profile_shows_modal(self, page: Page):
-        """만료된 프로파일로 Start Recording → expiry modal."""
-        # 1. target_url 입력.
+        """Start Recording with an expired profile → expiry modal."""
+        # 1. type target_url.
         page.fill("#start-form input[name='target_url']", "http://localhost:9/dummy")
-        # 2. 만료된 프로파일 선택.
+        # 2. select the expired profile.
         page.locator("#auth-profile-select").select_option("ui-expired")
         page.wait_for_timeout(150)
-        # 3. Start 클릭. → 백엔드가 verify_profile() 호출 → 실 Playwright 가 9999 포트로
-        #    이동 시도 (도달 불가) → service_side_error → 409 → expired modal.
+        # 3. click Start. → backend calls verify_profile() → real Playwright tries to
+        #    navigate to port 9999 (unreachable) → service_side_error → 409 → expired modal.
         page.locator("#btn-start").click()
 
-        # 4. expiry modal 이 열릴 때까지 대기 (verify 가 timeout 까지 가니 ~30s).
+        # 4. wait until the expiry modal opens (verify can run to its timeout, ~30s).
         expiry_dlg = page.locator("#auth-expired-dialog")
         expect(expiry_dlg).to_be_visible(timeout=45_000)
-        # 모달 내용 sanity.
+        # sanity-check modal content.
         assert "ui-expired" in (page.locator("#auth-expired-name").text_content() or "")
-        # 닫기.
+        # close.
         page.locator("#btn-auth-expired-cancel").click()
         page.wait_for_timeout(200)
         assert not expiry_dlg.evaluate("el => el.open")
 
     def test_reseed_button_opens_seed_dialog_with_prefill(self, page: Page):
-        """expiry modal 의 [재시드] 클릭 → seed-dialog 가 prefill name 으로 열림."""
+        """Click expiry modal's [Re-seed] → seed-dialog opens with name prefilled."""
         page.fill("#start-form input[name='target_url']", "http://localhost:9/dummy")
         page.locator("#auth-profile-select").select_option("ui-expired")
         page.wait_for_timeout(150)
@@ -440,10 +440,10 @@ class TestExpiryModal:
         expect(page.locator("#auth-expired-dialog")).to_be_visible(timeout=45_000)
         page.locator("#btn-auth-expired-reseed").click()
         page.wait_for_timeout(300)
-        # seed-dialog 가 열렸고 name 이 prefill 됐는지.
+        # confirm seed-dialog opened with prefilled name.
         seed_dlg = page.locator("#auth-seed-dialog")
         assert seed_dlg.evaluate("el => el.open")
-        # name 필드: 마지막에 선택된 프로파일 이름이 prefill.
+        # name field: last-selected profile name is prefilled.
         name_input = page.locator("#auth-seed-form input[name='name']")
         assert name_input.input_value() == "ui-expired"
         # cleanup.

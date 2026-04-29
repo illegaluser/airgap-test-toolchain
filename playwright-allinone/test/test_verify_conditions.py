@@ -1,9 +1,9 @@
-"""S3-06 — verify.condition 분기별 통합 검증.
+"""S3-06 — integration coverage for each verify.condition branch.
 
-7 케이스 (5 happy + 2 negative validation):
+7 cases (5 happy + 2 negative validation):
 - visible / hidden / disabled / enabled / checked / value / text(=contains_text)
-- 빈 condition + value → contains 해석
-- unknown condition 은 _validate_scenario 거부
+- empty condition + value → interpreted as contains
+- unknown condition rejected by _validate_scenario
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def test_verify_checked(make_executor, run_scenario, fixture_url):
 
 
 def test_verify_value_exact_match(make_executor, run_scenario, fixture_url):
-    """condition='value' 는 input form 값 정확 매칭."""
+    """condition='value' does an exact match on form input values."""
     executor = make_executor()
     scenario = _scenario(
         fixture_url,
@@ -62,7 +62,7 @@ def test_verify_value_exact_match(make_executor, run_scenario, fixture_url):
 
 
 def test_verify_text_substring_contains(make_executor, run_scenario, fixture_url):
-    """condition='text' (별칭 contains_text/contains) 는 substring contains."""
+    """condition='text' (aliases contains_text/contains) does substring contains."""
     executor = make_executor()
     scenario = _scenario(
         fixture_url,
@@ -73,7 +73,7 @@ def test_verify_text_substring_contains(make_executor, run_scenario, fixture_url
 
 
 def test_verify_blank_condition_with_value_means_contains(make_executor, run_scenario, fixture_url):
-    """condition 이 비어있고 value 가 있으면 contains 해석 (executor 분기 호환)."""
+    """Empty condition with a value is interpreted as contains (matches executor branch)."""
     executor = make_executor()
     scenario = _scenario(
         fixture_url,
@@ -84,7 +84,7 @@ def test_verify_blank_condition_with_value_means_contains(make_executor, run_sce
 
 
 def test_verify_unknown_condition_is_demoted_at_validation():
-    """화이트리스트 밖 condition 은 reject 대신 ""(default fallback) 로 강등."""
+    """Conditions outside the whitelist are demoted to "" (default fallback), not rejected."""
     bad = [
         navigate("file:///x", step=1),
         verify("#x", step=2, condition="exists"),

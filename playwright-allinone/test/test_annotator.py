@@ -1,4 +1,4 @@
-"""TR.7+ — codegen .py 의 hover 자동 주입 (annotator) 회귀 테스트."""
+"""TR.7+ — regression tests for the hover auto-injection (annotator) on codegen .py."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from recording_service.annotator import annotate_script
 
 
 def _make_script(tmp_path: Path, body: str) -> Path:
-    """codegen 표준 출력 구조로 .py 작성."""
+    """Write a .py in codegen's standard output shape."""
     p = tmp_path / "original.py"
     src = (
         "from playwright.sync_api import Playwright, sync_playwright\n"
@@ -26,7 +26,7 @@ def _make_script(tmp_path: Path, body: str) -> Path:
 
 
 def test_annotate_inserts_hover_for_nav_chain(tmp_path: Path) -> None:
-    """nav#gnb chain 안의 click 앞에 hover 라인 자동 삽입."""
+    """Inject a hover line right before a click inside a nav#gnb chain."""
     src = _make_script(
         tmp_path,
         "page.locator('nav#gnb').locator('li').filter(has_text='회사소개').get_by_role('link', name='About').click()",
@@ -38,18 +38,18 @@ def test_annotate_inserts_hover_for_nav_chain(tmp_path: Path) -> None:
     assert res.injected == 1
     assert res.examined_clicks == 1
     annotated = dst.read_text(encoding="utf-8")
-    # hover 라인이 click 라인 직전에 있어야 함.
+    # hover line must sit immediately before the click line.
     lines = annotated.splitlines()
     hover_idx = next(i for i, l in enumerate(lines) if ".hover()" in l)
     click_idx = next(i for i, l in enumerate(lines) if ".click()" in l)
     assert hover_idx < click_idx
     assert "nav#gnb" in lines[hover_idx]
-    # auto-annotated 마커 주석 포함.
+    # auto-annotated marker comment present.
     assert "auto-annotated" in lines[hover_idx]
 
 
 def test_annotate_no_change_for_simple_clicks(tmp_path: Path) -> None:
-    """nav/menu/dropdown 신호 없는 click 은 그대로 (회귀 0)."""
+    """Clicks with no nav/menu/dropdown signal are left alone (zero regression)."""
     src = _make_script(
         tmp_path,
         "page.get_by_role('button', name='Submit').click()\n"
@@ -61,12 +61,12 @@ def test_annotate_no_change_for_simple_clicks(tmp_path: Path) -> None:
 
     assert res.injected == 0
     assert res.examined_clicks == 2
-    # source 가 그대로여야 함 (개행만 일치).
+    # source must round-trip unchanged (only newline parity).
     assert src.read_text() == dst.read_text()
 
 
 def test_annotate_handles_multiple_clicks(tmp_path: Path) -> None:
-    """여러 click 중 일부만 hover 주입 — 라인 인덱스가 밀리지 않는지 확인."""
+    """Inject hover for only some clicks — confirm line indexes don't drift."""
     src = _make_script(
         tmp_path,
         "page.get_by_role('button', name='Login').click()\n"
@@ -79,7 +79,7 @@ def test_annotate_handles_multiple_clicks(tmp_path: Path) -> None:
 
     assert res.injected == 1
     assert res.examined_clicks == 3
-    # syntax check — 결과 파일이 valid python 이어야 함.
+    # syntax check — output must be valid python.
     import ast as _ast
     _ast.parse(dst.read_text(encoding="utf-8"))
 
@@ -98,7 +98,7 @@ def test_annotate_dropdown_class_is_picked(tmp_path: Path) -> None:
 
 
 def test_annotate_returns_existing_path_when_no_clicks(tmp_path: Path) -> None:
-    """click 자체가 없으면 injected=0, 출력은 입력과 동일."""
+    """No clicks at all → injected=0, output identical to input."""
     src = _make_script(tmp_path, "page.goto('https://example.com')")
     dst = tmp_path / "original_annotated.py"
 

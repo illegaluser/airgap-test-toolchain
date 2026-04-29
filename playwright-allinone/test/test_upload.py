@@ -1,9 +1,9 @@
-"""S3-01 — upload 액션 통합 검증.
+"""S3-01 — upload action integration check.
 
-3 케이스:
-- happy: artifacts 안 파일 업로드 후 DOM 결과 표시
-- artifacts 밖 경로 차단: `_validate_scenario` 가 FileNotFoundError 로 거부
-- 빈 value 거부: `_validate_scenario` 가 ScenarioValidationError 로 즉시 거부
+Three cases:
+- happy: file inside artifacts uploads and the DOM shows the result
+- path outside artifacts is blocked: `_validate_scenario` rejects with FileNotFoundError
+- empty value rejected: `_validate_scenario` rejects immediately with ScenarioValidationError
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from helpers.scenarios import navigate, upload, verify
 
 
 def _seed_artifact_file(executor, name: str = "smoke.txt", content: str = "hello") -> Path:
-    """artifacts 안에 업로드 대상 파일을 미리 둔다."""
+    """Place the upload target file inside artifacts ahead of time."""
     artifacts = Path(executor.config.artifacts_dir)
     artifacts.mkdir(parents=True, exist_ok=True)
     path = artifacts / name
@@ -31,7 +31,7 @@ def test_upload_happy_path(make_executor, run_scenario, fixture_url):
 
     scenario = [
         navigate(fixture_url("upload.html"), step=1),
-        upload("#file-input", "smoke.txt", step=2, description="파일 업로드"),
+        upload("#file-input", "smoke.txt", step=2, description="upload file"),
         verify("#result", step=3, condition="text", value="uploaded:smoke.txt"),
     ]
     results, _, _ = run_scenario(executor, scenario)
@@ -42,7 +42,7 @@ def test_upload_happy_path(make_executor, run_scenario, fixture_url):
 
 def test_upload_outside_artifacts_root_is_rejected(make_executor, fixture_url, tmp_path):
     executor = make_executor()
-    # artifacts 밖에 파일을 둔다 — 절대경로/상대경로 모두 차단되어야 한다.
+    # Place a file outside artifacts — both absolute and relative paths must be blocked.
     outside = tmp_path / "secret.txt"
     outside.write_text("nope", encoding="utf-8")
 
@@ -50,12 +50,12 @@ def test_upload_outside_artifacts_root_is_rejected(make_executor, fixture_url, t
         navigate(fixture_url("upload.html"), step=1),
         upload("#file-input", "../secret.txt", step=2),
     ]
-    # _validate_scenario 자체는 통과 (value 비어있지 않음). 실행 시 FileNotFoundError.
+    # _validate_scenario itself passes (value not empty). At execution time, FileNotFoundError.
     _validate_scenario(scenario)
     results = executor.execute(scenario, headed=False)
 
     assert results[0].status == "PASS"
-    assert results[1].status == "FAIL"  # 경로 거부 → fallback 도 없어 FAIL
+    assert results[1].status == "FAIL"  # path rejected → no fallback, so FAIL
 
 
 def test_upload_empty_value_rejected_at_validation():

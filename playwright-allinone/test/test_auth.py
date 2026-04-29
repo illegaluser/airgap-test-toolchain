@@ -1,13 +1,13 @@
-"""T-D (P0.1) — auth.py 단위 테스트 + auth_login fixture 통합.
+"""T-D (P0.1) — auth.py unit tests + auth_login fixture integration.
 
-설계: docs/PLAN_PRODUCTION_READINESS.md §"T-D — 인증 (form + OAuth + TOTP)"
+Design: docs/PLAN_PRODUCTION_READINESS.md §"T-D — auth (form + OAuth + TOTP)"
 
-검증 영역:
-- credential alias env var lookup (성공/실패)
-- mask_secret 마스킹 규칙
-- parse_auth_target 의 mode/옵션 파싱
-- TOTP 코드 생성 (pyotp 통합)
-- form/totp fixture 와 executor `_execute_auth_login` 통합
+Coverage:
+- credential alias env-var lookup (success/failure)
+- mask_secret masking rules
+- parse_auth_target mode/option parsing
+- TOTP code generation (pyotp integration)
+- form/totp fixtures wired through the executor's `_execute_auth_login`
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ AUTH_TOTP_URL = (FIXTURES_DIR / "auth_totp.html").as_uri()
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# CLI 검증 — auth_login 이 _validate_scenario 를 통과하는지 회귀 (P0.1 #1).
-# CLI 가 auth_login 액션을 화이트리스트 밖이라 reject 하던 버그의 회귀 가드.
+# CLI validation — regression guard that auth_login passes _validate_scenario
+# (P0.1 #1). Catches the bug where the CLI rejected auth_login as out-of-whitelist.
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -60,7 +60,7 @@ def test_cli_validates_auth_login_form_mode():
 
     _validate_scenario(_scenario_with({
         "step": 2, "action": "auth_login", "target": "form",
-        "value": "demo_alias", "description": "form 로그인",
+        "value": "demo_alias", "description": "form login",
         "fallback_targets": [],
     }))
 
@@ -82,7 +82,7 @@ def test_cli_rejects_auth_login_with_invalid_mode():
     with pytest.raises(ScenarioValidationError, match="target"):
         _validate_scenario(_scenario_with({
             "step": 2, "action": "auth_login", "target": "saml",
-            "value": "demo_alias", "description": "잘못된 모드",
+            "value": "demo_alias", "description": "invalid mode",
             "fallback_targets": [],
         }))
 
@@ -93,20 +93,20 @@ def test_cli_rejects_auth_login_with_empty_value():
     with pytest.raises(ScenarioValidationError, match="value"):
         _validate_scenario(_scenario_with({
             "step": 2, "action": "auth_login", "target": "form",
-            "value": "", "description": "alias 누락",
+            "value": "", "description": "alias missing",
             "fallback_targets": [],
         }))
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 스크린샷 마스킹 — _screenshot_masked 가 Playwright 의 mask= 인자를 정확히
-# 전달하는지 확인 (P0.1 #3). credential 평문이 PNG 캡처에 노출되는 것을 막는
-# 유일한 게이트이므로 회귀 가드가 필요.
+# Screenshot masking — confirm _screenshot_masked passes Playwright's
+# mask= argument through (P0.1 #3). This is the only gate keeping
+# plaintext credentials out of PNG captures, so a regression guard is needed.
 # ─────────────────────────────────────────────────────────────────────────
 
 
 class _PageStub:
-    """page.screenshot(...) 호출 인자를 기록만 하는 stub."""
+    """Stub that just records page.screenshot(...) call args."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -139,8 +139,8 @@ def test_screenshot_masked_with_none_uses_empty_mask(tmp_path):
 
 
 def test_screenshot_masked_skips_when_playwright_missing_mask_arg(tmp_path):
-    """구버전 Playwright 가 mask= 인자를 거부하면 자격증명 노출 방지를 위해
-    스크린샷 자체를 생략하고 빈 경로 반환 (Fail-secure)."""
+    """If an old Playwright rejects the mask= argument, skip the
+    screenshot entirely and return an empty path (fail-secure) so credentials don't leak."""
     from zero_touch_qa.executor import QAExecutor
 
     class _OldPage:
@@ -161,10 +161,10 @@ def test_screenshot_masked_skips_when_playwright_missing_mask_arg(tmp_path):
 
 @pytest.mark.parametrize("value,keep,expected", [
     ("", 2, "<empty>"),
-    ("ab", 2, "**"),                          # len ≤ keep → 전체 마스킹
-    ("abc", 2, "*bc"),                        # 끝 keep 자만 평문
+    ("ab", 2, "**"),                          # len ≤ keep → mask everything
+    ("abc", 2, "*bc"),                        # only the trailing keep chars are plaintext
     ("S3cret-pass-1234", 2, "**************34"),
-    ("hidden", 0, "******"),                  # keep=0 → 전체 마스킹
+    ("hidden", 0, "******"),                  # keep=0 → mask everything
     ("totp_secret_xyz", 4, "***********_xyz"),
 ])
 def test_mask_secret(value, keep, expected):
@@ -189,14 +189,14 @@ def test_resolve_credential_all_fields(monkeypatch):
 
 
 def test_resolve_credential_alias_normalized(monkeypatch):
-    """alias 의 비-영숫자 문자는 ``_`` 로 변환된다."""
+    """Non-alphanumeric chars in alias are normalized to ``_``."""
     monkeypatch.setenv(f"{ENV_PREFIX}_PROD_GOOGLE_USER", "ci@example.com")
     cred = resolve_credential("prod-google")  # dash → _
     assert cred.user == "ci@example.com"
 
 
 def test_resolve_credential_partial(monkeypatch):
-    """USER 만 있어도 OK — 적어도 하나는 있어야 함."""
+    """USER only is fine — at least one must be present."""
     monkeypatch.setenv(f"{ENV_PREFIX}_PARTIAL_USER", "user")
     cred = resolve_credential("partial")
     assert cred.user == "user"
@@ -205,7 +205,7 @@ def test_resolve_credential_partial(monkeypatch):
 
 
 def test_resolve_credential_missing_raises():
-    # 환경변수 셋 다 없으면 에러
+    # if all three env vars are missing, raise
     with pytest.raises(CredentialError, match="not in environment"):
         resolve_credential("nonexistent_alias_zzz_unique")
 
@@ -255,7 +255,7 @@ def test_parse_auth_target_totp_explicit():
 
 
 def test_parse_auth_target_unknown_keys_ignored():
-    """알 수 없는 키는 경고 후 무시 — 파싱 자체는 실패하지 않음."""
+    """Unknown keys warn and are dropped — parsing itself does not fail."""
     opts = parse_auth_target("form, unknown=foo, email_field=#e")
     assert opts.mode == "form"
     assert opts.email_field == "#e"
@@ -280,24 +280,24 @@ def test_generate_totp_code_empty_secret_raises():
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Field 후보 selector 가 정의되어 있는지 (regression 방지)
+# Confirm field candidate selectors are defined (regression guard)
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_field_candidates_defined():
-    """4 개 후보 selector 리스트가 비어 있지 않음."""
+    """All 4 candidate-selector lists are non-empty."""
     assert len(EMAIL_FIELD_CANDIDATES) > 0
     assert len(PASSWORD_FIELD_CANDIDATES) > 0
     assert len(TOTP_FIELD_CANDIDATES) > 0
     assert len(SUBMIT_BUTTON_CANDIDATES) > 0
-    # autocomplete 표준 selector 가 우선순위에 있어야 함
+    # standard autocomplete selector must rank in priority
     assert any('autocomplete="username"' in s for s in EMAIL_FIELD_CANDIDATES)
     assert any('type="password"' in s for s in PASSWORD_FIELD_CANDIDATES)
     assert any('one-time-code' in s for s in TOTP_FIELD_CANDIDATES)
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# AuthOptions / Credential 데이터클래스
+# AuthOptions / Credential dataclasses
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -315,37 +315,38 @@ def test_credential_dataclass_helpers():
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Fixture 통합 — executor `_execute_auth_login` 을 시나리오 단위로 호출.
-# 코드베이스 표준 패턴 (make_executor + run_scenario) 사용 — pytest-playwright
-# 의 `page` fixture 는 asyncio 루프를 띄워서 후속 sync_playwright 호출을
-# 깨뜨리므로 executor 내부의 sync_playwright 만 사용한다.
+# Fixture integration — call the executor's `_execute_auth_login` per scenario.
+# Use the codebase's standard pattern (make_executor + run_scenario) —
+# pytest-playwright's `page` fixture spins up an asyncio loop that breaks
+# subsequent sync_playwright calls, so we use only the executor's internal
+# sync_playwright.
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def _navigate_step(url: str) -> dict:
     return {
         "step": 1, "action": "navigate", "target": "", "value": url,
-        "description": f"{url} 로 이동", "fallback_targets": [],
+        "description": f"navigate to {url}", "fallback_targets": [],
     }
 
 
 def _auth_login_step(target: str, alias: str, *, step: int = 2) -> dict:
     return {
         "step": step, "action": "auth_login", "target": target, "value": alias,
-        "description": "auth_login fixture 통합", "fallback_targets": [],
+        "description": "auth_login fixture integration", "fallback_targets": [],
     }
 
 
 def _verify_step(target: str, value: str, *, step: int = 3) -> dict:
     return {
         "step": step, "action": "verify", "target": target, "value": value,
-        "description": "auth_login 결과 verify", "fallback_targets": [],
+        "description": "verify auth_login result", "fallback_targets": [],
         "condition": "text",
     }
 
 
 def test_auth_login_form_success(make_executor, run_scenario, monkeypatch):
-    """auth_form.html 정상 로그인 — auth_login form 이 필드 자동 탐지 + fill + submit."""
+    """auth_form.html happy path — auth_login form auto-detects fields + fill + submit."""
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_FORM_USER", "tester@example.com")
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_FORM_PASS", "S3cret-pass-1234")
 
@@ -357,12 +358,12 @@ def test_auth_login_form_success(make_executor, run_scenario, monkeypatch):
     ]
     results, _, _ = run_scenario(executor, scenario)
     statuses = [r.status for r in results]
-    assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"
+    assert statuses == ["PASS", "PASS", "PASS"], f"actual: {statuses}"
 
 
 def test_auth_login_form_wrong_password(make_executor, run_scenario, monkeypatch):
-    """잘못된 비밀번호 — auth_login 자체는 PASS (fill+submit 성공) 하지만
-    fixture 의 status 가 fail 로 바뀌어 후속 verify 가 FAIL."""
+    """Wrong password — auth_login itself PASSes (fill+submit succeeds) but
+    the fixture flips status to fail, so the follow-up verify runs against fail."""
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_BAD_USER", "tester@example.com")
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_BAD_PASS", "wrong-password")
 
@@ -370,19 +371,19 @@ def test_auth_login_form_wrong_password(make_executor, run_scenario, monkeypatch
     scenario = [
         _navigate_step(AUTH_FORM_URL),
         _auth_login_step("form", "fixture_bad"),
-        # 정답 status 가 안 나오는지 verify
+        # verify the success status doesn't appear
         _verify_step("#status", "auth_form_login_fail"),
     ]
     results, _, _ = run_scenario(executor, scenario)
-    # auth_login 자체는 PASS (form 제출 성공) — 실패 메시지가 status 에 반영
+    # auth_login itself PASSes (form submit succeeded) — failure message lands in status
     assert results[0].status == "PASS"
     assert results[1].status == "PASS"
-    # status 가 'auth_form_login_fail' 로 바뀜 → verify PASS
+    # status flips to 'auth_form_login_fail' → verify PASSes
     assert results[2].status == "PASS"
 
 
 def test_auth_login_form_explicit_selectors(make_executor, run_scenario, monkeypatch):
-    """target 옵션으로 selector 명시 — 자동 탐지 안 거치고 직접 지정한 필드 사용."""
+    """Explicit selectors via target — skip auto-detection and use the named fields directly."""
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_EXPLICIT_USER", "tester@example.com")
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_EXPLICIT_PASS", "S3cret-pass-1234")
 
@@ -400,7 +401,7 @@ def test_auth_login_form_explicit_selectors(make_executor, run_scenario, monkeyp
 
 
 def test_auth_login_totp_success(make_executor, run_scenario, monkeypatch):
-    """auth_totp.html — pyotp 코드 생성 후 fill + submit (자동 탐지)."""
+    """auth_totp.html — generate the code with pyotp, then fill + submit (auto-detected)."""
     pytest.importorskip("pyotp")
     monkeypatch.setenv(
         f"{ENV_PREFIX}_FIXTURE_TOTP_TOTP_SECRET", "JBSWY3DPEHPK3PXP",
@@ -419,9 +420,9 @@ def test_auth_login_totp_success(make_executor, run_scenario, monkeypatch):
 def test_auth_login_totp_missing_secret_fails(
     make_executor, run_scenario, monkeypatch,
 ):
-    """alias 가 USER 만 가지고 있고 TOTP 시크릿이 없으면 즉시 FAIL."""
+    """If alias has only USER and no TOTP secret, fail immediately."""
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_NOTOTP_USER", "x@example.com")
-    # TOTP_SECRET 의도적으로 안 둠
+    # intentionally leave TOTP_SECRET unset
 
     executor = make_executor()
     scenario = [
@@ -430,36 +431,36 @@ def test_auth_login_totp_missing_secret_fails(
     ]
     results, _, _ = run_scenario(executor, scenario)
     assert results[0].status == "PASS"  # navigate
-    assert results[1].status == "FAIL"  # auth_login (TOTP 시크릿 없음)
+    assert results[1].status == "FAIL"  # auth_login (no TOTP secret)
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 마스킹 회귀 — Credential 객체가 repr / str 로 평문 노출하지 않는지
+# Masking regression — confirm the Credential object doesn't leak plaintext via repr / str
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_credential_repr_does_not_leak_password(monkeypatch):
-    """Credential 의 default __repr__ 은 dataclass 기본 (필드 노출).
+    """Credential's default __repr__ is the dataclass default (exposes fields).
 
-    이는 의도된 디자인 — 디버깅 시 직접 출력 안 하면 노출 안 됨. 다만
-    log 출력 시 사용 측에서 mask_secret 으로 감싸야 한다 (executor 의
-    `_execute_auth_login` 가 그렇게 함).
+    This is intentional — as long as the value isn't printed during
+    debugging, nothing leaks. But callers must wrap log output with
+    mask_secret (the executor's `_execute_auth_login` does).
     """
     c = Credential(alias="x", user="u", password="p", totp_secret="s")
-    # repr 에 password 가 노출되는 것을 *기본값* 으로 받아들이고, 실 사용 측이
-    # mask_secret 으로 감싸는 책임을 진다. 본 테스트는 그 계약을 명시.
-    assert "p" in repr(c)  # password 가 repr 에 들어가는 것 자체는 의도된 동작
-    # 그러나 mask_secret 적용 시 평문 노출 안 됨
+    # We *accept* that password appears in repr by default; callers are
+    # responsible for wrapping with mask_secret. This test pins down that contract.
+    assert "p" in repr(c)  # password in repr is the intended default behavior
+    # but mask_secret hides plaintext when applied
     assert mask_secret(c.password, keep=0) == "*"
     assert mask_secret(c.totp_secret, keep=0) == "*"
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 로그 마스킹 회귀 — executor 가 auth_login 실행 시 평문 password / TOTP 시크릿
-# 을 로그에 절대 흘리지 않는지 caplog 로 캡처해 검증.
+# Log masking regression — capture caplog and verify the executor never
+# leaks plaintext password / TOTP secret while running auth_login.
 # ─────────────────────────────────────────────────────────────────────────
 
-# 의도적으로 짧지 않은, 식별 가능한 토큰 — 캡처된 로그 어디에도 등장하면 fail.
+# Intentionally long, identifiable tokens — if they appear anywhere in captured logs, fail.
 _PLAINTEXT_PASS_SENTINEL = "S3cret-PLAINTEXT-Sentinel-Token-9z"
 _PLAINTEXT_TOTP_SENTINEL = "JBSWY3DPLAINTEXTONLY"
 
@@ -467,7 +468,7 @@ _PLAINTEXT_TOTP_SENTINEL = "JBSWY3DPLAINTEXTONLY"
 def test_executor_logs_do_not_leak_password(
     make_executor, run_scenario, monkeypatch, caplog,
 ):
-    """auth_login form 흐름의 모든 로그/StepResult 에서 평문 password 가 노출 안 됨."""
+    """No plaintext password leaks in logs/StepResult during the auth_login form flow."""
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_LEAK_USER", "tester@example.com")
     monkeypatch.setenv(f"{ENV_PREFIX}_FIXTURE_LEAK_PASS", _PLAINTEXT_PASS_SENTINEL)
 
@@ -479,12 +480,12 @@ def test_executor_logs_do_not_leak_password(
     with caplog.at_level("DEBUG"):
         results, _, _ = run_scenario(executor, scenario)
 
-    # 1) caplog 에 평문 sentinel 미노출
+    # 1) plaintext sentinel never appears in caplog
     full_log = "\n".join(record.getMessage() for record in caplog.records)
     assert _PLAINTEXT_PASS_SENTINEL not in full_log, (
-        "executor 로그에 평문 password 노출됨"
+        "executor logs leaked plaintext password"
     )
-    # 2) StepResult 의 value/target/description 에도 미노출
+    # 2) and never in StepResult's value/target/description either
     for r in results:
         for fld in (r.target, r.value, r.description):
             assert _PLAINTEXT_PASS_SENTINEL not in str(fld)
@@ -493,7 +494,7 @@ def test_executor_logs_do_not_leak_password(
 def test_executor_logs_do_not_leak_totp_secret(
     make_executor, run_scenario, monkeypatch, caplog,
 ):
-    """auth_login totp 흐름에서 평문 TOTP 시크릿이 노출 안 됨."""
+    """No plaintext TOTP secret leaks in the auth_login totp flow."""
     pytest.importorskip("pyotp")
     monkeypatch.setenv(
         f"{ENV_PREFIX}_FIXTURE_LEAK_TOTP_TOTP_SECRET", _PLAINTEXT_TOTP_SENTINEL,
@@ -509,7 +510,7 @@ def test_executor_logs_do_not_leak_totp_secret(
 
     full_log = "\n".join(record.getMessage() for record in caplog.records)
     assert _PLAINTEXT_TOTP_SENTINEL not in full_log, (
-        "executor 로그에 평문 TOTP 시크릿 노출됨"
+        "executor logs leaked plaintext TOTP secret"
     )
     for r in results:
         for fld in (r.target, r.value, r.description):
@@ -519,9 +520,9 @@ def test_executor_logs_do_not_leak_totp_secret(
 def test_executor_logs_user_email_partially_visible(
     make_executor, run_scenario, monkeypatch, caplog,
 ):
-    """user (email) 은 전체 평문 노출 안 되고 mask_secret(keep=2) 형태로 부분 노출.
+    """user (email) isn't fully revealed — only partial via mask_secret(keep=2).
 
-    completely 마스킹은 디버깅 어려워서 user 는 끝 2자만 평문이 정상.
+    Full masking makes debugging hard, so the trailing 2 chars of user stay plaintext.
     """
     monkeypatch.setenv(
         f"{ENV_PREFIX}_FIXTURE_USER_VIS_USER", "tester-with-special@example.com",
@@ -537,5 +538,5 @@ def test_executor_logs_user_email_partially_visible(
         run_scenario(executor, scenario)
 
     full_log = "\n".join(record.getMessage() for record in caplog.records)
-    # 평문 email 자체는 완전 노출 안 됨
+    # raw email itself never appears in full
     assert "tester-with-special@example.com" not in full_log

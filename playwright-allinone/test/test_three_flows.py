@@ -1,9 +1,9 @@
-"""S3-11 — 3-Flow (chat / doc / execute) 통합 회귀.
+"""S3-11 — 3-Flow (chat / doc / execute) integration regression.
 
-3 모드 모두 fixture 위에서 한 번씩 통과해야 한다. chat 은 Dify monkeypatch
-로 결정론적 시나리오를 받고, doc 은 ZTQA_STEP marker 를 가진 텍스트 입력으로
-로컬 step parser 만으로 통과 (Dify 호출 없음), execute 는 손작성 scenario.json
-입력.
+All three modes must each pass once on the fixture. Chat receives a
+deterministic scenario via Dify monkeypatch, doc parses ZTQA_STEP marker
+text with the local step parser only (no Dify calls), and execute loads
+a hand-crafted scenario.json.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from zero_touch_qa.utils import parse_structured_doc_steps
 
 
 def _stub_args(**kwargs) -> argparse.Namespace:
-    """_prepare_scenario 가 기대하는 args namespace 를 합쳐서 만들어준다."""
+    """Build the args namespace _prepare_scenario expects."""
     base = {
         "mode": None,
         "file": None,
@@ -51,22 +51,22 @@ def _test_config(tmp_path: Path) -> Config:
 def test_chat_flow_uses_dify_monkeypatch_to_produce_scenario(
     monkeypatch_dify, tmp_path: Path, fixture_url, make_executor, run_scenario
 ):
-    """chat: Dify monkeypatch 결정론적 응답 → _validate_scenario 통과 → 실행."""
+    """chat: deterministic response from Dify monkeypatch → passes _validate_scenario → runs."""
     page_url = fixture_url("verify_conditions.html")
     expected_scenario = [
         {"step": 1, "action": "navigate", "target": "", "value": page_url,
-         "description": "대상 페이지 로드"},
+         "description": "load target page"},
         {"step": 2, "action": "verify", "target": "#visible-box", "value": "",
-         "condition": "visible", "description": "가시성 검증"},
+         "condition": "visible", "description": "visibility check"},
     ]
     monkeypatch_dify(generate_response=expected_scenario)
 
     config = _test_config(tmp_path)
-    args = _stub_args(mode="chat", srs_text="가시성 확인", target_url=page_url)
-    scenario = _prepare_scenario(args, config, page_url, "가시성 확인", "")
+    args = _stub_args(mode="chat", srs_text="visibility check", target_url=page_url)
+    scenario = _prepare_scenario(args, config, page_url, "visibility check", "")
     assert scenario == expected_scenario
 
-    # 실행까지 통과 확인 — 산출물도 정상 생성
+    # confirm full execution + artifacts produced
     executor = make_executor()
     results, _, _ = run_scenario(executor, scenario)
     assert [r.status for r in results] == ["PASS", "PASS"]
@@ -75,42 +75,42 @@ def test_chat_flow_uses_dify_monkeypatch_to_produce_scenario(
 def test_doc_flow_uses_local_step_parser_without_dify(
     tmp_path: Path, fixture_url, make_executor, run_scenario, monkeypatch_dify
 ):
-    """doc: ZTQA_STEP marker 가 있는 텍스트 → 로컬 파서 → Dify 호출 0."""
+    """doc: text with ZTQA_STEP markers → local parser → 0 Dify calls."""
     page_url = fixture_url("verify_conditions.html")
     doc_text = (
-        "테스트 문서\n\n"
-        f"ZTQA_STEP|1|navigate||{page_url}|페이지 로드\n"
-        "ZTQA_STEP|2|verify|#visible-box||가시성 검증\n"
+        "test document\n\n"
+        f"ZTQA_STEP|1|navigate||{page_url}|page load\n"
+        "ZTQA_STEP|2|verify|#visible-box||visibility check\n"
     )
     parsed = parse_structured_doc_steps(doc_text)
     assert parsed is not None and len(parsed) == 2
-    _validate_scenario(parsed)  # 14대 계약 통과 확인
+    _validate_scenario(parsed)  # confirm the 14-action contract holds
 
-    # Dify 호출 0 인지 확인하기 위해 monkeypatch — 호출되면 카운트가 증가.
+    # monkeypatch so we can confirm Dify was never called — count goes up if it was.
     recorder = monkeypatch_dify(generate_response=[])
 
     executor = make_executor()
     results, _, _ = run_scenario(executor, parsed)
     assert [r.status for r in results] == ["PASS", "PASS"]
-    assert recorder.generate_calls == 0  # 로컬 파서로만 통과 — Dify 안 부름
+    assert recorder.generate_calls == 0  # passed via local parser only — Dify not called
 
 
 def test_execute_flow_loads_handcrafted_scenario_json_and_validates(
     tmp_path: Path, fixture_url, make_executor, run_scenario, write_scenario_json
 ):
-    """execute: 손작성 scenario.json → _validate_scenario → 실행."""
+    """execute: hand-crafted scenario.json → _validate_scenario → runs."""
     page_url = fixture_url("verify_conditions.html")
     scenario = [
         {"step": 1, "action": "navigate", "target": "", "value": page_url,
-         "description": "대상 페이지"},
+         "description": "target page"},
         {"step": 2, "action": "verify", "target": "#btn-disabled", "value": "",
-         "condition": "disabled", "description": "비활성 검증"},
+         "condition": "disabled", "description": "disabled check"},
     ]
     scenario_path = write_scenario_json(scenario)
     assert scenario_path.exists()
 
-    # _prepare_scenario 가 execute 모드에서 _validate_scenario 를 호출하는지
-    # 확인 (Sprint 2 의 S2-11 보강).
+    # confirm _prepare_scenario calls _validate_scenario in execute mode
+    # (Sprint 2 S2-11 hardening).
     config = _test_config(tmp_path)
     args = _stub_args(mode="execute", scenario=str(scenario_path))
     loaded = _prepare_scenario(args, config, "", "", "")

@@ -53,7 +53,7 @@ def test_validate_scenario_accepts_new_actions():
 
 
 def test_convert_only_rejects_non_convert_mode_before_dify_call(tmp_path: Path):
-    """`--convert-only` 오용은 Dify retry 로 들어가기 전에 즉시 실패해야 한다."""
+    """Misuse of `--convert-only` must fail immediately before any Dify retry."""
     project_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env.update(
@@ -125,7 +125,7 @@ def test_normalize_mock_body_accepts_dict_and_json_string(tmp_path: Path):
 
 
 def test_validate_scenario_demotes_unknown_verify_condition():
-    """LLM 비결정성 대응: 화이트리스트 밖 condition 은 reject 대신 ""(default) 로 강등."""
+    """LLM non-determinism handling: out-of-whitelist conditions are demoted to "" (default) instead of rejected."""
     scenario = [
         {"step": 1, "action": "navigate", "value": "https://example.com"},
         {"step": 2, "action": "verify", "target": "#x", "condition": "exists"},
@@ -241,7 +241,7 @@ def test_regression_generator_emits_verify_condition_branches():
 
 
 def test_install_mock_route_clamps_times_minimum(tmp_path: Path):
-    """times <= 0 이 들어와도 1 로 끌어올려 page.route 호출이 깨지지 않게 한다."""
+    """times <= 0 is clamped up to 1 so the page.route call doesn't break."""
     calls = []
 
     class _FakePage:
@@ -255,17 +255,17 @@ def test_install_mock_route_clamps_times_minimum(tmp_path: Path):
     assert calls[1][1] == 3
 
 
-# ─── Sanitizer meta-reasoning leak 회복 (Sprint 5 §10.5 후속) ──────────────
+# ─── Sanitizer meta-reasoning leak recovery (follow-up to Sprint 5 §10.5) ─
 
 
 def test_sanitize_recovers_leading_valid_action_from_polluted_field():
-    """LLM 이 action 필드에 'verify, target: ...' 형태로 meta-reasoning 을 섞어 emit
-    하더라도 앞쪽 첫 토큰이 valid action 이면 회복한다."""
+    """When the LLM emits meta-reasoning into action like 'verify, target: ...',
+    the sanitizer recovers if the first token is a valid action."""
     raw = [
         {"action": 'verify, target: id=status, value: "clicked", condition: text',
          "target": "#status", "value": "clicked"},
         {"action": "`upload`, target: <input type='file'>", "target": "#file"},
-        {"action": "click", "target": "#btn"},  # 정상
+        {"action": "click", "target": "#btn"},  # normal
     ]
     out = _sanitize_scenario(raw)
     assert len(out) == 3
@@ -275,7 +275,7 @@ def test_sanitize_recovers_leading_valid_action_from_polluted_field():
 
 
 def test_sanitize_drops_when_leading_token_not_valid():
-    """앞쪽 첫 토큰조차 valid action 이 아니면 drop 한다."""
+    """If even the leading token isn't a valid action, drop it."""
     raw = [
         {"action": "* target is source, value is destination", "target": "x"},
         {"action": "click", "target": "#btn"},
@@ -285,13 +285,13 @@ def test_sanitize_drops_when_leading_token_not_valid():
     assert out[0]["action"] == "click"
 
 
-# ─── Healer action whitelist 전이 (Sprint 6 / Option-2) ────────────────────
+# ─── Healer action whitelist transitions (Sprint 6 / Option-2) ─────────────
 
 
 def test_heal_action_transition_whitelist_accepts_intra_group():
     from zero_touch_qa.executor import _is_allowed_action_transition
 
-    # 의미 등가 전이는 허용
+    # semantically equivalent transitions are allowed
     assert _is_allowed_action_transition("select", "fill")
     assert _is_allowed_action_transition("fill", "select")
     assert _is_allowed_action_transition("check", "click")
@@ -300,22 +300,22 @@ def test_heal_action_transition_whitelist_accepts_intra_group():
     assert _is_allowed_action_transition("press", "click")
     assert _is_allowed_action_transition("upload", "click")
     assert _is_allowed_action_transition("click", "upload")
-    # identity 도 허용 (Healer 가 같은 action 으로 재confirm 하는 경우)
+    # identity also allowed (when the healer re-confirms the same action)
     assert _is_allowed_action_transition("click", "click")
 
 
 def test_heal_action_transition_whitelist_rejects_cross_group():
     from zero_touch_qa.executor import _is_allowed_action_transition
 
-    # false-PASS 위험 전이는 거절
-    assert not _is_allowed_action_transition("drag", "click")  # 의미 변경 — 검증 무력화
+    # transitions that risk false-PASS are rejected
+    assert not _is_allowed_action_transition("drag", "click")  # semantic change — defeats verification
     assert not _is_allowed_action_transition("click", "drag")
-    assert not _is_allowed_action_transition("verify", "click")  # 검증 그룹간 변경
+    assert not _is_allowed_action_transition("verify", "click")  # cross-group (verify)
     assert not _is_allowed_action_transition("navigate", "click")
-    assert not _is_allowed_action_transition("mock_status", "mock_data")  # 다른 그룹
-    assert not _is_allowed_action_transition("upload", "mock_data")  # 결함 4 케이스
+    assert not _is_allowed_action_transition("mock_status", "mock_data")  # different group
+    assert not _is_allowed_action_transition("upload", "mock_data")  # 4 review-flagged cases
     assert not _is_allowed_action_transition("wait", "verify")
-    assert not _is_allowed_action_transition("hover", "click")  # hover 는 부분적으로 click 과 다른 의미
+    assert not _is_allowed_action_transition("hover", "click")  # hover differs in meaning from click in part
 
 
 def test_heal_action_transition_whitelist_rejects_invalid_inputs():
@@ -325,5 +325,5 @@ def test_heal_action_transition_whitelist_rejects_invalid_inputs():
     assert not _is_allowed_action_transition("click", None)
     assert not _is_allowed_action_transition("", "click")
     assert not _is_allowed_action_transition("click", "")
-    # 대문자 입력은 함수 내부 lowercase 정규화로 화이트리스트와 매치된다 (방어적 처리)
+    # uppercase input matches the whitelist via the function's internal lowercase normalization (defensive)
     assert _is_allowed_action_transition("CLICK", "PRESS")

@@ -1,7 +1,8 @@
-"""Phase R-MVP TR.1 / TR.2 — Recording 서비스 단위 테스트.
+"""Phase R-MVP TR.1 / TR.2 — Recording service unit tests.
 
-FastAPI TestClient + monkeypatch 로 codegen subprocess 를 fake handle 로 대체해
-엔드포인트 흐름·에러 처리·핸들 레지스트리 검증.
+FastAPI TestClient + monkeypatch replace the codegen subprocess with a
+fake handle to exercise the endpoint flow, error handling, and the
+handle registry.
 """
 
 from __future__ import annotations
@@ -14,10 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
-# 의존성 미설치 환경에서 collection 실패 안 하도록 graceful skip.
-# starlette.testclient 는 httpx 미설치 시 ImportError 가 아닌 RuntimeError 를
-# 던져 importorskip 의 ImportError 핸들링을 우회한다 → httpx 를 먼저 게이트해야
-# fastapi.testclient import 가 실제로 안전하게 skip.
+# Graceful skip so collection doesn't fail when deps aren't installed.
+# starlette.testclient raises RuntimeError instead of ImportError when
+# httpx is missing, which slips past importorskip's ImportError handling
+# → gate httpx first so the fastapi.testclient import is actually safely skipped.
 pytest.importorskip("httpx")
 fastapi = pytest.importorskip("fastapi")
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
@@ -27,7 +28,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def temp_host_root(monkeypatch):
-    """recordings 호스트 루트를 임시 디렉토리로 격리."""
+    """Isolate the recordings host root in a temp directory."""
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setenv("RECORDING_HOST_ROOT", td)
         yield td
@@ -35,12 +36,12 @@ def temp_host_root(monkeypatch):
 
 @pytest.fixture
 def rplus_on():
-    """TR.4+.4 — R-Plus 게이트 폐기 후 no-op. 기존 테스트 시그니처 호환용."""
+    """TR.4+.4 — no-op after the R-Plus gate was retired. Keeps the test signature compatible."""
     yield
 
 
 def _make_fake_handle(output_path: Path, *, write_actions: bool = True, returncode: int = 0):
-    """monkeypatch 용 fake CodegenHandle. subprocess 미실행."""
+    """Fake CodegenHandle for monkeypatch. No subprocess runs."""
     from recording_service.codegen_runner import CodegenHandle
 
     if write_actions:
@@ -74,10 +75,11 @@ def _make_fake_handle(output_path: Path, *, write_actions: bool = True, returnco
 
 @pytest.fixture
 def patched_codegen(monkeypatch):
-    """server._start_codegen_impl, _stop_codegen_impl, _run_convert_impl 을 fake 로 대체.
+    """Fakes for server._start_codegen_impl, _stop_codegen_impl, and _run_convert_impl.
 
-    /stop 까지 가는 정상 흐름을 위해 변환도 함께 patch — 컨테이너 측 변환을
-    시뮬레이션해 host_scenario_path 에 미니멀 scenario.json 을 만든다.
+    Patches conversion too so the /stop happy path completes — simulates
+    the container-side conversion and writes a minimal scenario.json at
+    host_scenario_path.
     """
     from recording_service import server as srv
     from recording_service.converter_proxy import ConvertResult
@@ -85,7 +87,7 @@ def patched_codegen(monkeypatch):
     captured: dict = {"started": [], "stopped": [], "converted": []}
 
     def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
-        # P3.1 (auth-profile) 후 _start_codegen_impl 시그니처에 extra_args 가 추가됨.
+        # extra_args was added to the _start_codegen_impl signature in P3.1 (auth-profile).
         captured["started"].append((target_url, str(output_path), timeout_sec, extra_args))
         return _make_fake_handle(Path(output_path), write_actions=True)
 
@@ -94,7 +96,7 @@ def patched_codegen(monkeypatch):
         return handle
 
     def fake_convert(*, container_session_dir, host_scenario_path):
-        # 컨테이너가 scenario.json 을 썼다고 시뮬레이션
+        # Simulate the container writing scenario.json
         Path(host_scenario_path).parent.mkdir(parents=True, exist_ok=True)
         Path(host_scenario_path).write_text(
             '[{"step":1,"action":"navigate","target":"","value":"https://x.test"},'
@@ -104,7 +106,7 @@ def patched_codegen(monkeypatch):
         captured["converted"].append((container_session_dir, host_scenario_path))
         return ConvertResult(
             returncode=0,
-            stdout="[convert-only] 2 스텝 변환 + 검증 완료",
+            stdout="[convert-only] 2 steps converted + validated",
             stderr="",
             scenario_path=host_scenario_path,
             scenario_exists=True,
@@ -134,13 +136,13 @@ def test_healthz_returns_ok(client):
     assert "version" in body
     assert "codegen_available" in body  # bool
     assert "host_root" in body
-    # TR.4+.4 — rplus_enabled 필드 제거 (게이트 폐기). 회귀: 응답에 없어야 한다.
+    # TR.4+.4 — rplus_enabled field removed (gate retired). Regression: must not appear in the response.
     assert "rplus_enabled" not in body
 
 
-# 메인 UI 가 R-Plus 섹션을 항상 노출하므로 별도 experimental SPA index 없음.
-# `/experimental/` GET 라우트 미정의 → FastAPI 자동 404. (Recording stop 후
-# state=done 일 때 메인 결과 화면에 R-Plus 섹션이 함께 노출됨.)
+# Main UI always shows the R-Plus section, so there's no separate experimental SPA index.
+# No `/experimental/` GET route is defined → FastAPI returns 404 automatically.
+# (After Recording stop with state=done, the main result screen shows the R-Plus section.)
 
 
 # ── /recording/start ─────────────────────────────────────────────────────────
@@ -152,10 +154,10 @@ def test_start_creates_session(client, temp_host_root, patched_codegen):
     assert r.status_code == 201
     body = r.json()
     assert body["target_url"] == "https://example.com"
-    # TR.2: codegen 시작됐으므로 state=recording
+    # TR.2: codegen has started so state=recording
     assert body["state"] == "recording"
     assert len(body["id"]) >= 8
-    # 영속화 디렉토리 + metadata.json 생성됨
+    # persistence directory + metadata.json created
     sess_dir = os.path.join(temp_host_root, body["id"])
     assert os.path.isdir(sess_dir)
     assert os.path.isfile(os.path.join(sess_dir, "metadata.json"))
@@ -168,7 +170,7 @@ def test_start_with_planning_doc_ref(client, patched_codegen):
     })
     assert r.status_code == 201
     sid = r.json()["id"]
-    # 후속 GET 으로 planning_doc_ref 보존 확인
+    # confirm planning_doc_ref survives via follow-up GET
     r2 = client.get(f"/recording/sessions/{sid}")
     assert r2.status_code == 200
     assert r2.json()["planning_doc_ref"] == "feature_login.md"
@@ -193,7 +195,7 @@ def test_list_sessions_after_starts(client, patched_codegen):
     r = client.get("/recording/sessions")
     assert r.status_code == 200
     assert len(r.json()) == 3
-    # 최신순 정렬 — 마지막 생성 c.test 가 첫번째
+    # newest-first ordering — most-recently-created c.test comes first
     assert r.json()[0]["target_url"] == "https://c.test"
 
 
@@ -213,15 +215,15 @@ def test_get_session_returns_state(client, patched_codegen):
     assert body["created_at_iso"]
 
 
-# ── /recording/start (TR.2 — 실 codegen 연동) ─────────────────────────────────
+# ── /recording/start (TR.2 — real codegen wiring) ────────────────────────────
 
 def test_start_invokes_codegen_and_records_pid(client, patched_codegen):
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     assert r.status_code == 201
     assert r.json()["state"] == "recording"
-    # fake codegen 이 호출됐는지
+    # confirm fake codegen was called
     assert len(patched_codegen["started"]) == 1
-    # GET 으로 pid 노출 확인
+    # confirm pid is exposed via GET
     sid = r.json()["id"]
     s = client.get(f"/recording/sessions/{sid}").json()
     assert s["state"] == "recording"
@@ -250,7 +252,7 @@ def test_start_400_on_invalid_url(client, monkeypatch):
 
     monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
     r = client.post("/recording/start", json={"target_url": ""})
-    # 빈 URL은 pydantic 통과(str), runtime 단계에서 400
+    # empty URL passes pydantic (str), 400 at runtime stage
     assert r.status_code == 400
 
 
@@ -262,8 +264,8 @@ def test_stop_404_for_unknown_session(client):
 
 
 def test_stop_409_when_no_active_handle(client):
-    """start 안 된 세션 stop → 409 (start 가 핸들 등록 안 함)."""
-    # 직접 registry 에 세션 만들고 stop 시도
+    """Stopping a session that was never started → 409 (start never registered a handle)."""
+    # Create the session in the registry directly, then try to stop.
     from recording_service.server import _registry
     from recording_service import session as s
     sess = _registry.create("https://x.test")
@@ -272,15 +274,15 @@ def test_stop_409_when_no_active_handle(client):
 
 
 def test_stop_after_normal_recording(client, patched_codegen):
-    """start → stop 정상 흐름. TR.3 후 state=done, scenario.json 생성."""
+    """Normal start → stop flow. After TR.3, state=done and scenario.json exists."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     r2 = client.post(f"/recording/stop/{sid}")
     assert r2.status_code == 202
     body = r2.json()
-    # TR.3: 변환까지 성공하면 state=done
+    # TR.3: when conversion also succeeds, state=done
     assert body["state"] == "done"
-    assert body["step_count"] == 2  # fake_convert 가 2 스텝 시나리오 생성
+    assert body["step_count"] == 2  # fake_convert wrote a 2-step scenario
     assert body["output_size_bytes"] > 0
     assert "scenario_path" in body
     assert len(patched_codegen["stopped"]) == 1
@@ -288,7 +290,7 @@ def test_stop_after_normal_recording(client, patched_codegen):
 
 
 def test_get_session_scenario_returns_dsl(client, patched_codegen):
-    """state=done 세션의 scenario.json 본문을 그대로 반환 (TR.4 #4)."""
+    """state=done sessions return the scenario.json body as-is (TR.4 #4)."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     client.post(f"/recording/stop/{sid}")
@@ -297,12 +299,12 @@ def test_get_session_scenario_returns_dsl(client, patched_codegen):
     assert r2.status_code == 200
     body = r2.json()
     assert isinstance(body, list)
-    # patched_codegen 의 fake_convert 가 만들어 둔 2-스텝 시나리오 형태 확인.
+    # confirm the 2-step scenario shape produced by patched_codegen's fake_convert.
     assert all(isinstance(step, dict) and "action" in step for step in body)
 
 
 def test_get_session_scenario_download_returns_attachment(client, patched_codegen):
-    """TR.4+.2 — ?download=1 일 때 Content-Disposition: attachment 응답."""
+    """TR.4+.2 — ?download=1 returns Content-Disposition: attachment."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     client.post(f"/recording/stop/{sid}")
@@ -315,19 +317,19 @@ def test_get_session_scenario_download_returns_attachment(client, patched_codege
 
 
 def test_get_session_original_returns_python_source(client, patched_codegen):
-    """TR.4+.1 — codegen 원본 .py 본문을 그대로 반환."""
+    """TR.4+.1 — return the codegen original .py body as-is."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     client.post(f"/recording/stop/{sid}")
 
     r2 = client.get(f"/recording/sessions/{sid}/original")
     assert r2.status_code == 200
-    # patched_codegen 의 fake_start 가 써 둔 내용
+    # contents written by patched_codegen's fake_start
     assert "page.click('button')" in r2.text
 
 
 def test_get_session_original_download_returns_attachment(client, patched_codegen):
-    """TR.4+.1 — ?download=1 일 때 attachment 응답."""
+    """TR.4+.1 — attachment response when ?download=1."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     client.post(f"/recording/stop/{sid}")
@@ -350,22 +352,22 @@ def test_get_session_scenario_404_unknown_session(client):
 
 
 def test_get_session_scenario_404_when_state_recording(client, patched_codegen):
-    """녹화 중 (state=recording) 에는 scenario.json 미존재 → 404."""
+    """While recording (state=recording), scenario.json doesn't exist yet → 404."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
-    # stop 호출 안 함 → recording 상태 유지
+    # don't call stop → stays in recording state
 
     r2 = client.get(f"/recording/sessions/{sid}/scenario")
     assert r2.status_code == 404
 
 
 def test_stop_with_empty_output(client, monkeypatch):
-    """codegen 출력 0 byte → state=error + action_count=0 + 명확한 메시지."""
+    """0-byte codegen output → state=error + action_count=0 + clear message."""
     from recording_service import server as srv
     from pathlib import Path
 
     def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
-        # 핵심: 파일을 생성하지 않거나 0 byte 만들기
+        # The point: don't create the file, or create a 0-byte file.
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("", encoding="utf-8")
         return _make_fake_handle(Path(output_path), write_actions=False)
@@ -386,7 +388,7 @@ def test_stop_with_empty_output(client, monkeypatch):
 
 
 def test_stop_is_idempotent_returns_409_second_time(client, patched_codegen):
-    """첫 stop 후 핸들이 사라지므로 두 번째 stop 은 409."""
+    """The handle is gone after first stop, so the second stop is 409."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     r2 = client.post(f"/recording/stop/{sid}")
@@ -395,10 +397,10 @@ def test_stop_is_idempotent_returns_409_second_time(client, patched_codegen):
     assert r3.status_code == 409
 
 
-# ── TR.3 — docker exec 위임 변환 ──────────────────────────────────────────────
+# ── TR.3 — convert delegated via docker exec ────────────────────────────────
 
 def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
-    """변환이 exit code != 0 → state=error + stderr 노출 + 원본 .py 보존."""
+    """When conversion exits non-zero → state=error + stderr visible + original .py preserved."""
     from recording_service import server as srv
     from recording_service.converter_proxy import ConvertResult
 
@@ -434,7 +436,7 @@ def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
 
 
 def test_stop_with_converter_proxy_error(client, monkeypatch):
-    """docker 미설치 / timeout → ConverterProxyError → state=error."""
+    """docker not installed / timeout → ConverterProxyError → state=error."""
     from recording_service import server as srv
     from recording_service.converter_proxy import ConverterProxyError
 
@@ -445,7 +447,7 @@ def test_stop_with_converter_proxy_error(client, monkeypatch):
         return handle
 
     def fake_convert(*, container_session_dir, host_scenario_path):
-        raise ConverterProxyError("docker 실행 파일을 찾을 수 없습니다.")
+        raise ConverterProxyError("docker executable not found.")
 
     monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
     monkeypatch.setattr(srv, "_stop_codegen_impl", fake_stop)
@@ -461,7 +463,7 @@ def test_stop_with_converter_proxy_error(client, monkeypatch):
 
 
 def test_stop_after_codegen_empty_skips_conversion(client, monkeypatch):
-    """codegen 출력 0 byte 시 변환 단계로 진입하지 않는다 (TR.2 가 먼저 가로챔)."""
+    """0-byte codegen output → don't enter the conversion stage (TR.2 intercepts first)."""
     from recording_service import server as srv
 
     convert_calls = []
@@ -487,14 +489,14 @@ def test_stop_after_codegen_empty_skips_conversion(client, monkeypatch):
     r2 = client.post(f"/recording/stop/{sid}")
     assert r2.status_code == 202
     assert r2.json()["state"] == "error"
-    # 0 byte 가 먼저 가로채므로 변환은 호출 안 됨
+    # 0 byte intercepts first, so conversion isn't called
     assert convert_calls == []
 
 
-# ── converter_proxy 순수 함수 ────────────────────────────────────────────────
+# ── converter_proxy pure functions ──────────────────────────────────────────
 
 def test_converter_proxy_run_convert_when_docker_missing(monkeypatch):
-    """docker 미설치 시 ConverterProxyError. subprocess 실행 안 함."""
+    """If docker is missing → ConverterProxyError. subprocess never runs."""
     from recording_service import converter_proxy
     from recording_service.converter_proxy import ConverterProxyError
 
@@ -508,19 +510,19 @@ def test_converter_proxy_run_convert_when_docker_missing(monkeypatch):
 
 
 def test_converter_proxy_run_convert_returns_result(monkeypatch, tmp_path):
-    """subprocess.run 을 fake 로 대체해 ConvertResult 형식 검증."""
+    """Replace subprocess.run with a fake and verify the ConvertResult shape."""
     from recording_service import converter_proxy
 
     monkeypatch.setattr(converter_proxy, "is_docker_available", lambda: True)
 
     fake_completed = SimpleNamespace(
         returncode=0,
-        stdout=b"[convert-only] 5 \xec\x8a\xa4\xed\x85\x9d \xeb\xb3\x80\xed\x99\x98 \xec\x99\x84\xeb\xa3\x8c",
+        stdout=b"[convert-only] 5 steps converted + validated",
         stderr=b"",
     )
     monkeypatch.setattr(converter_proxy.subprocess, "run", lambda *a, **kw: fake_completed)
 
-    # scenario.json 시뮬레이션
+    # simulate scenario.json
     scenario = tmp_path / "scenario.json"
     scenario.write_text("[]", encoding="utf-8")
 
@@ -530,7 +532,7 @@ def test_converter_proxy_run_convert_returns_result(monkeypatch, tmp_path):
     )
     assert result.returncode == 0
     assert result.scenario_exists is True
-    assert "변환 완료" in result.stdout
+    assert "converted" in result.stdout
     assert result.elapsed_ms >= 0
 
 
@@ -554,10 +556,10 @@ def test_converter_proxy_timeout_raises(monkeypatch):
     assert "did not finish within" in str(excinfo.value)
 
 
-# ── TR.4 — Web UI 정적 서빙 ─────────────────────────────────────────────────
+# ── TR.4 — Web UI static serving ────────────────────────────────────────────
 
 def test_root_returns_html(client):
-    """/ → index.html 반환."""
+    """/ returns index.html."""
     r = client.get("/")
     assert r.status_code == 200
     assert "Recording UI" in r.text
@@ -567,7 +569,7 @@ def test_root_returns_html(client):
 def test_static_app_js_served(client):
     r = client.get("/static/app.js")
     assert r.status_code == 200
-    # 키워드 한 두 개로 정합성만 확인
+    # check coherence with one or two keywords
     assert "recording" in r.text.lower()
 
 
@@ -577,10 +579,10 @@ def test_static_style_css_served(client):
     assert ".card" in r.text or "state-pill" in r.text
 
 
-# ── TR.4 — Assertion 추가 endpoint ──────────────────────────────────────────
+# ── TR.4 — Assertion-add endpoint ──────────────────────────────────────────
 
 def _create_done_session(client, patched_codegen):
-    """assertion 테스트용 fixture — start → stop → state=done 까지."""
+    """Fixture for assertion tests — go through start → stop → state=done."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     client.post(f"/recording/stop/{sid}")
@@ -596,10 +598,10 @@ def test_assertion_404_for_unknown_session(client):
 
 
 def test_assertion_409_when_session_not_done(client, patched_codegen):
-    """state != done 인 세션엔 assertion 추가 불가."""
+    """Sessions in state != done can't accept new assertions."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
-    # stop 호출 안 함 → state=recording
+    # don't call stop → state=recording
     r2 = client.post(
         f"/recording/sessions/{sid}/assertion",
         json={"action": "verify", "target": "#x", "value": "y"},
@@ -637,7 +639,7 @@ def test_assertion_400_empty_value(client, patched_codegen):
 
 def test_assertion_appends_verify_step(client, patched_codegen):
     sid = _create_done_session(client, patched_codegen)
-    # patched_codegen 의 fake_convert 가 2 스텝 시나리오를 만들었음
+    # patched_codegen's fake_convert built a 2-step scenario
     r = client.post(
         f"/recording/sessions/{sid}/assertion",
         json={
@@ -679,13 +681,13 @@ def test_assertion_appends_mock_status_and_mock_data(client, patched_codegen):
         },
     )
     assert r2.status_code == 201
-    # 4번째 step 이 mock_data
+    # 4th step is mock_data
     assert r2.json()["step_added"] == 4
     assert r2.json()["added_step"]["action"] == "mock_data"
 
 
 def test_assertion_persists_to_scenario_json(client, patched_codegen, temp_host_root):
-    """추가된 step 이 scenario.json 파일에 실제로 저장되는지."""
+    """Confirm the added step is actually persisted to scenario.json."""
     import json
     from pathlib import Path
 
@@ -695,7 +697,7 @@ def test_assertion_persists_to_scenario_json(client, patched_codegen, temp_host_
         json={"action": "verify", "target": "#x", "value": "y"},
     )
     assert r.status_code == 201
-    # 파일 직접 읽기
+    # read the file directly
     scenario_file = Path(temp_host_root) / sid / "scenario.json"
     assert scenario_file.is_file()
     data = json.loads(scenario_file.read_text(encoding="utf-8"))
@@ -706,11 +708,11 @@ def test_assertion_persists_to_scenario_json(client, patched_codegen, temp_host_
     )
 
 
-# ── codegen 미녹화 액션 (scroll / hover) 보충 ──────────────────────────────
+# ── actions codegen doesn't record (scroll / hover) — supplemented manually ──
 
 
 def test_assertion_appends_scroll_step_with_into_view(client, patched_codegen):
-    """scroll 액션 — value=into_view 가 14-DSL executor 의 화이트리스트와 정합."""
+    """scroll action — value=into_view aligns with the 14-DSL executor whitelist."""
     sid = _create_done_session(client, patched_codegen)
     r = client.post(
         f"/recording/sessions/{sid}/assertion",
@@ -725,8 +727,7 @@ def test_assertion_appends_scroll_step_with_into_view(client, patched_codegen):
     assert "into view" in added["description"]
 
 
-def test_assertion_scroll_400_when_value_not_in_whitelist(client, patched_codegen):
-    """scroll 의 value 는 화이트리스트 (into_view 등) 외엔 거부 — DSL validator 와 정합."""
+    """scroll's value is rejected unless in the whitelist (into_view, etc.) — matches the DSL validator."""
     sid = _create_done_session(client, patched_codegen)
     r = client.post(
         f"/recording/sessions/{sid}/assertion",
@@ -736,8 +737,7 @@ def test_assertion_scroll_400_when_value_not_in_whitelist(client, patched_codege
     assert "into_view" in r.json()["detail"]
 
 
-def test_assertion_appends_hover_step_with_empty_value(client, patched_codegen):
-    """hover 액션 — value 비어도 허용 (DSL _VALUE_REQUIRED_ACTIONS 와 정합)."""
+    """hover action — empty value is accepted (matches DSL _VALUE_REQUIRED_ACTIONS)."""
     sid = _create_done_session(client, patched_codegen)
     r = client.post(
         f"/recording/sessions/{sid}/assertion",
@@ -751,8 +751,7 @@ def test_assertion_appends_hover_step_with_empty_value(client, patched_codegen):
     assert "hover" in added["description"]
 
 
-def test_assertion_hover_400_when_target_empty(client, patched_codegen):
-    """hover 도 target 은 필수 — value 만 optional."""
+    """hover still requires target — only value is optional."""
     sid = _create_done_session(client, patched_codegen)
     r = client.post(
         f"/recording/sessions/{sid}/assertion",
@@ -761,10 +760,10 @@ def test_assertion_hover_400_when_target_empty(client, patched_codegen):
     assert r.status_code == 400
 
 
-# ── TR.8 — 영속화 / 마운트 / 디스크 세션 흡수 ────────────────────────────────
+# ── TR.8 — persistence / mount / absorbing disk sessions ───────────────────
 
 def test_storage_container_path_for_default_is_recordings(monkeypatch):
-    """nested bind 위험 회피 — default 가 /recordings 이어야 함."""
+    """Avoid nested bind risk — default must be /recordings."""
     monkeypatch.delenv("RECORDING_CONTAINER_ROOT", raising=False)
     from recording_service import storage
     assert storage.container_path_for("abc") == "/recordings/abc"
@@ -779,10 +778,10 @@ def test_storage_container_path_for_env_override(monkeypatch):
 def test_storage_list_session_dirs(temp_host_root):
     from pathlib import Path
     from recording_service import storage
-    # 임시 루트 안에 가짜 세션 디렉토리 3개
+    # 3 fake session dirs under the temp root
     for sid in ("aaa", "bbb", "ccc"):
         (Path(temp_host_root) / sid).mkdir()
-    # 정렬된 목록
+    # sorted list
     assert storage.list_session_dirs() == ["aaa", "bbb", "ccc"]
 
 
@@ -793,13 +792,13 @@ def test_storage_list_session_dirs_when_root_missing(monkeypatch, tmp_path):
 
 
 def test_absorb_disk_sessions_recovers_done_state(temp_host_root, monkeypatch):
-    """server 재시작 시뮬레이션 — metadata.json 만 있어도 done 세션 복원."""
+    """Simulate server restart — even with only metadata.json, restore done sessions."""
     import json
     from pathlib import Path
     from recording_service import server as srv
     from recording_service import session as sess_mod
 
-    # 가짜 디스크 세션 만들기
+    # build a fake disk session
     sid = "diskonly42xy"
     sdir = Path(temp_host_root) / sid
     sdir.mkdir()
@@ -811,7 +810,7 @@ def test_absorb_disk_sessions_recovers_done_state(temp_host_root, monkeypatch):
     }), encoding="utf-8")
     (sdir / "scenario.json").write_text("[]", encoding="utf-8")
 
-    # registry 비우고 startup hook 직접 호출
+    # clear the registry and invoke the startup hook directly
     srv._reset_for_tests()
     srv._absorb_disk_sessions()
 
@@ -823,7 +822,7 @@ def test_absorb_disk_sessions_recovers_done_state(temp_host_root, monkeypatch):
 
 
 def test_absorb_disk_sessions_marks_orphan_recording(temp_host_root):
-    """state=recording 세션은 orphan(error) 으로 표시 (codegen 끊겼음)."""
+    """state=recording sessions are flagged as orphan(error) (codegen detached)."""
     import json
     from pathlib import Path
     from recording_service import server as srv
@@ -846,7 +845,7 @@ def test_absorb_disk_sessions_marks_orphan_recording(temp_host_root):
     assert "orphan" in (sess.error or "").lower()
 
 
-# ── TR.5 R-Plus — enricher (Recording → IEEE 829-lite 역추정) ───────────────
+# ── TR.5 R-Plus — enricher (Recording → IEEE 829-lite backfill) ────────────
 
 def test_enrich_404_for_unknown_session(client, rplus_on):
     r = client.post("/experimental/sessions/nope/enrich", json={})
@@ -861,13 +860,13 @@ def test_enrich_409_when_session_not_done(client, patched_codegen, rplus_on):
 
 
 def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_root, rplus_on):
-    """fake Ollama 응답을 monkeypatch 로 주입해 흐름 검증."""
+    """Inject a fake Ollama response via monkeypatch to verify the flow."""
     import time
     from pathlib import Path
     from recording_service import server as srv
     from recording_service.enricher import EnrichResult
 
-    # done 세션 직접 주입 (codegen·convert 우회)
+    # inject a done session directly (bypass codegen/convert)
     srv._reset_for_tests()
     sess = srv._registry.create("https://app.example.com/login")
     sess.state = "done"
@@ -901,7 +900,7 @@ def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_ro
     assert body["model"] == "gemma4:26b"
     assert body["markdown"] == fake_md
     assert body["char_count"] == len(fake_md)
-    # 디스크에 저장됐는지
+    # confirm it was written to disk
     enriched = Path(temp_host_root) / sess.id / "doc_enriched.md"
     assert enriched.is_file()
     assert enriched.read_text(encoding="utf-8") == fake_md
@@ -948,10 +947,10 @@ def test_enricher_module_raises_on_empty_scenario():
         enricher.enrich_recording(scenario=[], target_url="https://x.test")
 
 
-# ── TR.6 R-Plus — comparator (Doc ↔ Recording 의미 비교) ────────────────────
+# ── TR.6 R-Plus — comparator (Doc ↔ Recording semantic compare) ────────────
 
 def _setup_done_session(client_or_temp, sid_prefix="doc", scenario=None):
-    """compare/enrich 테스트용 done 세션 직접 주입."""
+    """Inject a done session directly for compare/enrich tests."""
     from pathlib import Path
     from recording_service import server as srv
     srv._reset_for_tests()
@@ -1017,8 +1016,8 @@ def test_comparator_missing_and_extra():
         {"action": "press", "target": "#email", "value": "Enter"},
     ]
     res = compare(doc, rec)
-    assert res.counts["missing"] == 1   # click #btn-A 만 doc 에
-    assert res.counts["extra"] == 1     # press 만 recording 에
+    assert res.counts["missing"] == 1   # click #btn-A only in doc
+    assert res.counts["extra"] == 1     # press only in recording
     assert res.counts["exact"] >= 2     # navigate + fill
 
 
@@ -1036,11 +1035,11 @@ def test_comparator_intent_only_doc_verify_separated():
         {"action": "click", "target": "#btn", "value": ""},
     ]
     res = compare(doc, rec)
-    # navigate + click 정확 일치
+    # navigate + click exact match
     assert res.counts["exact"] == 2
-    # verify / mock_status 는 intent_only
+    # verify / mock_status are intent_only
     assert res.counts["intent_only"] == 2
-    # missing 0 (verify/mock 은 정렬 대상 외)
+    # missing 0 (verify/mock aren't part of alignment)
     assert res.counts["missing"] == 0
 
 
@@ -1098,7 +1097,7 @@ def test_compare_writes_html_and_returns_counts(client, temp_host_root, rplus_on
     body = r.json()
     assert body["counts"]["exact"] == 2
     assert body["counts"]["intent_only"] == 1
-    # HTML 리포트 파일 존재
+    # confirm the HTML report file exists
     from pathlib import Path
     html_path = Path(temp_host_root) / sid / "doc_comparison.html"
     assert html_path.is_file()
@@ -1123,10 +1122,10 @@ def test_compare_html_endpoint_404_when_no_report(client, temp_host_root, rplus_
     assert r.status_code == 404
 
 
-# ── TR.7 R-Plus — Play (codegen output / LLM 두 모드, headed) ────────────────
+# ── TR.7 R-Plus — Play (codegen output / LLM modes, headed) ────────────────
 
 def test_play_codegen_success(client, monkeypatch, temp_host_root, rplus_on):
-    """codegen output replay — host 에서 original.py 직접 실행."""
+    """codegen output replay — runs original.py directly on the host."""
     from recording_service.replay_proxy import PlayResult
 
     sid = _setup_done_session(temp_host_root, scenario=[
@@ -1147,7 +1146,7 @@ def test_play_codegen_success(client, monkeypatch, temp_host_root, rplus_on):
 
 
 def test_play_llm_success(client, monkeypatch, temp_host_root, rplus_on):
-    """LLM play — 14-DSL scenario.json 을 zero_touch_qa executor 로 실행."""
+    """LLM play — runs the 14-DSL scenario.json through the zero_touch_qa executor."""
     from recording_service.replay_proxy import PlayResult
 
     sid = _setup_done_session(temp_host_root, scenario=[
@@ -1168,7 +1167,7 @@ def test_play_llm_success(client, monkeypatch, temp_host_root, rplus_on):
     body = r.json()
     assert body["returncode"] == 0
     assert "PASS: 1" in body["stdout_tail"]
-    # router 가 project_root 를 자동으로 주입
+    # router auto-injects project_root
     assert captured["project_root"]
     assert captured["host_session_dir"].endswith(sid)
 
@@ -1206,7 +1205,7 @@ def test_play_llm_502_when_proxy_error(client, monkeypatch, temp_host_root, rplu
 
 
 def test_play_codegen_proxy_raises_when_original_py_missing(tmp_path):
-    """original.py 가 없으면 ReplayProxyError."""
+    """If original.py is missing → ReplayProxyError."""
     from recording_service import replay_proxy
     from recording_service.replay_proxy import ReplayProxyError
 
@@ -1275,19 +1274,20 @@ def test_play_llm_invokes_zero_touch_qa_with_scenario(monkeypatch, tmp_path):
     assert "-m" in captured["cmd"]
     assert "zero_touch_qa" in captured["cmd"]
     assert "--mode" in captured["cmd"] and "execute" in captured["cmd"]
-    # PYTHONPATH 와 ARTIFACTS_DIR 주입 확인
+    # confirm PYTHONPATH and ARTIFACTS_DIR injected
     assert "/fake/project" in captured["env"]["PYTHONPATH"]
     assert captured["env"]["ARTIFACTS_DIR"] == str(tmp_path)
-    # --headless 미지정 (default: headed)
+    # --headless not set (default: headed)
     assert "--headless" not in captured["cmd"]
 
 
 def test_play_llm_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
-    """play-llm subprocess 의 stdout/stderr 가 세션 디렉토리에 떨어진다.
+    """play-llm subprocess stdout/stderr land in the session dir.
 
-    데몬 log 에는 자식 프로세스 출력이 안 들어가서, 시나리오 실행과 실제
-    healer 동작 사이 연결고리가 끊겼던 문제 (visibility-healer 의 cascade
-    hover 로그 추적 불가) 를 보강.
+    Plug the gap where the daemon log didn't capture child-process
+    output, which had broken the trace between scenario execution and
+    actual healer behavior (couldn't follow visibility-healer's cascade
+    hover logs).
     """
     from recording_service import replay_proxy
     from types import SimpleNamespace
@@ -1309,7 +1309,7 @@ def test_play_llm_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
     )
 
     log_path = tmp_path / "play-llm.log"
-    assert log_path.is_file(), "play-llm.log 가 세션 디렉토리에 안 떨어짐"
+    assert log_path.is_file(), "play-llm.log not landed in the session dir"
     content = log_path.read_text(encoding="utf-8")
     assert "visibility-healer cascade hover" in content
     assert "executor:done" in content
@@ -1317,7 +1317,7 @@ def test_play_llm_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
 
 
 def test_play_codegen_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
-    """play-codegen 도 동일 정책 — original.py 실행 출력을 별도 파일로 보존."""
+    """play-codegen follows the same policy — preserve original.py run output in a separate file."""
     from recording_service import replay_proxy
     from types import SimpleNamespace
 
@@ -1338,19 +1338,19 @@ def test_play_codegen_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path)
     assert "hi" in content
 
 
-# ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────
+# ── DELETE also tears down an active codegen ──────────────────────────────
 
 def test_delete_terminates_active_codegen(client, patched_codegen):
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
-    # stop 안 하고 바로 delete — 활성 핸들 종료 후 삭제
+    # delete without stop — terminate the active handle, then remove
     r2 = client.delete(f"/recording/sessions/{sid}")
     assert r2.status_code == 204
-    # codegen stop 이 호출됐어야
+    # codegen stop must have been called
     assert len(patched_codegen["stopped"]) == 1
 
 
-# ── codegen_runner 순수 함수 ────────────────────────────────────────────────
+# ── codegen_runner pure functions ──────────────────────────────────────────
 
 def test_codegen_runner_handle_elapsed_sec_grows():
     handle = _make_fake_handle(Path("/tmp/_unused.py"), write_actions=False)
@@ -1366,7 +1366,7 @@ def test_codegen_runner_is_timed_out_threshold():
     handle = _make_fake_handle(Path("/tmp/_unused.py"), write_actions=False)
     handle.timeout_sec = 9999
     assert is_timed_out(handle) is False
-    # 강제로 started_at 을 옛날로 끌어올려 타임아웃 유발
+    # force timeout by pulling started_at back into the past
     handle.timeout_sec = 1
     handle.started_at = time.time() - 5
     assert is_timed_out(handle) is True
@@ -1376,7 +1376,7 @@ def test_codegen_runner_output_size_zero_for_missing_file(tmp_path):
     from recording_service.codegen_runner import output_size_bytes
 
     handle = _make_fake_handle(tmp_path / "missing.py", write_actions=False)
-    # write_actions=False 라 파일 없음
+    # write_actions=False so file doesn't exist
     assert output_size_bytes(handle) == 0
 
 
@@ -1385,14 +1385,14 @@ def test_codegen_runner_output_size_zero_for_missing_file(tmp_path):
 def test_play_codegen_auto_annotates_before_running(
     client, monkeypatch, temp_host_root, rplus_on,
 ):
-    """play-codegen 이 실행 직전 자동 annotate 를 수행하고, 응답에 annotate 결과 포함."""
+    """play-codegen auto-annotates right before running and includes the annotate result in the response."""
     from pathlib import Path
     from recording_service.replay_proxy import PlayResult
 
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
     ])
-    # original.py — nav chain → annotate 1건 주입 기대.
+    # original.py — nav chain → expect 1 annotate injection.
     original = Path(temp_host_root) / sid / "original.py"
     original.write_text(
         "from playwright.sync_api import Playwright, sync_playwright\n"
@@ -1414,12 +1414,12 @@ def test_play_codegen_auto_annotates_before_running(
     r = client.post(f"/experimental/sessions/{sid}/play-codegen")
     assert r.status_code == 201
     body = r.json()
-    # play 실행 결과 + annotate 결과 동봉.
+    # play run result + annotate result included.
     assert body["returncode"] == 0
     assert "annotate" in body
     assert body["annotate"]["examined_clicks"] == 1
     assert body["annotate"]["injected"] == 1
-    # annotated 파일도 디스크에 생성됐어야.
+    # the annotated file must also exist on disk.
     annotated = Path(temp_host_root) / sid / "original_annotated.py"
     assert annotated.is_file()
 
@@ -1427,7 +1427,7 @@ def test_play_codegen_auto_annotates_before_running(
 def test_play_codegen_annotate_summary_zero_injection(
     client, monkeypatch, temp_host_root, rplus_on,
 ):
-    """flat selector 만 있는 codegen 출력 — annotate injected 0 / examined N."""
+    """codegen output with only flat selectors — annotate injected 0 / examined N."""
     from pathlib import Path
     from recording_service.replay_proxy import PlayResult
 
@@ -1470,7 +1470,7 @@ def test_play_llm_404_unknown(client, rplus_on):
 
 
 def test_play_codegen_409_when_session_recording(client, patched_codegen, rplus_on):
-    """state=recording 중에는 codegen replay 불가 (original.py 가 아직 쓰이는 중)."""
+    """While state=recording, codegen replay is not allowed (original.py still being written)."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     r2 = client.post(f"/experimental/sessions/{sid}/play-codegen")
@@ -1478,7 +1478,7 @@ def test_play_codegen_409_when_session_recording(client, patched_codegen, rplus_
 
 
 def test_play_llm_409_when_session_recording(client, patched_codegen, rplus_on):
-    """state=recording 중에는 LLM play 불가 (codegen 이 stop 안 된 상태)."""
+    """While state=recording, LLM play is not allowed (codegen hasn't stopped)."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
     r2 = client.post(f"/experimental/sessions/{sid}/play-llm")
@@ -1496,7 +1496,7 @@ def test_delete_removes_session(client, temp_host_root, patched_codegen):
     r2 = client.delete(f"/recording/sessions/{sid}")
     assert r2.status_code == 204
 
-    # 메모리 + 디스크 모두 제거
+    # gone from memory and disk
     r3 = client.get(f"/recording/sessions/{sid}")
     assert r3.status_code == 404
     assert not os.path.exists(sess_dir)
@@ -1507,7 +1507,7 @@ def test_delete_404_for_unknown(client):
     assert r.status_code == 404
 
 
-# ── P1 (항목 5) — Run-log + 스크린샷 endpoint ──────────────────────────────
+# ── P1 (item 5) — run-log + screenshot endpoints ──────────────────────────
 
 def test_get_run_log_404_when_no_log_file(client, patched_codegen):
     sid = _create_done_session(client, patched_codegen)
@@ -1519,18 +1519,18 @@ def test_get_run_log_404_when_no_log_file(client, patched_codegen):
 def test_get_run_log_returns_parsed_steps_with_screenshot_field(
     client, patched_codegen, temp_host_root,
 ):
-    """run_log.jsonl + step_*.png 가 있으면 screenshot 필드 자동 채움."""
+    """If run_log.jsonl + step_*.png exist, the screenshot field is auto-filled."""
     from pathlib import Path
 
     sid = _create_done_session(client, patched_codegen)
     sess_dir = Path(temp_host_root) / sid
-    # run_log.jsonl + step_1_pass.png 만 만들고 step_2 는 안 만듦.
+    # only create run_log.jsonl + step_1_pass.png, leave step_2 missing.
     (sess_dir / "run_log.jsonl").write_text(
         '{"step": 1, "action": "click", "target": "#a", "status": "PASS", "heal_stage": "none"}\n'
         '{"step": 2, "action": "click", "target": "#b", "status": "HEALED", "heal_stage": "local"}\n',
         encoding="utf-8",
     )
-    (sess_dir / "step_1_pass.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # 헤더만 — 충분
+    (sess_dir / "step_1_pass.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # header only — enough
     r = client.get(f"/recording/sessions/{sid}/run-log")
     assert r.status_code == 200
     data = r.json()
@@ -1538,7 +1538,7 @@ def test_get_run_log_returns_parsed_steps_with_screenshot_field(
     assert data[0]["status"] == "PASS"
     assert data[0]["screenshot"] == "step_1_pass.png"
     assert data[1]["heal_stage"] == "local"
-    assert data[1]["screenshot"] is None  # step_2_healed.png 없음
+    assert data[1]["screenshot"] is None  # step_2_healed.png missing
 
 
 def test_screenshot_endpoint_serves_png(client, patched_codegen, temp_host_root):
@@ -1554,7 +1554,7 @@ def test_screenshot_endpoint_serves_png(client, patched_codegen, temp_host_root)
 def test_screenshot_endpoint_rejects_path_traversal(client, patched_codegen):
     sid = _create_done_session(client, patched_codegen)
     r = client.get(f"/recording/sessions/{sid}/screenshot/..%2Fmetadata.json")
-    # path traversal 또는 화이트리스트 외 — 400 또는 404. 둘 다 안전.
+    # path traversal or out-of-whitelist — 400 or 404. Both are safe.
     assert r.status_code in (400, 404)
 
 
@@ -1565,7 +1565,7 @@ def test_screenshot_endpoint_rejects_arbitrary_filename(client, patched_codegen)
     assert "disallowed" in r.json()["detail"]
 
 
-# ── P2 (항목 6) — Play log tail endpoint ──────────────────────────────────
+# ── P2 (item 6) — play log tail endpoint ──────────────────────────────────
 
 def test_play_log_tail_returns_new_bytes_only(
     client, patched_codegen, temp_host_root,
@@ -1582,7 +1582,7 @@ def test_play_log_tail_returns_new_bytes_only(
     assert body["content"] == "first\nsecond\n"
     assert body["offset"] == len("first\nsecond\n")
 
-    # offset 으로 incremental 폴링
+    # incremental polling using offset
     log_path.write_text("first\nsecond\nthird\n", encoding="utf-8")
     r2 = client.get(
         f"/recording/sessions/{sid}/play-log/tail?kind=llm&from={body['offset']}"
@@ -1606,7 +1606,7 @@ def test_play_log_tail_400_for_invalid_kind(client, patched_codegen):
     assert r.status_code == 400
 
 
-# ── 항목 4 — regression .py + diff endpoint ───────────────────────────────
+# ── item 4 — regression .py + diff endpoint ──────────────────────────────
 
 def test_get_regression_returns_python_text(
     client, patched_codegen, temp_host_root,
@@ -1654,19 +1654,19 @@ def test_diff_endpoint_returns_unified_diff(
     (sess_dir / "regression_test.py").write_text(
         "page.click('#different')\n", encoding="utf-8",
     )
-    # original.py 는 patched_codegen fixture 가 만들어 줌 (시작 시점에)
+    # patched_codegen fixture creates original.py at session start.
     r = client.get(f"/experimental/sessions/{sid}/diff-codegen-vs-llm")
     assert r.status_code == 200
     body = r.json()
     assert body["left_exists"] is True
     assert body["right_exists"] is True
-    # unified diff 헤더 + +/- 라인 포함
+    # unified diff header + +/- lines present
     assert "original.py" in body["unified_diff"]
     assert "regression_test.py" in body["unified_diff"]
 
 
 def test_diff_endpoint_404_when_neither_file_exists(client, rplus_on):
-    # 존재하지 않는 세션 — 두 파일 다 없음
+    # non-existent session — both files missing
     r = client.get("/experimental/sessions/nope/diff-codegen-vs-llm")
     assert r.status_code == 404
 
@@ -1674,12 +1674,12 @@ def test_diff_endpoint_404_when_neither_file_exists(client, rplus_on):
 def test_diff_endpoint_partial_when_only_one_file_exists(
     client, patched_codegen, temp_host_root, rplus_on,
 ):
-    """regression_test.py 만 있고 original.py 없을 때 — left_exists=False, 200."""
+    """Only regression_test.py exists, original.py missing — left_exists=False, 200."""
     from pathlib import Path
 
     sid = _create_done_session(client, patched_codegen)
     sess_dir = Path(temp_host_root) / sid
-    # original.py 삭제 + regression_test.py 만 만듦
+    # delete original.py + create regression_test.py only
     (sess_dir / "original.py").unlink(missing_ok=True)
     (sess_dir / "regression_test.py").write_text("x = 1\n", encoding="utf-8")
     r = client.get(f"/experimental/sessions/{sid}/diff-codegen-vs-llm")
@@ -1689,10 +1689,10 @@ def test_diff_endpoint_partial_when_only_one_file_exists(
     assert body["right_exists"] is True
 
 
-# ── 항목 4 (UI 개선) — LLM diff 분석 endpoint ─────────────────────────────
+# ── item 4 (UI improvement) — LLM diff analysis endpoint ──────────────────
 
 def test_diff_analysis_404_when_no_regression(client, patched_codegen, rplus_on):
-    """regression_test.py 가 없으면 404 — Play with LLM 미실행 케이스."""
+    """When regression_test.py is missing → 404 (Play with LLM never ran)."""
     sid = _create_done_session(client, patched_codegen)
     r = client.post(f"/experimental/sessions/{sid}/diff-analysis")
     assert r.status_code == 404
@@ -1701,7 +1701,7 @@ def test_diff_analysis_404_when_no_regression(client, patched_codegen, rplus_on)
 def test_diff_analysis_returns_markdown(
     client, patched_codegen, temp_host_root, monkeypatch, rplus_on,
 ):
-    """fake _run_diff_analysis_impl 로 Ollama 우회 — markdown 반환 확인."""
+    """Bypass Ollama with a fake _run_diff_analysis_impl — confirm markdown is returned."""
     from pathlib import Path
 
     from recording_service.enricher import DiffAnalysisResult
@@ -1714,7 +1714,7 @@ def test_diff_analysis_returns_markdown(
         captured["reg"] = regression_py
         captured["diff"] = unified_diff
         return DiffAnalysisResult(
-            markdown="### 1. 핵심 변경 요약\n- selector swap 1건\n",
+            markdown="### 1. Summary of key changes\n- 1 selector swap\n",
             elapsed_ms=2500.0,
             model="gemma4:26b",
         )
@@ -1732,11 +1732,11 @@ def test_diff_analysis_returns_markdown(
     assert "selector swap" in body["markdown"]
     assert body["model"] == "gemma4:26b"
     assert body["elapsed_ms"] >= 0
-    # fake 가 입력 받은 파일 본문 확인
+    # confirm the file body the fake was handed
     assert "page.click('#healed')" in captured["reg"]
 
 
-# ── /recording/import-script — 사용자 .py 업로드 ─────────────────────────
+# ── /recording/import-script — user .py upload ──────────────────────────
 
 
 def test_import_script_creates_session_and_persists_original(
@@ -1759,12 +1759,12 @@ def test_import_script_creates_session_and_persists_original(
     assert body["imported_filename"] == "uploaded.py"
     assert body["step_count"] >= 2  # goto + click
 
-    # session 등록 + state=done
+    # session is registered and state=done
     r2 = client.get(f"/recording/sessions/{sid}")
     assert r2.status_code == 200
     assert r2.json()["state"] == "done"
 
-    # original.py 디스크에 저장
+    # original.py is saved to disk
     p = Path(temp_host_root) / sid / "original.py"
     assert p.is_file()
     content = p.read_text(encoding="utf-8")
@@ -1831,13 +1831,13 @@ def test_import_script_listed_in_sessions(client, temp_host_root):
 
 
 def test_import_script_filename_sanitized(client, temp_host_root):
-    """파일명 path traversal / 특수문자 제거."""
+    """Filename path traversal / special chars are stripped."""
     src = b"from playwright.sync_api import sync_playwright\npass\n"
     files = {"file": ("../../etc/passwd.py", src, "text/x-python")}
     r = client.post("/recording/import-script", files=files)
     assert r.status_code == 201
     body = r.json()
-    # 슬래시는 _ 로 변환되지만 .py 는 보존
+    # slashes become _, .py is preserved
     assert "/" not in body["imported_filename"]
     assert body["imported_filename"].endswith(".py")
 
@@ -1845,16 +1845,16 @@ def test_import_script_filename_sanitized(client, temp_host_root):
 def test_import_script_runs_converter_to_produce_scenario_json(
     client, temp_host_root, monkeypatch,
 ):
-    """업로드 후 convert 호출 → scenario.json 생성 (codegen 세션과 동일 흐름).
+    """After upload, call convert → scenario.json generated (same flow as codegen sessions).
 
-    convert 실패는 silent — 그래도 세션 등록은 성공 (테스트코드 원본 실행 가능).
+    convert failures are silent — session still registers (running the test-code original is still possible).
     """
     from pathlib import Path
 
     from recording_service import server as srv
     from recording_service.converter_proxy import ConvertResult
 
-    # convert 결과 fake — scenario.json 을 디스크에 직접 생성
+    # fake convert result — write scenario.json directly to disk
     def fake_convert(*, container_session_dir, host_scenario_path):
         Path(host_scenario_path).write_text(
             '[{"step":1,"action":"navigate","target":"","value":"https://x","fallback_targets":[]}]',
@@ -1882,7 +1882,7 @@ def test_import_script_runs_converter_to_produce_scenario_json(
     assert body["convert"]["ok"] is True
     assert body["convert"]["scenario_exists"] is True
 
-    # scenario.json 디스크에 실제 생성됨 → Play with LLM 가능
+    # scenario.json is actually on disk → Play with LLM is possible
     scenario_path = Path(temp_host_root) / sid / "scenario.json"
     assert scenario_path.is_file()
     assert "navigate" in scenario_path.read_text(encoding="utf-8")
@@ -1891,19 +1891,19 @@ def test_import_script_runs_converter_to_produce_scenario_json(
 def test_import_script_silent_fails_when_converter_errors(
     client, temp_host_root, monkeypatch,
 ):
-    """converter 실패해도 import 자체는 성공 — 사용자가 테스트코드 원본 실행 으로 재생 가능."""
+    """Even if converter fails, import itself succeeds — user can still replay via the test-code original."""
     from recording_service import server as srv
     from recording_service.converter_proxy import ConverterProxyError
 
     def fake_convert_fails(*, container_session_dir, host_scenario_path):
-        raise ConverterProxyError("docker 미설치 (test stub)")
+        raise ConverterProxyError("docker not installed (test stub)")
 
     monkeypatch.setattr(srv, "_run_convert_impl", fake_convert_fails)
 
     src = b"from playwright.sync_api import sync_playwright\npass\n"
     files = {"file": ("user.py", src, "text/x-python")}
     r = client.post("/recording/import-script", files=files)
-    assert r.status_code == 201  # 여전히 성공
+    assert r.status_code == 201  # still succeeds
     body = r.json()
     assert body["convert"]["ok"] is False
     assert "docker" in body["convert"].get("error", "").lower()
@@ -1912,11 +1912,11 @@ def test_import_script_silent_fails_when_converter_errors(
 def test_imported_session_play_codegen_skips_annotator(
     client, temp_host_root, monkeypatch, rplus_on,
 ):
-    """업로드 스크립트는 annotator 우회 — 사용자 의도된 코드 변형 방지.
+    """Uploaded scripts skip annotator — protect user-authored code from injection.
 
-    사용자 시나리오: 사용자가 직접 작성한 .py 를 업로드 → annotator 가 hover
-    추가하면 의도와 다른 동작. 본 테스트는 imported_filename 메타가 있을 때
-    annotator.annotate_script 가 호출되지 않음을 검증.
+    User scenario: user uploads their own .py → annotator adding hover would
+    diverge from intent. This test confirms annotator.annotate_script is
+    not called when imported_filename meta is present.
     """
     from pathlib import Path
 
@@ -1936,7 +1936,7 @@ def test_imported_session_play_codegen_skips_annotator(
     assert r.status_code == 201
     sid = r.json()["id"]
 
-    # annotator 호출 추적
+    # track annotator calls
     called = {"count": 0}
 
     def fake_annotate(*args, **kwargs):
@@ -1951,20 +1951,20 @@ def test_imported_session_play_codegen_skips_annotator(
     monkeypatch.setattr(annotator, "annotate_script", fake_annotate)
     monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_replay)
 
-    # play-codegen 호출 — annotator 호출 0 + skipped 메시지
+    # call play-codegen — 0 annotator calls + skipped message
     r2 = client.post(f"/experimental/sessions/{sid}/play-codegen")
     assert r2.status_code == 201
     summary = r2.json()["annotate"]
     assert summary["injected"] == 0
     assert summary["examined_clicks"] == 0
     assert "imported" in (summary.get("skipped") or "").lower()
-    assert called["count"] == 0  # annotate_script 호출 안 됨
+    assert called["count"] == 0  # annotate_script wasn't called
 
 
 def test_codegen_session_play_still_runs_annotator(
     client, patched_codegen, monkeypatch, rplus_on,
 ):
-    """일반 codegen 세션은 annotator 그대로 호출 — 회귀 가드."""
+    """Regular codegen sessions still call annotator — regression guard."""
     from recording_service import annotator
     from recording_service.replay_proxy import PlayResult
     from recording_service.rplus import router as rplus_router
@@ -1987,21 +1987,21 @@ def test_codegen_session_play_still_runs_annotator(
 
     r = client.post(f"/experimental/sessions/{sid}/play-codegen")
     assert r.status_code == 201
-    assert called["count"] == 1  # codegen 세션은 annotator 호출됨
+    assert called["count"] == 1  # codegen sessions call annotator
     assert r.json()["annotate"]["injected"] == 2
 
 
 def test_diff_analysis_502_when_ollama_fails(
     client, patched_codegen, temp_host_root, monkeypatch, rplus_on,
 ):
-    """Ollama 호출 실패 시 502 — UI 가 사용자에게 명확한 에러 노출."""
+    """When Ollama call fails → 502 (UI surfaces a clear error to the user)."""
     from pathlib import Path
 
     from recording_service.enricher import EnrichError
     from recording_service.rplus import router as rplus_router
 
     def fake_fail(**kw):
-        raise EnrichError("Ollama 미가동")
+        raise EnrichError("Ollama not running")
 
     monkeypatch.setattr(rplus_router, "_run_diff_analysis_impl", fake_fail)
 

@@ -1,12 +1,12 @@
 """executor._apply_fingerprint_env — auth-profile fingerprint env override (P4.1).
 
-설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.8 (D10)
+Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.8 (D10)
 
-검증:
-- env 4종 (PLAYWRIGHT_VIEWPORT/_LOCALE/_TIMEZONE/_COLOR_SCHEME) 적용
-- env 미설정 시 context_kwargs 미수정
-- 잘못된 viewport 형식은 silent skip (경고만)
-- UA 관련 env 가 들어가지 않음 (D10)
+Checks:
+- 4 env vars (PLAYWRIGHT_VIEWPORT/_LOCALE/_TIMEZONE/_COLOR_SCHEME) applied
+- when env vars are unset, context_kwargs is untouched
+- invalid viewport formats are silently skipped (warning only)
+- no UA-related env var leaks through (D10)
 """
 
 from __future__ import annotations
@@ -70,12 +70,12 @@ class TestApplyFingerprintEnv:
         kwargs = {"viewport": {"width": 1280, "height": 800}}
         original = dict(kwargs)
         _apply_fingerprint_env(kwargs)
-        # 잘못된 값이면 기존 viewport 유지.
+        # invalid value → keep existing viewport.
         assert kwargs["viewport"] == original["viewport"]
 
     def test_no_user_agent_env_consumed(self, monkeypatch):
-        """D10 — UA 는 임의 spoof 하지 않으므로 어떤 env 도 user_agent 키를 만들지 않는다."""
-        monkeypatch.setenv("PLAYWRIGHT_USER_AGENT", "Some/Spoofed/UA")  # 의도적으로 무시되어야 함
+        """D10 — UA is never spoofed, so no env var should ever produce a user_agent key."""
+        monkeypatch.setenv("PLAYWRIGHT_USER_AGENT", "Some/Spoofed/UA")  # intentionally ignored
         monkeypatch.setenv("PLAYWRIGHT_VIEWPORT", "1280x800")
         kwargs = {}
         _apply_fingerprint_env(kwargs)

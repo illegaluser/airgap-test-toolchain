@@ -1,11 +1,11 @@
-"""Phase 1 grounding 모듈 단위/통합 테스트.
+"""Unit and integration tests for the Phase 1 grounding module.
 
-- T1.1 스키마 — InventoryElement / Inventory 데이터 클래스
-- T1.2 추출기 — fixture 기반 fetch_inventory (file:// 경로)
-- T1.3 pruner — 가지치기 룰
-- T1.4 budget — 토큰 예산 가드
+- T1.1 schema — InventoryElement / Inventory data classes
+- T1.2 extractor — fixture-based fetch_inventory (file:// paths)
+- T1.3 pruner — pruning rules
+- T1.4 budget — token-budget guard
 - T1.5 dify_client — _prepend_dom_inventory (graceful degradation)
-- T1.6 가이드 블록 — serialize_block 의 마커/footer
+- T1.6 guide block — serialize_block markers/footer
 """
 
 from __future__ import annotations
@@ -60,8 +60,8 @@ def test_inventory_dataclass_defaults():
 
 def test_extractor_click_fixture():
     inv = fetch_inventory(_file_url("click.html"))
-    assert inv.error is None, f"추출 실패: {inv.error}"
-    # 골든 셋(docs/grounding-schema.md): 1+ button 포함
+    assert inv.error is None, f"extraction failed: {inv.error}"
+    # golden set (docs/grounding-schema.md): includes 1+ button
     roles = [e.role for e in inv.elements]
     assert "button" in roles
     assert any(e.role == "button" and e.name for e in inv.elements)
@@ -71,22 +71,22 @@ def test_extractor_fill_fixture_textboxes():
     inv = fetch_inventory(_file_url("fill.html"))
     assert inv.error is None
     textboxes = [e for e in inv.elements if e.role == "textbox"]
-    # fill.html 에 4 개의 textbox (Name/Bio/ReadOnly/Special)
-    assert len(textboxes) >= 3, f"textbox 부족: {len(textboxes)}"
+    # fill.html has 4 textboxes (Name/Bio/ReadOnly/Special)
+    assert len(textboxes) >= 3, f"too few textboxes: {len(textboxes)}"
 
 
 def test_extractor_select_fixture():
     inv = fetch_inventory(_file_url("select.html"))
     assert inv.error is None
     assert any(e.role == "combobox" for e in inv.elements)
-    # option 도 인터랙티브로 추출
+    # options are also extracted as interactive
     assert any(e.role == "option" for e in inv.elements)
 
 
 def test_extractor_unreachable_url_graceful():
-    """존재하지 않는 file:// 경로 → graceful degradation (error 기록)."""
+    """A non-existent file:// path → graceful degradation (error recorded)."""
     inv = fetch_inventory("file:///nonexistent/path.html")
-    # 추출 자체가 실패하거나 빈 인벤토리 둘 다 허용 (브라우저 동작 의존)
+    # either extraction fails or returns an empty inventory (browser-dependent)
     assert inv.error is not None or inv.is_empty()
 
 
@@ -155,7 +155,7 @@ def test_budget_truncates_when_over():
 # ── T1.5 (graceful degradation) ───────────────────────────────────────────────
 
 def test_dify_client_prepend_graceful_on_failure():
-    """target_url 추출 실패 시 srs_text 가 변경되지 않고 meta.used=False."""
+    """If target_url extraction fails, srs_text is unchanged and meta.used=False."""
     from zero_touch_qa.config import Config
     from zero_touch_qa.dify_client import DifyClient
 
@@ -166,14 +166,14 @@ def test_dify_client_prepend_graceful_on_failure():
         srs_text="ORIGINAL TEXT",
         target_url="file:///nonexistent/grounding-test.html",
     )
-    # 실패해도 srs_text 그대로 (graceful)
+    # even on failure, srs_text stays as-is (graceful)
     assert merged == "ORIGINAL TEXT" or "ORIGINAL TEXT" in merged
-    # 성공 시 used=True, 실패 시 used=False — 두 케이스 모두 일관 형식
+    # success → used=True, failure → used=False — same shape both ways
     assert "used" in meta
 
 
 def test_dify_client_prepend_succeeds_on_local_fixture():
-    """실제 fixture 로 prepend 동작 — block 이 srs_text 앞에 붙음."""
+    """prepend on a real fixture — the block sits before srs_text."""
     from zero_touch_qa.config import Config
     from zero_touch_qa.dify_client import DifyClient
 
@@ -185,8 +185,8 @@ def test_dify_client_prepend_succeeds_on_local_fixture():
         target_url=_file_url("fill.html"),
     )
     if not meta.get("used"):
-        pytest.skip(f"인벤토리 추출 실패: {meta.get('error')}")
-    # 마커가 ORIGINAL TEXT 보다 앞에 와야 함
+        pytest.skip(f"inventory extraction failed: {meta.get('error')}")
+    # marker must come before ORIGINAL TEXT
     idx_marker = merged.find("=== DOM INVENTORY")
     idx_orig = merged.find("ORIGINAL TEXT")
     assert idx_marker != -1 and idx_orig != -1
@@ -212,7 +212,7 @@ def test_serialize_block_marker_format():
 
 
 def test_serialize_block_empty_returns_empty_string():
-    """빈 인벤토리는 prepend 안 함 (graceful)."""
+    """Empty inventory → no prepend (graceful)."""
     inv = Inventory(target_url="x", elements=[])
     assert serialize_block(inv) == ""
 

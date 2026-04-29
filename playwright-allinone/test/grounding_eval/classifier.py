@@ -1,16 +1,18 @@
-"""Phase 1 T1.7 — selector 분류기.
+"""Phase 1 T1.7 — selector classifier.
 
-골든 스텝의 셀렉터와 LLM 출력의 셀렉터를 비교해 정확/부분/실패 3분류로 라벨링한다.
+Compares the golden step selector against the LLM output selector and
+labels each pair as one of three classes: exact / partial / fail.
 
-분류 정의 (docs/PLAN_GROUNDING_RECORDING_AGENT.md §"DoD §분류 정의"):
+Class definitions (docs/PLAN_GROUNDING_RECORDING_AGENT.md §"DoD §classification"):
 
-| 분류 | 정의 |
-| --- | --- |
-| exact   | role+name 매칭 (getByRole 끼리 또는 의미적 동등) / CSS 동일 토큰 |
-| partial | 같은 요소를 가리키지만 셀렉터 우선순위가 낮은 형식 (CSS-id ↔ role 등) |
-| fail    | 다른 요소 또는 빈 selector / 의미 없음 |
+| class   | definition |
+| ---     | --- |
+| exact   | role+name match (getByRole-to-getByRole or semantically equivalent) / identical CSS tokens |
+| partial | points to the same element but the selector format has lower priority (CSS-id ↔ role, etc.) |
+| fail    | different element or empty / meaningless selector |
 
-mock_target=true 또는 action ∈ {wait, navigate} 인 step 은 셀렉터 평가에서 제외.
+Steps with mock_target=true or action ∈ {wait, navigate} are excluded
+from selector evaluation.
 """
 
 from __future__ import annotations
@@ -20,22 +22,22 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# action 별 selector 평가 정책
+# selector evaluation policy by action
 SKIP_ACTIONS = frozenset({"wait", "navigate"})
 
-# 정규식: getByRole('role', { name: '<name>' })
+# regex: getByRole('role', { name: '<name>' })
 _ROLE_NAME_RE = re.compile(
     r"getByRole\(\s*['\"]([\w-]+)['\"]\s*(?:,\s*\{\s*name:\s*['\"]([^'\"]*)['\"]\s*\})?\s*\)",
     re.IGNORECASE,
 )
 
-# 정규식: getByText('<text>') / getByLabel / getByPlaceholder
+# regex: getByText('<text>') / getByLabel / getByPlaceholder
 _BY_TEXT_RE = re.compile(
     r"getBy(Text|Label|Placeholder|TestId)\(\s*['\"]([^'\"]*)['\"]\s*\)",
     re.IGNORECASE,
 )
 
-# CSS id (#foo) / class (.bar) / attr 셀렉터
+# CSS id (#foo) / class (.bar) / attribute selectors
 _CSS_ID_RE = re.compile(r"#([\w-]+)")
 _CSS_CLASS_RE = re.compile(r"\.([\w-]+)")
 _CSS_ATTR_RE = re.compile(r"\[([\w-]+)(?:\s*=\s*['\"]?([^'\"\]]*)['\"]?)?\]")
@@ -43,7 +45,7 @@ _CSS_ATTR_RE = re.compile(r"\[([\w-]+)(?:\s*=\s*['\"]?([^'\"\]]*)['\"]?)?\]")
 
 @dataclass
 class ParsedSelector:
-    """셀렉터 문자열의 의미 파싱 결과."""
+    """Semantic parse result of a selector string."""
     raw: str
     kind: str  # "role" | "text" | "label" | "placeholder" | "testid" | "css" | "empty"
     role: Optional[str] = None
@@ -55,10 +57,10 @@ class ParsedSelector:
 
 
 def parse_selector(sel: str) -> ParsedSelector:
-    """셀렉터 문자열을 의미 단위로 파싱.
+    """Parse a selector string into semantic parts.
 
-    빈 문자열 / None → kind=empty.
-    매칭 실패 → kind=css (best-effort, 토큰 그대로 유지).
+    Empty string / None → kind=empty.
+    No regex match → kind=css (best-effort, keep tokens as-is).
     """
     raw = (sel or "").strip()
     if not raw:
@@ -90,19 +92,20 @@ def _normalize_text(s: Optional[str]) -> str:
 
 
 def classify_selector(golden: str, observed: str) -> str:
-    """golden 과 observed 셀렉터를 비교해 'exact' / 'partial' / 'fail' 반환.
+    """Compare golden and observed selectors and return 'exact' / 'partial' / 'fail'.
 
-    규칙:
-    - 둘 다 empty → exact (navigate 같이 selector 가 의미 없는 경우)
-    - 한쪽만 empty → fail
-    - 정규화 후 raw 동일 → exact
-    - 둘 다 role 형식: role+name 모두 일치 → exact, role 만 일치 → partial,
-      role 도 다름 → fail
-    - 한쪽 role / 다른 쪽 css 또는 text: 같은 요소를 의미 — name/text 가
-      css ids 의 어느 한 토큰과 substring 매칭이거나 그 반대 → partial
-    - 둘 다 css: id 집합 또는 첫 id 가 같으면 exact, 부분 교집합 → partial,
-      교집합 0 → fail
-    - 둘 다 text/label/placeholder/testid 형식: text 일치 → exact, 부분일치 → partial
+    Rules:
+    - both empty → exact (e.g. navigate where selector has no meaning)
+    - only one side empty → fail
+    - identical raw after normalization → exact
+    - both role form: role+name both match → exact, only role matches →
+      partial, role also differs → fail
+    - one role / other css or text: same element if name/text substring-matches
+      one of the css ids or vice versa → partial
+    - both css: id sets identical (or first id same) → exact, partial overlap
+      → partial, no overlap → fail
+    - both text/label/placeholder/testid: text equal → exact, partial substring
+      → partial
     """
     g = parse_selector(golden)
     o = parse_selector(observed)
@@ -120,16 +123,16 @@ def classify_selector(golden: str, observed: str) -> str:
         if g.role == o.role and _normalize_text(g.name) == _normalize_text(o.name):
             return "exact"
         if g.role == o.role:
-            # role 일치, name 만 부분일치 (substring) → partial
+            # role match, name only partial (substring) → partial
             if g.name and o.name and (
                 _normalize_text(g.name) in _normalize_text(o.name)
                 or _normalize_text(o.name) in _normalize_text(g.name)
             ):
                 return "partial"
-            return "partial"  # 같은 role 이라도 name 불일치는 부분
+            return "partial"  # same role with name mismatch is still partial
         return "fail"
 
-    # text/label/placeholder/testid 끼리
+    # text/label/placeholder/testid pairs
     text_kinds = {"text", "label", "placeholder", "testid"}
     if g.kind in text_kinds and o.kind in text_kinds:
         if g.kind == o.kind and _normalize_text(g.text) == _normalize_text(o.text):
@@ -157,17 +160,18 @@ def classify_selector(golden: str, observed: str) -> str:
             return "partial"
         return "fail"
 
-    # 혼합: role ↔ css / text ↔ css 등
-    # 한쪽 role 의 name 이 다른 쪽 css ids/classes 의 어느 토큰과 substring 일치하면 partial.
+    # mixed: role ↔ css / text ↔ css etc.
+    # If one side's role.name substring-matches any token of the other side's
+    # css ids/classes, return partial.
     g_keywords = _selector_keywords(g)
     o_keywords = _selector_keywords(o)
     if g_keywords and o_keywords:
         norm_g = {_normalize_text(k) for k in g_keywords if k}
         norm_o = {_normalize_text(k) for k in o_keywords if k}
-        # 완전일치 토큰 있음 → partial (스타일 불일치라 exact 는 안 줌)
+        # exact-token overlap → partial (style mismatch, so don't promote to exact)
         if norm_g & norm_o:
             return "partial"
-        # substring 매칭
+        # substring match
         for a in norm_g:
             for b in norm_o:
                 if a and b and (a in b or b in a):
@@ -176,7 +180,7 @@ def classify_selector(golden: str, observed: str) -> str:
 
 
 def _selector_keywords(p: ParsedSelector) -> list[str]:
-    """role.name / text / css ids / css classes 를 비교 토큰으로 평탄화."""
+    """Flatten role.name / text / css ids / css classes into comparison tokens."""
     out: list[str] = []
     if p.role:
         out.append(p.role)
@@ -192,7 +196,7 @@ def _selector_keywords(p: ParsedSelector) -> list[str]:
     return [t for t in out if t]
 
 
-# ── 페이지 단위 채점 ──────────────────────────────────────────────────────────
+# ── per-page scoring ────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -242,7 +246,7 @@ def evaluate_page(
     grounding_truncated: Optional[bool] = None,
     grounding_used: Optional[bool] = None,
 ) -> PageEval:
-    """한 페이지의 골든 vs 관측 비교."""
+    """Compare golden vs observed for one page."""
     step_evals: list[StepEval] = []
     obs_by_step = {int(s.get("step", i + 1)): s for i, s in enumerate(observed_steps)}
 
@@ -255,16 +259,16 @@ def evaluate_page(
         o = obs_by_step.get(step_no, {})
         observed_target = str(o.get("target", "") or "")
 
-        # mock_target 또는 wait/navigate 는 selector 평가 제외
+        # skip selector evaluation for mock_target or wait/navigate
         if mock_target or action in SKIP_ACTIONS:
             cls = "skipped"
-            note = "selector 평가 제외 (mock_target 또는 wait/navigate)"
+            note = "selector eval skipped (mock_target or wait/navigate)"
         elif not o:
             cls = "fail"
-            note = "관측 step 누락"
+            note = "observed step missing"
         elif o.get("action") != action:
             cls = "fail"
-            note = f"action 불일치: golden={action} observed={o.get('action')}"
+            note = f"action mismatch: golden={action} observed={o.get('action')}"
         else:
             cls = classify_selector(golden_target, observed_target)
             note = ""

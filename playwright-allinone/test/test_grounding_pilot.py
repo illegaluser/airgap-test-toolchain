@@ -1,12 +1,13 @@
-"""Phase 1 T1.8 — fixture 카탈로그 파일럿 smoke (결정론적).
+"""Phase 1 T1.8 — fixture catalog pilot smoke (deterministic).
 
-각 P0-FX-* 골든 시나리오의 role 기반 셀렉터가 실제 grounding 추출 결과
-(인벤토리) 에 존재하는지 검증한다. 한 건이라도 빠지면 LLM 이 prompt
-가이드를 받아도 그 step 의 셀렉터를 정확히 생성할 수 없다 — 즉 grounding
-upper-bound 가 1.0 미만임을 의미.
+Verifies every role-based selector in each P0-FX-* golden scenario is
+present in the actual grounding extraction (inventory). If even one is
+missing, the LLM cannot generate that step's selector accurately even
+with the prompt guide — i.e. the grounding upper-bound is below 1.0.
 
-본 테스트는 LLM 호출 없이 결정론적이며 실제 효과 측정 (T1.7 페어 실행) 의
-선결 조건이다. 한 fixture 가 실패하면 fixture 자체나 골든을 조정해야 한다.
+This test is deterministic (no LLM calls) and is the prerequisite for
+the T1.7 pair runs that measure real impact. If a fixture fails, adjust
+the fixture itself or the golden.
 """
 
 from __future__ import annotations
@@ -55,27 +56,27 @@ def _fixture_filename_from_url(url: str) -> str:
     "P0-FX-01", "P0-FX-02", "P0-FX-03", "P0-FX-04", "P0-FX-05",
 ])
 def test_fixture_inventory_within_budget(catalog_id: str):
-    """추출 → prune → budget fit 까지 한 페이지 인벤토리가 1500 토큰 이하."""
+    """After extract → prune → budget fit, a page inventory stays within 1500 tokens."""
     spec = _load_fx_golden(catalog_id)
     fixture_name = _fixture_filename_from_url(spec["target_url"])
     url = _file_url(fixture_name)
 
     inv = fetch_inventory(url)
     if inv.error:
-        pytest.skip(f"인벤토리 추출 실패 (browser 없을 수 있음): {inv.error}")
+        pytest.skip(f"inventory extraction failed (no browser?): {inv.error}")
 
     prune(inv)
     fit_to_budget(inv, budget=DEFAULT_TOKEN_BUDGET)
     block = serialize_block(inv)
-    assert block, "직렬화 블록이 비어 있음"
+    assert block, "serialized block is empty"
     tokens = estimate_tokens(block)
-    assert tokens <= DEFAULT_TOKEN_BUDGET, f"한도 초과: {tokens} > {DEFAULT_TOKEN_BUDGET}"
+    assert tokens <= DEFAULT_TOKEN_BUDGET, f"over budget: {tokens} > {DEFAULT_TOKEN_BUDGET}"
 
 
 def _golden_role_step_missing_from_inventory(
     step: dict, inv_keys: set[tuple[str, str]],
 ) -> bool:
-    """골든 step 의 role 셀렉터가 인벤토리에 없는지 확인."""
+    """Check whether the golden step's role selector is missing from the inventory."""
     if step.get("mock_target"):
         return False
     ps = parse_selector(str(step.get("target") or ""))
@@ -84,7 +85,7 @@ def _golden_role_step_missing_from_inventory(
     role = ps.role.lower() if ps.role else ""
     name_norm = _normalize(ps.name or "")
     if not name_norm:
-        # name 없는 role 셀렉터 (예: getByRole('heading')) 는 role 만 매칭
+        # role-only selectors with no name (e.g. getByRole('heading')) match on role alone
         return not any(r == role for r, _n in inv_keys)
     return (role, name_norm) not in inv_keys
 
@@ -93,9 +94,9 @@ def _golden_role_step_missing_from_inventory(
     "P0-FX-01", "P0-FX-02", "P0-FX-03", "P0-FX-05",
 ])
 def test_fixture_role_selectors_present_in_inventory(catalog_id: str):
-    """골든의 getByRole 셀렉터들이 인벤토리에 모두 존재해야 한다.
+    """Every getByRole selector in the golden must exist in the inventory.
 
-    P0-FX-04 는 verify-only 페이지라 role 기반 selector 가 없어 제외.
+    P0-FX-04 is verify-only (no role-based selectors), so it's excluded.
     """
     spec = _load_fx_golden(catalog_id)
     fixture_name = _fixture_filename_from_url(spec["target_url"])
@@ -103,7 +104,7 @@ def test_fixture_role_selectors_present_in_inventory(catalog_id: str):
 
     inv = fetch_inventory(url)
     if inv.error:
-        pytest.skip(f"인벤토리 추출 실패: {inv.error}")
+        pytest.skip(f"inventory extraction failed: {inv.error}")
 
     inv_keys = {(e.role.lower(), _normalize(e.name)) for e in inv.elements}
     missing = [
@@ -113,14 +114,14 @@ def test_fixture_role_selectors_present_in_inventory(catalog_id: str):
     ]
 
     assert not missing, (
-        f"{catalog_id}: 골든의 role 셀렉터 {len(missing)} 개가 인벤토리에 없음 — "
-        f"grounding upper-bound 가 100% 미만이라 fixture/골든 조정 필요. "
+        f"{catalog_id}: {len(missing)} golden role selectors missing from inventory — "
+        f"grounding upper-bound is below 100%, so the fixture or golden needs adjustment. "
         f"missing={missing}"
     )
 
 
 def test_inventory_block_prepends_in_dify_client_for_each_fixture(monkeypatch):
-    """5종 fixture 각각에 대해 _prepend_dom_inventory 가 마커 블록을 srs 앞에 붙인다."""
+    """For each of the 5 fixtures, _prepend_dom_inventory prepends the marker block before srs."""
     from zero_touch_qa.config import Config
     from zero_touch_qa.dify_client import DifyClient
 
@@ -139,31 +140,33 @@ def test_inventory_block_prepends_in_dify_client_for_each_fixture(monkeypatch):
             failures.append(f"{cid}: meta={meta}")
             continue
         if merged.find("=== DOM INVENTORY") > merged.find("ORIGINAL"):
-            failures.append(f"{cid}: 마커가 ORIGINAL 뒤에 옴")
+            failures.append(f"{cid}: marker came after ORIGINAL")
         if (meta.get("grounding_inventory_tokens") or 0) <= 0:
             failures.append(f"{cid}: tokens=0")
 
     if failures:
-        pytest.fail("fixture 파일럿 실패: " + "; ".join(failures))
+        pytest.fail("fixture pilot failed: " + "; ".join(failures))
 
 
 def test_grounding_eval_token_budget_env_override(monkeypatch):
-    """env GROUNDING_TOKEN_BUDGET 으로 한도 override 동작."""
+    """env GROUNDING_TOKEN_BUDGET overrides the budget."""
     from zero_touch_qa.config import Config
     from zero_touch_qa.dify_client import DifyClient
 
     cfg = Config.from_env()
     client = DifyClient(cfg)
 
-    # 한도를 빡빡하게 → truncate 발생해야 함. full_dsl.html 의 8 요소 인벤토리는
-    # 비-truncate 시 ~275 토큰 (헤더/푸터 ~99 + 요소당 ~22). budget=180 이면
-    # 3 요소만 살아남고 ~167 토큰으로 truncated=True 가 된다.
-    # (이전 budget=300 은 8 요소 / 275 토큰이 그대로 한도 안에 들어가 truncate 가
-    #  발생 안 함 — 토큰 카운터/fixture 변경으로 헐거워졌던 것을 이번 fix 에서 정정.)
+    # Tight budget → truncate must trigger. full_dsl.html's 8-element
+    # inventory is ~275 tokens un-truncated (header/footer ~99 + ~22 per
+    # element). With budget=180, only 3 elements survive at ~167 tokens
+    # and truncated=True.
+    # (The earlier budget=300 fit 8 elements / 275 tokens within the
+    #  budget so truncate never fired — the token counter / fixture
+    #  drift had loosened it; this fix tightens it again.)
     monkeypatch.setenv("GROUNDING_TOKEN_BUDGET", "180")
     url = _file_url("full_dsl.html")
     _, meta = client._prepend_dom_inventory(srs_text="x", target_url=url)
     if not meta.get("used"):
-        pytest.skip(f"인벤토리 추출 실패: {meta.get('error')}")
+        pytest.skip(f"inventory extraction failed: {meta.get('error')}")
     assert meta.get("grounding_truncated") is True
     assert meta.get("grounding_inventory_tokens", 0) <= 180

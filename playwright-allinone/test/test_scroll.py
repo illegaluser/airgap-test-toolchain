@@ -1,8 +1,8 @@
-"""S3-03 — scroll 액션 통합 검증.
+"""S3-03 — scroll action integration check.
 
-2 케이스:
-- happy: viewport 밖 #footer 가 scroll 후 visible 로 검증
-- into_view 외 value 는 _validate_scenario 단계에서 거부
+Two cases:
+- happy: an off-viewport #footer is verified visible after scroll
+- values other than into_view are rejected by _validate_scenario
 """
 
 from __future__ import annotations

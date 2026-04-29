@@ -1,13 +1,13 @@
-"""replay_proxy 의 auth-profile 자동 매칭 (P4.2~P4.4).
+"""replay_proxy auth-profile auto-matching (P4.2 ~ P4.4).
 
-설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.8
+Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.8
 
-검증:
-- metadata.json 에 auth_profile 이 있을 때:
-  - run_llm_play  → cmd 에 --storage-state-in 주입 + env 에 PLAYWRIGHT_* 주입
-  - run_codegen_replay → env 에 AUTH_STORAGE_STATE_IN + PLAYWRIGHT_* 주입
-- metadata.json 에 auth_profile 이 없을 때 — 기존 동작 그대로 (env 미주입)
-- verify 실패 시 ReplayAuthExpiredError (P4.4) — UI 가 만료 모달로 분기 가능
+Coverage:
+- when metadata.json has auth_profile:
+  - run_llm_play  → injects --storage-state-in into cmd + PLAYWRIGHT_* into env
+  - run_codegen_replay → injects AUTH_STORAGE_STATE_IN + PLAYWRIGHT_* into env
+- when metadata.json has no auth_profile — original behavior (no env injection)
+- on verify failure → ReplayAuthExpiredError (P4.4) — UI can branch to expired modal
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def isolated_root(tmp_path: Path, monkeypatch) -> Path:
 
 @pytest.fixture
 def session_dir(isolated_root: Path) -> Path:
-    """녹화 세션 디렉토리 + 빈 metadata.json + scenario.json + original.py."""
+    """Recording session dir + empty metadata.json + scenario.json + original.py."""
     sd = isolated_root / "session-abc"
     sd.mkdir(parents=True, exist_ok=True)
     (sd / "metadata.json").write_text("{}", encoding="utf-8")
@@ -51,7 +51,7 @@ def session_dir(isolated_root: Path) -> Path:
 
 
 def _seed_profile_in_catalog(name: str, isolated_root: Path) -> Path:
-    """auth_profiles 카탈로그에 합성 프로파일 등록 + 가짜 storage 파일 생성."""
+    """Register a synthetic profile in the auth_profiles catalog + create a fake storage file."""
     from zero_touch_qa.auth_profiles import (
         AuthProfile, FingerprintProfile, NaverProbeSpec, VerifySpec,
         _ensure_root, _upsert_profile,
@@ -92,7 +92,7 @@ def _seed_profile_in_catalog(name: str, isolated_root: Path) -> Path:
 
 
 def _stub_subprocess_capture(monkeypatch):
-    """subprocess.run 을 가로채 cmd/env 를 캡처. 정상 종료 시뮬레이션."""
+    """Intercept subprocess.run and capture cmd/env. Simulates a clean exit."""
     captured = {"cmd": None, "env": None, "cwd": None}
 
     class _FakeProc:
@@ -112,12 +112,12 @@ def _stub_subprocess_capture(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P4.2 — run_llm_play 자동 매칭
+# P4.2 — run_llm_play auto-matching
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestRunLlmPlayAuth:
     def test_no_metadata_no_auth_injection(self, session_dir: Path, monkeypatch):
-        """metadata.json 에 auth_profile 키가 없으면 기존 동작."""
+        """No auth_profile key in metadata.json → original behavior."""
         captured = _stub_subprocess_capture(monkeypatch)
         run_llm_play(host_session_dir=str(session_dir), project_root=".")
         assert "--storage-state-in" not in captured["cmd"]
@@ -128,12 +128,12 @@ class TestRunLlmPlayAuth:
     def test_auth_profile_injects_storage_and_env(
         self, session_dir: Path, isolated_root: Path, monkeypatch,
     ):
-        """auth_profile 메타 + verify 통과 → cmd 에 --storage-state-in + env 주입."""
+        """auth_profile meta + verify passes → cmd gets --storage-state-in + env injected."""
         storage_p = _seed_profile_in_catalog("alpha", isolated_root)
         (session_dir / "metadata.json").write_text(
             json.dumps({"auth_profile": "alpha"}), encoding="utf-8",
         )
-        # verify 통과 모킹.
+        # mock verify pass.
         from zero_touch_qa import auth_profiles as ap
         monkeypatch.setattr(
             ap, "verify_profile",
@@ -156,7 +156,7 @@ class TestRunLlmPlayAuth:
     def test_verify_failure_raises_expired(
         self, session_dir: Path, isolated_root: Path, monkeypatch,
     ):
-        """verify 실패 → ReplayAuthExpiredError + profile_name + detail."""
+        """verify fails → ReplayAuthExpiredError + profile_name + detail."""
         _seed_profile_in_catalog("alpha", isolated_root)
         (session_dir / "metadata.json").write_text(
             json.dumps({"auth_profile": "alpha"}), encoding="utf-8",
@@ -175,7 +175,7 @@ class TestRunLlmPlayAuth:
     def test_profile_not_found_raises_expired(
         self, session_dir: Path, isolated_root: Path, monkeypatch,
     ):
-        """metadata 에 적힌 profile 이 카탈로그에 없을 때도 만료로 간주 (UI 가 재시드 유도)."""
+        """A profile referenced in metadata but missing from the catalog is also treated as expired (UI prompts re-seed)."""
         (session_dir / "metadata.json").write_text(
             json.dumps({"auth_profile": "ghost"}), encoding="utf-8",
         )
@@ -186,14 +186,14 @@ class TestRunLlmPlayAuth:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P4.3 — run_codegen_replay 자동 매칭
+# P4.3 — run_codegen_replay auto-matching
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestRunCodegenReplayAuth:
     def test_no_metadata_no_env_injection(self, session_dir: Path, monkeypatch):
         captured = _stub_subprocess_capture(monkeypatch)
         run_codegen_replay(host_session_dir=str(session_dir))
-        # codegen replay 는 env=None 이 기본 — auth 없으면 그대로.
+        # codegen replay defaults to env=None — without auth, it stays None.
         assert captured["env"] is None
 
     def test_auth_profile_injects_env(
@@ -233,12 +233,12 @@ class TestRunCodegenReplayAuth:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P4.4 — ReplayAuthExpiredError 가 ReplayProxyError 의 subclass
+# P4.4 — ReplayAuthExpiredError is a subclass of ReplayProxyError
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestExpiredErrorHierarchy:
     def test_is_replay_proxy_error(self):
-        """rplus router 가 ReplayProxyError 로 catch 해도 expired 에러가 잡힘."""
+        """The rplus router can catch via ReplayProxyError and still see expired."""
         e = ReplayAuthExpiredError("alpha", {"reason": "x"})
         assert isinstance(e, ReplayProxyError)
 

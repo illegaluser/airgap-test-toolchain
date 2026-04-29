@@ -1,7 +1,8 @@
-"""T-H — Visibility Healer 시나리오 통합 테스트.
+"""T-H — Visibility Healer scenario integration tests.
 
-별도 파일 — make_executor 가 자체 sync_playwright 를 띄우므로 module-scoped
-playwright context 와 충돌하는 단위 테스트와 분리.
+In a separate file because make_executor spins up its own
+sync_playwright context and would clash with the module-scoped
+playwright context used by the unit tests.
 """
 
 from __future__ import annotations
@@ -16,8 +17,9 @@ HOVER_MENU_URL = (FIXTURES_DIR / "hover_menu.html").as_uri()
 def test_full_scenario_click_hidden_submenu_link_passes(
     make_executor, run_scenario,
 ):
-    """codegen 이 hover step 을 빠뜨린 형태의 click 만 emit 해도 visibility
-    healer 가 ancestor hover 후 복구해 시나리오가 PASS 끝까지 간다."""
+    """Even when codegen emits only the click (hover step missing), the
+    visibility healer recovers by hovering the ancestor and the scenario
+    runs PASS end-to-end."""
     executor = make_executor()
     scenario = [
         {
@@ -27,7 +29,7 @@ def test_full_scenario_click_hidden_submenu_link_passes(
         },
         {
             "step": 2, "action": "click", "target": "#link-about",
-            "value": "", "description": "About 클릭 (hover 누락 시뮬레이션)",
+            "value": "", "description": "click About (simulating missing hover)",
             "fallback_targets": [],
         },
         {
@@ -38,16 +40,16 @@ def test_full_scenario_click_hidden_submenu_link_passes(
     ]
     results, _, _ = run_scenario(executor, scenario)
     statuses = [r.status for r in results]
-    assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"
+    assert statuses == ["PASS", "PASS", "PASS"], f"actual: {statuses}"
 
 
-# T-H (D)(E)(F) — lazy menu (페이지 로드 직후 height:0, body mouseover 로 활성화)
+# T-H (D)(E)(F) — lazy menu (height:0 right after load, activated via body mouseover)
 LAZY_MENU_URL = (FIXTURES_DIR / "lazy_menu.html").as_uri()
 
 
 def test_full_scenario_lazy_menu_click_passes(make_executor, run_scenario):
-    """페이지 로드 직후 GNB link 가 height:0 인 사이트 — page-level activator
-    probe 가 body 에 hover 를 트리거해 menu 가 펼쳐지면 click PASS."""
+    """Site where GNB links are height:0 right after load — the page-level
+    activator probe triggers a body hover, the menu unfolds, and click PASSes."""
     executor = make_executor()
     scenario = [
         {
@@ -56,7 +58,7 @@ def test_full_scenario_lazy_menu_click_passes(make_executor, run_scenario):
         },
         {
             "step": 2, "action": "click", "target": "role=link, name=회사소개",
-            "value": "", "description": "GNB 클릭 (lazy menu)",
+            "value": "", "description": "click GNB (lazy menu)",
             "fallback_targets": [],
         },
         {
@@ -67,19 +69,20 @@ def test_full_scenario_lazy_menu_click_passes(make_executor, run_scenario):
     ]
     results, _, _ = run_scenario(executor, scenario)
     statuses = [r.status for r in results]
-    assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"
+    assert statuses == ["PASS", "PASS", "PASS"], f"actual: {statuses}"
 
 
-# T-H (G) — height:0 / line-height:0 anchor 에 JS dispatch click 폴백
+# T-H (G) — JS dispatch click fallback for height:0 / line-height:0 anchors
 ZERO_HEIGHT_ANCHOR_URL = (FIXTURES_DIR / "zero_height_anchor.html").as_uri()
 
 
 def test_full_scenario_zero_height_anchor_click_passes_via_js_click(
     make_executor, run_scenario,
 ):
-    """ktds.com 패턴 — anchor 의 computed style 이 height:0/line-height:0 이라
-    Playwright 의 normal/force click 모두 거부. JS dispatchEvent('click') 폴백이
-    DOM event 를 직접 발화하여 listener 가 동작 → verify PASS.
+    """ktds.com pattern — the anchor's computed style is height:0 /
+    line-height:0, so Playwright's normal and force click both refuse.
+    The JS dispatchEvent('click') fallback fires the DOM event directly,
+    the listener runs → verify PASSes.
     """
     executor = make_executor()
     scenario = [
@@ -90,7 +93,7 @@ def test_full_scenario_zero_height_anchor_click_passes_via_js_click(
         },
         {
             "step": 2, "action": "click", "target": "role=link, name=회사소개",
-            "value": "", "description": "zero-height anchor 클릭",
+            "value": "", "description": "click zero-height anchor",
             "fallback_targets": [],
         },
         {
@@ -101,4 +104,4 @@ def test_full_scenario_zero_height_anchor_click_passes_via_js_click(
     ]
     results, _, _ = run_scenario(executor, scenario)
     statuses = [r.status for r in results]
-    assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"
+    assert statuses == ["PASS", "PASS", "PASS"], f"actual: {statuses}"

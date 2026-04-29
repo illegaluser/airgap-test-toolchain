@@ -1,12 +1,15 @@
-"""S4C-03 — convert 14대 E2E 통합 회귀.
+"""S4C-03 — convert 14-action E2E integration regression.
 
-`recorded-14actions.py` 의 인메모리 변형을 fixture URL 로 만든 뒤:
-1. `convert_playwright_to_dsl` 로 14대 DSL scenario 변환
-2. `_validate_scenario` 통과 확인
-3. `QAExecutor` 로 fixture `full_dsl.html` 위에서 14 step 실행 → 모두 PASS
+Take an in-memory variant of `recorded-14actions.py` pointing to the
+fixture URL, then:
+1. convert it into a 14-action DSL scenario with `convert_playwright_to_dsl`
+2. confirm `_validate_scenario` passes
+3. run the 14 steps through `QAExecutor` over the `full_dsl.html`
+   fixture → all PASS
 
-LLM 우회 경로 (convert 모드는 정규식 파서만 사용) 이므로 Dify monkeypatch 불필요.
-이 테스트가 PASS 하면 Jenkins `RUN_MODE=convert` E2E 의 결정론적 회귀 책임을 진다.
+LLM-bypass path (convert mode uses only the regex parser), so no Dify
+monkeypatch is needed. When this test passes, it owns the deterministic
+regression for the Jenkins `RUN_MODE=convert` E2E.
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from zero_touch_qa.converter import convert_playwright_to_dsl
 
 
 def _write_recorded(tmp_path: Path, fixture_uri: str) -> Path:
-    """fixture file:// URL 기반 14대 codegen-style 스크립트를 임시 파일로 기록."""
+    """Write a 14-action codegen-style script to a temp file targeting the fixture file:// URL."""
     src = tmp_path / "recorded.py"
     src.write_text(
         f'''from playwright.sync_api import Playwright, sync_playwright, expect
@@ -58,14 +61,14 @@ with sync_playwright() as playwright:
 
 
 def test_convert_14_actions_full_pipeline(tmp_path: Path, fixture_url, make_executor, run_scenario):
-    """convert → validate → execute 풀 사슬 — fixture full_dsl.html 위에서 14/14 PASS."""
+    """convert → validate → execute full chain — 14/14 PASS over the full_dsl.html fixture."""
     fixture_uri = fixture_url("full_dsl.html")
     recorded = _write_recorded(tmp_path, fixture_uri)
 
     out_dir = tmp_path / "out"
     scenario = convert_playwright_to_dsl(str(recorded), str(out_dir))
 
-    # 1. 14대 액션이 모두 들어왔는지 확인.
+    # 1. confirm all 14 actions are present.
     assert len(scenario) == 14
     actions = [s["action"] for s in scenario]
     expected = [
@@ -75,12 +78,13 @@ def test_convert_14_actions_full_pipeline(tmp_path: Path, fixture_url, make_exec
     ]
     assert actions == expected
 
-    # 2. _validate_scenario 통과.
+    # 2. passes _validate_scenario.
     _validate_scenario(scenario)
 
-    # 3. executor 가 풀 시나리오를 실행 — 14/14 PASS.
-    #    upload step 의 fallback 경로(`artifacts/upload_sample.txt`) 를 위해
-    #    artifacts 에 더미 파일을 미리 생성한다 (Sprint 5 §10.3.2 default fallback).
+    # 3. executor runs the full scenario — 14/14 PASS.
+    #    For the upload step's fallback path (`artifacts/upload_sample.txt`),
+    #    drop a dummy file under artifacts ahead of time
+    #    (Sprint 5 §10.3.2 default fallback).
     executor = make_executor()
     artifacts = Path(executor.config.artifacts_dir)
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -92,7 +96,7 @@ def test_convert_14_actions_full_pipeline(tmp_path: Path, fixture_url, make_exec
 
 
 def test_convert_14_actions_artifact_outputs(tmp_path: Path, fixture_url):
-    """convert 산출물 — scenario.json 이 output_dir 에 기록되는지 확인."""
+    """convert artifact — confirm scenario.json is written into output_dir."""
     fixture_uri = fixture_url("full_dsl.html")
     recorded = _write_recorded(tmp_path, fixture_uri)
 
@@ -101,7 +105,7 @@ def test_convert_14_actions_artifact_outputs(tmp_path: Path, fixture_url):
 
     scenario_path = out_dir / "scenario.json"
     assert scenario_path.exists()
-    # 비어있지 않은 JSON 배열인지 표면적 검증.
+    # surface-level check that it's a non-empty JSON array.
     text = scenario_path.read_text(encoding="utf-8")
     assert text.strip().startswith("[")
     assert "navigate" in text and "mock_data" in text

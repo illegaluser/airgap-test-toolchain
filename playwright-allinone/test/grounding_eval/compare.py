@@ -1,26 +1,27 @@
-"""Phase 1 T1.7 — flag=off vs flag=on 비교 리포트 생성기.
+"""Phase 1 T1.7 — flag=off vs flag=on comparison report generator.
 
-입력:
-  --golden <dir>           골든 시나리오 디렉토리 (test/grounding_eval/golden/)
-  --off <dir>              flag=off 실행 산출물 루트 (per-page subdir)
-  --on  <dir>              flag=on  실행 산출물 루트 (per-page subdir)
-  --out <path>             출력 HTML 리포트 경로
-  --json <path>            (옵션) 메트릭 JSON 출력 경로
+Inputs:
+  --golden <dir>           golden scenarios directory (test/grounding_eval/golden/)
+  --off <dir>              flag=off run artifacts root (per-page subdir)
+  --on  <dir>              flag=on  run artifacts root (per-page subdir)
+  --out <path>             HTML report output path
+  --json <path>            (optional) metrics JSON output path
 
-각 page subdir 형식:
+Each page subdir layout:
   <root>/<catalog_id>/scenario.json
   <root>/<catalog_id>/llm_calls.jsonl
 
-산출:
-  - HTML 리포트 (off vs on 페이지별 표 + 합계 요약)
-  - JSON 메트릭 (CI 관찰용)
+Outputs:
+  - HTML report (per-page off vs on table + summary aggregate)
+  - JSON metrics (for CI observability)
 
-DoD 자동 판정:
-  - "8종 이상에서 selector_accuracy ≥ 0.75" — 평가에 포함된 페이지 수 기준
-  - "healer 호출 on/off 비율 ≤ 1/3"
-  - "planner 응답시간 증가 ≤ +10초"
+DoD auto-judgment:
+  - "≥ 8 pages with selector_accuracy ≥ 0.75" — count among evaluated pages
+  - "healer call on/off ratio ≤ 1/3"
+  - "planner response time increase ≤ +10s"
 
-본 모듈은 결정론적 (LLM 호출 없음). 실제 실행은 run_grounding_eval.sh 가 담당.
+This module is deterministic (no LLM calls). The actual run is
+orchestrated by run_grounding_eval.sh.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ def load_scenario(path: Path) -> list[dict]:
     if not path.exists():
         return []
     raw = json.loads(path.read_text(encoding="utf-8"))
-    # Phase 1 산출물은 list[dict] 또는 {"steps": [...]} 두 형식 허용
+    # Phase 1 artifacts allow either list[dict] or {"steps": [...]} forms
     if isinstance(raw, dict) and "steps" in raw:
         return list(raw.get("steps") or [])
     if isinstance(raw, list):
@@ -67,9 +68,9 @@ def load_scenario(path: Path) -> list[dict]:
 def evaluate_run(
     *, golden_dir: Path, run_root: Path,
 ) -> dict[str, PageEval]:
-    """run_root 의 per-page 산출물을 골든 디렉토리와 비교.
+    """Compare per-page artifacts under run_root with the golden directory.
 
-    반환: {catalog_id: PageEval}
+    Returns: {catalog_id: PageEval}
     """
     results: dict[str, PageEval] = {}
     for golden_path in sorted(golden_dir.glob("*.scenario.json")):
@@ -87,7 +88,7 @@ def evaluate_run(
         planner_elapsed = (
             sum(float(c.get("elapsed_ms") or 0) for c in planner_calls) / len(planner_calls)
         ) if planner_calls else 0.0
-        # grounding 메타는 planner 레코드의 첫 항목에서
+        # grounding metadata comes from the first planner record
         gtokens: Optional[int] = None
         gtrunc: Optional[bool] = None
         gused: Optional[bool] = None
@@ -112,7 +113,7 @@ def evaluate_run(
 
 
 def compute_dod(off: dict[str, PageEval], on: dict[str, PageEval]) -> dict:
-    """DoD 자동 판정 — off/on 페어가 모두 있는 페이지에 한해 계산."""
+    """DoD auto-judgment — computed only over pages with both off/on pairs."""
     pages = sorted(set(off) & set(on))
     accuracy_pass = 0
     rows = []
@@ -170,7 +171,7 @@ def compute_dod(off: dict[str, PageEval], on: dict[str, PageEval]) -> dict:
     }
 
 
-# ── HTML 리포트 ───────────────────────────────────────────────────────────────
+# ── HTML report ─────────────────────────────────────────────────────────────
 
 
 def _h(s) -> str:
@@ -213,7 +214,7 @@ def render_html(
         dod_rows.append(f"<li>{mark} <code>{_h(k)}</code></li>")
 
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>DOM Grounding 효과 측정 리포트</title>
+<html><head><meta charset="utf-8"><title>DOM Grounding effectiveness report</title>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 20px; }}
   h1 {{ color: #06c; }}
@@ -224,17 +225,17 @@ def render_html(
   code {{ background: #eef; padding: 1px 4px; border-radius: 3px; }}
 </style></head>
 <body>
-<h1>DOM Grounding 효과 측정 리포트 (Phase 1 T1.7)</h1>
+<h1>DOM Grounding effectiveness report (Phase 1 T1.7)</h1>
 <div class="summary">
-  <p><b>평가 페이지 수</b>: {dod.get('pages_evaluated', 0)}</p>
-  <p><b>selector_accuracy ≥ 75% 페이지 수</b>: {dod.get('accuracy_75_pct_pages', 0)}</p>
-  <p><b>healer 호출 합계</b>: off={dod.get('healer_off_total', 0)} / on={dod.get('healer_on_total', 0)} (ratio = {dod.get('healer_ratio_on_over_off')})</p>
+  <p><b>Pages evaluated</b>: {dod.get('pages_evaluated', 0)}</p>
+  <p><b>Pages with selector_accuracy ≥ 75%</b>: {dod.get('accuracy_75_pct_pages', 0)}</p>
+  <p><b>Healer calls (totals)</b>: off={dod.get('healer_off_total', 0)} / on={dod.get('healer_on_total', 0)} (ratio = {dod.get('healer_ratio_on_over_off')})</p>
   <p><b>avg planner elapsed (ms)</b>: off={dod.get('avg_planner_elapsed_off_ms', 0)} / on={dod.get('avg_planner_elapsed_on_ms', 0)} (Δ = {dod.get('planner_elapsed_delta_ms', 0)} ms)</p>
-  <p><b>토큰 예산 초과 페이지</b>: {dod.get('over_budget_pages', 0)} ({_fmt_pct(dod.get('over_budget_ratio', 0))})</p>
+  <p><b>Pages over token budget</b>: {dod.get('over_budget_pages', 0)} ({_fmt_pct(dod.get('over_budget_ratio', 0))})</p>
 </div>
-<h2>DoD 자동 판정</h2>
+<h2>DoD auto-judgment</h2>
 <ul>{''.join(dod_rows)}</ul>
-<h2>페이지별 페어 비교</h2>
+<h2>Per-page pair comparison</h2>
 <table>
   <thead><tr>
     <th>catalog_id</th>
@@ -259,12 +260,12 @@ def _serialize_eval(p: PageEval) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="DOM Grounding off/on 페어 비교 리포트")
-    parser.add_argument("--golden", required=True, help="골든 디렉토리 (test/grounding_eval/golden/)")
-    parser.add_argument("--off",    required=True, help="flag=off 산출물 루트")
-    parser.add_argument("--on",     required=True, help="flag=on  산출물 루트")
-    parser.add_argument("--out",    required=True, help="HTML 리포트 출력 경로")
-    parser.add_argument("--json",   default=None,  help="(옵션) JSON 메트릭 출력 경로")
+    parser = argparse.ArgumentParser(description="DOM Grounding off/on pair comparison report")
+    parser.add_argument("--golden", required=True, help="golden directory (test/grounding_eval/golden/)")
+    parser.add_argument("--off",    required=True, help="flag=off artifacts root")
+    parser.add_argument("--on",     required=True, help="flag=on  artifacts root")
+    parser.add_argument("--out",    required=True, help="HTML report output path")
+    parser.add_argument("--json",   default=None,  help="(optional) JSON metrics output path")
     args = parser.parse_args(argv)
 
     gdir = Path(args.golden)
@@ -275,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_html(off=off, on=on, dod=dod), encoding="utf-8")
-    print(f"[grounding-eval] HTML 리포트 → {out}")
+    print(f"[grounding-eval] HTML report → {out}")
 
     if args.json:
         jpath = Path(args.json)
@@ -286,11 +287,11 @@ def main(argv: list[str] | None = None) -> int:
             "on": {k: _serialize_eval(v) for k, v in on.items()},
         }
         jpath.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[grounding-eval] JSON 메트릭 → {jpath}")
+        print(f"[grounding-eval] JSON metrics → {jpath}")
 
-    # 페어 페이지가 0 이면 비정상 종료 (CI 가시성)
+    # if no pair pages, exit non-zero (CI visibility)
     if dod.get("pages_evaluated", 0) == 0:
-        print("[grounding-eval] off/on 페어 페이지 0 — 산출물 디렉토리 확인 필요", file=sys.stderr)
+        print("[grounding-eval] no off/on pair pages — check artifacts directories", file=sys.stderr)
         return 2
     return 0
 

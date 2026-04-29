@@ -1,13 +1,15 @@
-"""T-A (P0.4) — converter_ast 단위 테스트.
+"""T-A (P0.4) — converter_ast unit tests.
 
-설계: docs/PLAN_PRODUCTION_READINESS.md §"T-A — converter AST 화"
+Design: docs/PLAN_PRODUCTION_READINESS.md §"T-A — converter AST migration"
 
-검증 영역:
-- 8 corpus fixture (popup chain / .nth / .first / .filter / nested locator /
-  frame_locator / expect / 14-DSL 특수 액션) → expected.json 정확 일치
-- _split_modifiers / _apply_modifiers 의 단위 동작
-- 비표준 패턴 → CodegenAstError 또는 line fallback
-- AST + line fallback 이 통합 wrapper 에서 같은 결과 (corpus 한정)
+Coverage:
+- 8 corpus fixtures (popup chain / .nth / .first / .filter / nested
+  locator / frame_locator / expect / 14-DSL specials) match
+  expected.json exactly
+- _split_modifiers / _apply_modifiers unit behavior
+- non-standard patterns → CodegenAstError or line fallback
+- AST + line fallback yield the same result through the integrated
+  wrapper (within the corpus)
 """
 
 from __future__ import annotations
@@ -40,19 +42,19 @@ CORPUS_PATTERNS = [
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Corpus 정확도 — 8 패턴 모두 expected 와 정확 일치
+# Corpus accuracy — all 8 patterns match expected exactly
 # ─────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("pattern", CORPUS_PATTERNS)
 def test_corpus_via_ast_matches_expected(pattern: str, tmp_path: Path) -> None:
-    """convert_via_ast 가 corpus 의 expected.json 과 정확 일치 (직접 호출)."""
+    """convert_via_ast (called directly) matches the corpus expected.json exactly."""
     src = CORPUS_DIR / f"{pattern}.py"
     expected_path = CORPUS_DIR / f"{pattern}.expected.json"
     actual = convert_via_ast(str(src), str(tmp_path))
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
     assert actual == expected, (
-        f"{pattern}: {len(actual)} 스텝 vs expected {len(expected)} 스텝"
+        f"{pattern}: {len(actual)} steps vs expected {len(expected)} steps"
     )
 
 
@@ -60,7 +62,7 @@ def test_corpus_via_ast_matches_expected(pattern: str, tmp_path: Path) -> None:
 def test_corpus_via_wrapper_matches_expected(
     pattern: str, tmp_path: Path,
 ) -> None:
-    """convert_playwright_to_dsl wrapper (AST 우선 + line fallback) 도 동일 결과."""
+    """convert_playwright_to_dsl wrapper (AST-first + line fallback) yields the same result."""
     src = CORPUS_DIR / f"{pattern}.py"
     expected_path = CORPUS_DIR / f"{pattern}.expected.json"
     actual = convert_playwright_to_dsl(str(src), str(tmp_path))
@@ -69,28 +71,28 @@ def test_corpus_via_wrapper_matches_expected(
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Popup chain — 이번 세션 naver 케이스 6/6 스텝 보존
+# Popup chain — preserve all 6/6 steps from this session's naver case
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_popup_chain_preserves_6_steps(tmp_path: Path) -> None:
-    """02_popup_chain (naver 시나리오) 의 popup 액션 2 개 누락 없음."""
+    """No drops in 02_popup_chain (naver scenario) — both popup actions preserved."""
     src = CORPUS_DIR / "02_popup_chain.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     assert len(actual) == 6
-    # popup 안의 두 액션 (page1.click(엔터), page1.click(기사 헤드라인)) 보존
+    # both actions inside the popup (page1.click(엔터), page1.click(기사 헤드라인)) preserved
     targets = [s["target"] for s in actual]
     assert "role=link, name=엔터" in targets
     assert "role=link, name=기사 헤드라인" in targets
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Modifier 보존 — .nth / .first / .filter
+# Modifier preservation — .nth / .first / .filter
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_nth_modifier_preserved(tmp_path: Path) -> None:
-    """``.nth(N)`` 가 target 의 후미 ``, nth=N`` 으로 보존."""
+    """``.nth(N)`` is preserved as a trailing ``, nth=N`` on target."""
     src = CORPUS_DIR / "03_nth.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     assert actual[1]["target"] == "role=link, name=Read more, nth=0"
@@ -98,28 +100,28 @@ def test_nth_modifier_preserved(tmp_path: Path) -> None:
 
 
 def test_first_modifier_preserved(tmp_path: Path) -> None:
-    """``.first`` 가 ``, nth=0`` 으로 변환."""
+    """``.first`` becomes ``, nth=0``."""
     src = CORPUS_DIR / "04_first.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     assert actual[1]["target"].endswith(", nth=0")
 
 
 def test_filter_has_text_preserved(tmp_path: Path) -> None:
-    """``.filter(has_text=...)`` 가 ``, has_text=...`` 으로 보존."""
+    """``.filter(has_text=...)`` is preserved as ``, has_text=...``."""
     src = CORPUS_DIR / "05_filter.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     assert actual[1]["target"] == "role=listitem, has_text=Premium"
-    # 05 의 두번째 액션은 .filter + .first 조합 → 두 modifier 모두 보존
+    # the second action in 05 is .filter + .first combined → both modifiers preserved
     assert actual[2]["target"] == "a, has_text=구매하기, nth=0"
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Frame locator chain 보존 (T-C 의 전제)
+# Frame locator chain preservation (prerequisite for T-C)
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_frame_locator_chain_preserved(tmp_path: Path) -> None:
-    """``page.frame_locator(sel).get_by_role(...)`` 가 ``frame=sel >> role=...`` 으로 보존."""
+    """``page.frame_locator(sel).get_by_role(...)`` becomes ``frame=sel >> role=...``."""
     src = CORPUS_DIR / "07_frame_locator.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     assert actual[1]["target"].startswith("frame=#payment-iframe >> ")
@@ -133,7 +135,7 @@ def test_frame_locator_chain_preserved(tmp_path: Path) -> None:
 
 
 def test_nested_locator_chain(tmp_path: Path) -> None:
-    """``page.locator(parent).locator(child)`` 가 ``parent >> child`` 로 평탄화."""
+    """``page.locator(parent).locator(child)`` flattens to ``parent >> child``."""
     src = CORPUS_DIR / "06_nested_locator.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     assert actual[1]["target"] == "#sidebar >> role=button, name=Settings"
@@ -141,7 +143,7 @@ def test_nested_locator_chain(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Expect (verify) 변환
+# Expect (verify) conversion
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -165,12 +167,12 @@ def test_expect_to_be_visible(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 14-DSL 특수 액션 (upload / drag / scroll / mock_*)
+# 14-DSL specials (upload / drag / scroll / mock_*)
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_special_actions_all_present(tmp_path: Path) -> None:
-    """upload / drag / scroll / mock_status / mock_data 5 액션 모두 변환."""
+    """All 5 actions (upload / drag / scroll / mock_status / mock_data) convert."""
     src = CORPUS_DIR / "08_expect_and_specials.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     actions = {s["action"] for s in actual}
@@ -178,7 +180,7 @@ def test_special_actions_all_present(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# _split_modifiers — 단위 함수 동작
+# _split_modifiers — unit-function behavior
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -201,7 +203,7 @@ def test_special_actions_all_present(tmp_path: Path) -> None:
         ("#sidebar >> button", "#sidebar >> button", []),
         # CSS + modifier
         ("a[href=\"/x\"], nth=0", "a[href=\"/x\"]", [("nth", "0")]),
-        # name 안의 ',' 는 modifier 가 아님 (name= 은 modifier 키 아님)
+        # the ',' inside name is not a modifier (name= is not a modifier key)
         ("role=link, name=A, B", "role=link, name=A, B", []),
     ],
 )
@@ -215,12 +217,12 @@ def test_split_modifiers_unit(
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 비표준 / 비정상 패턴
+# Non-standard / abnormal patterns
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_syntax_error_raises_codegen_ast_error(tmp_path: Path) -> None:
-    """잘못된 Python 구문은 CodegenAstError → wrapper 가 line fallback 하는 신호."""
+    """Invalid Python syntax → CodegenAstError → signal for the wrapper to use line fallback."""
     bad = tmp_path / "bad.py"
     bad.write_text("def run(playwright):\n    page = context.new_page()\n    page.goto(", encoding="utf-8")
     with pytest.raises(CodegenAstError):
@@ -228,7 +230,7 @@ def test_syntax_error_raises_codegen_ast_error(tmp_path: Path) -> None:
 
 
 def test_no_run_function_returns_empty(tmp_path: Path) -> None:
-    """`def run` 이 없는 파일 → 빈 시나리오 (wrapper 가 line fallback 시도)."""
+    """File without `def run` → empty scenario (wrapper retries via line fallback)."""
     no_run = tmp_path / "no_run.py"
     no_run.write_text(
         "from playwright.sync_api import sync_playwright\nprint('hi')\n",
@@ -239,9 +241,10 @@ def test_no_run_function_returns_empty(tmp_path: Path) -> None:
 
 
 def test_wrapper_falls_back_when_ast_returns_empty(tmp_path: Path) -> None:
-    """AST 가 빈 결과를 주면 wrapper 가 line fallback 으로 재시도.
+    """When AST returns empty, the wrapper retries with line fallback.
 
-    ``def run`` 없는 legacy codegen 출력에서도 line 기반은 page.goto 등을 잡는다.
+    For legacy codegen output without ``def run``, line-based parsing
+    still picks up page.goto and friends.
     """
     legacy = tmp_path / "legacy_no_run.py"
     legacy.write_text(
@@ -251,12 +254,12 @@ def test_wrapper_falls_back_when_ast_returns_empty(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     actual = convert_playwright_to_dsl(str(legacy), str(tmp_path))
-    assert len(actual) >= 1  # line fallback 이 적어도 navigate 는 잡음
+    assert len(actual) >= 1  # line fallback at least catches navigate
     assert actual[0]["action"] == "navigate"
 
 
 def test_unknown_method_returns_none_step(tmp_path: Path) -> None:
-    """codegen 이 만들지 않는 메서드 (예: page.foo()) 는 단순히 스킵."""
+    """Methods codegen never emits (e.g. page.foo()) are simply skipped."""
     src = tmp_path / "unknown.py"
     src.write_text(
         "from playwright.sync_api import Playwright, sync_playwright\n\n"
@@ -267,13 +270,13 @@ def test_unknown_method_returns_none_step(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     actual = convert_via_ast(str(src), str(tmp_path))
-    # navigate 만 1 스텝 — unknown_method 는 스킵
+    # only navigate (1 step) — unknown_method is skipped
     assert len(actual) == 1
     assert actual[0]["action"] == "navigate"
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Step 번호 / fallback_targets 기본값
+# Step numbers / fallback_targets defaults
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -290,12 +293,12 @@ def test_fallback_targets_default_empty_list(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Page 변수 스코프 — popup_info → page var 승격
+# Page variable scope — popup_info → promote page var
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def test_page_var_promoted_after_popup_info_value(tmp_path: Path) -> None:
-    """``page1 = page1_info.value`` 후 page1 의 액션도 처리되는지 확인."""
+    """After ``page1 = page1_info.value``, actions on page1 are also handled."""
     src = CORPUS_DIR / "02_popup_chain.py"
     actual = convert_via_ast(str(src), str(tmp_path))
     # 4 = page.click(뉴스홈), 5 = page1.click(엔터), 6 = page1.click(기사 헤드라인)
@@ -304,9 +307,9 @@ def test_page_var_promoted_after_popup_info_value(tmp_path: Path) -> None:
 
 
 def test_page_close_action_skipped() -> None:
-    """``page2.close()`` 등 close 호출은 스킵 (액션 매핑 없음)."""
+    """Close calls like ``page2.close()`` are skipped (no action mapping)."""
     converter = _AstConverter()
-    # 직접 _convert_call_to_step 호출 — 테스트 친화 형태
+    # call _convert_call_to_step directly — test-friendly form
     import ast
     tree = ast.parse("page.close()")
     call = tree.body[0].value
@@ -314,7 +317,7 @@ def test_page_close_action_skipped() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# scenario.json 파일 출력
+# scenario.json file output
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -338,13 +341,13 @@ def test_missing_file_raises(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# T-H 연계 — converter 가 hover-trigger ancestor 를 정적으로 식별해 click
-# 앞에 hover step 을 자동 삽입 (보수적 휴리스틱)
+# T-H tie-in — converter statically identifies a hover-trigger ancestor
+# and auto-inserts a hover step before the click (conservative heuristic)
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def _make_codegen_script(tmp_path: Path, body: str) -> Path:
-    """codegen 표준 출력 구조로 .py 작성 — `def run(playwright)` 안에 body 삽입."""
+    """Write a .py in codegen's standard output shape — body lives inside `def run(playwright)`."""
     p = tmp_path / "rec.py"
     src = (
         "from playwright.sync_api import Playwright, sync_playwright\n"
@@ -362,7 +365,7 @@ def _make_codegen_script(tmp_path: Path, body: str) -> Path:
 
 
 def test_hover_prepended_for_nav_chain(tmp_path: Path) -> None:
-    """chain 안에 nav ancestor 가 있으면 click 앞에 hover step 자동 삽입."""
+    """If the chain has a nav ancestor, auto-insert a hover step before the click."""
     src = _make_codegen_script(
         tmp_path,
         "page.locator('nav#gnb').locator('li').filter(has_text='회사소개').get_by_role('link', name='About').click()",
@@ -376,8 +379,7 @@ def test_hover_prepended_for_nav_chain(tmp_path: Path) -> None:
     assert "nav#gnb" in steps[hover_idx]["target"]
 
 
-def test_no_hover_prepended_for_simple_click(tmp_path: Path) -> None:
-    """nav/menu/dropdown 신호 없는 chain 은 hover 삽입 안 함 (false-positive 방지)."""
+    """Chains without nav/menu/dropdown signal don't get a hover (avoids false positives)."""
     src = _make_codegen_script(
         tmp_path,
         "page.get_by_role('button', name='Submit').click()\n"

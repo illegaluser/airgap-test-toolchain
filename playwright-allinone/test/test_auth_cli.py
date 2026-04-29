@@ -1,16 +1,17 @@
-"""auth 서브커맨드 CLI (P2) 단위 테스트.
+"""auth subcommand CLI (P2) unit tests.
 
-설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §9 P2.1~P2.4
+Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §9 P2.1 ~ P2.4
 
-검증:
-- argparse 트리 (필수 인자, 누락 시 SystemExit)
-- list / verify / delete 핸들러 의 정상/실패 rc
-- ``--json`` 출력 shape (list / verify)
-- seed 핸들러 와이어 (auth_profiles.seed_profile 모킹)
-- legacy ``--mode`` 와의 비충돌
+Coverage:
+- argparse tree (required args, SystemExit when missing)
+- list / verify / delete handlers — success/failure return codes
+- ``--json`` output shape (list / verify)
+- seed handler wiring (mocks auth_profiles.seed_profile)
+- no conflict with the legacy ``--mode`` CLI
 
-실 ``playwright open`` 호출은 모킹 — auth_profiles 단의 seed_profile 자체는
-P1 에서 이미 검증되어 있어 본 파일은 *CLI 와이어링* 만 검증한다.
+Real ``playwright open`` calls are mocked. auth_profiles' seed_profile
+itself was already verified in P1, so this file only checks the *CLI
+wiring*.
 """
 
 from __future__ import annotations
@@ -76,7 +77,7 @@ def _make_profile(name: str, root: Path, *, last_verified: str | None = None) ->
 
 
 def _capture(handler, args_ns: SimpleNamespace) -> tuple[int, str]:
-    """핸들러 호출 + stdout 캡처."""
+    """Call the handler and capture stdout."""
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = handler(args_ns, ap)
@@ -84,12 +85,12 @@ def _capture(handler, args_ns: SimpleNamespace) -> tuple[int, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P2.1 — argparse 트리
+# P2.1 — argparse tree
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestArgparse:
     def test_help_runs(self):
-        """--help 출력 시 SystemExit(0)."""
+        """--help exits with SystemExit(0)."""
         parser = _build_auth_parser()
         with pytest.raises(SystemExit) as ei:
             parser.parse_args(["--help"])
@@ -130,7 +131,7 @@ class TestArgparse:
         assert args.timeout_sec == 300
 
     def test_seed_verify_text_optional(self):
-        """검증 텍스트를 생략하면 보호 URL 접근만 확인하는 약한 검증 모드."""
+        """Omitting verify text → weak-verify mode that only checks protected-URL access."""
         parser = _build_auth_parser()
         args = parser.parse_args([
             "seed",
@@ -158,7 +159,7 @@ class TestArgparse:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P2.3 — list 핸들러
+# P2.3 — list handler
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestListHandler:
@@ -196,7 +197,7 @@ class TestListHandler:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P2.3 — verify 핸들러
+# P2.3 — verify handler
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestVerifyHandler:
@@ -215,7 +216,7 @@ class TestVerifyHandler:
         assert rc == 1
 
     def test_pass_through_naver_probe_flag(self, isolated_root: Path, monkeypatch):
-        """--no-naver-probe 시 verify_profile 의 naver_probe=False 로 전달."""
+        """--no-naver-probe is passed through to verify_profile as naver_probe=False."""
         _upsert_profile(_make_profile("alpha", isolated_root))
         captured = {}
 
@@ -281,7 +282,7 @@ class TestVerifyHandler:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P2.3 — delete 핸들러
+# P2.3 — delete handler
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestDeleteHandler:
@@ -292,7 +293,7 @@ class TestDeleteHandler:
     def test_existing_removed(self, isolated_root: Path):
         prof = _make_profile("alpha", isolated_root)
         _upsert_profile(prof)
-        # storage 파일도 만들어두기.
+        # also create the storage file.
         prof.storage_path.write_text("{}", encoding="utf-8")
 
         rc, out = _capture(_auth_handle_delete, SimpleNamespace(name="alpha"))
@@ -304,7 +305,7 @@ class TestDeleteHandler:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# P2.2 — seed 핸들러 (auth_profiles.seed_profile 모킹)
+# P2.2 — seed handler (mocks auth_profiles.seed_profile)
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestSeedHandler:
@@ -337,7 +338,7 @@ class TestSeedHandler:
         assert captured["name"] == "booking-via-naver"
         assert captured["seed_url"] == "https://booking.example.com/"
         assert captured["notes"] == "first"
-        # verify spec 의 naver_probe 가 NaverProbeSpec 으로 들어감 (--no-naver-probe 미지정).
+        # verify spec's naver_probe is set to NaverProbeSpec (no --no-naver-probe).
         verify_spec = captured["verify"]
         assert verify_spec.service_url == "https://booking.example.com/mypage"
         assert verify_spec.service_text == "환영합니다"
@@ -365,7 +366,7 @@ class TestSeedHandler:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 통합 — _run_auth_cli 진입점 (argparse + dispatch)
+# Integration — _run_auth_cli entry point (argparse + dispatch)
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestRunAuthCli:
@@ -379,14 +380,14 @@ class TestRunAuthCli:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 호환성 — 기존 ``--mode`` CLI 가 영향 받지 않는지 (subprocess 검증)
+# Compat — confirm the existing ``--mode`` CLI is unaffected (subprocess check)
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestLegacyModeCompat:
     def test_legacy_mode_execute_still_errors(self, tmp_path: Path):
-        """``--mode execute`` (인자 누락) 가 여전히 rc=1 + 기존 에러 메시지."""
-        # subprocess 로 실 진입점 호출 — argv routing 확인. sys.executable 로 호출
-        # 해서 venv 안의 의존성 (requests 등) 이 보이는 인터프리터 사용.
+        """``--mode execute`` (missing args) still returns rc=1 with the existing error message."""
+        # call the real entry point via subprocess to verify argv routing.
+        # Use sys.executable so the interpreter sees venv deps (requests, etc.).
         result = subprocess.run(
             [sys.executable, "-m", "zero_touch_qa", "--mode", "execute"],
             capture_output=True, text=True, timeout=15,
@@ -397,7 +398,7 @@ class TestLegacyModeCompat:
         assert "execute mode requires the --scenario argument" in combined
 
     def test_auth_subcommand_does_not_trigger_mode_arg(self, tmp_path: Path):
-        """``auth list`` 호출 시 ``--mode`` required 에러가 나면 안 됨."""
+        """``auth list`` must not raise the required-``--mode`` error."""
         result = subprocess.run(
             [sys.executable, "-m", "zero_touch_qa", "auth", "list"],
             capture_output=True, text=True, timeout=15,
@@ -405,6 +406,6 @@ class TestLegacyModeCompat:
         )
         assert result.returncode == 0, f"stderr: {result.stderr}"
         combined = result.stdout + result.stderr
-        # 빈 카탈로그 메시지가 보여야지, --mode 에러가 보이면 안 됨.
+        # the empty-catalog message must appear, not a --mode error.
         assert "(no profiles registered)" in combined
         assert "--mode" not in combined

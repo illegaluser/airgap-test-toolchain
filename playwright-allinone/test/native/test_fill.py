@@ -1,18 +1,18 @@
-"""fill 액션 — 4 케이스."""
+"""fill action — 4 cases."""
 
 import pytest
 from playwright.sync_api import Page, expect, Error
 
 
 def test_fill_text_input(page: Page, fixture_url):
-    """일반 text input 채우기."""
+    """Fill a regular text input."""
     page.goto(fixture_url("fill.html"))
     page.locator("#input-name").fill("홍길동")
     expect(page.locator("#input-name")).to_have_value("홍길동")
 
 
 def test_fill_textarea_multiline(page: Page, fixture_url):
-    """textarea 에 여러 줄 입력."""
+    """Enter multiple lines into a textarea."""
     page.goto(fixture_url("fill.html"))
     multiline = "첫 줄\n둘째 줄\n셋째 줄"
     page.locator("#input-bio").fill(multiline)
@@ -20,15 +20,15 @@ def test_fill_textarea_multiline(page: Page, fixture_url):
 
 
 def test_fill_readonly_raises(page: Page, fixture_url):
-    """readonly input 에 fill 시도 → Playwright 가 timeout/error 로 거부."""
+    """fill on a readonly input → Playwright rejects with timeout/error."""
     page.goto(fixture_url("fill.html"))
     with pytest.raises(Error):
-        # 짧은 timeout 으로 빠르게 실패 확인
+        # short timeout so the failure is fast
         page.locator("#input-readonly").fill("intrusion", timeout=1500)
 
 
 def test_fill_special_chars(page: Page, fixture_url):
-    """한글 / 이모지 / 특수문자 모두 유지된다."""
+    """Hangul / emoji / special characters all round-trip intact."""
     page.goto(fixture_url("fill.html"))
     value = "한글 + English + 123 + 🚀 + \"quote\" + <tag>"
     page.locator("#input-special").fill(value)

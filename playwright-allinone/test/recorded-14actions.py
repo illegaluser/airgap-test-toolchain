@@ -1,12 +1,13 @@
-"""Playwright codegen 형식 flat 스크립트 — 14대 DSL 액션 전부 포함.
+"""Flat script in Playwright codegen format — covers all 14 DSL actions.
 
-`recorded-9actions.py` 의 14대 확장본. converter.py 가 신규 5종
-(`upload`/`drag`/`scroll`/`mock_status`/`mock_data`) 까지 매핑하는지
-회귀 검증하는 fixture.
+The 14-action expansion of `recorded-9actions.py`. Regression fixture that
+checks converter.py also maps the 5 new actions
+(`upload`/`drag`/`scroll`/`mock_status`/`mock_data`).
 
-페이지 fixture 경로는 개발 머신 기준 절대경로 `file://` 로 하드코딩 — 데모 목적.
-converter 가 `def` / `from` / `with` / `browser` / `context` 로 시작하는 라인을
-skip 하므로 wrapper 는 자동 무시되고, `page.X` / `expect(...)` 라인만 DSL 로 매핑된다.
+The fixture page path is hard-coded as an absolute `file://` URL on the dev
+machine — demo only. The converter skips lines starting with `def` / `from`
+/ `with` / `browser` / `context`, so the wrapper is auto-ignored and only
+`page.X` / `expect(...)` lines map into the DSL.
 """
 from playwright.sync_api import Playwright, sync_playwright, expect
 

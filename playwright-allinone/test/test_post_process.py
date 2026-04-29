@@ -1,6 +1,6 @@
-"""recording_service.post_process — portabilize_storage_path 단위 테스트 (P3.9).
+"""recording_service.post_process — portabilize_storage_path unit tests (P3.9).
 
-설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.7 (D3)
+Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.7 (D3)
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import pytest
 from recording_service.post_process import portabilize_storage_path
 
 
-# ── 합성 codegen 출력 샘플 ──────────────────────────────────────────────
+# ── synthetic codegen output samples ────────────────────────────────────
 
 _CODEGEN_DOUBLE_QUOTE = '''from playwright.sync_api import Playwright, sync_playwright
 
@@ -57,7 +57,7 @@ def run(p):
 '''
 
 
-# ── 테스트 ──────────────────────────────────────────────────────────────
+# ── tests ───────────────────────────────────────────────────────────────
 
 class TestPortabilize:
     def test_double_quote_replaced(self, tmp_path: Path):
@@ -85,15 +85,15 @@ class TestPortabilize:
         assert "/Users/x/abs/win-style.json" not in text
 
     def test_no_storage_state_no_op(self, tmp_path: Path):
-        """인증 없이 녹화한 codegen 출력은 변경되지 않는다."""
+        """codegen output recorded without auth is left unchanged."""
         p = tmp_path / "original.py"
         p.write_text(_CODEGEN_NO_STORAGE, encoding="utf-8")
         assert portabilize_storage_path(p) is False
-        # 원본 그대로.
+        # untouched.
         assert p.read_text(encoding="utf-8") == _CODEGEN_NO_STORAGE
 
     def test_already_portable_idempotent(self, tmp_path: Path):
-        """이미 env var 형태면 멱등성 — False 반환 + 파일 미수정."""
+        """If already env-var form, idempotent — returns False and file unchanged."""
         p = tmp_path / "original.py"
         p.write_text(_ALREADY_PORTABLE, encoding="utf-8")
         assert portabilize_storage_path(p) is False
@@ -103,7 +103,7 @@ class TestPortabilize:
         assert portabilize_storage_path(tmp_path / "missing.py") is False
 
     def test_import_os_not_duplicated(self, tmp_path: Path):
-        """이미 ``import os`` 가 있으면 prepend 안 함."""
+        """Don't prepend when ``import os`` is already present."""
         p = tmp_path / "original.py"
         p.write_text(
             "import os\nimport sys\n" + _CODEGEN_DOUBLE_QUOTE,
@@ -111,11 +111,11 @@ class TestPortabilize:
         )
         assert portabilize_storage_path(p) is True
         text = p.read_text(encoding="utf-8")
-        # ``import os`` 한 번만 등장.
+        # ``import os`` appears exactly once.
         assert text.count("import os\n") == 1
 
     def test_idempotent_double_run(self, tmp_path: Path):
-        """portabilize 두 번 실행 — 두 번째는 no-op."""
+        """Run portabilize twice — second call is a no-op."""
         p = tmp_path / "original.py"
         p.write_text(_CODEGEN_DOUBLE_QUOTE, encoding="utf-8")
         assert portabilize_storage_path(p) is True

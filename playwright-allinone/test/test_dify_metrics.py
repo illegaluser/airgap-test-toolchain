@@ -109,7 +109,7 @@ def test_summarize_llm_calls_computes_baseline_metrics():
     assert summary["by_kind"]["healer"]["timeout_count"] == 1
 
 
-# ─── S4C-05 — llm_sla.json 집계 ───────────────────────────────────────────
+# ─── S4C-05 — llm_sla.json aggregation ─────────────────────────────────
 
 
 def test_aggregate_llm_sla_writes_summary_json(tmp_path: Path):

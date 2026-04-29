@@ -1,9 +1,9 @@
-"""S3-05 — mock_data + 빈 응답 시나리오 통합 검증.
+"""S3-05 — integration check for mock_data + empty-response scenarios.
 
-3 케이스:
-- 빈 배열 응답 → "데이터 없음" UI 노출
-- 1 개 아이템 응답 (dict body 입력) → list 렌더 검증
-- JSON 문자열 입력으로도 동일 동작
+Three cases:
+- empty array response → "데이터 없음" UI shows
+- one-item response (dict body input) → list render check
+- JSON string input behaves identically
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from helpers.scenarios import click, mock_data, navigate, verify
 def test_mock_data_empty_array_shows_empty_ui(make_executor, run_scenario, fixture_url):
     executor = make_executor()
     scenario = [
-        mock_data("**/api/list", {"items": []}, step=1, description="빈 배열 응답"),
+        mock_data("**/api/list", {"items": []}, step=1, description="empty array response"),
         navigate(fixture_url("mock_data.html"), step=2),
         click("#load-btn", step=3),
         verify("#empty", step=4, condition="visible"),
@@ -50,7 +50,7 @@ def test_mock_data_with_json_string_body_works_identically(
             "**/api/list",
             '{"items":[{"name":"gamma","value":"3"}]}',
             step=1,
-            description="JSON 문자열 입력",
+            description="JSON string input",
         ),
         navigate(fixture_url("mock_data.html"), step=2),
         click("#load-btn", step=3),

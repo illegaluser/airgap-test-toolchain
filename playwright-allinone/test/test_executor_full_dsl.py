@@ -1,7 +1,8 @@
-"""S3-08 — 14대 액션을 한 시나리오에 모두 포함한 메타-회귀.
+"""S3-08 — meta-regression covering all 14 actions in one scenario.
 
-executor 가 14대 DSL 을 한 번에 순차 실행할 때 step 간 상태 오염 없이 모두
-PASS 하는지 검증. 산출물 (run_log.jsonl, scenario.healed.json) 정합도 함께.
+When the executor runs all 14 DSL steps sequentially, every step should
+PASS with no state leaking between them. Also confirms the artifacts
+(run_log.jsonl, scenario.healed.json) stay coherent.
 """
 
 from __future__ import annotations
@@ -29,15 +30,16 @@ def test_full_14_action_scenario_all_pass(make_executor, run_scenario, fixture_u
 
     page = fixture_url("full_dsl.html")
     scenario = [
-        # mock_* 는 navigate 보다 먼저 — 페이지 로드시 fetch 가 먼저 트리거되지
-        # 않지만 후속 click 으로 호출될 때 가로챌 수 있게 미리 설치.
-        mock_status("**/api/users/*", 500, step=1, description="users API 모킹"),
+        # mock_* runs before navigate — fetch isn't triggered on page load,
+        # but pre-install so it can intercept on subsequent click.
+        mock_status("**/api/users/*", 500, step=1, description="mock users API"),
         mock_data("**/api/list", {"items": [{"name": "alpha"}]}, step=2,
-                  description="list API 모킹"),
-        navigate(page, step=3, description="대상 페이지 로드"),
-        wait(50, step=4, description="DOM 안정화"),
-        # hover 가 click 보다 먼저 — fixture 의 click 핸들러가 status 를
-        # "clicked" 로 덮어쓰면 mouseenter 가 다시 발화되지 않으므로 순서 보존.
+                  description="mock list API"),
+        navigate(page, step=3, description="load target page"),
+        wait(50, step=4, description="DOM settle"),
+        # hover runs before click — once the fixture's click handler
+        # overwrites status to "clicked", mouseenter won't fire again,
+        # so we preserve order.
         hover("#primary-btn", step=5),
         verify("#status", step=6, condition="contains_text", value="hovered"),
         click("#primary-btn", step=7),
@@ -62,13 +64,13 @@ def test_full_14_action_scenario_all_pass(make_executor, run_scenario, fixture_u
     statuses = [r.status for r in results]
     assert all(s == "PASS" for s in statuses), f"some steps failed: {statuses}"
 
-    # 14대 액션 모두 ≥1 회 등장
+    # All 14 actions appear ≥ once
     actions_seen = {s["action"] for s in scenario}
     expected = {
         "navigate", "click", "fill", "press", "select", "check", "hover", "wait",
         "verify", "upload", "drag", "scroll", "mock_status", "mock_data",
     }
     missing = expected - actions_seen
-    assert not missing, f"누락된 액션: {missing}"
+    assert not missing, f"missing actions: {missing}"
 
 

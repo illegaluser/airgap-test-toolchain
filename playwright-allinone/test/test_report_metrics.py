@@ -22,8 +22,8 @@ def test_report_omits_operations_section_when_metrics_are_absent(tmp_path: Path)
 
     html = Path(report_path).read_text(encoding="utf-8")
 
-    assert "운영 지표" not in html
-    assert "스텝별 실행 결과" in html
+    assert "Operations metrics" not in html
+    assert "Per-step results" in html
 
 
 def test_report_renders_llm_metrics_and_json_metric_links(tmp_path: Path):
@@ -53,7 +53,7 @@ def test_report_renders_llm_metrics_and_json_metric_links(tmp_path: Path):
     report_path = build_html_report([_result()], str(tmp_path))
 
     html = Path(report_path).read_text(encoding="utf-8")
-    assert "운영 지표" in html
+    assert "Operations metrics" in html
     assert "LLM latency" in html
     assert "p95 300.0ms" in html
     assert "LLM timeout" in html

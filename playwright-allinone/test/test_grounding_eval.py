@@ -1,7 +1,7 @@
-"""Phase 1 T1.7 — grounding_eval 분류기 + comparator 단위 테스트.
+"""Phase 1 T1.7 — unit tests for the grounding_eval classifier + comparator.
 
-본 테스트는 LLM 호출 없이 결정론적으로 동작한다. 운영 러너는
-test/grounding_eval/scripts/run_grounding_eval.sh 가 별도로 실행한다.
+These tests are deterministic and never call the LLM. The actual runner
+lives in test/grounding_eval/scripts/run_grounding_eval.sh.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def test_parse_selector_empty():
     assert parse_selector(None).kind == "empty"
 
 
-# ── classify_selector — 핵심 분류 룰 ─────────────────────────────────────────
+# ── classify_selector — core classification rules ──────────────────────────
 
 
 def test_classify_role_role_exact():
@@ -69,8 +69,7 @@ def test_classify_role_role_exact():
     ) == "exact"
 
 
-def test_classify_role_role_name_case_insensitive():
-    """name 비교는 대소문자/공백 정규화."""
+    """name comparison is normalized for case and whitespace."""
     assert classify_selector(
         "getByRole('button', { name: 'Save' })",
         "getByRole('button', { name: 'save' })",
@@ -104,7 +103,7 @@ def test_classify_css_css_fail_different_id():
 
 
 def test_classify_role_vs_css_partial_via_keyword():
-    """role 의 name 이 CSS id 의 토큰과 겹치면 partial."""
+    """If role.name overlaps with a CSS id token, classify as partial."""
     assert classify_selector(
         "getByRole('button', { name: 'login' })",
         "#login-btn",
@@ -157,7 +156,7 @@ def test_evaluate_page_action_mismatch_is_fail():
         catalog_id="X", target_url="x", golden_steps=golden, observed_steps=obs,
     )
     assert pe.steps[0].selector_class == "fail"
-    assert "action 불일치" in pe.steps[0].note
+    assert "action mismatch" in pe.steps[0].note
 
 
 def test_evaluate_page_missing_observed_step_is_fail():
@@ -170,11 +169,11 @@ def test_evaluate_page_missing_observed_step_is_fail():
         catalog_id="X", target_url="x", golden_steps=golden, observed_steps=obs,
     )
     assert pe.steps[1].selector_class == "fail"
-    assert "관측 step 누락" in pe.steps[1].note
+    assert "observed step missing" in pe.steps[1].note
 
 
 def test_evaluate_page_mock_target_skipped():
-    """mock_target 마커가 있으면 selector 평가에서 제외."""
+    """A mock_target marker excludes the step from selector evaluation."""
     golden = [
         {"step": 1, "action": "mock_data", "target": "https://api/x", "value": "{}", "mock_target": True},
     ]
@@ -208,9 +207,9 @@ def _mock_page(cid: str, *, on_acc: float, off_acc: float,
                on_healer: int = 0, off_healer: int = 0,
                on_elapsed: float = 1000, off_elapsed: float = 800,
                grounding_tokens: int = 800) -> tuple[PageEval, PageEval]:
-    """selector_accuracy 가 정확히 on_acc/off_acc 인 PageEval 페어 생성."""
+    """Build a PageEval pair whose selector_accuracy is exactly on_acc/off_acc."""
     def steps_with_acc(target_acc: float) -> list[StepEval]:
-        # 10 step 중 floor(target_acc * 10) 개를 exact, 나머지 fail
+        # mark floor(target_acc * 10) of 10 steps as exact, the rest as fail
         n = 10
         exact_n = int(round(target_acc * n))
         out = []
@@ -272,11 +271,11 @@ def test_compute_dod_elapsed_overhead_capped_at_10s():
     assert dod["dod_checks"]["elapsed_delta_within_10s"] is False
 
 
-# ── evaluate_run + render_html — 디스크 IO 통합 ─────────────────────────────
+# ── evaluate_run + render_html — disk-IO integration ───────────────────────
 
 
 def test_evaluate_run_with_real_artifacts(tmp_path: Path):
-    """tmp_path 에 가짜 산출물을 만들고 evaluate_run + compute_dod + render_html 실행."""
+    """Drop fake artifacts under tmp_path, then run evaluate_run + compute_dod + render_html."""
     golden_dir = tmp_path / "golden"
     golden_dir.mkdir()
     (golden_dir / "P-TEST-01.scenario.json").write_text(
@@ -324,22 +323,22 @@ def test_evaluate_run_with_real_artifacts(tmp_path: Path):
 
 
 def test_render_html_handles_missing_pair():
-    """off 만 있고 on 이 없는 페이지도 렌더 가능해야 함."""
+    """Pages that have off only, no on, must still render."""
     off = {"P-X": PageEval(catalog_id="P-X", target_url="x",
                             steps=[StepEval(step=1, action="click", selector_class="exact",
                                             golden_target="#x", observed_target="#x")])}
     on: dict = {}
-    dod = compute_dod(off, on)  # 페어 0
+    dod = compute_dod(off, on)  # zero pairs
     html = render_html(off=off, on=on, dod=dod)
     assert "P-X" in html
     assert dod["pages_evaluated"] == 0
 
 
-# ── 골든 시나리오 파일 자체의 형식 검증 ─────────────────────────────────────
+# ── format checks for the golden scenario files themselves ─────────────────
 
 
 def test_golden_files_exist_and_parse():
-    """리포 내 골든 6개가 모두 존재하고 schema 통과."""
+    """All 6 golden files in the repo exist and pass the schema."""
     golden_dir = Path(__file__).resolve().parent / "grounding_eval" / "golden"
     files = sorted(golden_dir.glob("*.scenario.json"))
     cids = [f.stem.split(".")[0] for f in files]
