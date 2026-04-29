@@ -78,11 +78,15 @@ def run_replay(
             "docker 실행 파일을 찾을 수 없습니다. 호스트 PATH 확인."
         )
 
+    # converter_proxy 와 동일 패턴 — `-w /opt` 로 PYTHONPATH 자동 해결,
+    # qa-venv python 명시. system python (`/usr/local/bin/python`) 은
+    # `/opt` 가 path 에 없어 zero_touch_qa import 실패.
     cmd = [
         "docker", "exec",
+        "-w", "/opt",
         "-e", f"ARTIFACTS_DIR={container_session_dir}",
         container_name,
-        "python", "-m", "zero_touch_qa",
+        "/opt/qa-venv/bin/python", "-m", "zero_touch_qa",
         "--mode", "execute",
         "--headless",
         "--scenario", f"{container_session_dir}/scenario.json",
