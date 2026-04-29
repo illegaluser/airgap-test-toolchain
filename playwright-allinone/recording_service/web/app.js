@@ -115,10 +115,6 @@ async function addAssertion(sid, payload) {
 }
 
 // R-Plus — 백엔드는 /experimental/* 로 분리. UI 는 메인 결과 화면에 함께 노출.
-async function annotateSession(sid) {
-  return api(`/experimental/sessions/${sid}/annotate`, { method: "POST" });
-}
-
 async function playCodegen(sid) {
   return api(`/experimental/sessions/${sid}/play-codegen`, { method: "POST" });
 }
@@ -317,6 +313,19 @@ function _currentRplusSid() {
   return $("#rplus-section").dataset.sid;
 }
 
+function _annotateLine(a) {
+  if (!a) return "";
+  if (a.skipped) return `\nannotate: skipped — ${a.skipped}`;
+  if (a.injected === 0) {
+    return `\nannotate: examined ${a.examined_clicks} clicks → 0 hover 주입 (원본 그대로 사용)`;
+  }
+  const triggers = (a.triggers || []).map((t, i) => `  ${i + 1}. ${t}`).join("\n");
+  return (
+    `\nannotate: examined ${a.examined_clicks} clicks → ${a.injected} hover 주입\n` +
+    triggers
+  );
+}
+
 async function _runPlay(label, btnSel, fn) {
   const sid = _currentRplusSid();
   if (!sid) return;
@@ -330,44 +339,16 @@ async function _runPlay(label, btnSel, fn) {
     _rplusOutputBox().textContent =
       `${status}\n\n` +
       `returncode: ${data.returncode}\n` +
-      `elapsed: ${data.elapsed_ms.toFixed(0)}ms\n` +
-      (data.stdout_tail ? `\n--- stdout (tail) ---\n${data.stdout_tail}` : "") +
-      (data.stderr_tail ? `\n--- stderr (tail) ---\n${data.stderr_tail}` : "");
+      `elapsed: ${data.elapsed_ms.toFixed(0)}ms` +
+      _annotateLine(data.annotate) +
+      (data.stdout_tail ? `\n\n--- stdout (tail) ---\n${data.stdout_tail}` : "") +
+      (data.stderr_tail ? `\n\n--- stderr (tail) ---\n${data.stderr_tail}` : "");
   } catch (err) {
     _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
   } finally {
     btn.disabled = false;
   }
 }
-
-$("#btn-annotate").addEventListener("click", async () => {
-  const sid = _currentRplusSid();
-  if (!sid) return;
-  const btn = $("#btn-annotate");
-  btn.disabled = true;
-  _rplusOutputBox().textContent = "⏳ codegen 원본 분석 중...";
-  try {
-    const data = await annotateSession(sid);
-    if (data.injected === 0) {
-      _rplusOutputBox().textContent =
-        `✓ Annotate 완료 — 추가 hover 불필요\n` +
-        `examined clicks: ${data.examined_clicks}, injected: 0\n` +
-        `(드롭다운/메뉴 신호가 chain 안에서 발견되지 않음)`;
-    } else {
-      _rplusOutputBox().textContent =
-        `✓ Annotate 완료 — original_annotated.py 생성\n\n` +
-        `examined clicks: ${data.examined_clicks}\n` +
-        `injected hovers: ${data.injected}\n\n` +
-        `--- triggers ---\n` +
-        data.triggers.map((t, i) => `${i + 1}. ${t}`).join("\n") +
-        `\n\n다음 [▶ Codegen Output Replay] 가 annotated 본을 자동 사용합니다.`;
-    }
-  } catch (err) {
-    _rplusOutputBox().textContent = "✗ Annotate 실패: " + err.message;
-  } finally {
-    btn.disabled = false;
-  }
-});
 
 $("#btn-play-codegen").addEventListener("click", () =>
   _runPlay("Codegen Output Replay", "#btn-play-codegen", playCodegen),

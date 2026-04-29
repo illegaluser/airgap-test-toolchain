@@ -119,58 +119,56 @@ def _play_response(sid: str, result) -> dict:
     }
 
 
-@router.post("/sessions/{sid}/annotate", status_code=201)
-def annotate_session(sid: str) -> dict:
-    """codegen 원본 ``original.py`` 를 정적 휴리스틱으로 분석해 hidden-click 우려가
-    있는 click 앞에 ``<ancestor>.hover()`` 를 자동 주입한 ``original_annotated.py`` 를 생성.
+def _annotate_for_session(sid: str) -> dict:
+    """play-codegen 진입 직전 자동 호출용 — annotate 결과 dict 반환.
 
-    이후 play-codegen 은 (prefer_annotated=True) 자동으로 annotated 본을 우선 실행.
+    실패는 silent (annotation 없이도 codegen 원본 그대로 실행 가능). 호출자가
+    응답에 합쳐 사용자에게 노출.
     """
     from .. import annotator
-    _ensure_session_not_recording(sid, "annotate")
     host_dir = storage.session_dir(sid)
     src = host_dir / "original.py"
-    dst = host_dir / "original_annotated.py"
     if not src.is_file():
-        raise HTTPException(status_code=404, detail=f"original.py 없음: {src}")
+        return {"injected": 0, "examined_clicks": 0, "triggers": [], "skipped": "no original.py"}
+    dst = host_dir / "original_annotated.py"
     try:
-        result = annotator.annotate_script(str(src), str(dst))
+        r = annotator.annotate_script(str(src), str(dst))
+        return {
+            "injected": r.injected,
+            "examined_clicks": r.examined_clicks,
+            "triggers": r.triggers,
+        }
     except Exception as e:  # noqa: BLE001
-        log.error("[/experimental/annotate] %s — %s", sid, e)
-        raise HTTPException(status_code=500, detail=str(e))
-    log.info(
-        "[/experimental/annotate] %s — examined=%d injected=%d",
-        sid, result.examined_clicks, result.injected,
-    )
-    return {
-        "id": sid,
-        "examined_clicks": result.examined_clicks,
-        "injected": result.injected,
-        "triggers": result.triggers,
-        "annotated_path": str(dst),
-    }
+        log.warning("[annotate auto] %s — %s", sid, e)
+        return {"injected": 0, "examined_clicks": 0, "triggers": [], "skipped": str(e)}
 
 
 @router.post("/sessions/{sid}/play-codegen", status_code=201)
 def play_codegen(sid: str) -> dict:
     """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (TR.7, headed).
 
-    녹화한 동작이 화면에 그대로 재현. 14-DSL 변환과 무관한 평범한 Playwright
-    스크립트 실행이라 healing/verify 같은 14-DSL 풀 기능은 동작하지 않는다.
-    원본 selector 가 화면 변경으로 깨지면 그대로 실패.
+    실행 직전 자동으로 annotate 를 수행해 hover-needing click 앞에 hover 라인을
+    주입한 ``original_annotated.py`` 를 만들고 그것을 우선 실행 (prefer_annotated).
+    Annotate 결과 (injected 수 + trigger 목록) 도 응답에 함께 노출.
     """
     _ensure_session_not_recording(sid, "play-codegen")
     host_dir = str(storage.session_dir(sid))
+
+    # (β) annotate 자동 — 정적 휴리스틱으로 hover 주입.
+    annotate_summary = _annotate_for_session(sid)
+
     try:
         result = _run_codegen_replay_impl(host_session_dir=host_dir)
     except ReplayProxyError as e:
         log.error("[/experimental/play-codegen] %s — %s", sid, e)
         raise HTTPException(status_code=502, detail=str(e))
     log.info(
-        "[/experimental/play-codegen] %s — rc=%d (%.0fms)",
-        sid, result.returncode, result.elapsed_ms,
+        "[/experimental/play-codegen] %s — rc=%d (%.0fms) annotate=%s",
+        sid, result.returncode, result.elapsed_ms, annotate_summary,
     )
-    return _play_response(sid, result)
+    response = _play_response(sid, result)
+    response["annotate"] = annotate_summary
+    return response
 
 
 @router.post("/sessions/{sid}/play-llm", status_code=201)

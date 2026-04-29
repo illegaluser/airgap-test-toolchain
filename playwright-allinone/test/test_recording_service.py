@@ -1270,18 +1270,17 @@ def test_codegen_runner_output_size_zero_for_missing_file(tmp_path):
 
 # ── /recording/sessions/{id}/replay (R-Plus only) ────────────────────────────
 
-def test_annotate_404_unknown(client, rplus_on):
-    r = client.post("/experimental/sessions/nope/annotate")
-    assert r.status_code == 404
-
-
-def test_annotate_creates_annotated_py(client, monkeypatch, temp_host_root, rplus_on):
-    """annotate 가 original_annotated.py 를 생성하고 응답에 stats 반환."""
+def test_play_codegen_auto_annotates_before_running(
+    client, monkeypatch, temp_host_root, rplus_on,
+):
+    """play-codegen 이 실행 직전 자동 annotate 를 수행하고, 응답에 annotate 결과 포함."""
     from pathlib import Path
+    from recording_service.replay_proxy import PlayResult
+
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
     ])
-    # original.py 작성 — hover 가 주입되어야 하는 nav chain 케이스.
+    # original.py — nav chain → annotate 1건 주입 기대.
     original = Path(temp_host_root) / sid / "original.py"
     original.write_text(
         "from playwright.sync_api import Playwright, sync_playwright\n"
@@ -1294,14 +1293,58 @@ def test_annotate_creates_annotated_py(client, monkeypatch, temp_host_root, rplu
         "with sync_playwright() as p:\n    run(p)\n",
         encoding="utf-8",
     )
-    r = client.post(f"/experimental/sessions/{sid}/annotate")
+
+    def fake_play(*, host_session_dir):
+        return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
+
+    from recording_service.rplus import router as rplus_router
+    monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_play)
+    r = client.post(f"/experimental/sessions/{sid}/play-codegen")
     assert r.status_code == 201
     body = r.json()
-    assert body["examined_clicks"] == 1
-    assert body["injected"] == 1
+    # play 실행 결과 + annotate 결과 동봉.
+    assert body["returncode"] == 0
+    assert "annotate" in body
+    assert body["annotate"]["examined_clicks"] == 1
+    assert body["annotate"]["injected"] == 1
+    # annotated 파일도 디스크에 생성됐어야.
     annotated = Path(temp_host_root) / sid / "original_annotated.py"
     assert annotated.is_file()
-    assert ".hover()" in annotated.read_text()
+
+
+def test_play_codegen_annotate_summary_zero_injection(
+    client, monkeypatch, temp_host_root, rplus_on,
+):
+    """flat selector 만 있는 codegen 출력 — annotate injected 0 / examined N."""
+    from pathlib import Path
+    from recording_service.replay_proxy import PlayResult
+
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+    ])
+    original = Path(temp_host_root) / sid / "original.py"
+    original.write_text(
+        "from playwright.sync_api import Playwright, sync_playwright\n"
+        "def run(playwright: Playwright) -> None:\n"
+        "    browser = playwright.chromium.launch()\n"
+        "    context = browser.new_context()\n"
+        "    page = context.new_page()\n"
+        "    page.get_by_role('link', name='회사소개').click()\n"
+        "    page.get_by_role('button', name='Submit').click()\n"
+        "    context.close()\n    browser.close()\n"
+        "with sync_playwright() as p:\n    run(p)\n",
+        encoding="utf-8",
+    )
+
+    def fake_play(*, host_session_dir):
+        return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
+
+    from recording_service.rplus import router as rplus_router
+    monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_play)
+    r = client.post(f"/experimental/sessions/{sid}/play-codegen")
+    body = r.json()
+    assert body["annotate"]["examined_clicks"] == 2
+    assert body["annotate"]["injected"] == 0
 
 
 def test_play_codegen_404_unknown(client, rplus_on):
