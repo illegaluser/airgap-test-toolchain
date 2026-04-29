@@ -878,12 +878,12 @@ def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_ro
     )
 
     fake_md = (
-        "## 목적\n로그인 흐름.\n\n"
-        "## 범위\n인증 페이지.\n\n"
-        "## 사전조건\n- 자격증명.\n\n"
-        "## 단계\n1. 진입.\n\n"
-        "## 예상 결과\n진입 성공.\n\n"
-        "## 검증 기준\nURL 매칭.\n"
+        "## Purpose\nLogin flow.\n\n"
+        "## Scope\nAuth page.\n\n"
+        "## Preconditions\n- Credentials.\n\n"
+        "## Steps\n1. Enter.\n\n"
+        "## Expected Result\nEntered successfully.\n\n"
+        "## Acceptance Criteria\nURL matches.\n"
     )
 
     def fake_enrich(*, scenario, target_url, page_title=None, inventory_block=None):
@@ -919,7 +919,7 @@ def test_enrich_502_when_ollama_fails(client, monkeypatch, temp_host_root, rplus
     Path(temp_host_root, sess.id, "scenario.json").write_text("[{}]", encoding="utf-8")
 
     def fake_enrich(*a, **kw):
-        raise EnrichError("Ollama 호출이 180s 안에 끝나지 않았습니다.")
+        raise EnrichError("Ollama call did not finish within 180s.")
 
     from recording_service.rplus import router as rplus_router  # P0.1 #5
     monkeypatch.setattr(rplus_router, "_run_enrich_impl", fake_enrich)
@@ -936,8 +936,8 @@ def test_enricher_module_few_shot_count():
 def test_enricher_module_system_prompt_contains_required_sections():
     from recording_service.enricher import _build_system_prompt
     sp = _build_system_prompt()
-    # 6 섹션 명이 시스템 프롬프트에 포함되어야 LLM 이 따름
-    for section in ("목적", "범위", "사전조건", "단계", "예상 결과", "검증 기준"):
+    # The 6 section names must appear in the system prompt for the LLM to follow them
+    for section in ("Purpose", "Scope", "Preconditions", "Steps", "Expected Result", "Acceptance Criteria"):
         assert section in sp
 
 
@@ -1058,10 +1058,10 @@ def test_comparator_html_renders_5_categories():
     res = compare(doc, rec)
     html = render_html(res)
     assert "<table>" in html
-    # 5분류 라벨 노출
-    assert "정확" in html
-    assert "녹화 외 의도" in html
-    # 비대칭 안내
+    # The 5 category labels are displayed
+    assert "Exact" in html
+    assert "Intent only" in html
+    # Asymmetry note
     assert "verify / mock_*" in html
 
 
@@ -1181,7 +1181,7 @@ def test_play_codegen_502_when_proxy_error(client, monkeypatch, temp_host_root, 
     ])
 
     def fake_play(*a, **kw):
-        raise ReplayProxyError("original.py 없음: ...")
+        raise ReplayProxyError("original.py missing: ...")
 
     from recording_service.rplus import router as rplus_router
     monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_play)
@@ -1197,7 +1197,7 @@ def test_play_llm_502_when_proxy_error(client, monkeypatch, temp_host_root, rplu
     ])
 
     def fake_play(*a, **kw):
-        raise ReplayProxyError("scenario.json 없음: ...")
+        raise ReplayProxyError("scenario.json missing: ...")
 
     from recording_service.rplus import router as rplus_router
     monkeypatch.setattr(rplus_router, "_run_llm_play_impl", fake_play)
@@ -1562,7 +1562,7 @@ def test_screenshot_endpoint_rejects_arbitrary_filename(client, patched_codegen)
     sid = _create_done_session(client, patched_codegen)
     r = client.get(f"/recording/sessions/{sid}/screenshot/foo.png")
     assert r.status_code == 400
-    assert "허용되지 않는" in r.json()["detail"]
+    assert "disallowed" in r.json()["detail"]
 
 
 # ── P2 (항목 6) — Play log tail endpoint ──────────────────────────────────

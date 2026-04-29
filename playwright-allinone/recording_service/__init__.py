@@ -1,13 +1,13 @@
-"""Recording 서비스 (호스트 에이전트, Phase R-MVP).
+"""Recording service (host agent, Phase R-MVP).
 
-호스트(mac/wsl) 에서 동작하는 FastAPI 데몬. playwright codegen 을 subprocess
-로 실행해 사용자 행동을 녹화하고, 컨테이너 CLI 위임으로 14-DSL JSON 으로
-변환한다.
+A FastAPI daemon that runs on the host (mac/wsl). It runs playwright codegen as a
+subprocess to record user actions and converts the recording into 14-DSL JSON by
+delegating to the container CLI.
 
-진입점:
+Entry point:
     uvicorn recording_service.server:app --host 0.0.0.0 --port 18092
 
-설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"Phase R" / §"T0.3"
+Design: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"Phase R" / §"T0.3"
 """
 
 __version__ = "0.2.0-rplus"

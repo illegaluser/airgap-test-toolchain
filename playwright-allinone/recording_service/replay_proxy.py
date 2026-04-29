@@ -1,19 +1,21 @@
-"""TR.7 — Play (R-Plus). 두 가지 모드:
+"""TR.7 — Play (R-Plus). Two modes:
 
-1. **Codegen Output Replay** — codegen 원본 ``original.py`` 를 호스트에서 그대로
-   실행. 녹화한 동작이 화면에 그대로 재현 (headed).
+1. **Codegen Output Replay** — run the codegen original ``original.py`` directly
+   on the host. The recorded actions are reproduced visibly (headed).
 
-2. **Play with LLM** — 변환된 14-DSL 시나리오 (``scenario.json``) 를 호스트
-   zero_touch_qa executor 로 실행. healing/verify/mock 등 14-DSL 의 풀 기능
-   동작 + 화면에 재생 (headed).
+2. **Play with LLM** — run the converted 14-DSL scenario (``scenario.json``)
+   through the host zero_touch_qa executor. Full 14-DSL features
+   (healing / verify / mock, etc.) plus headed playback.
 
-두 모드 모두 호스트 venv python 으로 subprocess 실행 — 컨테이너 docker exec
-경로는 화면 표시 불가라 사용 안 함. ``<venv_py>`` 는 ``RECORDING_VENV_PY`` env
-또는 ``sys.executable`` (= recording-service daemon 의 venv python).
+Both modes shell out to a host venv python — the container docker exec path is
+not used because it cannot display the screen. ``<venv_py>`` resolves to the
+``RECORDING_VENV_PY`` env var or ``sys.executable`` (= the recording-service
+daemon's venv python).
 
-P4 — auth-profile 통합:
-    세션 ``metadata.json`` 의 ``auth_profile`` 필드 (D15) 가 있으면 재생 시작
-    전에 verify 통과 강제 + storage_state 인자 + fingerprint env 자동 주입.
+P4 — auth-profile integration:
+    If the session's ``metadata.json`` has the ``auth_profile`` field (D15),
+    we force a verify pass before replay begins, and automatically inject the
+    storage_state argument plus the fingerprint env vars.
 """
 
 from __future__ import annotations
@@ -37,25 +39,26 @@ DEFAULT_REPLAY_TIMEOUT_SEC = int(
 
 
 class ReplayProxyError(RuntimeError):
-    """play 단계의 명시적 에러 (codegen / LLM 공통)."""
+    """Explicit error for the play stage (shared by codegen / LLM)."""
 
 
 class ReplayAuthExpiredError(ReplayProxyError):
-    """auth-profile verify 실패 — 재시드 필요 (P4.4).
+    """auth-profile verify failed — re-seed required (P4.4).
 
-    UI 가 만료 모달로 분기할 수 있도록 별도 예외 타입으로 분리.
+    Split out as its own exception type so the UI can branch into the
+    expiration modal.
     """
 
     def __init__(self, profile_name: str, detail: dict):
         super().__init__(
-            f"auth-profile '{profile_name}' verify 실패 (재시드 필요): {detail}"
+            f"auth-profile '{profile_name}' verify failed (re-seed required): {detail}"
         )
         self.profile_name = profile_name
         self.detail = dict(detail)
 
 
 def _load_session_metadata(host_session_dir: str) -> dict:
-    """세션 디렉토리의 ``metadata.json`` 로드. 없으면 빈 dict."""
+    """Load the session directory's ``metadata.json``. Empty dict if missing."""
     p = Path(host_session_dir) / "metadata.json"
     if not p.is_file():
         return {}
@@ -63,24 +66,24 @@ def _load_session_metadata(host_session_dir: str) -> dict:
         data = json.loads(p.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError) as e:
-        log.warning("[replay] metadata.json 로드 실패 (%s): %s", p, e)
+        log.warning("[replay] failed to load metadata.json (%s): %s", p, e)
         return {}
 
 
 def _resolve_auth_for_replay(
     host_session_dir: str,
 ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
-    """metadata.json 의 ``auth_profile`` → (storage_path, fingerprint_env, profile_name).
+    """``auth_profile`` from metadata.json → (storage_path, fingerprint_env, profile_name).
 
-    - 메타에 auth_profile 키가 없으면 ``(None, None, None)`` — 인증 없는 재생.
-    - 프로파일 lookup / verify 실패 시 ``ReplayAuthExpiredError`` (P4.4).
+    - If the metadata has no auth_profile key → ``(None, None, None)`` (no-auth replay).
+    - On profile lookup / verify failure → ``ReplayAuthExpiredError`` (P4.4).
     """
     meta = _load_session_metadata(host_session_dir)
     profile_name = meta.get("auth_profile")
     if not profile_name:
         return None, None, None
 
-    # auth_profiles 는 fcntl 의존성이라 lazy import.
+    # auth_profiles depends on fcntl, so import lazily.
     from zero_touch_qa import auth_profiles
     from zero_touch_qa.auth_profiles import (
         AuthProfileError, ProfileNotFoundError,
@@ -113,12 +116,13 @@ def _resolve_auth_for_replay(
 
 @dataclass
 class PlayResult:
-    """호스트 subprocess 실행 결과 — codegen output / LLM 공통.
+    """Host subprocess run result — shared by codegen output / LLM modes.
 
-    codegen 원본은 평범한 Playwright 스크립트이므로 'PASS step 수' 같은 개념이
-    없다 — returncode 0 = 끝까지 정상 실행. 14-DSL executor 도 본 응답에는
-    pass/fail 카운트를 노출하지 않는다 (HTML 리포트가 artifacts 안에 따로
-    생성되며 향후 UI 에서 노출 가능).
+    The codegen original is just a regular Playwright script, so there is no
+    notion of 'PASS step count' — returncode 0 = ran end-to-end successfully.
+    The 14-DSL executor also does not expose pass/fail counts in this response
+    (an HTML report is written separately into artifacts and may be surfaced
+    in the UI later).
     """
     returncode: int
     stdout: str
@@ -132,11 +136,13 @@ def _resolve_venv_py(venv_py: str | None) -> str:
 
 def _dump_play_log(cwd: str, log_name: str, cmd: list[str], stdout: str, stderr: str,
                    returncode: int, elapsed_ms: float) -> None:
-    """subprocess 의 stdout/stderr 를 세션 디렉토리에 떨어뜨려 healer/executor
-    내부 동작을 사후 추적 가능하게 한다. 데몬 log 에는 안 들어가는 자식 프로세스
-    출력의 유일한 보존 경로 — 시나리오와 실제 액션 사이 연결고리.
+    """Drop the subprocess stdout/stderr into the session directory so healer /
+    executor internals can be traced after the fact. This is the only place where
+    child-process output (which never reaches the daemon log) is preserved — the
+    bridge between the scenario and the actual actions taken.
 
-    실패는 silent — 본 dump 가 막히면 시나리오 결과 자체엔 영향 없음.
+    Failures are silent — if this dump is blocked, the scenario result itself is
+    unaffected.
     """
     try:
         path = Path(cwd) / log_name
@@ -151,7 +157,7 @@ def _dump_play_log(cwd: str, log_name: str, cmd: list[str], stdout: str, stderr:
             f.write("# ── stderr ──────────────────────────────────────\n")
             f.write(stderr or "(empty)\n")
     except OSError as e:
-        log.warning("[play-log] dump 실패 (%s): %s", cwd, e)
+        log.warning("[play-log] dump failed (%s): %s", cwd, e)
 
 
 def _run_subprocess(
@@ -163,14 +169,14 @@ def _run_subprocess(
     started: float,
     log_name: str = "play.log",
 ) -> PlayResult:
-    """공용 subprocess 실행 + PlayResult 변환."""
+    """Shared subprocess runner + PlayResult conversion."""
     try:
         proc = subprocess.run(
             cmd, cwd=cwd, env=env, capture_output=True, timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as e:
         elapsed = (time.time() - started) * 1000
-        # timeout 케이스도 그동안 누적된 출력을 dump — 어디서 멈췄는지 추적용
+        # On timeout too, dump whatever output accumulated — for tracing where it stopped
         partial_stdout = ""
         partial_stderr = ""
         if e.stdout:
@@ -179,11 +185,11 @@ def _run_subprocess(
             partial_stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
         _dump_play_log(cwd, log_name, cmd, partial_stdout, partial_stderr, -1, elapsed)
         raise ReplayProxyError(
-            f"play 가 {timeout_sec}s 안에 끝나지 않았습니다 (elapsed={elapsed:.0f}ms). "
-            f"부분 출력은 {log_name} 참조."
+            f"play did not finish within {timeout_sec}s (elapsed={elapsed:.0f}ms). "
+            f"See {log_name} for partial output."
         ) from e
     except FileNotFoundError as e:
-        raise ReplayProxyError(f"python 호출 실패: {e}") from e
+        raise ReplayProxyError(f"python invocation failed: {e}") from e
 
     elapsed_ms = (time.time() - started) * 1000
     stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
@@ -203,14 +209,14 @@ def run_codegen_replay(
     venv_py: str | None = None,
     prefer_annotated: bool = True,
 ) -> PlayResult:
-    """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (headed).
+    """Run the codegen original ``original.py`` directly on the host (headed).
 
     Args:
-        host_session_dir: 호스트 측 세션 디렉토리 — ``original.py`` 위치.
-        timeout_sec: subprocess timeout (기본 300s).
-        venv_py: 인터프리터 경로 override.
-        prefer_annotated: True 이고 ``original_annotated.py`` 가 있으면 그걸 우선
-            실행 (T-H 정적 hover 주입본). 기본 True.
+        host_session_dir: host-side session directory — where ``original.py`` lives.
+        timeout_sec: subprocess timeout (default 300s).
+        venv_py: interpreter path override.
+        prefer_annotated: if True and ``original_annotated.py`` exists, run it first
+            (the T-H static hover-injection variant). Default True.
     """
     annotated = Path(host_session_dir) / "original_annotated.py"
     if prefer_annotated and annotated.is_file():
@@ -218,14 +224,14 @@ def run_codegen_replay(
     else:
         script = Path(host_session_dir) / "original.py"
     if not script.is_file():
-        raise ReplayProxyError(f"실행 대상 .py 없음: {script}")
+        raise ReplayProxyError(f"target .py missing: {script}")
 
     py = _resolve_venv_py(venv_py)
     cmd = [py, str(script)]
 
-    # P4.3 — auth-profile 자동 매칭. 메타에 auth_profile 이 있으면 verify 통과 후
-    # AUTH_STORAGE_STATE_IN env 주입 (portabilize 된 original.py 가 읽음).
-    # fingerprint env 도 함께 주입해 executor 가 동일 fingerprint 로 컨텍스트 생성.
+    # P4.3 — auto-match auth-profile. If the metadata has auth_profile, pass verify
+    # then inject AUTH_STORAGE_STATE_IN env (read by the portabilized original.py).
+    # Also inject fingerprint env so the executor builds the context with the same fingerprint.
     storage_path, fingerprint_env, profile_name = _resolve_auth_for_replay(host_session_dir)
     env: Optional[dict]
     if storage_path:
@@ -255,18 +261,18 @@ def run_llm_play(
     timeout_sec: int = DEFAULT_REPLAY_TIMEOUT_SEC,
     venv_py: str | None = None,
 ) -> PlayResult:
-    """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행 (headed).
+    """Run the converted 14-DSL ``scenario.json`` through the zero_touch_qa executor (headed).
 
     Args:
-        host_session_dir: 호스트 측 세션 디렉토리 — ``scenario.json`` 위치 +
-            artifacts 산출물도 같은 폴더로 떨어진다 (ARTIFACTS_DIR).
-        project_root: zero_touch_qa 패키지가 있는 프로젝트 루트 — PYTHONPATH 주입.
-        timeout_sec: subprocess timeout (기본 300s).
-        venv_py: 인터프리터 경로 override.
+        host_session_dir: host-side session directory — ``scenario.json`` lives here
+            and artifacts are written into the same folder (ARTIFACTS_DIR).
+        project_root: project root containing the zero_touch_qa package — injected via PYTHONPATH.
+        timeout_sec: subprocess timeout (default 300s).
+        venv_py: interpreter path override.
     """
     scenario = Path(host_session_dir) / "scenario.json"
     if not scenario.is_file():
-        raise ReplayProxyError(f"scenario.json 없음: {scenario}")
+        raise ReplayProxyError(f"scenario.json missing: {scenario}")
 
     py = _resolve_venv_py(venv_py)
     cmd = [
@@ -275,8 +281,8 @@ def run_llm_play(
         "--scenario", str(scenario),
     ]
 
-    # P4.2 — auth-profile 자동 매칭. 메타에 auth_profile 이 있으면 verify 통과 후
-    # ``--storage-state-in <path>`` 인자 + fingerprint env 주입.
+    # P4.2 — auto-match auth-profile. If the metadata has auth_profile, pass verify
+    # then inject ``--storage-state-in <path>`` argument + fingerprint env.
     storage_path, fingerprint_env, profile_name = _resolve_auth_for_replay(host_session_dir)
     if storage_path:
         cmd += ["--storage-state-in", storage_path]

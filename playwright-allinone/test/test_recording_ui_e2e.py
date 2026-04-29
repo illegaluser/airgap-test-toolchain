@@ -265,7 +265,7 @@ def test_footer_text_uses_recording_ui(e2e_page: Page):
 def test_back_button_is_visible(e2e_page: Page):
     btn = e2e_page.locator("#back-btn")
     expect(btn).to_be_visible()
-    expect(btn).to_contain_text("뒤로")
+    expect(btn).to_contain_text("Back")
 
 
 # ── 3. 호버 메뉴 안내 배너 ────────────────────────────────────────────────
@@ -273,7 +273,7 @@ def test_back_button_is_visible(e2e_page: Page):
 
 def test_hover_hint_banner_is_present_on_start_card(e2e_page: Page):
     expect(e2e_page.locator(".hover-hint")).to_be_visible()
-    expect(e2e_page.locator(".hover-hint")).to_contain_text("호버 메뉴")
+    expect(e2e_page.locator(".hover-hint")).to_contain_text("hover menus")
 
 
 # ── 4. 세션 목록 + 검색/필터 (P3 / 항목 7) ──────────────────────────────────
@@ -464,8 +464,8 @@ def test_diff_analysis_button_renders_4_section_markdown(e2e_page: Page, e2e_dae
     e2e_page.wait_for_selector(".analysis-output h4", timeout=10000)
     headings = e2e_page.locator(".analysis-output h4").all_text_contents()
     # stub 의 4 섹션 헤딩
-    assert any("핵심 변경 요약" in h for h in headings)
-    assert any("회귀 채택 권고" in h for h in headings)
+    assert any("Key change summary" in h for h in headings)
+    assert any("Regression-adoption recommendation" in h for h in headings)
     # 모델 메타 표시
     expect(e2e_page.locator(".analysis-output")).to_contain_text("stub")
 

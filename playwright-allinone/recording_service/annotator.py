@@ -1,19 +1,20 @@
-"""TR.7+ — Codegen 원본 ``.py`` 의 hover 자동 주입 (static annotate).
+"""TR.7+ — Auto-inject hover into codegen-original ``.py`` (static annotate).
 
-(4) converter heuristic 과 동일 규칙(`_SEG_LOOKS_LIKE_HOVER_TRIGGER`) 을 codegen
-원본 소스 자체에 적용한다. 동기 — codegen Output Replay 는 변환 없이 원본을
-그대로 호스트에서 돌리는 경로라 (1) executor healer / (4) converter 의 보호를
-받지 못한다. 이 모듈은 ``page.<chain>.click()`` 라인을 찾아 그 chain 안에
-hover-trigger ancestor 가 있으면 같은 chain 의 prefix 에 ``.hover()`` 를 호출
-하는 라인을 click 직전에 prepend 한다.
+Applies the same rule as the (4) converter heuristic
+(`_SEG_LOOKS_LIKE_HOVER_TRIGGER`) to the codegen original source itself.
+Motivation — codegen Output Replay runs the original on the host without
+conversion, so it gets neither (1) executor healer nor (4) converter protection.
+This module scans for ``page.<chain>.click()`` lines and, when the chain
+contains a hover-trigger ancestor, prepends a ``.hover()`` call on the
+matching chain prefix immediately before the click.
 
-설계 한계 (정적 분석):
-  - DOM 무관 — chain segment 의 selector 문자열만 보고 추정.
-  - false-positive 시: hover 가 no-op 으로 끝나 click 부담 0.
-  - false-negative 시: 기존 codegen 동작 그대로 — 회귀 0.
+Design limits (static analysis):
+  - DOM-agnostic — inferred only from the selector strings in chain segments.
+  - On false-positive: the hover ends as a no-op, so the click cost is 0.
+  - On false-negative: original codegen behavior preserved — no regression.
 
-dynamic 변형 (실 페이지 visibility probe 후 annotate) 은 향후 ``run_replay``
-훅에 결합하여 별도 모듈에서 처리.
+The dynamic variant (annotate after a real-page visibility probe) will be
+hooked into ``run_replay`` later in a separate module.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-# (4) 와 동일 패턴 재사용 — 정의 위치를 옮기지 않고 함수만 import.
+# Reuse the same pattern as (4) — import the function rather than relocating the definition.
 from zero_touch_qa.converter_ast import _SEG_LOOKS_LIKE_HOVER_TRIGGER
 
 log = logging.getLogger(__name__)
@@ -33,24 +34,24 @@ log = logging.getLogger(__name__)
 class AnnotateResult:
     src_path: str
     dst_path: str
-    injected: int                 # 추가된 hover 라인 수
-    examined_clicks: int          # 검사한 click 호출 총수
-    triggers: list[str]           # 감지된 trigger source segment list (디버그용)
+    injected: int                 # number of hover lines added
+    examined_clicks: int          # total click calls examined
+    triggers: list[str]           # list of detected trigger source segments (for debugging)
 
 
 def annotate_script(src_path: str, dst_path: str) -> AnnotateResult:
-    """``src_path`` 를 읽고 hover 가 필요해 보이는 click 앞에 hover 라인을 삽입해 ``dst_path`` 에 쓴다."""
+    """Read ``src_path``, insert hover lines before clicks that look like they need them, and write to ``dst_path``."""
     p = Path(src_path)
     if not p.is_file():
-        raise FileNotFoundError(f"annotate src 없음: {src_path}")
+        raise FileNotFoundError(f"annotate src missing: {src_path}")
 
     source = p.read_text(encoding="utf-8")
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
-        raise RuntimeError(f"AST 파싱 실패: {e}") from e
+        raise RuntimeError(f"AST parse failed: {e}") from e
 
-    # line_no(1-based) → list[hover_source_line] 으로 누적.
+    # Accumulate as line_no(1-based) → list[hover_source_line].
     insertions: dict[int, list[str]] = {}
     triggers: list[str] = []
     examined = 0
@@ -65,14 +66,14 @@ def annotate_script(src_path: str, dst_path: str) -> AnnotateResult:
             continue
         examined += 1
 
-        chain_root = call.func.value  # `<chain>.click()` 의 chain 부분
+        chain_root = call.func.value  # the chain part of `<chain>.click()`
         trigger_node = _find_hover_trigger_in_chain(chain_root)
         if trigger_node is None:
             continue
         segment = ast.get_source_segment(source, trigger_node)
         if not segment:
             continue
-        # click 라인의 leading 인덴트 추출.
+        # Extract the leading indent of the click line.
         line_idx = node.lineno - 1
         line = source.splitlines()[line_idx] if line_idx < len(source.splitlines()) else ""
         indent = line[: len(line) - len(line.lstrip())]
@@ -80,7 +81,7 @@ def annotate_script(src_path: str, dst_path: str) -> AnnotateResult:
         insertions.setdefault(node.lineno, []).append(hover_line)
         triggers.append(segment)
 
-    # 라인 번호 역순으로 source 에 삽입 (앞 라인 인덱스가 안 밀리도록).
+    # Insert into source in reverse line-number order (so earlier indices don't shift).
     if insertions:
         lines = source.splitlines(keepends=True)
         for lineno in sorted(insertions.keys(), reverse=True):
@@ -105,29 +106,29 @@ def annotate_script(src_path: str, dst_path: str) -> AnnotateResult:
 
 
 def _find_hover_trigger_in_chain(node: ast.expr) -> ast.expr | None:
-    """chain root 부터 거슬러 올라가며 hover-trigger 가능성이 있는 가장 바깥 segment 반환.
+    """Walk back from the chain root and return the outermost segment that could be a hover trigger.
 
-    chain 예: ``page.locator('nav#gnb').locator('li').get_by_role('link', name='X')``.
-    각 sub-Call 의 selector 인자를 보고 trigger 휴리스틱 매칭 — 가장 root 에 가까운
-    trigger 까지의 prefix 를 hover 대상으로.
+    Chain example: ``page.locator('nav#gnb').locator('li').get_by_role('link', name='X')``.
+    Each sub-Call's selector argument is checked against the trigger heuristic —
+    the prefix up to the trigger closest to the root becomes the hover target.
     """
-    # chain 평탄화 — 가장 inner Call 부터 root 방향으로.
+    # Flatten the chain — innermost Call first, walking toward the root.
     candidates: list[ast.expr] = []
     cur = node
     while isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute):
         candidates.append(cur)
         cur = cur.func.value
-    # candidates[0] = leaf (click 직전), candidates[-1] = root 에 가장 가까움.
-    # 가장 root 에 가까운 trigger 를 선택 (hover 가 광범위 ancestor 일수록 안전).
+    # candidates[0] = leaf (just before click), candidates[-1] = closest to the root.
+    # Pick the trigger closest to the root (hovering a broader ancestor is safer).
     for c in reversed(candidates):
         if not isinstance(c, ast.Call) or not isinstance(c.func, ast.Attribute):
             continue
         method = c.func.attr
         if method not in ("locator", "filter", "get_by_role", "frame_locator"):
-            # get_by_text / get_by_label 등은 leaf 로 자주 쓰이므로 hover trigger
-            # 후보에서 제외 — 너무 광범위해질 위험.
+            # get_by_text / get_by_label etc. are typically used as leaves, so we
+            # exclude them as hover trigger candidates — too broad a risk.
             continue
-        # 인자 텍스트로 trigger 휴리스틱 매칭.
+        # Apply the trigger heuristic to the argument text.
         arg_text = _stringify_args(c)
         if _SEG_LOOKS_LIKE_HOVER_TRIGGER(arg_text):
             return c

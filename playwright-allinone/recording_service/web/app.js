@@ -1,10 +1,10 @@
 // DSCORE Recording Service Web UI (TR.4)
-// vanilla JS — 프레임워크 없음. 단일 worker 데몬 가정.
+// Vanilla JS — no framework. Assumes a single worker daemon.
 
 const $ = (sel) => document.querySelector(sel);
 const $all = (sel) => document.querySelectorAll(sel);
 
-// ── 전역 상태 (단일 활성 세션 가정) ──────────────────────────────────────────
+// ── Global state (assumes a single active session) ──────────────────────────
 let _state = {
   activeSid: null,
   startedAt: null,
@@ -37,7 +37,7 @@ async function loadHealth() {
       badge.textContent = `✓ healthy · v${h.version}`;
       badge.className = "ok";
     } else {
-      badge.textContent = `⚠ codegen 미설치 · v${h.version}`;
+      badge.textContent = `⚠ codegen not installed · v${h.version}`;
       badge.className = "warn";
     }
   } catch (e) {
@@ -46,7 +46,7 @@ async function loadHealth() {
   }
 }
 
-// P3 — 세션 필터. localStorage 에 마지막 값 보존.
+// P3 — Session filter. Persists last value in localStorage.
 const _SESSION_FILTER_KEY = "rec.sessionFilter";
 const _SESSION_STATE_KEY = "rec.sessionStateFilter";
 
@@ -66,7 +66,7 @@ function _renderSessionRows() {
   const tbody = $("#session-tbody");
   if (!filtered.length) {
     const all = _sessionsCache.length;
-    tbody.innerHTML = `<tr class="muted"><td colspan="7">— ${all > 0 ? "필터 일치 0건 (" + all + "건 중)" : "세션 없음"} —</td></tr>`;
+    tbody.innerHTML = `<tr class="muted"><td colspan="7">— ${all > 0 ? "0 matches (out of " + all + ")" : "No sessions"} —</td></tr>`;
     return;
   }
   tbody.innerHTML = filtered.map((s) => `
@@ -78,8 +78,8 @@ function _renderSessionRows() {
       <td>${s.action_count || 0}</td>
       <td class="muted">${formatIso(s.created_at_iso)}</td>
       <td class="row-actions">
-        <button data-act="open" data-sid="${s.id}">열기</button>
-        <button data-act="del" data-sid="${s.id}" class="danger">삭제</button>
+        <button data-act="open" data-sid="${s.id}">Open</button>
+        <button data-act="del" data-sid="${s.id}" class="danger">Delete</button>
       </td>
     </tr>
   `).join("");
@@ -89,7 +89,7 @@ async function loadSessions() {
   try {
     _sessionsCache = await api("/recording/sessions");
   } catch (e) {
-    console.warn("세션 목록 조회 실패:", e);
+    console.warn("Failed to fetch session list:", e);
     return;
   }
   _renderSessionRows();
@@ -118,7 +118,7 @@ async function startRecording(target_url, planning_doc_ref, auth_profile) {
   const body = { target_url };
   if (planning_doc_ref) body.planning_doc_ref = planning_doc_ref;
   if (auth_profile) body.auth_profile = auth_profile;
-  // raw fetch 로 응답 헤더 (X-Auth-Machine-Mismatch) 확인 가능하게.
+  // Use raw fetch so we can read response headers (X-Auth-Machine-Mismatch).
   const r = await fetch("/recording/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -131,7 +131,7 @@ async function startRecording(target_url, planning_doc_ref, auth_profile) {
     err.detail = data.detail || {};
     throw err;
   }
-  // 머신 불일치 헤더는 normal 200/201 에서만 의미 있음.
+  // The machine-mismatch header only carries meaning on a normal 200/201.
   data._machineMismatch = r.headers.get("X-Auth-Machine-Mismatch") === "1";
   return data;
 }
@@ -153,7 +153,7 @@ async function getSessionScenario(sid) {
 }
 
 async function getSessionOriginal(sid) {
-  // text 본문 — fetch 직접 사용 (api() 는 JSON 파싱 시도).
+  // Text body — call fetch directly (api() tries to parse JSON).
   const r = await fetch(`/recording/sessions/${sid}/original`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.text();
@@ -166,9 +166,10 @@ async function addAssertion(sid, payload) {
   });
 }
 
-// R-Plus — 백엔드는 /experimental/* 로 분리. UI 는 메인 결과 화면에 함께 노출.
-// 만료/머신 등 에러 status/detail 을 보존해야 _runPlay 가 409 → 만료 모달 분기를
-// 칠 수 있어, api() 가 아니라 raw fetch 로 호출하고 err.status/err.detail 을 박는다.
+// R-Plus — backend lives under /experimental/*. The UI shows it in the main result view.
+// We need to preserve error status/detail (expired / machine mismatch) so _runPlay can
+// branch on 409 → expiration modal, so we use raw fetch instead of api() and stash
+// err.status / err.detail.
 async function _playRawFetch(path) {
   const r = await fetch(path, {
     method: "POST",
@@ -210,7 +211,7 @@ async function compareSession(sid, doc_dsl, threshold) {
   });
 }
 
-// ── 활성 세션 패널 ───────────────────────────────────────────────────────────
+// ── Active session panel ─────────────────────────────────────────────────────
 function showActivePanel(session) {
   _state.activeSid = session.id;
   _state.startedAt = Date.now();
@@ -220,7 +221,7 @@ function showActivePanel(session) {
   $("#active-url").textContent = session.target_url;
   setStatePill("#active-state", session.state);
 
-  // 폴링 + 경과 시간
+  // Polling + elapsed time
   if (_state.pollTimer) clearInterval(_state.pollTimer);
   _state.pollTimer = setInterval(() => pollActive(session.id), 2000);
   if (_state.elapsedTimer) clearInterval(_state.elapsedTimer);
@@ -246,8 +247,8 @@ async function pollActive(sid) {
       await loadSessions();
     }
   } catch (e) {
-    // 세션이 사라짐 (삭제됨)
-    console.warn("폴링 실패:", e);
+    // Session is gone (deleted)
+    console.warn("Polling failed:", e);
     hideActivePanel();
   }
 }
@@ -257,10 +258,10 @@ function updateElapsed() {
   const sec = Math.round((Date.now() - _state.startedAt) / 1000);
   const m = Math.floor(sec / 60);
   const s = sec % 60;
-  $("#active-elapsed").textContent = m > 0 ? `${m}분 ${s}초` : `${s}초`;
+  $("#active-elapsed").textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-// ── 결과 패널 ────────────────────────────────────────────────────────────────
+// ── Result panel ─────────────────────────────────────────────────────────────
 async function openSession(sid) {
   const s = await getSession(sid);
   $("#result-section").hidden = false;
@@ -269,7 +270,7 @@ async function openSession(sid) {
   $("#result-step-count").textContent = s.action_count || 0;
   $("#result-path").textContent = `~/.dscore.ttc.playwright-agent/recordings/${s.id}/scenario.json`;
 
-  // Scenario JSON 카드 — state=done 일 때만 노출 + 다운로드 링크 갱신 (TR.4+.2).
+  // Scenario JSON card — only shown when state=done; refresh download link too (TR.4+.2).
   const scenarioCard = $("#scenario-card");
   if (s.state === "done") {
     scenarioCard.hidden = false;
@@ -278,14 +279,14 @@ async function openSession(sid) {
       const scenario = await getSessionScenario(sid);
       $("#result-json").textContent = JSON.stringify(scenario, null, 2);
     } catch (err) {
-      $("#result-json").textContent = `(scenario.json 로드 실패: ${err.message})`;
+      $("#result-json").textContent = `(failed to load scenario.json: ${err.message})`;
     }
   } else {
     scenarioCard.hidden = true;
   }
 
-  // Original .py 카드 — original.py 가 존재할 때 노출 (TR.4+.1).
-  // recording 도중 stop 직전 / done / error 모두에서 codegen 산출물이 있으면 표시.
+  // Original .py card — shown when original.py exists (TR.4+.1).
+  // Visible whenever the codegen artifact is present, including just before stop / done / error.
   const originalCard = $("#original-card");
   $("#dl-original").href = `/recording/sessions/${sid}/original?download=1`;
   try {
@@ -296,17 +297,17 @@ async function openSession(sid) {
     originalCard.hidden = true;
   }
 
-  // P1 — Run-log (실행 결과) 카드. run_log.jsonl 이 있을 때만.
+  // P1 — Run-log (execution result) card. Only when run_log.jsonl exists.
   await _renderRunLog(sid);
-  // 항목 4 — Regression .py 별도 카드 + 비교 분석 카드.
+  // Item 4 — Regression .py card and diff analysis card.
   await _renderRegression(sid);
   await _renderDiff(sid);
 
-  // Assertion 추가 영역은 state=done 일 때만 노출.
+  // Assertion-add area is only shown when state=done.
   $("#assertion-section").hidden = s.state !== "done";
   $("#assertion-form").dataset.sid = sid;
 
-  // R-Plus 섹션 — state=done 일 때 항상 노출 (게이트 폐기 — TR.4+.4).
+  // R-Plus section — always shown when state=done (gating removed — TR.4+.4).
   const rplus = $("#rplus-section");
   const showRplus = s.state === "done";
   rplus.hidden = !showRplus;
@@ -318,7 +319,7 @@ async function openSession(sid) {
   }
 }
 
-// ── 폼 핸들러 ────────────────────────────────────────────────────────────────
+// ── Form handlers ────────────────────────────────────────────────────────────
 $("#start-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
@@ -336,7 +337,7 @@ $("#start-form").addEventListener("submit", async (e) => {
     $("#rplus-section").hidden = true;
     await loadSessions();
   } catch (err) {
-    alert("Start 실패: " + err.message);
+    alert("Start failed: " + err.message);
   } finally {
     $("#btn-start").disabled = false;
   }
@@ -351,13 +352,13 @@ $("#btn-stop").addEventListener("click", async () => {
     if (data.id) await openSession(data.id);
     await loadSessions();
   } catch (err) {
-    alert("Stop 실패: " + err.message);
+    alert("Stop failed: " + err.message);
   } finally {
     $("#btn-stop").disabled = false;
   }
 });
 
-// action 변경 시 value 입력 보조 — scroll 은 into_view 자동 채움, hover 는 비움.
+// On action change, help fill the value input — auto-fill into_view for scroll, clear for hover.
 $("#assertion-form select[name='action']").addEventListener("change", (e) => {
   const action = e.target.value;
   const valueInput = $("#assertion-form input[name='value']");
@@ -371,7 +372,7 @@ $("#assertion-form select[name='action']").addEventListener("change", (e) => {
 $("#assertion-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const sid = e.target.dataset.sid;
-  if (!sid) { alert("세션 미선택."); return; }
+  if (!sid) { alert("No session selected."); return; }
   const fd = new FormData(e.target);
   const payload = {
     action: fd.get("action"),
@@ -386,13 +387,13 @@ $("#assertion-form").addEventListener("submit", async (e) => {
     const data = await addAssertion(sid, payload);
     e.target.reset();
     await openSession(sid);
-    alert(`Step ${data.step_added} 추가됨 (총 ${data.step_count} 스텝)`);
+    alert(`Step ${data.step_added} added (total ${data.step_count} steps)`);
   } catch (err) {
-    alert("Step 추가 실패: " + err.message);
+    alert("Failed to add step: " + err.message);
   }
 });
 
-// R-Plus 핸들러 — RPLUS_ENABLED 미설정 시 백엔드가 404 던지므로 알림으로 안내.
+// R-Plus handler — when RPLUS_ENABLED is unset the backend returns 404, so notify the user.
 function _rplusOutputBox() {
   const box = $("#rplus-output");
   box.hidden = false;
@@ -407,11 +408,11 @@ function _annotateLine(a) {
   if (!a) return "";
   if (a.skipped) return `\nannotate: skipped — ${a.skipped}`;
   if (a.injected === 0) {
-    return `\nannotate: examined ${a.examined_clicks} clicks → 0 hover 주입 (원본 그대로 사용)`;
+    return `\nannotate: examined ${a.examined_clicks} clicks → 0 hovers injected (using original as is)`;
   }
   const triggers = (a.triggers || []).map((t, i) => `  ${i + 1}. ${t}`).join("\n");
   return (
-    `\nannotate: examined ${a.examined_clicks} clicks → ${a.injected} hover 주입\n` +
+    `\nannotate: examined ${a.examined_clicks} clicks → ${a.injected} hovers injected\n` +
     triggers
   );
 }
@@ -422,9 +423,9 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
   const btn = $(btnSel);
   btn.disabled = true;
   _rplusOutputBox().textContent =
-    `⏳ ${label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)`;
+    `⏳ ${label} running... (a browser window will open on the host — do not close it until it finishes)`;
 
-  // P2 — 실시간 로그 진행 박스 초기화 + 1s 폴링.
+  // P2 — initialize the live progress box and start 1s polling.
   const progress = $("#play-progress");
   const details = $("#play-progress-details");
   progress.textContent = "";
@@ -445,13 +446,13 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
       }
       offset = t.offset;
     } catch (_) {
-      // 폴링 실패는 무시 — subprocess 끝날 때까지 재시도.
+      // Ignore polling failures — keep retrying until the subprocess ends.
     }
   }, 1000);
 
   try {
     const data = await fn(sid);
-    const status = data.returncode === 0 ? `✓ ${label} 완료` : `✗ ${label} 실패`;
+    const status = data.returncode === 0 ? `✓ ${label} done` : `✗ ${label} failed`;
     _rplusOutputBox().textContent =
       `${status}\n\n` +
       `returncode: ${data.returncode}\n` +
@@ -459,22 +460,22 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
       _annotateLine(data.annotate) +
       (data.stdout_tail ? `\n\n--- stdout (tail) ---\n${data.stdout_tail}` : "") +
       (data.stderr_tail ? `\n\n--- stderr (tail) ---\n${data.stderr_tail}` : "");
-    // 실행 끝 — Run-log 새로고침 (PASS/FAIL/HEALED 표 갱신).
+    // Run finished — refresh Run-log (PASS/FAIL/HEALED table).
     await _renderRunLog(sid);
-    // 진행 박스는 자동 collapse — 사용자가 펼쳐 보고 싶으면 수동으로.
+    // Auto-collapse the progress box — user can expand manually if they want to look.
     details.open = false;
   } catch (err) {
-    // post-review fix — auth-profile 만료/미존재 (rplus router 의 409) 는
-    // 일반 실패 메시지가 아니라 만료 모달로 분기. UI 의 [재시드] 버튼이
-    // 같은 카탈로그 prefill 흐름을 재사용.
+    // Post-review fix — auth-profile expired/missing (the rplus router's 409) should
+    // open the expiration modal instead of a generic failure message. The UI's
+    // [Re-seed] button reuses the same catalog prefill flow.
     if (err.status === 409 && err.detail?.reason === "profile_expired") {
       const profName = err.detail.profile_name || _authState.selected || "—";
       const reason = err.detail.fail_reason || err.detail.reason || "verify failed";
       _rplusOutputBox().textContent =
-        `⚠ ${label} 중단 — 인증 세션 '${profName}' 만료 (${reason}). 재시드 후 다시 실행하세요.`;
+        `⚠ ${label} aborted — auth session '${profName}' expired (${reason}). Re-seed and try again.`;
       _showExpiredDialog(profName, reason);
     } else {
-      _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
+      _rplusOutputBox().textContent = `✗ ${label} failed: ` + err.message;
     }
   } finally {
     stopped = true;
@@ -495,16 +496,16 @@ $("#btn-enrich").addEventListener("click", async () => {
   const sid = _currentRplusSid();
   if (!sid) return;
   $("#btn-enrich").disabled = true;
-  _rplusOutputBox().textContent = "⏳ Ollama 역추정 진행 중... (수십 초~수 분 소요 가능)";
+  _rplusOutputBox().textContent = "⏳ Ollama back-inference running... (may take tens of seconds to a few minutes)";
   try {
     const data = await enrichSession(sid);
     _rplusOutputBox().textContent =
-      `✓ Generate Doc 완료 (model=${data.model}, ${data.elapsed_ms.toFixed(0)}ms)\n` +
-      `저장: ${data.saved_to}\n\n` +
+      `✓ Generate Doc done (model=${data.model}, ${data.elapsed_ms.toFixed(0)}ms)\n` +
+      `saved: ${data.saved_to}\n\n` +
       "─".repeat(40) + "\n\n" +
       data.markdown;
   } catch (err) {
-    _rplusOutputBox().textContent = "✗ 역추정 실패: " + err.message;
+    _rplusOutputBox().textContent = "✗ Back-inference failed: " + err.message;
   } finally {
     $("#btn-enrich").disabled = false;
   }
@@ -525,9 +526,9 @@ $("#compare-form").addEventListener("submit", async (e) => {
   let docDsl;
   try {
     docDsl = JSON.parse(fd.get("doc_dsl"));
-    if (!Array.isArray(docDsl)) throw new Error("doc-DSL 은 JSON 배열이어야 합니다.");
+    if (!Array.isArray(docDsl)) throw new Error("doc-DSL must be a JSON array.");
   } catch (err) {
-    alert("JSON 파싱 실패: " + err.message);
+    alert("JSON parse failed: " + err.message);
     return;
   }
   const threshold = fd.get("threshold") || 0.7;
@@ -537,20 +538,20 @@ $("#compare-form").addEventListener("submit", async (e) => {
     const data = await compareSession(sid, docDsl, threshold);
     const c = data.counts;
     _rplusOutputBox().textContent =
-      `✓ Compare 완료\n\n` +
-      `정확: ${c.exact} · 값차이: ${c.value_diff} · 누락: ${c.missing} · ` +
-      `추가: ${c.extra} · 녹화 외 의도: ${c.intent_only}\n` +
-      `리포트 HTML: ${data.report_html_url}\n`;
+      `✓ Compare done\n\n` +
+      `exact: ${c.exact} · value_diff: ${c.value_diff} · missing: ${c.missing} · ` +
+      `extra: ${c.extra} · intent_only: ${c.intent_only}\n` +
+      `report HTML: ${data.report_html_url}\n`;
     window.open(data.report_html_url, "_blank");
     $("#compare-dialog").close();
   } catch (err) {
-    alert("Compare 실패: " + err.message);
+    alert("Compare failed: " + err.message);
   } finally {
     $("#btn-compare-submit").disabled = false;
   }
 });
 
-// 세션 테이블의 row 액션 (열기 / 삭제)
+// Row actions in the session table (Open / Delete)
 $("#session-tbody").addEventListener("click", async (e) => {
   const btn = e.target.closest("button[data-act]");
   if (!btn) return;
@@ -558,14 +559,14 @@ $("#session-tbody").addEventListener("click", async (e) => {
   if (btn.dataset.act === "open") {
     await openSession(sid);
   } else if (btn.dataset.act === "del") {
-    if (!confirm(`세션 ${sid} 를 삭제할까요? (호스트 디렉토리도 함께 제거)`)) return;
+    if (!confirm(`Delete session ${sid}? (the host directory is removed too)`)) return;
     try {
       await deleteSession(sid);
       $("#result-section").hidden = true;
       $("#assertion-section").hidden = true;
       await loadSessions();
     } catch (err) {
-      alert("삭제 실패: " + err.message);
+      alert("Delete failed: " + err.message);
     }
   }
 });
@@ -585,7 +586,7 @@ function escapeHtml(s) {
 
 function formatIso(iso) {
   if (!iso) return "—";
-  // ISO8601 → HH:MM:SS 만 표시 (오늘) 또는 MM-DD HH:MM
+  // ISO8601 → show only HH:MM:SS (today) or MM-DD HH:MM
   try {
     const d = new Date(iso);
     const today = new Date();
@@ -596,7 +597,7 @@ function formatIso(iso) {
   } catch (_) { return iso; }
 }
 
-// ── P1 (항목 5) — Run-log 시각화 + P4 (항목 8) step JSON 복사 ──────────────
+// ── P1 (item 5) — Run-log visualization + P4 (item 8) step JSON copy ────────
 async function _renderRunLog(sid) {
   const card = $("#run-log-card");
   const container = $("#run-log-container");
@@ -604,13 +605,13 @@ async function _renderRunLog(sid) {
   try {
     records = await api(`/recording/sessions/${sid}/run-log`);
   } catch (err) {
-    // 404 = run_log 없음 (Play 미실행) — 카드 숨김.
+    // 404 = no run_log (Play has not run) — hide the card.
     card.hidden = true;
     return;
   }
   card.hidden = false;
   if (!Array.isArray(records) || records.length === 0) {
-    container.innerHTML = '<p class="muted">— 빈 run-log —</p>';
+    container.innerHTML = '<p class="muted">— Empty run-log —</p>';
     return;
   }
   let firstFailIdx = -1;
@@ -622,10 +623,10 @@ async function _renderRunLog(sid) {
       ? `<button class="shot-link" data-shot="${escapeHtml(rec.screenshot)}"
                   data-shot-sid="${escapeHtml(sid)}"
                   data-shot-step="${escapeHtml(String(rec.step))}"
-                  title="스크린샷 확대">📷</button>`
+                  title="Enlarge screenshot">📷</button>`
       : "—";
     const recJson = JSON.stringify(rec).replace(/'/g, "&#39;");
-    const copyCell = `<button class="copy-step-btn" data-step-json='${recJson}' title="이 step JSON 복사">📋</button>`;
+    const copyCell = `<button class="copy-step-btn" data-step-json='${recJson}' title="Copy this step JSON">📋</button>`;
     return `
       <tr class="run-log-row run-log-${status.toLowerCase()}" data-step="${escapeHtml(String(rec.step))}">
         <td class="step-no">${escapeHtml(String(rec.step ?? "—"))}</td>
@@ -647,16 +648,16 @@ async function _renderRunLog(sid) {
       <tbody>${rows}</tbody>
     </table>
   `;
-  // FAIL step 자동 스크롤.
+  // Auto-scroll to the FAIL step.
   if (firstFailIdx >= 0) {
     const failRow = container.querySelector(`tr[data-step="${records[firstFailIdx].step}"]`);
     if (failRow) failRow.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 }
 
-// ── 항목 4 — codegen 원본 ↔ LLM healed regression 비교 ────────────────────
+// ── Item 4 — codegen original ↔ LLM healed regression diff ──────────────────
 function _renderUnifiedDiff(text) {
-  if (!text) return '<span class="muted">(차이 없음)</span>';
+  if (!text) return '<span class="muted">(no differences)</span>';
   return text.split("\n").map((line) => {
     const safe = escapeHtml(line);
     if (line.startsWith("+++") || line.startsWith("---")) return `<span class="diff-meta">${safe}</span>`;
@@ -667,7 +668,7 @@ function _renderUnifiedDiff(text) {
   }).join("\n");
 }
 
-// 매우 작은 markdown → HTML 렌더러 (분석 결과용. 외부 라이브러리 없이).
+// Tiny markdown → HTML renderer (for analysis output, no external library).
 function _renderMarkdown(md) {
   const lines = md.split("\n");
   const out = [];
@@ -697,7 +698,7 @@ function _renderMarkdown(md) {
     else if (raw.trim() === "") out.push("<br>");
     else out.push(`<p>${line}</p>`);
   }
-  // <li> 들을 <ul> 로 감싸기 (간단 fix-up)
+  // Wrap consecutive <li>s in <ul> (simple fix-up)
   return out.join("\n").replace(/((?:<li>[^<]*<\/li>\n?)+)/g, "<ul>$1</ul>");
 }
 
@@ -716,12 +717,12 @@ async function _renderDiff(sid) {
   }
   card.hidden = false;
   $("#diff-output").innerHTML = _renderUnifiedDiff(data.unified_diff);
-  // 분석 영역 초기화 (다른 세션 진입 시 이전 결과 흔적 제거)
+  // Reset the analysis area (clear previous output when entering another session)
   $("#diff-analysis-output").innerHTML =
-    "— <strong>🔎 LLM 분석</strong> 버튼을 누르면 분석을 시작합니다 —";
+    "— Click <strong>🔎 LLM analysis</strong> to start the analysis —";
 }
 
-// LLM 분석 버튼 핸들러
+// LLM analysis button handler
 $("#btn-analyze-diff").addEventListener("click", async () => {
   const sid = _currentRplusSid();
   if (!sid) return;
@@ -729,7 +730,7 @@ $("#btn-analyze-diff").addEventListener("click", async () => {
   const btn = $("#btn-analyze-diff");
   btn.disabled = true;
   out.innerHTML =
-    '<span class="muted">⏳ Ollama 호출 중... 모델 추론에 30~60s 소요됩니다.</span>';
+    '<span class="muted">⏳ Calling Ollama... model inference takes ~30-60s.</span>';
   try {
     const data = await api(
       `/experimental/sessions/${sid}/diff-analysis`, { method: "POST" },
@@ -740,13 +741,13 @@ $("#btn-analyze-diff").addEventListener("click", async () => {
                     _renderMarkdown(data.markdown) + '</div>';
   } catch (err) {
     out.innerHTML =
-      '<span class="err">✗ 분석 실패:</span> ' + escapeHtml(err.message);
+      '<span class="err">✗ Analysis failed:</span> ' + escapeHtml(err.message);
   } finally {
     btn.disabled = false;
   }
 });
 
-// Regression Test Script (.py) 카드 렌더 — 항목 #2 (UI 개선)
+// Regression Test Script (.py) card render — item #2 (UI improvement)
 async function _renderRegression(sid) {
   const card = $("#regression-card");
   let body;
@@ -763,7 +764,7 @@ async function _renderRegression(sid) {
   $("#result-regression").textContent = body || "(empty)";
 }
 
-// 스크린샷 모달 — 클릭 위임.
+// Screenshot modal — click delegation.
 document.addEventListener("click", (e) => {
   const btn = e.target.closest(".shot-link");
   if (!btn) return;
@@ -778,7 +779,7 @@ document.addEventListener("click", (e) => {
   else dlg.setAttribute("open", "");
 });
 
-// P4 — Step 단위 JSON 복사. data-step-json 에서 직접 읽음.
+// P4 — Per-step JSON copy. Reads directly from data-step-json.
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest(".copy-step-btn");
   if (!btn) return;
@@ -788,11 +789,11 @@ document.addEventListener("click", async (e) => {
     btn.textContent = "✓";
     setTimeout(() => { btn.textContent = "📋"; }, 800);
   } catch (err) {
-    alert("Step 복사 실패: " + err.message);
+    alert("Step copy failed: " + err.message);
   }
 });
 
-// ── R-Plus dropdown (항목 3 — hover-open + click-stick) ───────────────────
+// ── R-Plus dropdown (item 3 — hover-open + click-stick) ─────────────────────
 function _closeAllDropdowns(except) {
   document.querySelectorAll(".dropdown-group.expanded").forEach((g) => {
     if (g !== except) {
@@ -812,7 +813,7 @@ document.addEventListener("click", (e) => {
     toggle.setAttribute("aria-expanded", String(willExpand));
     return;
   }
-  // 그룹 외부 클릭 → 모든 dropdown 닫기.
+  // Click outside the group → close all dropdowns.
   if (!e.target.closest(".dropdown-group")) {
     _closeAllDropdowns(null);
   }
@@ -821,10 +822,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") _closeAllDropdowns(null);
 });
 
-// ── 클립보드 복사 (항목 2) ─────────────────────────────────────────────────
+// ── Clipboard copy (item 2) ─────────────────────────────────────────────────
 async function _copyToClipboard(text) {
   if (!navigator.clipboard) {
-    throw new Error("브라우저가 clipboard API 미지원 — HTTPS/localhost 필요");
+    throw new Error("Browser does not support the clipboard API — HTTPS/localhost is required");
   }
   await navigator.clipboard.writeText(text);
 }
@@ -848,11 +849,11 @@ document.addEventListener("click", async (e) => {
       }, 800);
     }
   } catch (err) {
-    alert("복사 실패: " + err.message);
+    alert("Copy failed: " + err.message);
   }
 });
 
-// ── 항목 (import-script) — 사용자 .py 업로드 + 결과 화면 자동 진입 ──────
+// ── import-script — upload user .py and auto-enter the result view ──────────
 $("#btn-import-script").addEventListener("click", () => {
   $("#import-file-input").click();
 });
@@ -864,7 +865,7 @@ $("#import-file-input").addEventListener("change", async (e) => {
   fd.append("file", f);
   const btn = $("#btn-import-script");
   btn.disabled = true;
-  btn.textContent = "⏳ 업로드 중...";
+  btn.textContent = "⏳ Uploading...";
   try {
     const r = await fetch("/recording/import-script", {
       method: "POST", body: fd,
@@ -872,40 +873,40 @@ $("#import-file-input").addEventListener("change", async (e) => {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
       const detail = (data && data.detail) || `HTTP ${r.status}`;
-      alert("업로드 실패: " + detail);
+      alert("Upload failed: " + detail);
       return;
     }
     await loadSessions();
     await openSession(data.id);
-    // 결과 화면으로 스크롤
+    // Scroll to the result view
     $("#result-section").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
-    alert("업로드 실패: " + err.message);
+    alert("Upload failed: " + err.message);
   } finally {
     btn.disabled = false;
     btn.innerHTML = "📁 Play Script from File";
-    e.target.value = "";  // 같은 파일 재업로드 가능하도록 reset
+    e.target.value = "";  // reset so the same file can be uploaded again
   }
 });
 
-// ── 뒤로가기 버튼 — 항상 노출 (Jenkins 의 Safe HTML 정책이 <a target="_blank">
-// 의 target 을 스트립해 새 탭 진입이 불가능 — 동일 탭 진입 사용자의 복귀 경로). ──
+// ── Back button — always shown (Jenkins's Safe HTML policy strips
+// target="_blank" so a new tab is impossible — same-tab users need a way back). ──
 (function _initBackButton() {
   const btn = document.getElementById("back-btn");
   if (!btn) return;
   btn.addEventListener("click", () => {
-    // 시도 1: referrer (가장 결정적). 다른 origin 에서 왔다면 100% 동작.
+    // Try 1: referrer (most reliable). 100% works if we came from a different origin.
     if (document.referrer) {
       window.location.href = document.referrer;
       return;
     }
-    // 시도 2: history.back. 이 페이지 진입 전에 history 가 있으면 이동.
+    // Try 2: history.back. If history exists from before this page, go back.
     if (window.history.length > 1) {
       window.history.back();
       return;
     }
-    // 시도 3: 시작점 — 안내 후 Jenkins 기본 URL 로.
-    alert("이전 페이지가 없습니다 — Jenkins 메인으로 이동합니다.");
+    // Try 3: starting point — notify, then go to the Jenkins default URL.
+    alert("No previous page — going to Jenkins home.");
     window.location.href = "http://localhost:18080/";
   });
 })();
@@ -913,25 +914,25 @@ $("#import-file-input").addEventListener("change", async (e) => {
 // ─────────────────────────────────────────────────────────────────────────
 // Auth Profile UI (P5.2 ~ P5.9)
 // ─────────────────────────────────────────────────────────────────────────
-// 설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §3 + §4
+// Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §3 + §4
 //
-// 흐름:
-//   1) 페이지 로드 → GET /auth/profiles → 드롭다운 채움 (P5.2)
-//   2) 드롭다운 선택 → 라벨 갱신 + verify 버튼 활성화
+// Flow:
+//   1) Page load → GET /auth/profiles → populate dropdown (P5.2)
+//   2) Dropdown selection → refresh label + enable verify button
 //   3) ↻ verify → POST /auth/profiles/{name}/verify (P5.3)
-//   4) + 새 세션 시드 → 시드 입력 모달 → POST /auth/profiles/seed (P5.4)
-//   5) 시드 진행 모달 → 1초 폴링 → ready/error (P5.5)
-//   6) Start Recording 시 409 (만료) → 만료 모달 → 재시드 prefill (P5.6)
-//   7) 응답 헤더 X-Auth-Machine-Mismatch=1 → 머신 불일치 모달 (P5.7)
-//   8) sessionStorage 경고 (P5.9) — list 응답의 session_storage_warning 표시
+//   4) + Seed new session → seed-input modal → POST /auth/profiles/seed (P5.4)
+//   5) Seed-progress modal → 1s polling → ready/error (P5.5)
+//   6) Start Recording 409 (expired) → expiration modal → re-seed prefill (P5.6)
+//   7) Response header X-Auth-Machine-Mismatch=1 → machine-mismatch modal (P5.7)
+//   8) sessionStorage warning (P5.9) — display the list response's session_storage_warning
 
 async function fetchAuthProfiles() {
   return api("/auth/profiles");
 }
 
 async function fetchAuthProfileDetail(name) {
-  // P2.1 — 만료 모달의 [재시드] 가 verify_service_url / verify_service_text 까지
-  // prefill 할 수 있도록 단일 프로파일 detail 조회.
+  // P2.1 — fetch a single profile detail so the [Re-seed] button on the expiration
+  // modal can prefill verify_service_url / verify_service_text too.
   return api(`/auth/profiles/${encodeURIComponent(name)}`);
 }
 
@@ -959,7 +960,7 @@ const _authState = {
   selected: "",
   lastVerify: null,        // {ok, service_ms, ...}
   pollTimer: null,
-  reseedPrefill: null,     // 재시드 시 입력 폼 prefill 용
+  reseedPrefill: null,     // input form prefill for re-seed
 };
 
 function _formatRelative(iso) {
@@ -967,10 +968,10 @@ function _formatRelative(iso) {
   try {
     const dt = new Date(iso);
     const sec = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
-    if (sec < 60) return `${sec}초 전`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}분 전`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}시간 전`;
-    return `${Math.floor(sec / 86400)}일 전`;
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
   } catch {
     return iso;
   }
@@ -981,18 +982,18 @@ async function loadAuthProfiles() {
   try {
     profiles = await fetchAuthProfiles();
   } catch (e) {
-    console.warn("auth profiles 조회 실패:", e);
+    console.warn("Failed to fetch auth profiles:", e);
     return;
   }
   _authState.profiles = profiles;
   const sel = $("#auth-profile-select");
   const current = _authState.selected;
-  sel.innerHTML = `<option value="">(없음 — 비로그인 녹화)</option>` +
+  sel.innerHTML = `<option value="">(none — record without login)</option>` +
     profiles.map((p) => {
       const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
       return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
     }).join("");
-  // 이전 선택 복원.
+  // Restore previous selection.
   if (current && profiles.some((p) => p.name === current)) {
     sel.value = current;
     _renderAuthStatus();
@@ -1011,21 +1012,21 @@ function _renderAuthStatus() {
   const status = $("#auth-status");
   const verifyBtn = $("#btn-auth-verify");
   if (!p) {
-    status.textContent = "— 프로파일을 선택하거나 새로 시드하세요 —";
+    status.textContent = "— Select a profile or seed a new one —";
     status.className = "auth-status muted";
     verifyBtn.disabled = true;
     return;
   }
   verifyBtn.disabled = false;
-  let txt = `프로파일 "${p.name}" — ${p.service_domain}`;
+  let txt = `Profile "${p.name}" — ${p.service_domain}`;
   if (p.last_verified_at) {
-    txt += ` · ${_formatRelative(p.last_verified_at)} 검증`;
+    txt += ` · verified ${_formatRelative(p.last_verified_at)}`;
   } else {
-    txt += " · 미검증";
+    txt += " · not verified";
   }
-  // P5.9 — sessionStorage 의심 서비스 경고.
+  // P5.9 — warn for services suspected of relying on sessionStorage.
   if (p.session_storage_warning) {
-    txt += " · ⚠ sessionStorage 의존 가능 (재시드 빈도↑)";
+    txt += " · ⚠ may rely on sessionStorage (re-seed more often)";
   }
   if (_authState.lastVerify && _authState.lastVerify.profile === p.name) {
     if (_authState.lastVerify.ok) {
@@ -1041,7 +1042,7 @@ function _renderAuthStatus() {
   status.textContent = txt;
 }
 
-// 드롭다운 선택 변경.
+// Dropdown selection change.
 $("#auth-profile-select").addEventListener("change", (e) => {
   _authState.selected = e.target.value;
   _authState.lastVerify = null;
@@ -1054,12 +1055,12 @@ $("#btn-auth-verify").addEventListener("click", async () => {
   if (!p) return;
   const btn = $("#btn-auth-verify");
   btn.disabled = true;
-  $("#auth-status").textContent = "verify 진행 중...";
+  $("#auth-status").textContent = "verify running...";
   $("#auth-status").className = "auth-status muted";
   try {
     const result = await verifyAuthProfile(p.name);
     _authState.lastVerify = { profile: p.name, ...result };
-    // 카탈로그 last_verified_at 갱신 — 다시 fetch.
+    // Refresh catalog last_verified_at — re-fetch.
     await loadAuthProfiles();
   } catch (err) {
     _authState.lastVerify = { profile: p.name, ok: false, fail_reason: err.message };
@@ -1069,7 +1070,7 @@ $("#btn-auth-verify").addEventListener("click", async () => {
   }
 });
 
-// ── 시드 입력 모달 (P5.4) ────────────────────────────────────────────────
+// ── Seed input modal (P5.4) ─────────────────────────────────────────────────
 function _openSeedDialog(prefill) {
   const dlg = $("#auth-seed-dialog");
   const form = $("#auth-seed-form");
@@ -1087,9 +1088,9 @@ function _openSeedDialog(prefill) {
 
 $("#btn-auth-seed").addEventListener("click", () => _openSeedDialog());
 
-// 취소 버튼은 type="button" — form 의 required 필드가 비어있어도 dialog 를 즉시 닫는다.
-// (type="submit" 은 HTML5 validation 이 submit 자체를 차단해 우리 핸들러 + form
-// method="dialog" close 까지 모두 건너뛴다.)
+// The cancel button is type="button" — it closes the dialog immediately even when
+// required form fields are empty. (type="submit" lets HTML5 validation block submit
+// itself, which would skip both our handler and the form method="dialog" close.)
 $("#btn-auth-seed-cancel-input").addEventListener("click", () => {
   $("#auth-seed-dialog").close();
 });
@@ -1106,13 +1107,13 @@ $("#auth-seed-form").addEventListener("submit", async (e) => {
     naver_probe: fd.get("naver_probe") === "on",
     ttl_hint_hours: parseInt(fd.get("ttl_hint_hours") || "12", 10),
   };
-  // 입력 모달 닫고 진행 모달 오픈 + 시드 시작.
+  // Close the input modal, open the progress modal, and start seeding.
   $("#auth-seed-dialog").close();
-  _authState.reseedPrefill = payload;  // 만료 → 재시드 시 동일 입력 prefill.
+  _authState.reseedPrefill = payload;  // prefill the same inputs on expired → re-seed.
   _startSeedFlow(payload);
 });
 
-// ── 시드 진행 폴링 (P5.5) ────────────────────────────────────────────────
+// ── Seed progress polling (P5.5) ────────────────────────────────────────────
 async function _startSeedFlow(payload) {
   const dlg = $("#auth-seed-progress");
   const status = $("#auth-seed-progress-status");
@@ -1123,13 +1124,13 @@ async function _startSeedFlow(payload) {
   const doneBtn = $("#btn-auth-seed-done");
   const inputDlg = $("#auth-seed-dialog");
   if (inputDlg && inputDlg.open) inputDlg.close();
-  status.textContent = "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요";
-  elapsed.textContent = `경과 0초 / 한도 ${payload.timeout_sec || 600}초`;
-  hint.textContent = "창이 닫히면 세션을 저장하고 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.";
+  status.textContent = "⏳ Waiting for the login window — once you see the logged-in screen, close the open browser window";
+  elapsed.textContent = `elapsed 0s / limit ${payload.timeout_sec || 600}s`;
+  hint.textContent = "When the window closes, we save the session, briefly show the verify target page, then finish.";
   cancelBtn.hidden = false;
   skipBtn.hidden = true;
   doneBtn.hidden = true;
-  cancelBtn.textContent = "취소 (창은 직접 닫으세요)";
+  cancelBtn.textContent = "Cancel (close the window yourself)";
   cancelBtn.dataset.action = "cancel";
   skipBtn.dataset.profile = "";
   doneBtn.dataset.profile = "";
@@ -1139,7 +1140,7 @@ async function _startSeedFlow(payload) {
   try {
     resp = await seedAuthProfileStart(payload);
   } catch (err) {
-    status.textContent = `✗ 시작 실패: ${err.message}`;
+    status.textContent = `✗ Failed to start: ${err.message}`;
     return;
   }
   const seedSid = resp.seed_sid;
@@ -1149,19 +1150,19 @@ async function _startSeedFlow(payload) {
     try {
       poll = await seedAuthProfilePoll(seedSid);
     } catch (err) {
-      console.warn("seed poll 실패:", err);
+      console.warn("seed poll failed:", err);
       return;
     }
     elapsed.textContent =
-      `경과 ${Math.floor(poll.elapsed_sec)}초 / 한도 ${poll.timeout_sec}초`;
+      `elapsed ${Math.floor(poll.elapsed_sec)}s / limit ${poll.timeout_sec}s`;
     if (poll.message) status.textContent = poll.message;
     if (poll.phase === "verifying") {
-      hint.textContent = "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.";
+      hint.textContent = "The verify browser shows the target page slowly, then closes automatically.";
     }
     if (poll.state === "ready") {
       clearInterval(_authState.pollTimer);
-      status.textContent = poll.message || `✓ 시드 완료 — 프로파일 "${poll.profile_name}"`;
-      hint.textContent = "이번 녹화에 사용할지 선택하세요. 사용하지 않아도 프로파일은 목록에 저장됩니다.";
+      status.textContent = poll.message || `✓ Seed complete — profile "${poll.profile_name}"`;
+      hint.textContent = "Choose whether to use it for this recording. Even if you skip, the profile is saved.";
       await loadAuthProfiles();
       cancelBtn.hidden = true;
       skipBtn.hidden = false;
@@ -1171,9 +1172,9 @@ async function _startSeedFlow(payload) {
     } else if (poll.state === "error") {
       clearInterval(_authState.pollTimer);
       const kind = poll.error_kind ? `[${poll.error_kind}] ` : "";
-      status.textContent = poll.message || `✗ 실패 — ${kind}${poll.error}`;
-      hint.textContent = "입력값을 확인한 뒤 다시 시드하세요.";
-      cancelBtn.textContent = "다시 입력";
+      status.textContent = poll.message || `✗ Failed — ${kind}${poll.error}`;
+      hint.textContent = "Check your inputs and seed again.";
+      cancelBtn.textContent = "Re-enter";
       cancelBtn.dataset.action = "retry";
     }
   }, 1000);
@@ -1204,12 +1205,12 @@ $("#btn-auth-seed-done").addEventListener("click", () => {
   $("#auth-seed-progress").close();
 });
 
-// ── 만료 모달 (P5.6) ─────────────────────────────────────────────────────
+// ── Expiration modal (P5.6) ─────────────────────────────────────────────────
 function _showExpiredDialog(name, reason) {
   $("#auth-expired-name").textContent = name || "—";
   $("#auth-expired-reason").textContent = reason
-    ? `원인: ${reason}`
-    : "원인: 세션 만료 또는 IP 변경.";
+    ? `Reason: ${reason}`
+    : "Reason: session expired or IP changed.";
   $("#auth-expired-dialog").showModal();
 }
 
@@ -1219,10 +1220,10 @@ $("#btn-auth-expired-cancel").addEventListener("click", () => {
 
 $("#btn-auth-expired-reseed").addEventListener("click", async () => {
   $("#auth-expired-dialog").close();
-  // P2.1 — prefill 우선순위:
-  //   (1) 방금 brower 세션에서 직접 seed 한 입력값 (_authState.reseedPrefill)
-  //   (2) 카탈로그 detail fetch — 어제 시드한 / 다른 머신에서 가져온 프로파일
-  //   (3) name 만 (최후의 fallback — detail 도 없는 경우)
+  // P2.1 — prefill priority:
+  //   (1) inputs the user just seeded directly in this browser session (_authState.reseedPrefill)
+  //   (2) catalog detail fetch — profiles seeded yesterday or imported from another machine
+  //   (3) name only (last fallback — when no detail is available either)
   if (_authState.reseedPrefill) {
     _openSeedDialog(_authState.reseedPrefill);
     return;
@@ -1236,11 +1237,11 @@ $("#btn-auth-expired-reseed").addEventListener("click", async () => {
   try {
     detail = await fetchAuthProfileDetail(name);
   } catch (e) {
-    console.warn("auth profile detail 조회 실패:", e);
+    console.warn("Failed to fetch auth profile detail:", e);
   }
   if (detail) {
-    // seed_url 은 카탈로그에 저장되지 않아 verify_service_url 의 origin 으로 추정.
-    // 사용자가 모달에서 직접 수정 가능.
+    // seed_url is not stored in the catalog, so we infer it from the verify_service_url origin.
+    // The user can edit it directly in the modal.
     let seedUrlGuess = "";
     try {
       seedUrlGuess = new URL(detail.verify_service_url).origin + "/";
@@ -1260,7 +1261,7 @@ $("#btn-auth-expired-reseed").addEventListener("click", async () => {
   }
 });
 
-// ── 머신 불일치 모달 (P5.7) ──────────────────────────────────────────────
+// ── Machine-mismatch modal (P5.7) ───────────────────────────────────────────
 let _mmRetryFn = null;
 
 function _showMachineMismatchDialog(retryFn) {
@@ -1275,7 +1276,7 @@ $("#btn-mm-cancel").addEventListener("click", () => {
 
 $("#btn-mm-proceed").addEventListener("click", () => {
   $("#auth-machine-mismatch-dialog").close();
-  // 이미 200 으로 응답된 시점이라 재시도 필요 없음 — 사용자 자각만.
+  // Already responded with 200, so no retry needed — this is just user awareness.
 });
 
 $("#btn-mm-reseed").addEventListener("click", () => {
@@ -1283,25 +1284,26 @@ $("#btn-mm-reseed").addEventListener("click", () => {
   _openSeedDialog({ name: _authState.selected });
 });
 
-// ── Start Recording 결과 — 에러 분기 (P5.6/P5.7) ─────────────────────────
-// 기존 #start-form submit 핸들러를 확장. auth_profile 인자 + 응답 분기.
-const _origSubmitListenerNeedsRebind = false; // 가드 — 기존 핸들러 그대로 두고 보강만.
+// ── Start Recording result — error branching (P5.6/P5.7) ────────────────────
+// Extends the existing #start-form submit handler. Adds the auth_profile arg + response branching.
+const _origSubmitListenerNeedsRebind = false; // guard — keep the existing handler, just reinforce.
 
-// 기존 handler 가 이미 등록됐으므로 capture 로 한 번 더 잡아 처리.
+// The original handler is already registered, so attach another one in capture phase.
 $("#start-form").addEventListener("submit", async (e) => {
-  // 기본 핸들러보다 먼저 — capture 단계에서 처리.
-  // 단, 기본 핸들러가 startRecording 호출하므로 여기선 *가로채서* auth_profile 만 추가.
+  // Runs before the default handler — handle in capture phase.
+  // The default handler calls startRecording, so here we *intercept* and only inject auth_profile.
 }, true);
 
-// 기존 handler 를 대체 (auth_profile 통합 + 에러 분기).
+// Replaces the existing handler (auth_profile integration + error branching).
 const _legacyStartFormSubmit = (() => {
-  // 기존 listener 는 그대로 유지하되, 새 listener 가 capture 로 먼저 가로채 e.preventDefault + 직접 처리.
-  // capture listener 안에서 startRecording 호출.
+  // Keep the existing listener but have the new capture listener intercept it first via
+  // e.preventDefault and handle it directly. The capture listener then calls startRecording.
   return null;
 })();
 
-// 깔끔한 처리를 위해 form 의 handler 를 *제거하지 않고* 새 capture handler 가 모두 책임.
-// 단, 첫 submit 시 기본 handler 도 실행돼 중복될 수 있어 초기 등록 시점에 stopImmediatePropagation.
+// To keep this clean we *do not remove* the form's handler — the new capture handler takes
+// full responsibility. To avoid double-submit on the first call, the initial registration
+// uses stopImmediatePropagation.
 $("#start-form").addEventListener("submit", async (e) => {
   if (e._authProfileHandled) return;
   e._authProfileHandled = true;
@@ -1332,16 +1334,16 @@ $("#start-form").addEventListener("submit", async (e) => {
       const reason = err.detail.fail_reason || err.detail.reason;
       _showExpiredDialog(authProfile, reason);
     } else if (err.status === 404 && err.detail?.reason === "profile_not_found") {
-      alert(`인증 프로파일 '${authProfile}' 를 찾을 수 없습니다 — 새로 시드하세요.`);
+      alert(`Auth profile '${authProfile}' not found — seed a new one.`);
     } else {
-      alert("Start 실패: " + err.message);
+      alert("Start failed: " + err.message);
     }
   } finally {
     $("#btn-start").disabled = false;
   }
-}, true);  // capture 로 먼저 처리
+}, true);  // capture so we run first
 
-// 결과 카드의 인증 프로파일 필드 노출 — openSession 안에서 갱신.
+// Show the auth profile field on the result card — refreshed inside openSession.
 async function _renderResultAuthProfile(sid) {
   try {
     const sess = await getSession(sid);
@@ -1350,11 +1352,11 @@ async function _renderResultAuthProfile(sid) {
       el.textContent = sess.auth_profile || "—";
     }
   } catch {
-    // 무시 — 결과 카드 보조 정보일 뿐.
+    // Ignore — auxiliary info on the result card.
   }
 }
 
-// openSession 보강 — 결과 카드 노출 직후 인증 메타 갱신.
+// Augment openSession — refresh the auth meta right after the result card is shown.
 const _origOpenSession = window.openSession;
 if (typeof _origOpenSession === "function") {
   window.openSession = async function patchedOpenSession(sid) {
@@ -1363,7 +1365,7 @@ if (typeof _origOpenSession === "function") {
   };
 }
 
-// ── 시작 ─────────────────────────────────────────────────────────────────────
+// ── Boot ────────────────────────────────────────────────────────────────────
 loadHealth();
 loadSessions();
 loadAuthProfiles();

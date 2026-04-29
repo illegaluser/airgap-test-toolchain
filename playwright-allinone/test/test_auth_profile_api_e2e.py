@@ -312,7 +312,7 @@ class TestAuthProfileApiLifecycle:
         final = _poll_seed_until_done(base, seed_sid)
         assert final["state"] == "ready", f"poll={final}"
         assert final["phase"] == "ready"
-        assert "시드 완료" in final["message"]
+        assert "seed done" in final["message"]
         assert final["profile_name"] == name
 
         # 3. 카탈로그에 등록되었는지.

@@ -1,9 +1,9 @@
-"""R-Plus 엔드포인트 — ``/experimental/sessions/{sid}/...``.
+"""R-Plus endpoints — ``/experimental/sessions/{sid}/...``.
 
-`recording_service.server` 가 ``RPLUS_ENABLED=1`` 일 때만 이 router 를 include
-한다. 핸들러 본체는 R-MVP 시절 `server.py` 에 있던 코드와 동일하지만, hook
-이름 (``_run_replay_impl`` 등) 은 이 모듈로 이전됐으므로 monkeypatch 대상도
-``recording_service.rplus.router`` 로 바뀐다.
+`recording_service.server` only includes this router when ``RPLUS_ENABLED=1``.
+The handler bodies are identical to the code that lived in `server.py` during
+R-MVP, but the hook names (``_run_replay_impl`` etc.) have been moved into this
+module, so monkeypatch targets are now ``recording_service.rplus.router``.
 """
 
 from __future__ import annotations
@@ -26,15 +26,16 @@ router = APIRouter(prefix="/experimental", tags=["rplus"])
 
 
 # ── monkeypatch hook ────────────────────────────────────────────────────────
-# 테스트가 실제 docker exec / Ollama 호출 없이 결정론적 결과를 주입할 수 있도록
-# 분기점을 모듈 레벨 함수로 노출. server.py 에 있던 같은 이름의 hook 들을 이
-# 모듈로 옮긴 것 — 테스트에서는 `recording_service.rplus.router` 를 monkeypatch.
+# Branch points exposed as module-level functions so tests can inject deterministic
+# results without actually calling docker exec / Ollama. These are the same hooks
+# that used to live in server.py — relocated here, so tests now monkeypatch
+# `recording_service.rplus.router` instead.
 
 def _run_enrich_impl(
     *, scenario: list[dict], target_url: str,
     page_title: Optional[str] = None, inventory_block: Optional[str] = None,
 ):
-    """TR.5 monkeypatch hook — 단위 테스트가 Ollama 호출 없이 fake 결과 반환."""
+    """TR.5 monkeypatch hook — unit tests return a fake result without calling Ollama."""
     return enricher.enrich_recording(
         scenario=scenario,
         target_url=target_url,
@@ -46,7 +47,7 @@ def _run_enrich_impl(
 def _run_diff_analysis_impl(
     *, original_py: str, regression_py: str, unified_diff: str,
 ):
-    """항목 4 (UI 개선) monkeypatch hook — 단위 테스트용 분기점."""
+    """Item 4 (UI improvement) monkeypatch hook — branch point for unit tests."""
     return enricher.analyze_codegen_vs_regression(
         original_py=original_py,
         regression_py=regression_py,
@@ -55,12 +56,12 @@ def _run_diff_analysis_impl(
 
 
 def _run_codegen_replay_impl(*, host_session_dir: str):
-    """codegen 원본 ``original.py`` 호스트 실행 hook (monkeypatch 대상)."""
+    """Hook to run the codegen original ``original.py`` on the host (monkeypatch target)."""
     return replay_proxy.run_codegen_replay(host_session_dir=host_session_dir)
 
 
 def _run_llm_play_impl(*, host_session_dir: str, project_root: str):
-    """14-DSL ``scenario.json`` 의 zero_touch_qa executor 실행 hook."""
+    """Hook to run the 14-DSL ``scenario.json`` through the zero_touch_qa executor."""
     return replay_proxy.run_llm_play(
         host_session_dir=host_session_dir,
         project_root=project_root,
@@ -68,54 +69,54 @@ def _run_llm_play_impl(*, host_session_dir: str, project_root: str):
 
 
 def _project_root() -> str:
-    """zero_touch_qa 패키지가 있는 프로젝트 루트 — recording_service 의 부모 디렉토리."""
+    """Project root containing the zero_touch_qa package — recording_service's parent directory."""
     from pathlib import Path
     return str(Path(__file__).resolve().parent.parent.parent)
 
 
 def _registry_lookup(sid: str):
-    """server module 의 in-memory registry 를 lazy 참조한다.
+    """Look up the in-memory registry of the server module lazily.
 
-    R-Plus router 가 server import 를 강결합하지 않도록 함수 내부에서 import.
-    server.py → rplus.router → server 의 순환 import 우회.
+    Imported inside the function so the R-Plus router does not hard-couple to
+    server. Avoids the server.py → rplus.router → server circular import.
     """
     from ..server import _registry
     return _registry.get(sid)
 
 
-# ── 응답/요청 모델 ─────────────────────────────────────────────────────────
+# ── Request / response models ───────────────────────────────────────────────
 
 class EnrichReq(BaseModel):
-    page_title: Optional[str] = Field(None, description="페이지 타이틀 (있으면 컨텍스트 강화)")
+    page_title: Optional[str] = Field(None, description="Page title (when present, strengthens the context)")
     inventory_block: Optional[str] = Field(
         None,
-        description="Phase 1 grounding 인벤토리 마커 블록 (선택). srs_text prepend 패턴과 동일.",
+        description="Phase 1 grounding inventory marker block (optional). Same pattern as srs_text prepend.",
     )
 
 
 class CompareReq(BaseModel):
-    doc_dsl: list[dict] = Field(..., description="비교 대상 doc-DSL (chat 모드 출력 또는 손작성).")
+    doc_dsl: list[dict] = Field(..., description="Doc-DSL to compare against (chat-mode output or hand-written).")
     threshold: float = Field(
         comparator.DEFAULT_FUZZY_THRESHOLD,
-        description="fuzzy 매칭 임계값 (0~1). 기본 0.7.",
+        description="Fuzzy match threshold (0-1). Default 0.7.",
     )
-    doc_label: str = Field("doc-DSL", description="HTML 리포트 컬럼 라벨")
-    rec_label: str = Field("recording-DSL", description="HTML 리포트 컬럼 라벨")
+    doc_label: str = Field("doc-DSL", description="Column label in the HTML report")
+    rec_label: str = Field("recording-DSL", description="Column label in the HTML report")
 
 
-# ── 엔드포인트 ─────────────────────────────────────────────────────────────
+# ── Endpoints ───────────────────────────────────────────────────────────────
 
 def _ensure_session_not_recording(sid: str, kind: str):
-    """공용 가드 — 세션이 존재하고 녹화 중이 아닐 것."""
+    """Shared guard — session must exist and not be recording."""
     sess = _registry_lookup(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     if sess.state == session.STATE_RECORDING:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"녹화 중에는 {kind} 불가 (state={sess.state}). "
-                f"먼저 stop 으로 codegen 을 종료한 뒤 시도하세요."
+                f"{kind} not allowed while recording (state={sess.state}). "
+                f"Stop codegen first, then try again."
             ),
         )
 
@@ -131,20 +132,19 @@ def _play_response(sid: str, result) -> dict:
 
 
 def _is_imported_session(sid: str) -> bool:
-    """metadata 의 ``imported_filename`` 필드로 사용자 업로드 세션 판별."""
+    """Detect a user-uploaded session via the metadata's ``imported_filename`` field."""
     meta = storage.load_metadata(sid) or {}
     return bool(meta.get("imported_filename"))
 
 
 def _annotate_for_session(sid: str) -> dict:
-    """play-codegen 진입 직전 자동 호출용 — annotate 결과 dict 반환.
+    """Helper called automatically right before play-codegen — returns the annotate result dict.
 
-    실패는 silent (annotation 없이도 codegen 원본 그대로 실행 가능). 호출자가
-    응답에 합쳐 사용자에게 노출.
+    Failures are silent (codegen original can run as is without annotation). The caller
+    merges the result into the response so it surfaces to the user.
 
-    **Imported 세션 (사용자 .py 업로드) 은 annotate 스킵** — 사용자의 의도된
-    스크립트를 휴리스틱이 변형하는 부수 효과 차단. stale `original_annotated.py`
-    존재 시 제거.
+    **Imported sessions (user .py uploads) skip annotate** — heuristics must not
+    mutate the user's intended script. Removes any stale `original_annotated.py`.
     """
     from .. import annotator
     host_dir = storage.session_dir(sid)
@@ -153,7 +153,7 @@ def _annotate_for_session(sid: str) -> dict:
         return {"injected": 0, "examined_clicks": 0, "triggers": [], "skipped": "no original.py"}
     dst = host_dir / "original_annotated.py"
     if _is_imported_session(sid):
-        # 업로드 스크립트는 그대로 실행 — stale annotated 제거
+        # Run the uploaded script as is — clear any stale annotated copy
         if dst.is_file():
             try:
                 dst.unlink()
@@ -163,7 +163,7 @@ def _annotate_for_session(sid: str) -> dict:
             "injected": 0,
             "examined_clicks": 0,
             "triggers": [],
-            "skipped": "imported script — annotator 우회 (사용자 의도 보존)",
+            "skipped": "imported script — annotator bypassed (preserve user intent)",
         }
     try:
         r = annotator.annotate_script(str(src), str(dst))
@@ -179,27 +179,28 @@ def _annotate_for_session(sid: str) -> dict:
 
 @router.post("/sessions/{sid}/play-codegen", status_code=201)
 def play_codegen(sid: str) -> dict:
-    """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (TR.7, headed).
+    """Run the codegen original ``original.py`` directly on the host (TR.7, headed).
 
-    실행 직전 자동으로 annotate 를 수행해 hover-needing click 앞에 hover 라인을
-    주입한 ``original_annotated.py`` 를 만들고 그것을 우선 실행 (prefer_annotated).
-    Annotate 결과 (injected 수 + trigger 목록) 도 응답에 함께 노출.
+    Right before running, automatically annotate to inject hover lines before
+    hover-needing clicks, producing ``original_annotated.py`` and preferring it
+    (prefer_annotated). The annotate result (injected count + trigger list) is
+    surfaced in the response too.
     """
     _ensure_session_not_recording(sid, "play-codegen")
     host_dir = str(storage.session_dir(sid))
 
-    # (β) annotate 자동 — 정적 휴리스틱으로 hover 주입.
+    # (β) auto annotate — static heuristic injects hover.
     annotate_summary = _annotate_for_session(sid)
 
     try:
         result = _run_codegen_replay_impl(host_session_dir=host_dir)
     except ReplayAuthExpiredError as e:
-        # post-review fix — auth-profile 만료/미존재는 502 가 아니라 409 +
-        # 구조화된 detail 로 반환. UI 가 만료 모달 + [재시드] 분기로 가도록.
+        # Post-review fix — auth-profile expired/missing returns 409 with a structured
+        # detail (not 502), so the UI can branch into the expiration modal + [Re-seed].
         log.warning("[/experimental/play-codegen] %s — auth expired: %s", sid, e)
-        # ``e.detail`` 에 ``reason`` 키가 있을 수 있어 spread 순서가 중요.
-        # router 의 ``reason="profile_expired"`` 가 inner detail 의 reason
-        # (예: ``verify_failed``) 에 덮이지 않도록 우리 키를 뒤에 둔다.
+        # ``e.detail`` may already include a ``reason`` key, so the spread order matters.
+        # Put our key last so ``reason="profile_expired"`` is not overwritten by an
+        # inner detail's reason (e.g. ``verify_failed``).
         raise HTTPException(
             status_code=409,
             detail={
@@ -222,12 +223,12 @@ def play_codegen(sid: str) -> dict:
 
 @router.post("/sessions/{sid}/play-llm", status_code=201)
 def play_llm(sid: str) -> dict:
-    """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행 (headed).
+    """Run the converted 14-DSL ``scenario.json`` through the zero_touch_qa executor (headed).
 
-    healing 3-stage / fallback_targets / verify / mock_status / mock_data 등
-    14-DSL 의 풀 기능 동작 + 화면에 재생. codegen 원본보다 selector 변동에
-    강함 (LocalHealer + Dify LLM 치유) — 단, scenario.json 이 변환된 상태여야
-    하므로 state=done 필수.
+    Full 14-DSL functionality (3-stage healing / fallback_targets / verify /
+    mock_status / mock_data, etc.) plus headed playback. More robust against
+    selector drift than the codegen original (LocalHealer + Dify LLM healing) —
+    but requires a converted scenario.json, so state=done is mandatory.
     """
     _ensure_session_not_recording(sid, "play-llm")
     sess = _registry_lookup(sid)
@@ -235,8 +236,8 @@ def play_llm(sid: str) -> dict:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"play-llm 은 변환 완료(state=done) 세션만 가능합니다. "
-                f"현재 state={sess.state}"
+                f"play-llm requires a converted (state=done) session. "
+                f"current state={sess.state}"
             ),
         )
     host_dir = str(storage.session_dir(sid))
@@ -246,12 +247,12 @@ def play_llm(sid: str) -> dict:
             project_root=_project_root(),
         )
     except ReplayAuthExpiredError as e:
-        # post-review fix — auth-profile 만료/미존재 → 409 + 구조화 detail.
-        # UI 가 만료 모달 + [재시드] 분기로 갈 수 있게.
+        # Post-review fix — auth-profile expired/missing → 409 with structured detail.
+        # Lets the UI branch into the expiration modal + [Re-seed].
         log.warning("[/experimental/play-llm] %s — auth expired: %s", sid, e)
-        # ``e.detail`` 에 ``reason`` 키가 있을 수 있어 spread 순서가 중요.
-        # router 의 ``reason="profile_expired"`` 가 inner detail 의 reason
-        # (예: ``verify_failed``) 에 덮이지 않도록 우리 키를 뒤에 둔다.
+        # ``e.detail`` may already include a ``reason`` key, so the spread order matters.
+        # Put our key last so ``reason="profile_expired"`` is not overwritten by an
+        # inner detail's reason (e.g. ``verify_failed``).
         raise HTTPException(
             status_code=409,
             detail={
@@ -272,21 +273,21 @@ def play_llm(sid: str) -> dict:
 
 @router.post("/sessions/{sid}/enrich", status_code=201)
 def enrich_session(sid: str, req: EnrichReq) -> dict:
-    """녹화된 시나리오를 IEEE 829-lite Markdown 으로 역추정 (TR.5 R-Plus)."""
+    """Back-infer the recorded scenario into IEEE 829-lite Markdown (TR.5 R-Plus)."""
     sess = _registry_lookup(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     if sess.state != session.STATE_DONE:
         raise HTTPException(
             status_code=409,
-            detail=f"역추정은 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
+            detail=f"back-inference requires a converted (state=done) session. current state={sess.state}",
         )
 
     scenario = storage.load_scenario(sid)
     if not scenario:
         raise HTTPException(
             status_code=409,
-            detail=f"세션 {sid} 의 scenario.json 이 비어있거나 누락됨.",
+            detail=f"session {sid} scenario.json is empty or missing.",
         )
 
     try:
@@ -320,24 +321,24 @@ def enrich_session(sid: str, req: EnrichReq) -> dict:
 
 @router.post("/sessions/{sid}/compare", status_code=201)
 def compare_session(sid: str, req: CompareReq) -> dict:
-    """녹화된 14-DSL 과 사용자가 제공한 doc-DSL 을 5분류로 비교 (TR.6 R-Plus)."""
+    """Compare the recorded 14-DSL with the user-supplied doc-DSL across 5 categories (TR.6 R-Plus)."""
     sess = _registry_lookup(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     if sess.state != session.STATE_DONE:
         raise HTTPException(
             status_code=409,
-            detail=f"비교는 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
+            detail=f"compare requires a converted (state=done) session. current state={sess.state}",
         )
     if not req.doc_dsl:
-        raise HTTPException(status_code=400, detail="doc_dsl 이 비어있습니다.")
+        raise HTTPException(status_code=400, detail="doc_dsl is empty.")
 
     rec_dsl = storage.load_scenario(sid)
     if not rec_dsl:
-        raise HTTPException(status_code=409, detail=f"세션 {sid} 의 scenario.json 이 누락됨.")
+        raise HTTPException(status_code=409, detail=f"session {sid} scenario.json is missing.")
 
     if not (0.0 <= req.threshold <= 1.0):
-        raise HTTPException(status_code=400, detail="threshold 는 0.0~1.0 범위.")
+        raise HTTPException(status_code=400, detail="threshold must be in 0.0-1.0.")
 
     result = comparator.compare(req.doc_dsl, rec_dsl, threshold=req.threshold)
     html = comparator.render_html(result, doc_label=req.doc_label, rec_label=req.rec_label)
@@ -362,27 +363,28 @@ def compare_session(sid: str, req: CompareReq) -> dict:
 
 @router.get("/sessions/{sid}/comparison.html", response_class=FileResponse, include_in_schema=False)
 def get_comparison_html(sid: str) -> FileResponse:
-    """compare 결과 HTML 리포트를 직접 서빙 (UI 의 새 탭 진입 용)."""
+    """Serve the compare result HTML report directly (for the UI's new-tab entry)."""
     p = storage.session_dir(sid) / "doc_comparison.html"
     if not p.is_file():
-        raise HTTPException(status_code=404, detail="비교 리포트 미생성")
+        raise HTTPException(status_code=404, detail="comparison report not generated")
     return FileResponse(str(p), media_type="text/html")
 
 
-# ── 항목 4 — codegen 원본 ↔ LLM healed regression 비교 ────────────────────
+# ── Item 4 — codegen original ↔ LLM healed regression diff ──────────────────
 
 @router.get("/sessions/{sid}/diff-codegen-vs-llm", include_in_schema=False)
 def get_diff_codegen_vs_llm(sid: str) -> dict:
-    """codegen ``original.py`` 와 LLM healed ``regression_test.py`` 를 비교.
+    """Compare codegen ``original.py`` with the LLM-healed ``regression_test.py``.
 
-    사용자 흐름: Play with LLM 후 자동 생성된 regression_test.py 를 원본과
-    diff 로 비교 → 의도 일치 확인 → 다운로드 → 회귀 슈트로 채택.
+    User flow: after Play with LLM, diff the auto-generated regression_test.py
+    against the original → verify intent matches → download → adopt into the
+    regression suite.
 
     Response:
         - left_path / right_path / left_content / right_content
-        - unified_diff: difflib.unified_diff 결과 텍스트
+        - unified_diff: difflib.unified_diff result text
         - left_exists / right_exists
-        - 양쪽 파일 모두 없으면 404.
+        - 404 if neither file exists.
     """
     import difflib
 
@@ -393,7 +395,7 @@ def get_diff_codegen_vs_llm(sid: str) -> dict:
     if not left_exists and not right_exists:
         raise HTTPException(
             status_code=404,
-            detail="original.py / regression_test.py 둘 다 없음",
+            detail="neither original.py nor regression_test.py exists",
         )
     left_content = left_p.read_text(encoding="utf-8") if left_exists else ""
     right_content = right_p.read_text(encoding="utf-8") if right_exists else ""
@@ -417,13 +419,14 @@ def get_diff_codegen_vs_llm(sid: str) -> dict:
 
 @router.post("/sessions/{sid}/diff-analysis", include_in_schema=False)
 def post_diff_analysis(sid: str) -> dict:
-    """codegen 원본 ↔ regression_test.py 차이를 LLM (Ollama) 으로 의미 분석.
+    """Use the LLM (Ollama) to semantically analyze the codegen original ↔ regression_test.py diff.
 
-    1차원 unified diff 보다 사용자에게 유용한 정보 (selector swap 의도 추정 /
-    위험 평가 / 회귀 채택 권고) 를 제공. 분석 결과는 markdown 으로 반환.
+    Provides information more useful than a one-dimensional unified diff
+    (inferred selector swap intent / risk assessment / regression-adoption
+    recommendation). Returns markdown.
 
-    POST 인 이유: Ollama 호출이 부수효과 (수십 초 시간/비용) 를 가짐 — GET
-    캐싱 의미론과 충돌.
+    POST because the Ollama call has side effects (tens of seconds of time/cost) —
+    inconsistent with GET caching semantics.
     """
     import difflib
 
@@ -432,7 +435,7 @@ def post_diff_analysis(sid: str) -> dict:
     if not right_p.is_file():
         raise HTTPException(
             status_code=404,
-            detail="regression_test.py 없음 — Play with LLM 미실행",
+            detail="regression_test.py missing — Play with LLM has not run",
         )
     left_content = left_p.read_text(encoding="utf-8") if left_p.is_file() else ""
     right_content = right_p.read_text(encoding="utf-8")
@@ -452,7 +455,7 @@ def post_diff_analysis(sid: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
-            detail=f"LLM 분석 호출 실패: {e}",
+            detail=f"LLM analysis call failed: {e}",
         ) from e
     log.info(
         "[/experimental/diff-analysis] %s — model=%s elapsed=%.0fms",

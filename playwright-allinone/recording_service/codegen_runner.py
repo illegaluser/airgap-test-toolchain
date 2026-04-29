@@ -1,15 +1,15 @@
-"""Playwright codegen subprocess 래퍼 (Phase R-MVP TR.2).
+"""Wrapper around the Playwright codegen subprocess (Phase R-MVP TR.2).
 
-설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"TR.2"
+Design: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"TR.2"
 
-책임 범위:
-- subprocess.Popen 으로 codegen 시작 + 핸들 추적
-- SIGTERM (유예) → SIGKILL 종료 흐름
-- 시간 한도 검사 (`is_timed_out` / `terminate_if_timed_out`)
-- 출력 파일 크기 검증 (0 = 액션 미녹화)
-- 명확한 에러 메시지 (playwright 미설치 / target_url 도달 불가)
+Responsibilities:
+- Start codegen via subprocess.Popen and track the handle
+- SIGTERM (with grace) → SIGKILL termination flow
+- Time-limit checks (`is_timed_out` / `terminate_if_timed_out`)
+- Output-file size verification (0 = no actions recorded)
+- Clear error messages (playwright not installed / target_url unreachable)
 
-이 모듈은 호스트 측만 사용. 컨테이너 안에서는 실행되지 않는다.
+This module is host-only. It does not run inside the container.
 """
 
 from __future__ import annotations
@@ -27,13 +27,13 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 
-# 환경변수로 override 가능한 codegen 한도. 기본 30분.
+# Codegen time limit, overridable via env var. Default 30 minutes.
 DEFAULT_TIMEOUT_SEC = int(os.environ.get("RECORDING_CODEGEN_TIMEOUT_SEC", "1800"))
 
 
 @dataclass
 class CodegenHandle:
-    """실행 중인 codegen subprocess 의 추적 핸들."""
+    """Tracking handle for a running codegen subprocess."""
 
     pid: int
     started_at: float
@@ -41,7 +41,7 @@ class CodegenHandle:
     process: subprocess.Popen
     timeout_sec: int = DEFAULT_TIMEOUT_SEC
     target_url: str = ""
-    # stop_codegen 후 기록되는 결과
+    # Result recorded after stop_codegen
     returncode: Optional[int] = None
     stdout: str = ""
     stderr: str = ""
@@ -53,11 +53,11 @@ class CodegenHandle:
 
 
 class CodegenError(RuntimeError):
-    """codegen 시작/종료 단계의 명시적 에러."""
+    """Explicit error for the codegen start/stop stages."""
 
 
 def is_codegen_available() -> bool:
-    """`playwright` 실행 파일이 PATH 에 있는지."""
+    """Whether the `playwright` executable is on PATH."""
     return shutil.which("playwright") is not None
 
 
@@ -68,19 +68,19 @@ def start_codegen(
     timeout_sec: int = DEFAULT_TIMEOUT_SEC,
     extra_args: Optional[list[str]] = None,
 ) -> CodegenHandle:
-    """playwright codegen 시작.
+    """Start playwright codegen.
 
     Raises:
-        CodegenError: playwright 실행 파일 없음 또는 subprocess 실행 실패
+        CodegenError: playwright executable missing or subprocess launch failed
     """
     if not is_codegen_available():
         raise CodegenError(
-            "playwright 실행 파일을 찾을 수 없습니다. "
-            "호스트 venv 의 PATH 또는 mac-agent-setup.sh 의 REQ_PKGS 를 확인하세요."
+            "playwright executable not found. "
+            "Check the host venv PATH or REQ_PKGS in mac-agent-setup.sh."
         )
 
     if not target_url or not isinstance(target_url, str):
-        raise CodegenError(f"target_url 이 유효하지 않습니다: {target_url!r}")
+        raise CodegenError(f"target_url is invalid: {target_url!r}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -93,7 +93,7 @@ def start_codegen(
     if extra_args:
         cmd.extend(extra_args)
 
-    log.info("[codegen] 시작: %s", " ".join(cmd))
+    log.info("[codegen] start: %s", " ".join(cmd))
     try:
         proc = subprocess.Popen(
             cmd,
@@ -102,7 +102,7 @@ def start_codegen(
             start_new_session=True,
         )
     except OSError as e:
-        raise CodegenError(f"codegen subprocess 실행 실패: {e}") from e
+        raise CodegenError(f"failed to launch codegen subprocess: {e}") from e
 
     return CodegenHandle(
         pid=proc.pid,
@@ -115,7 +115,7 @@ def start_codegen(
 
 
 def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-    """Process group 에 신호. group 권한 없거나 이미 죽었으면 단일 PID fallback."""
+    """Signal the process group. Falls back to single PID if no group permission or already dead."""
     try:
         os.killpg(os.getpgid(proc.pid), sig)
     except (ProcessLookupError, PermissionError):
@@ -126,7 +126,7 @@ def _signal_group(proc: subprocess.Popen, sig: int) -> None:
 
 
 def _close_pipes(proc: subprocess.Popen) -> None:
-    """stdout/stderr pipe 를 닫는다. 자식이 잡고 있던 FD 의 EOF 를 기다리지 않는다."""
+    """Close stdout/stderr pipes. Avoids waiting for EOF on FDs the child still holds."""
     for p in (proc.stdout, proc.stderr):
         if p is None:
             continue
@@ -137,36 +137,36 @@ def _close_pipes(proc: subprocess.Popen) -> None:
 
 
 def _terminate_proc(proc: subprocess.Popen, grace_sec: float) -> None:
-    """SIGTERM → 유예 → SIGKILL. process group 단위 (자식 Chromium 포함)."""
+    """SIGTERM → grace → SIGKILL. Per process group (covers child Chromium)."""
     _signal_group(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=grace_sec)
         return
     except subprocess.TimeoutExpired:
-        log.warning("[codegen] SIGKILL (유예 %.1fs 초과)", grace_sec)
+        log.warning("[codegen] SIGKILL (grace of %.1fs exceeded)", grace_sec)
     _signal_group(proc, signal.SIGKILL)
     try:
         proc.wait(timeout=2.0)
     except subprocess.TimeoutExpired:
-        log.error("[codegen] SIGKILL 후에도 종료되지 않음 — handle 만 닫음")
+        log.error("[codegen] still not exited after SIGKILL — closing handle only")
 
 
 def stop_codegen(handle: CodegenHandle, *, grace_sec: float = 5.0) -> CodegenHandle:
-    """SIGTERM → 유예 후 SIGKILL. handle 에 결과 기록 후 그대로 반환.
+    """SIGTERM → grace → SIGKILL. Records the result on the handle and returns it.
 
-    이미 종료된 프로세스에는 신호를 안 보내고 즉시 returncode 만 회수.
+    For already-exited processes, skip the signal and just collect returncode.
 
-    Process group 단위로 신호 전송: Playwright codegen 의 자식 Chromium 까지
-    포함해 한 번에 종료. 자식이 stdout/stderr pipe 를 잡고 있으면 EOF 가
-    오지 않아 _read_pipe 가 영구 블록되는 것을 방지.
+    Signals are sent per process group, so child Chromium is killed alongside
+    Playwright codegen in one shot. This also prevents _read_pipe from blocking
+    forever when a child holds the stdout/stderr pipes open and EOF never arrives.
     """
     proc = handle.process
     if proc.poll() is None:
         log.info("[codegen] SIGTERM PID=%d (elapsed=%.1fs)", proc.pid, handle.elapsed_sec())
         _terminate_proc(proc, grace_sec)
 
-    # pipe read 는 자식 Chromium 들이 FD 를 안 닫으면 무기한 블록된다.
-    # handle.stdout/stderr 는 어디서도 사용되지 않으므로 그냥 닫고 빈 값으로 둔다.
+    # Reading the pipes blocks forever if child Chromiums never close the FDs.
+    # handle.stdout/stderr are unused anywhere, so we close them and leave empty.
     _close_pipes(proc)
     handle.stdout = ""
     handle.stderr = ""
@@ -183,10 +183,10 @@ def is_timed_out(handle: CodegenHandle) -> bool:
 
 
 def terminate_if_timed_out(handle: CodegenHandle) -> bool:
-    """timeout 초과 시 SIGTERM 보내고 True 반환. 아니면 False."""
+    """If past the timeout, send SIGTERM and return True. Otherwise False."""
     if is_running(handle) and is_timed_out(handle):
         log.warning(
-            "[codegen] timeout %ds 초과 — 강제 종료 (PID=%d)",
+            "[codegen] timeout %ds exceeded — forced termination (PID=%d)",
             handle.timeout_sec, handle.pid,
         )
         handle.timed_out = True
@@ -196,7 +196,7 @@ def terminate_if_timed_out(handle: CodegenHandle) -> bool:
 
 
 def output_size_bytes(handle: CodegenHandle) -> int:
-    """codegen 출력 파일 크기. 0 = 액션 미녹화."""
+    """Codegen output file size. 0 = no actions recorded."""
     try:
         return handle.output_path.stat().st_size
     except OSError:

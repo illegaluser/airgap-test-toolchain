@@ -1,18 +1,19 @@
-"""컨테이너 CLI 위임 변환 (Phase R-MVP TR.3).
+"""Container-CLI delegated conversion (Phase R-MVP TR.3).
 
-설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"T0.3" / §"TR.3"
+Design: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"T0.3" / §"TR.3"
 
-호스트 측은 converter.py 를 import 하지 않는다. 변환은 컨테이너 CLI 에 위임:
+The host side does not import converter.py. Conversion is delegated to the
+container CLI:
 
     docker exec -e ARTIFACTS_DIR=<container_session_dir> <container_name> \
         python -m zero_touch_qa --mode convert --convert-only \
         --file <container_session_dir>/original.py
 
-성공 조건: exit 0 + 같은 디렉토리에 scenario.json 생성됨.
-실패 시 stderr 그대로 호출자에게 전달.
+Success: exit 0 + scenario.json appears in the same directory.
+Failure: stderr is passed through to the caller.
 
-라이브 동작은 build.sh 의 docker run 에 호스트 recordings 디렉토리 bind mount
-추가 후 (TR.8). TR.3 단계는 단위 테스트로 흐름만 검증.
+Live operation needs the host recordings directory to be bind-mounted into
+docker run in build.sh (TR.8). At the TR.3 stage we just unit-test the flow.
 """
 
 from __future__ import annotations
@@ -36,12 +37,12 @@ DEFAULT_DOCKER_EXEC_TIMEOUT_SEC = int(
 
 
 class ConverterProxyError(RuntimeError):
-    """변환 단계의 명시적 에러."""
+    """Explicit error for the conversion stage."""
 
 
 @dataclass
 class ConvertResult:
-    """docker exec 실행 결과 + scenario.json 존재 여부."""
+    """docker exec run result + whether scenario.json exists."""
 
     returncode: int
     stdout: str
@@ -62,22 +63,23 @@ def run_convert(
     timeout_sec: int = DEFAULT_DOCKER_EXEC_TIMEOUT_SEC,
     host_scenario_path: Optional[str] = None,
 ) -> ConvertResult:
-    """docker exec 로 컨테이너 측 변환 실행.
+    """Run the container-side conversion via docker exec.
 
     Args:
-        container_name: docker 컨테이너 이름 (build.sh CONTAINER_NAME 과 일치)
-        container_session_dir: 컨테이너 시점의 세션 디렉토리 (예 `/data/recordings/<id>`).
-            ARTIFACTS_DIR + --file 양쪽에 사용된다.
-        timeout_sec: docker exec 단일 호출 timeout.
-        host_scenario_path: 검증 시 사용. 컨테이너가 ARTIFACTS_DIR 에 쓴
-            scenario.json 의 호스트 측 경로. 마운트가 정상이면 동일 파일.
+        container_name: docker container name (matches build.sh CONTAINER_NAME)
+        container_session_dir: session directory as seen from inside the container
+            (e.g. `/data/recordings/<id>`). Used for both ARTIFACTS_DIR and --file.
+        timeout_sec: timeout for a single docker exec call.
+        host_scenario_path: used for verification. The host-side path to the
+            scenario.json the container wrote into ARTIFACTS_DIR. With a healthy
+            mount, this is the same file.
 
     Raises:
-        ConverterProxyError: docker 미설치 / timeout
+        ConverterProxyError: docker missing / timeout
     """
     if not is_docker_available():
         raise ConverterProxyError(
-            "docker 실행 파일을 찾을 수 없습니다. 호스트 PATH 를 확인하세요."
+            "docker executable not found. Check the host PATH."
         )
 
     cmd = [
@@ -103,10 +105,10 @@ def run_convert(
     except subprocess.TimeoutExpired as e:
         elapsed = (time.time() - started) * 1000
         raise ConverterProxyError(
-            f"docker exec 변환이 {timeout_sec}s 안에 끝나지 않았습니다 (elapsed={elapsed:.0f}ms)."
+            f"docker exec conversion did not finish within {timeout_sec}s (elapsed={elapsed:.0f}ms)."
         ) from e
     except FileNotFoundError as e:
-        raise ConverterProxyError(f"docker 호출 실패: {e}") from e
+        raise ConverterProxyError(f"docker invocation failed: {e}") from e
 
     elapsed_ms = (time.time() - started) * 1000
     stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""

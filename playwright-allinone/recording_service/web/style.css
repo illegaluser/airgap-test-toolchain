@@ -113,7 +113,7 @@ button[data-act="open"] { background: #fff; color: var(--accent); }
 
 .plus-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
-/* 항목 (import-script) — 시작 폼의 두 버튼 가로 배치 */
+/* import-script item — lay out the two start-form buttons side by side */
 .form-actions { display: flex; gap: 10px; flex-wrap: wrap; align-self: flex-start; }
 #btn-import-script {
   background: #fff;
@@ -157,7 +157,7 @@ code {
 
 .muted { color: var(--muted); }
 
-/* ── 클립보드 복사 (항목 2) ─────────────────────────────────────────── */
+/* ── Clipboard copy (item 2) ───────────────────────────────────────── */
 .copy-btn {
   font-size: 0.85em;
   padding: 2px 8px;
@@ -247,7 +247,7 @@ footer {
   font-size: 0.85rem;
 }
 
-/* Compare 모달 */
+/* Compare modal */
 dialog {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -278,13 +278,13 @@ dialog textarea {
   color: #fff;
 }
 
-/* 항목 3 — R-Plus dropdown 그룹 (hover-open + click-stick) */
+/* Item 3 — R-Plus dropdown group (hover-open + click-stick) */
 .dropdown-group {
   position: relative;
   display: inline-block;
 }
 .dropdown-toggle {
-  /* Inherits global button style. caret 는 inline. */
+  /* Inherits global button style. The caret is inline. */
 }
 .dropdown-toggle .caret {
   display: inline-block;
@@ -331,7 +331,7 @@ dialog textarea {
   border-color: #004d99;
 }
 
-/* P3 (항목 7) — 세션 목록 검색/필터 */
+/* P3 (item 7) — session list search / filter */
 .session-filters {
   display: flex;
   gap: 8px;
@@ -350,7 +350,7 @@ dialog textarea {
   min-width: 140px;
 }
 
-/* 항목 4 — LLM 분석 출력 */
+/* Item 4 — LLM analysis output */
 .analysis-output {
   background: #fafafa;
   border: 1px solid var(--border);
@@ -416,7 +416,7 @@ dialog textarea {
   font-size: 0.88rem;
 }
 
-/* 항목 4 — codegen ↔ LLM healed regression diff */
+/* Item 4 — codegen ↔ LLM healed regression diff */
 .diff-pre {
   background: #fafafa;
   border: 1px solid var(--border);
@@ -435,7 +435,7 @@ dialog textarea {
 .diff-pre .diff-del  { color: #c92a2a; background: #ffe6e6; display: block; padding: 0 4px; }
 .diff-pre .diff-ctx  { color: #1d1d1f; display: block; padding: 0 4px; }
 
-/* P2 (항목 6) — Play 진행 로그 스트리밍 */
+/* P2 (item 6) — Play progress log streaming */
 .play-progress {
   background: #1d1d1f;
   color: #e8e8ea;
@@ -457,7 +457,7 @@ dialog textarea {
   padding: 6px 0;
 }
 
-/* TR.4+.1/.2 — 결과 카드 헤더의 다운로드 링크 */
+/* TR.4+.1/.2 — download link in the result card header */
 .dl-link {
   font-size: 0.75rem;
   font-weight: normal;
@@ -468,7 +468,7 @@ dialog textarea {
 }
 .dl-link:hover { text-decoration: underline; }
 
-/* ── P1 (항목 5) — Run-log 시각화 ─────────────────────────────────────── */
+/* ── P1 (item 5) — Run-log visualization ─────────────────────────────── */
 .run-log-table {
   width: 100%;
   border-collapse: collapse;
@@ -484,7 +484,7 @@ dialog textarea {
 .run-log-table .step-action { width: 80px; }
 .run-log-table .step-target { max-width: 320px; word-break: break-all; }
 
-/* status pill — run-log 행의 상태 (executor 의 PASS/FAIL/HEALED) */
+/* status pill — run-log row state (executor PASS/FAIL/HEALED) */
 .status-pass    { background: #d4edda; color: var(--ok); }
 .status-healed  { background: #fff3cd; color: #856404; }
 .status-fail    { background: #f8d7da; color: var(--err); }
@@ -514,7 +514,7 @@ dialog textarea {
 }
 .shot-link:hover, .copy-step-btn:hover { background: #f0f0f2; }
 
-/* 스크린샷 모달 (P1) */
+/* Screenshot modal (P1) */
 .shot-dialog {
   border: none;
   border-radius: 8px;
@@ -599,7 +599,7 @@ dialog textarea {
   color: var(--err);
 }
 
-/* 인증 모달 공통 (시드 입력 / 시드 진행 / 만료 / 머신 불일치) */
+/* Auth modal common (seed input / seed progress / expired / machine mismatch) */
 .auth-dialog {
   border: none;
   border-radius: 8px;

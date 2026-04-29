@@ -396,10 +396,10 @@ class TestSeedDialog:
     def test_progress_dialog_explains_close_and_confirm(self, page: Page):
         """진행 모달은 창 닫기 완료 조건과 최종 확인 버튼을 제공한다."""
         progress = page.locator("#auth-seed-progress")
-        assert "브라우저 창을 닫으세요" in (progress.text_content() or "")
-        assert "검증 대상 페이지" in (page.locator("#auth-seed-progress-hint").text_content() or "")
+        assert "close the open browser window" in (progress.text_content() or "")
+        assert "save the session" in (page.locator("#auth-seed-progress-hint").text_content() or "")
         cancel = page.locator("#btn-auth-seed-cancel")
-        assert "취소" in (cancel.text_content() or "")
+        assert "Cancel" in (cancel.text_content() or "")
         assert cancel.evaluate("el => getComputedStyle(el).color") != "rgb(255, 255, 255)"
         assert page.locator("#btn-auth-seed-skip").get_attribute("hidden") is not None
         assert page.locator("#btn-auth-seed-done").get_attribute("hidden") is not None

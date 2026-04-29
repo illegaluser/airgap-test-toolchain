@@ -1,7 +1,8 @@
-"""세션 ID·상태 관리 (Phase R-MVP TR.1).
+"""Session ID / state management (Phase R-MVP TR.1).
 
-세션은 메모리 + 영속화 디렉토리 (storage.py) 에 동시 존재한다. 본 모듈은
-in-memory 레지스트리만 담당. 영속화는 storage.py 위임.
+A session lives both in memory and in a persistence directory (storage.py).
+This module owns only the in-memory registry; persistence is delegated to
+storage.py.
 """
 
 from __future__ import annotations
@@ -13,17 +14,17 @@ from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 
-# 세션 상태 머신
-STATE_PENDING = "pending"            # /start 직후, codegen 시작 전
-STATE_RECORDING = "recording"        # codegen subprocess 실행 중
-STATE_CONVERTING = "converting"      # docker exec --convert-only 진행 중
-STATE_DONE = "done"                  # scenario.json 저장 완료
-STATE_ERROR = "error"                # 어느 단계든 실패
+# Session state machine
+STATE_PENDING = "pending"            # Right after /start, before codegen begins
+STATE_RECORDING = "recording"        # codegen subprocess is running
+STATE_CONVERTING = "converting"      # docker exec --convert-only is in progress
+STATE_DONE = "done"                  # scenario.json has been saved
+STATE_ERROR = "error"                # Failure at any stage
 
 
 @dataclass
 class Session:
-    """단일 녹화 세션."""
+    """A single recording session."""
 
     id: str
     target_url: str
@@ -39,7 +40,7 @@ class Session:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        # 클라이언트 친화 ISO 시간 추가
+        # Add client-friendly ISO timestamps
         d["created_at_iso"] = _iso(self.created_at)
         d["started_at_iso"] = _iso(self.started_at)
         d["ended_at_iso"] = _iso(self.ended_at)
@@ -53,10 +54,10 @@ def _iso(ts: Optional[float]) -> Optional[str]:
 
 
 class SessionRegistry:
-    """프로세스-로컬 세션 저장소. thread-safe.
+    """Process-local session store. Thread-safe.
 
-    multi-worker uvicorn 환경에서는 각 worker 가 자기 레지스트리를 가지므로
-    R-MVP 단계는 단일 worker (`--workers 1`) 가정.
+    Under a multi-worker uvicorn each worker has its own registry, so
+    R-MVP assumes a single worker (`--workers 1`).
     """
 
     def __init__(self) -> None:
@@ -103,6 +104,6 @@ class SessionRegistry:
             return self._sessions.pop(sid, None) is not None
 
     def clear(self) -> None:
-        """테스트용."""
+        """For tests."""
         with self._lock:
             self._sessions.clear()
