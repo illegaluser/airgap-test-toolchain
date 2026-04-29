@@ -66,7 +66,7 @@ function _renderSessionRows() {
   const tbody = $("#session-tbody");
   if (!filtered.length) {
     const all = _sessionsCache.length;
-    tbody.innerHTML = `<tr class="muted"><td colspan="6">— ${all > 0 ? "필터 일치 0건 (" + all + "건 중)" : "세션 없음"} —</td></tr>`;
+    tbody.innerHTML = `<tr class="muted"><td colspan="7">— ${all > 0 ? "필터 일치 0건 (" + all + "건 중)" : "세션 없음"} —</td></tr>`;
     return;
   }
   tbody.innerHTML = filtered.map((s) => `
@@ -74,6 +74,7 @@ function _renderSessionRows() {
       <td><code>${s.id}</code></td>
       <td><span class="state-pill state-${s.state}">${s.state}</span></td>
       <td class="ellipsis" title="${escapeHtml(s.target_url || "")}">${escapeHtml(s.target_url || "")}</td>
+      <td class="muted">${escapeHtml(s.auth_profile || "—")}</td>
       <td>${s.action_count || 0}</td>
       <td class="muted">${formatIso(s.created_at_iso)}</td>
       <td class="row-actions">
@@ -113,13 +114,25 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
-async function startRecording(target_url, planning_doc_ref) {
+async function startRecording(target_url, planning_doc_ref, auth_profile) {
   const body = { target_url };
   if (planning_doc_ref) body.planning_doc_ref = planning_doc_ref;
-  const data = await api("/recording/start", {
+  if (auth_profile) body.auth_profile = auth_profile;
+  // raw fetch 로 응답 헤더 (X-Auth-Machine-Mismatch) 확인 가능하게.
+  const r = await fetch("/recording/start", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(data.detail?.reason || data.detail?.message || `HTTP ${r.status}`);
+    err.status = r.status;
+    err.detail = data.detail || {};
+    throw err;
+  }
+  // 머신 불일치 헤더는 normal 200/201 에서만 의미 있음.
+  data._machineMismatch = r.headers.get("X-Auth-Machine-Mismatch") === "1";
   return data;
 }
 
@@ -154,12 +167,33 @@ async function addAssertion(sid, payload) {
 }
 
 // R-Plus — 백엔드는 /experimental/* 로 분리. UI 는 메인 결과 화면에 함께 노출.
+// 만료/머신 등 에러 status/detail 을 보존해야 _runPlay 가 409 → 만료 모달 분기를
+// 칠 수 있어, api() 가 아니라 raw fetch 로 호출하고 err.status/err.detail 을 박는다.
+async function _playRawFetch(path) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const detail = data.detail || {};
+    const msg = typeof detail === "string"
+      ? detail
+      : (detail.reason || detail.message || `HTTP ${r.status}`);
+    const err = new Error(msg);
+    err.status = r.status;
+    err.detail = (typeof detail === "object" && detail !== null) ? detail : { message: msg };
+    throw err;
+  }
+  return data;
+}
+
 async function playCodegen(sid) {
-  return api(`/experimental/sessions/${sid}/play-codegen`, { method: "POST" });
+  return _playRawFetch(`/experimental/sessions/${sid}/play-codegen`);
 }
 
 async function playLLM(sid) {
-  return api(`/experimental/sessions/${sid}/play-llm`, { method: "POST" });
+  return _playRawFetch(`/experimental/sessions/${sid}/play-llm`);
 }
 
 async function enrichSession(sid) {
@@ -430,7 +464,18 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
     // 진행 박스는 자동 collapse — 사용자가 펼쳐 보고 싶으면 수동으로.
     details.open = false;
   } catch (err) {
-    _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
+    // post-review fix — auth-profile 만료/미존재 (rplus router 의 409) 는
+    // 일반 실패 메시지가 아니라 만료 모달로 분기. UI 의 [재시드] 버튼이
+    // 같은 카탈로그 prefill 흐름을 재사용.
+    if (err.status === 409 && err.detail?.reason === "profile_expired") {
+      const profName = err.detail.profile_name || _authState.selected || "—";
+      const reason = err.detail.fail_reason || err.detail.reason || "verify failed";
+      _rplusOutputBox().textContent =
+        `⚠ ${label} 중단 — 인증 세션 '${profName}' 만료 (${reason}). 재시드 후 다시 실행하세요.`;
+      _showExpiredDialog(profName, reason);
+    } else {
+      _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
+    }
   } finally {
     stopped = true;
     clearInterval(tailTimer);
@@ -865,8 +910,463 @@ $("#import-file-input").addEventListener("change", async (e) => {
   });
 })();
 
+// ─────────────────────────────────────────────────────────────────────────
+// Auth Profile UI (P5.2 ~ P5.9)
+// ─────────────────────────────────────────────────────────────────────────
+// 설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §3 + §4
+//
+// 흐름:
+//   1) 페이지 로드 → GET /auth/profiles → 드롭다운 채움 (P5.2)
+//   2) 드롭다운 선택 → 라벨 갱신 + verify 버튼 활성화
+//   3) ↻ verify → POST /auth/profiles/{name}/verify (P5.3)
+//   4) + 새 세션 시드 → 시드 입력 모달 → POST /auth/profiles/seed (P5.4)
+//   5) 시드 진행 모달 → 1초 폴링 → ready/error (P5.5)
+//   6) Start Recording 시 409 (만료) → 만료 모달 → 재시드 prefill (P5.6)
+//   7) 응답 헤더 X-Auth-Machine-Mismatch=1 → 머신 불일치 모달 (P5.7)
+//   8) sessionStorage 경고 (P5.9) — list 응답의 session_storage_warning 표시
+
+async function fetchAuthProfiles() {
+  return api("/auth/profiles");
+}
+
+async function fetchAuthProfileDetail(name) {
+  // P2.1 — 만료 모달의 [재시드] 가 verify_service_url / verify_service_text 까지
+  // prefill 할 수 있도록 단일 프로파일 detail 조회.
+  return api(`/auth/profiles/${encodeURIComponent(name)}`);
+}
+
+async function verifyAuthProfile(name) {
+  return api(`/auth/profiles/${encodeURIComponent(name)}/verify`, { method: "POST" });
+}
+
+async function deleteAuthProfile(name) {
+  return api(`/auth/profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+async function seedAuthProfileStart(payload) {
+  return api("/auth/profiles/seed", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+async function seedAuthProfilePoll(seedSid) {
+  return api(`/auth/profiles/seed/${encodeURIComponent(seedSid)}`);
+}
+
+const _authState = {
+  profiles: [],
+  selected: "",
+  lastVerify: null,        // {ok, service_ms, ...}
+  pollTimer: null,
+  reseedPrefill: null,     // 재시드 시 입력 폼 prefill 용
+};
+
+function _formatRelative(iso) {
+  if (!iso) return "—";
+  try {
+    const dt = new Date(iso);
+    const sec = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
+    if (sec < 60) return `${sec}초 전`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}분 전`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}시간 전`;
+    return `${Math.floor(sec / 86400)}일 전`;
+  } catch {
+    return iso;
+  }
+}
+
+async function loadAuthProfiles() {
+  let profiles;
+  try {
+    profiles = await fetchAuthProfiles();
+  } catch (e) {
+    console.warn("auth profiles 조회 실패:", e);
+    return;
+  }
+  _authState.profiles = profiles;
+  const sel = $("#auth-profile-select");
+  const current = _authState.selected;
+  sel.innerHTML = `<option value="">(없음 — 비로그인 녹화)</option>` +
+    profiles.map((p) => {
+      const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
+      return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
+    }).join("");
+  // 이전 선택 복원.
+  if (current && profiles.some((p) => p.name === current)) {
+    sel.value = current;
+    _renderAuthStatus();
+  } else {
+    _authState.selected = "";
+    _renderAuthStatus();
+  }
+}
+
+function _selectedProfile() {
+  return _authState.profiles.find((p) => p.name === _authState.selected) || null;
+}
+
+function _renderAuthStatus() {
+  const p = _selectedProfile();
+  const status = $("#auth-status");
+  const verifyBtn = $("#btn-auth-verify");
+  if (!p) {
+    status.textContent = "— 프로파일을 선택하거나 새로 시드하세요 —";
+    status.className = "auth-status muted";
+    verifyBtn.disabled = true;
+    return;
+  }
+  verifyBtn.disabled = false;
+  let txt = `프로파일 "${p.name}" — ${p.service_domain}`;
+  if (p.last_verified_at) {
+    txt += ` · ${_formatRelative(p.last_verified_at)} 검증`;
+  } else {
+    txt += " · 미검증";
+  }
+  // P5.9 — sessionStorage 의심 서비스 경고.
+  if (p.session_storage_warning) {
+    txt += " · ⚠ sessionStorage 의존 가능 (재시드 빈도↑)";
+  }
+  if (_authState.lastVerify && _authState.lastVerify.profile === p.name) {
+    if (_authState.lastVerify.ok) {
+      txt = "✓ verify OK · " + txt;
+      status.className = "auth-status ok";
+    } else {
+      txt = "✗ verify FAIL · " + txt;
+      status.className = "auth-status err";
+    }
+  } else {
+    status.className = "auth-status muted";
+  }
+  status.textContent = txt;
+}
+
+// 드롭다운 선택 변경.
+$("#auth-profile-select").addEventListener("change", (e) => {
+  _authState.selected = e.target.value;
+  _authState.lastVerify = null;
+  _renderAuthStatus();
+});
+
+// ↻ verify (P5.3).
+$("#btn-auth-verify").addEventListener("click", async () => {
+  const p = _selectedProfile();
+  if (!p) return;
+  const btn = $("#btn-auth-verify");
+  btn.disabled = true;
+  $("#auth-status").textContent = "verify 진행 중...";
+  $("#auth-status").className = "auth-status muted";
+  try {
+    const result = await verifyAuthProfile(p.name);
+    _authState.lastVerify = { profile: p.name, ...result };
+    // 카탈로그 last_verified_at 갱신 — 다시 fetch.
+    await loadAuthProfiles();
+  } catch (err) {
+    _authState.lastVerify = { profile: p.name, ok: false, fail_reason: err.message };
+    _renderAuthStatus();
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── 시드 입력 모달 (P5.4) ────────────────────────────────────────────────
+function _openSeedDialog(prefill) {
+  const dlg = $("#auth-seed-dialog");
+  const form = $("#auth-seed-form");
+  form.reset();
+  if (prefill) {
+    if (prefill.name) form.elements["name"].value = prefill.name;
+    if (prefill.seed_url) form.elements["seed_url"].value = prefill.seed_url;
+    if (prefill.verify_service_url) form.elements["verify_service_url"].value = prefill.verify_service_url;
+    if (prefill.verify_service_text) form.elements["verify_service_text"].value = prefill.verify_service_text;
+    if (prefill.ttl_hint_hours) form.elements["ttl_hint_hours"].value = prefill.ttl_hint_hours;
+    if (prefill.naver_probe !== undefined) form.elements["naver_probe"].checked = !!prefill.naver_probe;
+  }
+  dlg.showModal();
+}
+
+$("#btn-auth-seed").addEventListener("click", () => _openSeedDialog());
+
+// 취소 버튼은 type="button" — form 의 required 필드가 비어있어도 dialog 를 즉시 닫는다.
+// (type="submit" 은 HTML5 validation 이 submit 자체를 차단해 우리 핸들러 + form
+// method="dialog" close 까지 모두 건너뛴다.)
+$("#btn-auth-seed-cancel-input").addEventListener("click", () => {
+  $("#auth-seed-dialog").close();
+});
+
+$("#auth-seed-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const fd = new FormData(form);
+  const payload = {
+    name: fd.get("name").trim(),
+    seed_url: fd.get("seed_url").trim(),
+    verify_service_url: fd.get("verify_service_url").trim(),
+    verify_service_text: fd.get("verify_service_text").trim(),
+    naver_probe: fd.get("naver_probe") === "on",
+    ttl_hint_hours: parseInt(fd.get("ttl_hint_hours") || "12", 10),
+  };
+  // 입력 모달 닫고 진행 모달 오픈 + 시드 시작.
+  $("#auth-seed-dialog").close();
+  _authState.reseedPrefill = payload;  // 만료 → 재시드 시 동일 입력 prefill.
+  _startSeedFlow(payload);
+});
+
+// ── 시드 진행 폴링 (P5.5) ────────────────────────────────────────────────
+async function _startSeedFlow(payload) {
+  const dlg = $("#auth-seed-progress");
+  const status = $("#auth-seed-progress-status");
+  const elapsed = $("#auth-seed-progress-elapsed");
+  const hint = $("#auth-seed-progress-hint");
+  const cancelBtn = $("#btn-auth-seed-cancel");
+  const skipBtn = $("#btn-auth-seed-skip");
+  const doneBtn = $("#btn-auth-seed-done");
+  const inputDlg = $("#auth-seed-dialog");
+  if (inputDlg && inputDlg.open) inputDlg.close();
+  status.textContent = "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요";
+  elapsed.textContent = `경과 0초 / 한도 ${payload.timeout_sec || 600}초`;
+  hint.textContent = "창이 닫히면 세션을 저장하고 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.";
+  cancelBtn.hidden = false;
+  skipBtn.hidden = true;
+  doneBtn.hidden = true;
+  cancelBtn.textContent = "취소 (창은 직접 닫으세요)";
+  cancelBtn.dataset.action = "cancel";
+  skipBtn.dataset.profile = "";
+  doneBtn.dataset.profile = "";
+  dlg.showModal();
+
+  let resp;
+  try {
+    resp = await seedAuthProfileStart(payload);
+  } catch (err) {
+    status.textContent = `✗ 시작 실패: ${err.message}`;
+    return;
+  }
+  const seedSid = resp.seed_sid;
+  if (_authState.pollTimer) clearInterval(_authState.pollTimer);
+  _authState.pollTimer = setInterval(async () => {
+    let poll;
+    try {
+      poll = await seedAuthProfilePoll(seedSid);
+    } catch (err) {
+      console.warn("seed poll 실패:", err);
+      return;
+    }
+    elapsed.textContent =
+      `경과 ${Math.floor(poll.elapsed_sec)}초 / 한도 ${poll.timeout_sec}초`;
+    if (poll.message) status.textContent = poll.message;
+    if (poll.phase === "verifying") {
+      hint.textContent = "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.";
+    }
+    if (poll.state === "ready") {
+      clearInterval(_authState.pollTimer);
+      status.textContent = poll.message || `✓ 시드 완료 — 프로파일 "${poll.profile_name}"`;
+      hint.textContent = "이번 녹화에 사용할지 선택하세요. 사용하지 않아도 프로파일은 목록에 저장됩니다.";
+      await loadAuthProfiles();
+      cancelBtn.hidden = true;
+      skipBtn.hidden = false;
+      doneBtn.hidden = false;
+      skipBtn.dataset.profile = poll.profile_name || "";
+      doneBtn.dataset.profile = poll.profile_name || "";
+    } else if (poll.state === "error") {
+      clearInterval(_authState.pollTimer);
+      const kind = poll.error_kind ? `[${poll.error_kind}] ` : "";
+      status.textContent = poll.message || `✗ 실패 — ${kind}${poll.error}`;
+      hint.textContent = "입력값을 확인한 뒤 다시 시드하세요.";
+      cancelBtn.textContent = "다시 입력";
+      cancelBtn.dataset.action = "retry";
+    }
+  }, 1000);
+}
+
+$("#btn-auth-seed-cancel").addEventListener("click", () => {
+  if (_authState.pollTimer) clearInterval(_authState.pollTimer);
+  $("#auth-seed-progress").close();
+  if ($("#btn-auth-seed-cancel").dataset.action === "retry") {
+    _openSeedDialog(_authState.reseedPrefill);
+  }
+});
+
+$("#btn-auth-seed-skip").addEventListener("click", () => {
+  _authState.selected = "";
+  $("#auth-profile-select").value = "";
+  _renderAuthStatus();
+  $("#auth-seed-progress").close();
+});
+
+$("#btn-auth-seed-done").addEventListener("click", () => {
+  const profile = $("#btn-auth-seed-done").dataset.profile || "";
+  if (profile) {
+    _authState.selected = profile;
+    $("#auth-profile-select").value = profile;
+    _renderAuthStatus();
+  }
+  $("#auth-seed-progress").close();
+});
+
+// ── 만료 모달 (P5.6) ─────────────────────────────────────────────────────
+function _showExpiredDialog(name, reason) {
+  $("#auth-expired-name").textContent = name || "—";
+  $("#auth-expired-reason").textContent = reason
+    ? `원인: ${reason}`
+    : "원인: 세션 만료 또는 IP 변경.";
+  $("#auth-expired-dialog").showModal();
+}
+
+$("#btn-auth-expired-cancel").addEventListener("click", () => {
+  $("#auth-expired-dialog").close();
+});
+
+$("#btn-auth-expired-reseed").addEventListener("click", async () => {
+  $("#auth-expired-dialog").close();
+  // P2.1 — prefill 우선순위:
+  //   (1) 방금 brower 세션에서 직접 seed 한 입력값 (_authState.reseedPrefill)
+  //   (2) 카탈로그 detail fetch — 어제 시드한 / 다른 머신에서 가져온 프로파일
+  //   (3) name 만 (최후의 fallback — detail 도 없는 경우)
+  if (_authState.reseedPrefill) {
+    _openSeedDialog(_authState.reseedPrefill);
+    return;
+  }
+  const name = _authState.selected;
+  if (!name) {
+    _openSeedDialog({});
+    return;
+  }
+  let detail = null;
+  try {
+    detail = await fetchAuthProfileDetail(name);
+  } catch (e) {
+    console.warn("auth profile detail 조회 실패:", e);
+  }
+  if (detail) {
+    // seed_url 은 카탈로그에 저장되지 않아 verify_service_url 의 origin 으로 추정.
+    // 사용자가 모달에서 직접 수정 가능.
+    let seedUrlGuess = "";
+    try {
+      seedUrlGuess = new URL(detail.verify_service_url).origin + "/";
+    } catch (_) {
+      seedUrlGuess = detail.verify_service_url;
+    }
+    _openSeedDialog({
+      name: detail.name,
+      seed_url: seedUrlGuess,
+      verify_service_url: detail.verify_service_url,
+      verify_service_text: detail.verify_service_text,
+      ttl_hint_hours: detail.ttl_hint_hours,
+      naver_probe: detail.naver_probe_enabled,
+    });
+  } else {
+    _openSeedDialog({ name });
+  }
+});
+
+// ── 머신 불일치 모달 (P5.7) ──────────────────────────────────────────────
+let _mmRetryFn = null;
+
+function _showMachineMismatchDialog(retryFn) {
+  _mmRetryFn = retryFn;
+  $("#auth-machine-mismatch-dialog").showModal();
+}
+
+$("#btn-mm-cancel").addEventListener("click", () => {
+  _mmRetryFn = null;
+  $("#auth-machine-mismatch-dialog").close();
+});
+
+$("#btn-mm-proceed").addEventListener("click", () => {
+  $("#auth-machine-mismatch-dialog").close();
+  // 이미 200 으로 응답된 시점이라 재시도 필요 없음 — 사용자 자각만.
+});
+
+$("#btn-mm-reseed").addEventListener("click", () => {
+  $("#auth-machine-mismatch-dialog").close();
+  _openSeedDialog({ name: _authState.selected });
+});
+
+// ── Start Recording 결과 — 에러 분기 (P5.6/P5.7) ─────────────────────────
+// 기존 #start-form submit 핸들러를 확장. auth_profile 인자 + 응답 분기.
+const _origSubmitListenerNeedsRebind = false; // 가드 — 기존 핸들러 그대로 두고 보강만.
+
+// 기존 handler 가 이미 등록됐으므로 capture 로 한 번 더 잡아 처리.
+$("#start-form").addEventListener("submit", async (e) => {
+  // 기본 핸들러보다 먼저 — capture 단계에서 처리.
+  // 단, 기본 핸들러가 startRecording 호출하므로 여기선 *가로채서* auth_profile 만 추가.
+}, true);
+
+// 기존 handler 를 대체 (auth_profile 통합 + 에러 분기).
+const _legacyStartFormSubmit = (() => {
+  // 기존 listener 는 그대로 유지하되, 새 listener 가 capture 로 먼저 가로채 e.preventDefault + 직접 처리.
+  // capture listener 안에서 startRecording 호출.
+  return null;
+})();
+
+// 깔끔한 처리를 위해 form 의 handler 를 *제거하지 않고* 새 capture handler 가 모두 책임.
+// 단, 첫 submit 시 기본 handler 도 실행돼 중복될 수 있어 초기 등록 시점에 stopImmediatePropagation.
+$("#start-form").addEventListener("submit", async (e) => {
+  if (e._authProfileHandled) return;
+  e._authProfileHandled = true;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+
+  const fd = new FormData(e.target);
+  const target_url = (fd.get("target_url") || "").trim();
+  const planning = (fd.get("planning_doc_ref") || "").trim();
+  const authProfile = (fd.get("auth_profile") || "").trim();
+  if (!target_url) return;
+
+  $("#btn-start").disabled = true;
+  try {
+    const data = await startRecording(target_url, planning || null, authProfile || null);
+    showActivePanel(data);
+    $("#result-section").hidden = true;
+    $("#scenario-card").hidden = true;
+    $("#original-card").hidden = true;
+    $("#assertion-section").hidden = true;
+    $("#rplus-section").hidden = true;
+    await loadSessions();
+    if (data._machineMismatch) {
+      _showMachineMismatchDialog(null);
+    }
+  } catch (err) {
+    if (err.status === 409 && err.detail?.reason === "profile_expired") {
+      const reason = err.detail.fail_reason || err.detail.reason;
+      _showExpiredDialog(authProfile, reason);
+    } else if (err.status === 404 && err.detail?.reason === "profile_not_found") {
+      alert(`인증 프로파일 '${authProfile}' 를 찾을 수 없습니다 — 새로 시드하세요.`);
+    } else {
+      alert("Start 실패: " + err.message);
+    }
+  } finally {
+    $("#btn-start").disabled = false;
+  }
+}, true);  // capture 로 먼저 처리
+
+// 결과 카드의 인증 프로파일 필드 노출 — openSession 안에서 갱신.
+async function _renderResultAuthProfile(sid) {
+  try {
+    const sess = await getSession(sid);
+    const el = $("#result-auth-profile");
+    if (el) {
+      el.textContent = sess.auth_profile || "—";
+    }
+  } catch {
+    // 무시 — 결과 카드 보조 정보일 뿐.
+  }
+}
+
+// openSession 보강 — 결과 카드 노출 직후 인증 메타 갱신.
+const _origOpenSession = window.openSession;
+if (typeof _origOpenSession === "function") {
+  window.openSession = async function patchedOpenSession(sid) {
+    await _origOpenSession(sid);
+    _renderResultAuthProfile(sid);
+  };
+}
+
 // ── 시작 ─────────────────────────────────────────────────────────────────────
 loadHealth();
 loadSessions();
+loadAuthProfiles();
 setInterval(loadSessions, 5000);
 setInterval(loadHealth, 15000);
+setInterval(loadAuthProfiles, 30000);

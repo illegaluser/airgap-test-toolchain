@@ -1411,6 +1411,18 @@ tail -f ~/.dscore.ttc.playwright-agent/recording-service.log
 ./mac-agent-setup.sh   # 또는 wsl-agent-setup.sh
 ```
 
+#### 인증 프로파일로 로그인 상태 재사용
+
+네이버 OAuth 처럼 2중 확인을 사람이 한 번 통과해야 하는 서비스는 Recording UI 의
+**인증 → + 새 세션 시드** 로 storageState 프로파일을 저장해 이후 녹화/재생에 재사용할 수 있다.
+
+- 검증 텍스트는 선택이다. 입력하면 로그인 상태 문구까지 확인하고, 비우면 로그인된 사용자만 접근 가능한 검증 URL 도달 여부로 확인한다.
+- 시드가 끝나면 `사용하지 않음` / `이 프로파일 사용` 중 하나를 고른다. `사용하지 않음` 은 저장만 하고 이번 녹화에는 적용하지 않는다.
+- headed 검증은 기본적으로 천천히 진행되고 검증 대상 페이지를 잠시 유지한다. 조정값은 `AUTH_PROFILE_VERIFY_SLOW_MO_MS`, `AUTH_PROFILE_VERIFY_HOLD_MS`.
+- seed 진행 phase 와 uvicorn stdout/stderr 는 `~/.dscore.ttc.playwright-agent/recording-service.log` 에 남는다.
+
+상세 절차는 [docs/auth-profile-usage.md](docs/auth-profile-usage.md)를 참조.
+
 #### 트러블슈팅
 
 상세 진단은 [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md).

@@ -544,3 +544,162 @@ dialog textarea {
   cursor: pointer;
   margin-bottom: 4px;
 }
+
+/* ─────────────────────────────────────────────────────────────────── */
+/* Auth Profile (P5)                                                   */
+/* ─────────────────────────────────────────────────────────────────── */
+
+.auth-block {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0 12px;
+  background: #fafafb;
+}
+.auth-block legend {
+  font-size: 0.85em;
+  color: var(--muted);
+  padding: 0 6px;
+}
+.auth-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.auth-select-wrap {
+  flex: 1 1 280px;
+}
+.auth-select-wrap select {
+  width: 100%;
+}
+.auth-btn {
+  padding: 4px 10px;
+  border: 1px solid #c7c7cc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+.auth-btn:hover:not(:disabled) {
+  background: #f0f0f5;
+}
+.auth-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.auth-status {
+  font-size: 0.88em;
+  margin: 6px 0;
+}
+.auth-status.ok {
+  color: var(--ok);
+}
+.auth-status.err {
+  color: var(--err);
+}
+
+/* 인증 모달 공통 (시드 입력 / 시드 진행 / 만료 / 머신 불일치) */
+.auth-dialog {
+  border: none;
+  border-radius: 8px;
+  padding: 18px 22px;
+  width: min(560px, 90vw);
+  max-height: 90vh;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+}
+.auth-dialog::backdrop {
+  background: rgba(0,0,0,0.45);
+}
+.auth-dialog h3 {
+  margin: 0 0 12px;
+  font-size: 1.05em;
+}
+.auth-dialog p {
+  margin: 8px 0;
+  font-size: 0.92em;
+}
+.auth-dialog label {
+  display: block;
+  margin: 8px 0;
+  font-size: 0.9em;
+}
+.auth-dialog label > span {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 3px;
+  color: var(--text);
+}
+.auth-dialog label > span em {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--muted);
+}
+.auth-dialog input[type="text"],
+.auth-dialog input[type="url"],
+.auth-dialog input[type="number"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #c7c7cc;
+  border-radius: 4px;
+  font-size: 0.9em;
+  box-sizing: border-box;
+}
+.auth-dialog input:invalid {
+  border-color: var(--err);
+}
+.auth-dialog .auth-checkbox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+.auth-dialog .auth-checkbox > span {
+  display: inline;
+  font-weight: 400;
+  margin: 0;
+}
+.auth-warning {
+  background: #fff8dc;
+  border-left: 3px solid var(--warn);
+  padding: 8px 10px;
+  font-size: 0.88em;
+  margin: 10px 0;
+}
+.auth-steps {
+  margin: 10px 0;
+  padding-left: 22px;
+  font-size: 0.92em;
+}
+.auth-steps li {
+  margin: 4px 0;
+}
+.auth-steps li strong {
+  color: var(--err);
+}
+.auth-dialog .dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.auth-dialog .dialog-actions button {
+  padding: 6px 14px;
+  border: 1px solid #c7c7cc;
+  border-radius: 4px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.9em;
+}
+.auth-dialog .dialog-actions button[value="submit"],
+.auth-dialog .dialog-actions #btn-mm-reseed,
+.auth-dialog .dialog-actions #btn-auth-expired-reseed,
+.auth-dialog .dialog-actions #btn-auth-seed-done {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.auth-dialog .dialog-actions button:hover {
+  filter: brightness(0.95);
+}
