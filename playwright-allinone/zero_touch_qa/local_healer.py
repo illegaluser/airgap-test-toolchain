@@ -9,14 +9,14 @@ log = logging.getLogger(__name__)
 
 class LocalHealer:
     """
-    LLM 호출 없이(비용 0) 현재 페이지의 DOM을 스캔하여
-    실패한 타겟과 가장 유사한 요소를 찾아 반환한다.
+    Without an LLM call (zero cost), scan the current page's DOM and return
+    the element most similar to the failed target.
 
-    액션별 검색 대상:
-      - fill/press:     input, textarea, [role='textbox'], [role='searchbox'], [contenteditable]
-      - select:         select, [role='listbox'], [role='combobox'], option, [role='option']
-      - hover:          button, a, [role='menuitem'], [role='tab'], nav a, [aria-haspopup]
-      - click/check 등: button, a, [role='button'], [role='link'], [role='menuitem'], [role='tab']
+    Per-action search scope:
+      - fill/press:      input, textarea, [role='textbox'], [role='searchbox'], [contenteditable]
+      - select:          select, [role='listbox'], [role='combobox'], option, [role='option']
+      - hover:           button, a, [role='menuitem'], [role='tab'], nav a, [aria-haspopup]
+      - click/check etc: button, a, [role='button'], [role='link'], [role='menuitem'], [role='tab']
     """
 
     SELECTOR_MAP = {
@@ -49,11 +49,11 @@ class LocalHealer:
         self.threshold = threshold
 
     def try_heal(self, step: dict) -> Locator | None:
-        """step의 target과 유사한 요소를 DOM에서 검색한다.
+        """Search the DOM for an element similar to the step's target.
 
-        T-C (P0.2) — target 이 ``frame=<sel> >> ...`` chain 으로 시작하면
-        같은 FrameLocator 안에서만 fallback 을 시도해 frame 경계를 넘지 않는다.
-        그렇지 않으면 기존대로 page 전체 스캔.
+        T-C (P0.2) — when target starts with a ``frame=<sel> >> ...`` chain,
+        only try fallback inside the same FrameLocator and do not cross frame
+        boundaries. Otherwise scan the whole page as before.
         """
         action = step["action"].lower()
         target = step.get("target", "")
@@ -84,21 +84,21 @@ class LocalHealer:
 
         if best_match:
             log.info(
-                "  [로컬복구 성공] 유사도 %.0f%% 매칭 (scope=%s)",
+                "  [local-heal success] similarity %.0f%% match (scope=%s)",
                 highest_ratio * 100, scope_label,
             )
         return best_match
 
     def _frame_scope_for_target(self, target):
-        """target 이 ``frame=<sel>`` 로 시작하면 해당 FrameLocator 반환, 아니면 page.
+        """If target starts with ``frame=<sel>`` return that FrameLocator, else page.
 
-        반환값 ``(scope, label)`` 의 ``scope`` 는 ``.locator(...)`` 가 가능한 객체
-        (Page 또는 FrameLocator). label 은 로그용.
+        The returned ``(scope, label)`` has ``scope`` as something that supports
+        ``.locator(...)`` (Page or FrameLocator). label is for logging only.
         """
         if not isinstance(target, str):
             return self.page, "page"
-        # 합성 chain 의 첫 segment 만 검사. 중첩 frame 은 두 번째 segment 도
-        # frame= 일 수 있으므로 누적.
+        # Inspect the first segment of a composite chain. For nested frames the
+        # second segment may also start with frame=, so we accumulate.
         chain = [s.strip() for s in target.split(" >> ") if s.strip()]
         cur = self.page
         consumed = 0
@@ -120,30 +120,30 @@ class LocalHealer:
 
     @staticmethod
     def _clean_target(target) -> str:
-        """시맨틱 접두사를 제거하여 순수 텍스트를 추출한다.
+        """Strip semantic prefixes and extract the plain text.
 
-        T-C (P0.2) — ``frame=...>>`` chain 일 때는 마지막 segment 만 사용한다.
-        healer 가 frame-scoped fallback 을 수행할 때 텍스트 매칭은 leaf
-        descriptor 기준이어야 의미 있다.
+        T-C (P0.2) — for a ``frame=...>>`` chain, use only the last segment.
+        Frame-scoped fallback by the healer must do text matching against the
+        leaf descriptor to be meaningful.
 
-        ``role=X, name=Y`` 패턴은 사람이 읽을 수 있는 ``Y`` 만 추출 (X 는
-        accessibility role 이라 텍스트 매칭에 의미 없음). 모디파이어
-        (``, nth=N`` / ``, has_text=T``) 는 검사 전에 떨어낸다 — converter
-        AST 가 emit 하는 실제 형태에 그대로 작동하도록 하기 위함.
+        For ``role=X, name=Y`` patterns, extract only the human-readable ``Y``
+        (X is an accessibility role and adds nothing to text matching). Trailing
+        modifiers (``, nth=N`` / ``, has_text=T``) are stripped first so this
+        works as-is on the form the converter AST emits.
         """
         s = str(target)
         if " >> " in s:
             s = s.split(" >> ")[-1]
-        # 후미 modifier (nth / has_text) — 텍스트 매칭에 noise.
+        # Trailing modifier (nth / has_text) — noise for text matching.
         s = re.sub(r",\s*(nth|has_text)=.*$", "", s).strip()
-        # `role=X, name=Y` → Y. accessibility role 자체는 텍스트 노이즈.
+        # `role=X, name=Y` → Y. The accessibility role itself is text noise.
         m = re.match(r"role=.+?,\s*name=(.+)$", s)
         if m:
             return m.group(1).strip()
-        # name 없는 단독 role= 은 텍스트 매칭 불가 — 빈 문자열 반환 (try_heal 에서 skip).
+        # A bare role= (no name) cannot be text-matched — return empty (try_heal skips).
         if s.startswith("role="):
             return ""
-        # text/label/placeholder/testid/frame/shadow prefix 단독은 안전하게 strip.
+        # text/label/placeholder/testid/frame/shadow standalone prefixes are safe to strip.
         s = re.sub(r"^(text|label|placeholder|testid|frame|shadow)=", "", s)
         return s.strip()
 

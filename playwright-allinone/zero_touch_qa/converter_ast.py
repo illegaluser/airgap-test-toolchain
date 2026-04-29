@@ -1,22 +1,21 @@
-"""AST 기반 Playwright codegen → 14-DSL 변환기 (T-A / P0.4 본체).
+"""AST-based Playwright codegen → 14-DSL converter (T-A / P0.4 core).
 
-설계: docs/PLAN_PRODUCTION_READINESS.md §"T-A — converter AST 화"
+Design: docs/PLAN_PRODUCTION_READINESS.md §"T-A — AST-based converter"
 
-기존 [converter.py](converter.py) 의 line-based regex 가 가지는 한계 해소:
-- popup 탭 변수 (page1, page2, …) 의 액션 누락
-- ``.nth(N)`` / ``.first`` / ``.filter(has_text=...)`` 정보 손실
-- ``page.locator(...).locator(...)`` nested chain 평탄화 불가
-- ``page.frame_locator(...).get_by_role(...)`` chain 손실
+Removes the limits of the existing line-based regex in [converter.py](converter.py):
+- Lost actions on popup tab variables (page1, page2, …)
+- Information loss on ``.nth(N)`` / ``.first`` / ``.filter(has_text=...)``
+- Cannot flatten ``page.locator(...).locator(...)`` nested chains
+- Loses the ``page.frame_locator(...).get_by_role(...)`` chain
 
-본 모듈은 ``ast.parse`` 로 정확 파싱한 뒤 ``def run(playwright)`` body 를 순회
-하면서:
-- page-like 변수 스코프 추적 (popup chain 포함)
-- 액션 호출의 receiver chain 을 ``.nth/.first/.filter/locator/frame_locator``
-  포함하여 14-DSL ``target`` 문자열로 평탄화
-- 14-DSL 액션 14 개 모두 처리
+This module parses with ``ast.parse`` and walks the ``def run(playwright)`` body to:
+- Track page-like variable scopes (including popup chains)
+- Flatten the receiver chain of action calls — including ``.nth/.first/.filter/locator/frame_locator``
+  — into a 14-DSL ``target`` string
+- Handle all 14 actions of the DSL
 
-비표준 패턴 (lambda, 변수 별칭, dynamic dispatch) 만나면 ``CodegenAstError``
-발생 — 호출 측은 line-based fallback 으로 graceful degrade.
+On non-standard patterns (lambdas, variable aliases, dynamic dispatch), raise
+``CodegenAstError`` — the caller graceful-degrades to the line-based fallback.
 """
 
 from __future__ import annotations
@@ -31,25 +30,25 @@ log = logging.getLogger(__name__)
 
 
 class CodegenAstError(RuntimeError):
-    """AST 변환 단계의 명시적 에러. 호출 측 line fallback 트리거."""
+    """Explicit error for the AST-conversion stage. Triggers the caller's line fallback."""
 
 
 def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
-    """codegen .py 파일을 AST 로 파싱해 14-DSL 시나리오로 변환.
+    """Parse the codegen .py file via AST and convert it into a 14-DSL scenario.
 
     Args:
-        file_path: codegen 출력 .py 파일 절대 경로
-        output_dir: scenario.json 을 저장할 디렉토리
+        file_path: absolute path to the codegen-output .py file
+        output_dir: directory to save scenario.json
 
     Returns:
-        14-DSL 스텝 list. 각 스텝은 step/action/target/value/description/fallback_targets.
+        List of 14-DSL steps. Each step has step/action/target/value/description/fallback_targets.
 
     Raises:
-        FileNotFoundError: 입력 파일 없음
-        CodegenAstError: AST 파싱/변환 실패 (line fallback 트리거 신호)
+        FileNotFoundError: input file missing
+        CodegenAstError: AST parse/convert failure (signal to trigger the line fallback)
     """
     if not file_path or not os.path.exists(file_path):
-        raise FileNotFoundError(f"파일을 찾을 수 없습니다: {file_path}")
+        raise FileNotFoundError(f"file not found: {file_path}")
 
     with open(file_path, "r", encoding="utf-8") as f:
         source = f.read()
@@ -57,7 +56,7 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
-        raise CodegenAstError(f"AST 파싱 실패: {e}") from e
+        raise CodegenAstError(f"AST parse failed: {e}") from e
 
     converter = _AstConverter()
     converter.visit(tree)
@@ -69,7 +68,7 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
         json.dump(scenario, f, indent=2, ensure_ascii=False)
 
     log.info(
-        "[Convert/AST] %s -> %s (%d스텝 변환)",
+        "[Convert/AST] %s -> %s (%d steps converted)",
         file_path, output_path, len(scenario),
     )
     return scenario
@@ -81,18 +80,18 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
 
 
 class _AstConverter(ast.NodeVisitor):
-    """codegen .py 의 ``def run(playwright)`` body 를 순회하며 14-DSL 스텝 누적."""
+    """Walk the ``def run(playwright)`` body of a codegen .py and accumulate 14-DSL steps."""
 
     def __init__(self):
         self.steps: list[dict] = []
-        # page-like 변수 — 시작 시 'page' 만 안전 (codegen 관례).
-        # `with page.expect_popup() as pX_info:` + `pageX = pX_info.value` 발견
-        # 시 동적으로 추가.
+        # page-like variables — only 'page' is safe at start (codegen convention).
+        # We add dynamically when we see `with page.expect_popup() as pX_info:` +
+        # `pageX = pX_info.value`.
         self.page_vars: set[str] = {"page"}
-        # popup info 변수 (``pX_info`` 형태) — `.value` 접근 시 page 로 승격
+        # popup info variables (``pX_info`` form) — promoted to page on `.value` access
         self.popup_info_vars: set[str] = set()
 
-    # def run(...) 만 처리 — 다른 함수는 noise 일 가능성 높음
+    # Only process def run(...) — other functions are likely noise
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if node.name != "run":
             return
@@ -100,24 +99,24 @@ class _AstConverter(ast.NodeVisitor):
             self._handle_stmt(stmt)
 
     def _handle_stmt(self, stmt: ast.stmt) -> None:
-        """각 statement 를 처리. with / Expr / Assign 만 의미 있음."""
+        """Process each statement. Only with / Expr / Assign matter."""
         if isinstance(stmt, ast.With):
             self._handle_with(stmt)
         elif isinstance(stmt, ast.Expr):
             self._handle_expr(stmt.value)
         elif isinstance(stmt, ast.Assign):
             self._handle_assign(stmt)
-        # If/For/Try 등은 codegen 이 만들지 않음 — 무시
+        # codegen does not produce If/For/Try, etc. — ignore
 
     def _handle_with(self, node: ast.With) -> None:
-        """``with page.expect_popup() as page1_info:`` 등 인식 + body 순회.
+        """Recognize ``with page.expect_popup() as page1_info:`` etc. and walk the body.
 
-        body 의 마지막 stmt 가 popup 을 트리거하는 액션 (보통 click) 이라
-        body 도 정상 순회한다.
+        The last stmt of the body is usually the action (typically click) that
+        triggers the popup, so we still walk the body normally.
         """
         for item in node.items:
             ctx = item.context_expr
-            # page.expect_popup() 패턴
+            # page.expect_popup() pattern
             if (
                 isinstance(ctx, ast.Call)
                 and isinstance(ctx.func, ast.Attribute)
@@ -130,12 +129,13 @@ class _AstConverter(ast.NodeVisitor):
             self._handle_stmt(stmt)
 
     def _handle_assign(self, node: ast.Assign) -> None:
-        """``page1 = page1_info.value`` 패턴 인식 → page1 을 page var 로 등록.
+        """Recognize the ``page1 = page1_info.value`` pattern → register page1 as a page var.
 
-        그 외 assign 은 무시. ``browser =`` / ``context =`` / ``page =`` 같은
-        codegen 의 공통 prelude 도 본 변환기는 page 변수만 다루므로 영향 없음.
+        Other assigns are ignored. codegen's common prelude
+        (``browser =`` / ``context =`` / ``page =``) is unaffected because this
+        converter only tracks page variables.
         """
-        # 우변이 Attribute 이고 .value 접근 + Name 이 popup_info 면 페이지 승격
+        # If the RHS is an Attribute access to .value on a Name in popup_info, promote it
         v = node.value
         if (
             isinstance(v, ast.Attribute)
@@ -148,30 +148,31 @@ class _AstConverter(ast.NodeVisitor):
                     self.page_vars.add(tgt.id)
 
     def _handle_expr(self, expr: ast.expr) -> None:
-        """statement 의 expression 본체를 액션으로 시도."""
+        """Try to interpret the statement's expression body as an action."""
         if not isinstance(expr, ast.Call):
             return
         step = self._convert_call_to_step(expr)
         if step is not None:
-            # T-H 연계 — click 직전 hover 가 필요해 보이는 ancestor 가 target
-            # chain 안에 정적으로 식별되면 hover step 을 prepend. DOM 접근 없이
-            # selector 패턴만으로 추정 (보수적). false-positive 시 hover 가
-            # no-op 으로 끝나 후속 click 에 부담 0.
+            # T-H integration — when an ancestor that likely needs a hover before the
+            # click is statically identifiable in the target chain, prepend a hover
+            # step. Inferred from selector patterns alone, without DOM access
+            # (conservative). On false positives the hover ends as a no-op, adding
+            # zero overhead to the following click.
             self._maybe_prepend_hover(step)
             step["step"] = len(self.steps) + 1
             step.setdefault("fallback_targets", [])
             self.steps.append(step)
 
     def _maybe_prepend_hover(self, step: dict) -> None:
-        """click step 의 target chain 에서 hover trigger ancestor 추정 → hover step 삽입.
+        """Infer a hover-trigger ancestor in the click step's target chain → insert a hover step.
 
-        조건:
-          - action == 'click' 만 (다른 액션은 hover 가 의미 없음)
-          - target 안에 ``>>`` chain 이 존재 (단일 segment 면 ancestor 정보 없음)
-          - chain 의 leaf 가 아닌 segment 중 nav/menu/dropdown/gnb 등 신호 매칭
+        Conditions:
+          - action == 'click' only (hover is meaningless for other actions)
+          - target contains a ``>>`` chain (a single segment has no ancestor info)
+          - One of the non-leaf segments matches a signal like nav / menu / dropdown / gnb
 
-        hover trigger 가 발견되면 ``hover`` 액션 step 을 ``self.steps`` 에 직접 append
-        (caller 가 click step 을 뒤이어 append).
+        When a hover trigger is found, append a ``hover`` action step directly
+        to ``self.steps`` (the caller appends the click step right after).
         """
         if step.get("action") != "click":
             return
@@ -181,56 +182,56 @@ class _AstConverter(ast.NodeVisitor):
         segments = [s.strip() for s in target.split(" >> ") if s.strip()]
         if len(segments) < 2:
             return
-        # leaf 는 click 본체 — ancestor 후보는 그 외 segment.
+        # The leaf is the click target — ancestor candidates are all other segments.
         for i in range(len(segments) - 1):
             seg = segments[i]
             if not _SEG_LOOKS_LIKE_HOVER_TRIGGER(seg):
                 continue
-            # 해당 segment 까지의 chain 을 hover target 으로.
+            # Use the chain up to that segment as the hover target.
             hover_target = " >> ".join(segments[: i + 1])
             hover_step: dict = {
                 "step": len(self.steps) + 1,
                 "action": "hover",
                 "target": hover_target,
                 "value": "",
-                "description": f"메뉴 펼치기 (heuristic, {seg})",
+                "description": f"open menu (heuristic, {seg})",
                 "fallback_targets": [],
             }
             self.steps.append(hover_step)
-            return  # 여러 후보 중 가장 바깥 ancestor 1개만
+            return  # only the outermost ancestor among multiple candidates
 
     # ─────────────────────────────────────────────────────────────────────
-    # Call → step 변환
+    # Call → step conversion
     # ─────────────────────────────────────────────────────────────────────
 
     def _convert_call_to_step(self, call: ast.Call) -> Optional[dict]:
-        """``page.X(...).Y(...)...`` 형태의 Call 을 단일 14-DSL 스텝으로 변환.
+        """Convert a ``page.X(...).Y(...)...`` Call into a single 14-DSL step.
 
-        매칭 안 되면 None — 호출 측이 무시한다.
+        Returns None if no match — caller ignores it.
         """
-        # 1) expect(...).to_X(...) 패턴 (verify 액션)
+        # 1) expect(...).to_X(...) pattern (verify action)
         verify = self._try_parse_expect(call)
         if verify is not None:
             return verify
 
-        # 2) 일반 메서드 chain — receiver chain + 마지막 메서드명 추출
+        # 2) Generic method chain — extract receiver chain + final method name
         chain = self._collect_chain(call)
         if chain is None:
             return None
         receiver_root, segments, final_method, final_args, final_kwargs = chain
 
         if receiver_root not in self.page_vars and final_method != "goto":
-            # page 변수가 아니면 무시 (browser/context/expect 등 prelude)
+            # Ignore non-page variables (browser/context/expect prelude, etc.)
             return None
 
-        # 3) page.goto(URL) — 단순 형태 (segments 비어 있고 final_method == goto)
+        # 3) page.goto(URL) — simple form (no segments and final_method == goto)
         if final_method == "goto" and not segments and receiver_root in self.page_vars:
             url = self._literal_str(final_args[0]) if final_args else None
             if url is None:
                 return None
             return {
                 "action": "navigate", "target": "", "value": url,
-                "description": f"{url}로 이동",
+                "description": f"navigate to {url}",
             }
 
         # 4) page.wait_for_timeout(ms)
@@ -240,23 +241,23 @@ class _AstConverter(ast.NodeVisitor):
                 return None
             return {
                 "action": "wait", "target": "", "value": str(ms),
-                "description": f"{ms}ms 대기",
+                "description": f"wait {ms}ms",
             }
 
         # 5) page.route(PATTERN, lambda r: r.fulfill(...)) — mock_*
         if final_method == "route" and not segments:
             return self._parse_mock_route(call)
 
-        # 6) target 이 필요한 액션 — segments 로부터 target 문자열 합성
+        # 6) Action that needs a target — synthesize target string from segments
         target = self._segments_to_target(segments)
         if target is None and final_method not in {"close"}:
-            # target 추출 실패 — AST 가 다루지 못하는 패턴 → 호출자가 fallback
+            # Target extraction failed — pattern AST cannot handle → caller falls back
             return None
 
         return self._dispatch_action(final_method, target or "", final_args, final_kwargs)
 
     def _try_parse_expect(self, call: ast.Call) -> Optional[dict]:
-        """``expect(<locator-expr>).to_have_text("X")`` / ``.to_be_visible()`` 변환."""
+        """Convert ``expect(<locator-expr>).to_have_text("X")`` / ``.to_be_visible()``."""
         if not isinstance(call.func, ast.Attribute):
             return None
         outer_method = call.func.attr
@@ -269,7 +270,7 @@ class _AstConverter(ast.NodeVisitor):
             and inner.func.id == "expect"
         ):
             return None
-        # inner.args[0] 은 locator 표현식 — chain 으로 처리
+        # inner.args[0] is the locator expression — handle as chain
         if not inner.args:
             return None
         locator_expr = inner.args[0]
@@ -277,8 +278,8 @@ class _AstConverter(ast.NodeVisitor):
         if chain is None:
             return None
         root, segments, _final_method_unused, _, _ = chain
-        # locator 자체가 하나의 chain 끝이라, _collect_chain 은 마지막 호출을 final_*
-        # 로 떼어낸다. 다시 합쳐 target 으로 전체 평탄화한다.
+        # The locator itself is a chain end, so _collect_chain peels off the last
+        # call as final_*. Re-attach to flatten the whole thing into a target.
         full_segments = list(segments)
         full_segments.append(_LocatorSegment(_final_method_unused,
                                              _collect_args(locator_expr),
@@ -292,72 +293,72 @@ class _AstConverter(ast.NodeVisitor):
             text = self._literal_str(call.args[0]) if call.args else ""
             return {
                 "action": "verify", "target": target, "value": text,
-                "description": f"텍스트 '{text}' 확인",
+                "description": f"verify text '{text}'",
             }
         # to_be_visible
         return {
             "action": "verify", "target": target, "value": "",
-            "description": "요소 표시 확인",
+            "description": "verify visible",
         }
 
     # ─────────────────────────────────────────────────────────────────────
-    # 액션 dispatch
+    # Action dispatch
     # ─────────────────────────────────────────────────────────────────────
 
     def _dispatch_action(
         self, method: str, target: str,
         args: list[ast.expr], kwargs: list[ast.keyword],
     ) -> Optional[dict]:
-        """final method 이름과 args 로부터 14-DSL 액션 step 생성."""
+        """Build a 14-DSL action step from the final method name and args."""
         if method == "click":
             return {
                 "action": "click", "target": target, "value": "",
-                "description": "클릭",
+                "description": "click",
             }
         if method == "fill":
             value = self._literal_str(args[0]) if args else ""
             return {
                 "action": "fill", "target": target, "value": value,
-                "description": f"'{value}' 입력",
+                "description": f"fill '{value}'",
             }
         if method == "press":
             value = self._literal_str(args[0]) if args else ""
             return {
                 "action": "press", "target": target, "value": value,
-                "description": f"{value} 키 입력",
+                "description": f"press {value}",
             }
         if method == "select_option":
-            # select_option("ko") 또는 select_option(label="...") / value="..."
+            # select_option("ko") or select_option(label="...") / value="..."
             value = ""
             if args:
                 value = self._literal_str(args[0]) or ""
             elif kwargs:
-                # label= / value= 우선
+                # Prefer label= / value=
                 for kw in kwargs:
                     if kw.arg in ("label", "value"):
                         value = self._literal_str(kw.value) or ""
                         break
             return {
                 "action": "select", "target": target, "value": value,
-                "description": f"'{value}' 선택",
+                "description": f"select '{value}'",
             }
         if method == "check":
             return {
                 "action": "check", "target": target, "value": "on",
-                "description": "체크",
+                "description": "check",
             }
         if method == "uncheck":
             return {
                 "action": "check", "target": target, "value": "off",
-                "description": "체크 해제",
+                "description": "uncheck",
             }
         if method == "hover":
             return {
                 "action": "hover", "target": target, "value": "",
-                "description": "마우스 호버",
+                "description": "hover",
             }
         if method == "set_input_files":
-            # set_input_files("path") 또는 ["path1", "path2"] (첫 항목)
+            # set_input_files("path") or ["path1", "path2"] (first item)
             if not args:
                 return None
             arg = args[0]
@@ -370,10 +371,10 @@ class _AstConverter(ast.NodeVisitor):
                 return None
             return {
                 "action": "upload", "target": target, "value": path,
-                "description": f"'{path}' 파일 업로드",
+                "description": f"upload '{path}'",
             }
         if method == "drag_to":
-            # args[0] = page.locator("dst") 같은 표현
+            # args[0] = expression like page.locator("dst")
             if not args:
                 return None
             dst_chain = self._collect_chain(args[0])
@@ -388,14 +389,14 @@ class _AstConverter(ast.NodeVisitor):
                 return None
             return {
                 "action": "drag", "target": target, "value": dst_target,
-                "description": "드래그 앤 드롭",
+                "description": "drag and drop",
             }
         if method == "scroll_into_view_if_needed":
             return {
                 "action": "scroll", "target": target, "value": "into_view",
-                "description": "요소 위치로 스크롤",
+                "description": "scroll into view",
             }
-        # close / go_back / 등 — 무시
+        # close / go_back / etc. — ignore
         return None
 
     def _parse_mock_route(self, call: ast.Call) -> Optional[dict]:
@@ -406,7 +407,7 @@ class _AstConverter(ast.NodeVisitor):
         if pattern is None:
             return None
         handler = call.args[1]
-        # handler 는 lambda — body 가 r.fulfill(status=N) 또는 r.fulfill(body=...)
+        # The handler is a lambda — body is r.fulfill(status=N) or r.fulfill(body=...)
         if not isinstance(handler, ast.Lambda):
             return None
         body = handler.body
@@ -428,7 +429,7 @@ class _AstConverter(ast.NodeVisitor):
                 return None
             return {
                 "action": "mock_data", "target": pattern, "value": body_value,
-                "description": f"{pattern} 응답 본문 모킹",
+                "description": f"mock response body for {pattern}",
             }
         if status_kw is not None:
             status_value = self._literal_int(status_kw)
@@ -437,24 +438,24 @@ class _AstConverter(ast.NodeVisitor):
             return {
                 "action": "mock_status", "target": pattern,
                 "value": str(status_value),
-                "description": f"{pattern} 응답 상태 {status_value} 모킹",
+                "description": f"mock response status {status_value} for {pattern}",
             }
         return None
 
     # ─────────────────────────────────────────────────────────────────────
-    # chain 분해 + target 합성
+    # Chain decomposition + target synthesis
     # ─────────────────────────────────────────────────────────────────────
 
     def _collect_chain(self, node: ast.expr):
-        """수신자 chain 을 모은다.
+        """Collect the receiver chain.
 
-        ``page.X(...).Y(...).Z(...)`` 같은 형태에서:
+        For ``page.X(...).Y(...).Z(...)``:
           - root = "page" (Name)
-          - segments = [X(...), Y(...)]  (마지막 Z 제외)
+          - segments = [X(...), Y(...)]  (excluding the final Z)
           - final_method = "Z"
-          - final_args / final_kwargs = Z 의 인자
+          - final_args / final_kwargs = Z's args
 
-        ``.first`` 처럼 Attribute (Call 아님) 인 segment 도 포함한다.
+        Also includes Attribute (non-Call) segments such as ``.first``.
         """
         if not isinstance(node, ast.Call):
             return None
@@ -465,7 +466,7 @@ class _AstConverter(ast.NodeVisitor):
         final_args = node.args
         final_kwargs = node.keywords
 
-        # 수신자 = node.func.value — 여기서부터 segments 수집
+        # Receiver = node.func.value — start collecting segments here
         segments = []
         cur = node.func.value
         while True:
@@ -477,7 +478,7 @@ class _AstConverter(ast.NodeVisitor):
                 ))
                 cur = cur.func.value
             elif isinstance(cur, ast.Attribute):
-                # `.first` 같은 Attribute access (Call 아님)
+                # Attribute access like `.first` (not a Call)
                 segments.append(_LocatorSegment(
                     method=cur.attr, args=[], kwargs=[],
                 ))
@@ -494,21 +495,21 @@ class _AstConverter(ast.NodeVisitor):
     def _segments_to_target(
         self, segments: list["_LocatorSegment"],
     ) -> Optional[str]:
-        """chain 의 segment list 를 14-DSL ``target`` 문자열로 평탄화.
+        """Flatten a list of chain segments into a 14-DSL ``target`` string.
 
-        규칙:
-          - frame_locator(sel) → target 앞에 ``frame=<sel> >> `` 누적
+        Rules:
+          - frame_locator(sel) → accumulate ``frame=<sel> >> `` in front of target
           - get_by_role(role, name=N) → ``role=<role>, name=<N>``
           - get_by_text(t) / get_by_label(t) / get_by_placeholder(t) / get_by_test_id(t)
-            → 각각 ``text=t`` / ``label=t`` / ``placeholder=t`` / ``testid=t``
-          - locator(sel) → ``sel`` (CSS/XPath 그대로). 이미 target 있으면 ``>> sel``
-          - nth(N) → ``, nth=N`` 후미 부착
+            → ``text=t`` / ``label=t`` / ``placeholder=t`` / ``testid=t`` respectively
+          - locator(sel) → ``sel`` (CSS/XPath verbatim). If target is non-empty, ``>> sel``
+          - nth(N) → append ``, nth=N``
           - first → ``, nth=0``
           - filter(has_text=T) → ``, has_text=T``
         """
         target = ""
         frame_prefix_parts: list[str] = []
-        # 임시 누적 변수 — locator chain 의 ``>>`` 결합용
+        # Working buffer for ``>>``-joining the locator chain
         for seg in segments:
             method = seg.method
 
@@ -595,12 +596,12 @@ class _AstConverter(ast.NodeVisitor):
                 continue
 
             if method == "last":
-                # codegen 이 ``.last`` 는 거의 안 만들지만 보존만.
+                # codegen rarely produces ``.last`` but we keep it.
                 target = self._append_modifier(target, "nth=-1")
                 continue
 
             if method == "filter":
-                # filter(has_text="...") 만 표준 처리
+                # Only standardize filter(has_text="...")
                 for kw in seg.kwargs:
                     if kw.arg == "has_text":
                         v = self._literal_str(kw.value)
@@ -610,8 +611,8 @@ class _AstConverter(ast.NodeVisitor):
                         break
                 continue
 
-            # 그 외 unknown — 무시 (line fallback 으로 가지 않게 부분 처리)
-            # 예: .all() / .count() 같은 read-only 는 액션 본체에 없으므로 도달 불가
+            # Other unknowns — ignore (partial handling so we don't drop to line fallback).
+            # e.g. read-only methods like .all() / .count() never appear as action bodies.
 
         if frame_prefix_parts:
             joined_frame = " >> ".join(frame_prefix_parts)
@@ -620,26 +621,26 @@ class _AstConverter(ast.NodeVisitor):
 
     @staticmethod
     def _append_to_target(existing: str, segment: str) -> str:
-        """기존 target 에 새 selector segment 를 ``>>`` 로 결합."""
+        """Join a new selector segment onto the existing target with ``>>``."""
         if not existing:
             return segment
         return f"{existing} >> {segment}"
 
     @staticmethod
     def _append_modifier(existing: str, modifier: str) -> str:
-        """``, modifier`` 를 후미에 붙인다 (nth/has_text 같은 옵션)."""
+        """Append ``, modifier`` (options like nth/has_text)."""
         if not existing:
-            # base selector 없이 modifier 만 있는 비정상 케이스 — 그대로 둔다
+            # Unusual case: modifier only, no base selector — keep as is
             return modifier
         return f"{existing}, {modifier}"
 
     # ─────────────────────────────────────────────────────────────────────
-    # 리터럴 추출 헬퍼
+    # Literal-extraction helpers
     # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _literal_str(node: ast.expr) -> Optional[str]:
-        """ast.Constant(str) 만 추출. f-string / 변수 / 표현식 결합은 None."""
+        """Extract only ast.Constant(str). Returns None for f-strings / variables / expressions."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         return None
@@ -649,7 +650,7 @@ class _AstConverter(ast.NodeVisitor):
         if isinstance(node, ast.Constant) and isinstance(node.value, int) \
                 and not isinstance(node.value, bool):
             return node.value
-        # 문자열로 저장된 숫자도 허용 (codegen 은 거의 안 만들지만)
+        # Allow integers stored as strings (codegen rarely does this)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             try:
                 return int(node.value)
@@ -659,12 +660,12 @@ class _AstConverter(ast.NodeVisitor):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Locator segment 표현 — 내부 자료구조
+# Locator segment representation — internal data structure
 # ─────────────────────────────────────────────────────────────────────────
 
 
 class _LocatorSegment:
-    """chain 의 한 마디. method=호출명, args/kwargs=ast 노드 그대로."""
+    """One link of a chain. method=call name, args/kwargs=raw ast nodes."""
 
     __slots__ = ("method", "args", "kwargs")
 
@@ -674,8 +675,9 @@ class _LocatorSegment:
         self.kwargs = list(kwargs) if kwargs else []
 
 
-# T-H 연계 — chain segment 가 hover-trigger 처럼 보이는지 정적 식별 (DOM 무관).
-# 보수적: 명시적 신호만 매칭 → false-positive 최소화.
+# T-H integration — statically identify whether a chain segment looks like a
+# hover trigger (DOM-agnostic). Conservative: match only explicit signals to
+# minimize false positives.
 import re as _re
 
 _HOVER_TRIGGER_PATTERNS = [
@@ -690,7 +692,7 @@ _HOVER_TRIGGER_PATTERNS = [
 
 
 def _SEG_LOOKS_LIKE_HOVER_TRIGGER(seg: str) -> bool:
-    """segment 가 hover trigger 가능성이 있는 ancestor 인지 보수적 추정."""
+    """Conservatively infer whether a segment is an ancestor that could be a hover trigger."""
     s = seg.strip()
     if not s:
         return False

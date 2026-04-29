@@ -5,55 +5,55 @@ from playwright.sync_api import Page, Locator
 
 log = logging.getLogger(__name__)
 
-# DSL target prefix 상수 — _resolve_* 와 _raw_* 양쪽에서 공용.
+# DSL target prefix constants — shared by _resolve_* and _raw_*.
 _ROLE_PREFIX = "role="
 
 
 class ShadowAccessError(RuntimeError):
-    """closed shadow root 를 만나 자동화가 불가능한 상태.
+    """Encountered a closed shadow root that automation cannot reach.
 
-    T-C (P0.2). DSL 의 ``shadow=<host>`` segment 가 mode=closed 로 attach 된
-    Web Component 를 가리키면 raise. executor 가 이를 잡아 step 을 즉시
-    FAIL 처리하고 시나리오 종료한다 — 30초 timeout hang 방지.
+    T-C (P0.2). Raised when the DSL ``shadow=<host>`` segment points at a Web
+    Component attached with mode=closed. The executor catches this and immediately
+    FAILs the step / ends the scenario — preventing a 30s timeout hang.
     """
 
 
 class LocatorResolver:
     """
-    Dify가 생성한 target을 Playwright Locator로 변환하는 7단계 시맨틱 탐색 엔진.
+    7-stage semantic-search engine that converts a Dify-produced target into a Playwright Locator.
 
-    탐색 순서:
-      1. role + name   (접근성 역할 기반, 가장 안정적)
-      2. text          (화면 표시 텍스트)
-      3. label         (입력 폼 라벨)
-      4. placeholder   (입력 필드 힌트)
-      5. testid        (data-testid 속성)
-      6. CSS / XPath   (구조적 폴백)
-      7. 존재 검증     (count > 0 확인 후 반환, 실패 시 None)
+    Lookup order:
+      1. role + name   (accessibility role; most stable)
+      2. text          (visible text)
+      3. label         (input-form label)
+      4. placeholder   (input-field hint)
+      5. testid        (data-testid attribute)
+      6. CSS / XPath   (structural fallback)
+      7. existence check (return when count > 0, None on failure)
     """
 
     def __init__(self, page: Page):
         self.page = page
-        # 같은 시나리오 내에서 한 번 healed 된 selector 매핑.
-        # 예: step 2 의 fill 이 'name=query' → 'placeholder=검색' 로 복구되면
-        # step 3 의 press 가 같은 'name=query' 를 만났을 때 곧바로
-        # 'placeholder=검색' 부터 시도해 동일 element 에 작용하게 한다.
+        # Map of selectors healed earlier in the same scenario.
+        # e.g. if step 2's fill is healed 'name=query' → 'placeholder=Search',
+        # then step 3's press meeting the same 'name=query' immediately
+        # tries 'placeholder=Search' first and acts on the same element.
         self.healed_aliases: dict[str, str] = {}
 
     @staticmethod
     def _safe_count(loc: Locator) -> int:
-        """요소 수를 반환하되, 잘못된 선택자 시 0 을 반환한다."""
+        """Return element count; return 0 for invalid selectors."""
         try:
             return loc.count()
         except Exception:
             return 0
 
     def record_alias(self, original, healed) -> None:
-        """원본 target 이 healed target 으로 복구된 사실을 기록한다.
+        """Record that an original target was healed into a healed one.
 
-        같은 시나리오 안에서 후속 스텝이 같은 ``original`` 을 만나면
-        곧바로 ``healed`` 를 첫 시도로 사용해 일관성을 유지한다.
-        ``original`` 이 비어 있으면 무시한다.
+        When a later step in the same scenario meets the same ``original``,
+        it immediately uses ``healed`` as its first attempt for consistency.
+        Ignored if ``original`` is empty.
         """
         if not original or not healed:
             return
@@ -62,48 +62,48 @@ class LocatorResolver:
         if not key or not val or key == val:
             return
         if self.healed_aliases.get(key) != val:
-            log.info("[Resolver] alias 등록: %s → %s", key, val)
+            log.info("[Resolver] alias registered: %s → %s", key, val)
             self.healed_aliases[key] = val
 
     def resolve(self, target) -> Locator | None:
-        """DSL target 을 Playwright Locator 로 변환한다.
+        """Convert a DSL target into a Playwright Locator.
 
-        7단계 시맨틱 탐색 순서: role→text→label→placeholder→testid→CSS/XPath→존재 검증.
+        7-stage semantic-search order: role→text→label→placeholder→testid→CSS/XPath→existence check.
 
         Args:
-            target: DSL 스텝의 target 값. 문자열(``"role=button, name=로그인"``),
-                    dict(``{"role": "button", "name": "확인"}``), 또는 None.
+            target: DSL step's target value. A string (``"role=button, name=Sign in"``),
+                    dict (``{"role": "button", "name": "OK"}``), or None.
 
         Returns:
-            매칭된 ``Locator`` 객체(항상 ``.first``). 요소 미발견 시 ``None``.
+            Matching ``Locator`` (always ``.first``). ``None`` if no element is found.
 
-        T-A (P0.4) 확장: target 후미 modifier (`, nth=N` / `, has_text=...`) 처리.
-        AST 변환기가 codegen 의 ``.nth(N)`` / ``.first`` / ``.filter(has_text=...)``
-        를 보존하도록 출력하는 14-DSL 옵션을 receiver-side 에서 해석.
+        T-A (P0.4) extension: handles trailing modifiers in target (`, nth=N` / `, has_text=...`).
+        Interprets the 14-DSL options the AST converter emits to preserve codegen's
+        ``.nth(N)`` / ``.first`` / ``.filter(has_text=...)`` on the receiver side.
         """
         if not target:
             return None
 
-        # 직전 healed alias 가 있으면 그쪽을 우선 사용
+        # If a healed alias is registered, prefer it
         if isinstance(target, str):
             aliased = self.healed_aliases.get(target.strip())
             if aliased:
-                log.debug("[Resolver] alias 사용: %s → %s", target, aliased)
+                log.debug("[Resolver] using alias: %s → %s", target, aliased)
                 target = aliased
 
-        # Dict 타겟 (Dify가 JSON 객체로 보낸 경우)
+        # Dict target (when Dify sent a JSON object)
         if isinstance(target, dict):
             return self._resolve_dict(target)
 
         target_str = str(target).strip()
 
-        # T-A (P0.4) — 후미 modifier (nth, has_text) 추출.
-        # 본체 selector 와 modifier 를 분리.
+        # T-A (P0.4) — extract trailing modifiers (nth, has_text).
+        # Split the body selector from the modifiers.
         base_str, modifiers = _split_modifiers(target_str)
 
-        # P0.1 #2 — `>>` chain (예: ``#sidebar >> role=button, name=Settings``,
-        # ``frame=#x >> role=textbox, name=Card``). AST 변환기가 codegen 의 nested
-        # locator 를 보존해 emit 한 형태를 segment 단위로 누적 적용한다.
+        # P0.1 #2 — `>>` chain (e.g. ``#sidebar >> role=button, name=Settings``,
+        # ``frame=#x >> role=textbox, name=Card``). Apply each segment cumulatively
+        # — the AST converter emits this form to preserve codegen's nested locators.
         if " >> " in base_str:
             if modifiers:
                 raw = self._resolve_chain(base_str, raw=True)
@@ -113,7 +113,7 @@ class LocatorResolver:
             return self._resolve_chain(base_str, raw=False)
 
         if not modifiers:
-            # 기존 경로 — .first 가 즉시 적용된 단일 element locator 반환.
+            # Existing path — return a single-element locator with .first applied.
             loc = self._resolve_role(base_str)
             if loc is None:
                 loc = self._resolve_semantic_prefix(base_str)
@@ -121,18 +121,18 @@ class LocatorResolver:
                 loc = self._resolve_css_xpath(base_str)
             return loc
 
-        # T-A modifier 경로 — raw multi-element locator 에 nth/filter 적용.
-        # `.first` 위에 `.nth(N)` 거는 것은 Playwright 의미상 N≥1 일 때 빈 결과.
+        # T-A modifier path — apply nth/filter on a raw multi-element locator.
+        # Calling `.nth(N)` on top of `.first` yields an empty result for N≥1 in Playwright.
         raw = self._resolve_raw(base_str)
         if raw is None:
             return None
         return _apply_modifiers(raw, modifiers)
 
     def _resolve_dict(self, target: dict) -> Locator | None:
-        """dict 형태의 target 을 키(role/label/text/placeholder/testid) 우선순위로 해석한다.
+        """Resolve a dict-form target by key priority (role/label/text/placeholder/testid).
 
-        각 키에 대해 ``count() > 0`` 존재 검증을 수행하여
-        요소가 없을 때 30초 타임아웃을 방지한다.
+        Performs a ``count() > 0`` existence check per key to avoid the
+        30-second timeout when no element is present.
         """
         if target.get("role"):
             loc = self.page.get_by_role(
@@ -151,31 +151,32 @@ class LocatorResolver:
         if target.get("testid"):
             loc = self.page.get_by_test_id(target["testid"])
             return loc.first if self._safe_count(loc) > 0 else None
-        # 폴백: selector 키 또는 문자열 변환
+        # Fallback: selector key or string conversion
         fallback = target.get("selector", str(target))
         return self._resolve_css_xpath(str(fallback).strip())
 
-    # name 한정자 없이 쓰면 페이지 전체에서 첫 매치(보통 헤더/로고 등) 가 잡혀
-    # 의도와 다른 element 에 액션이 가는 false-positive PASS 를 만든다.
-    # 이런 광범위 role 은 거부하고 fallback_targets 로 강제 진입시킨다.
+    # Without a name qualifier, the first page-wide match (typically header/logo)
+    # is selected, producing a false-positive PASS where the action lands on the
+    # wrong element. We reject these broad roles and force the use of fallback_targets.
     _AMBIGUOUS_ROLES_WITHOUT_NAME = {
         "link", "button", "textbox", "checkbox", "radio",
         "searchbox", "combobox", "menuitem", "tab", "option",
     }
 
     def _resolve_role(self, target_str: str) -> Locator | None:
-        """``role=`` 접두사가 있는 target 을 get_by_role 로 해석한다.
+        """Resolve targets prefixed with ``role=`` via get_by_role.
 
-        ``count() > 0`` 존재 검증을 수행하여 요소가 없을 때
-        30초 타임아웃 없이 즉시 None 을 반환한다.
+        Performs a ``count() > 0`` existence check so that when no element is
+        present we return None immediately without the 30-second timeout.
 
-        ``name=`` 한정자 없는 광범위 role (link, button 등) 은 거부한다 —
-        '첫 번째 검색 결과 링크' 의도가 페이지 헤더/로고에 잘못 매치되는
-        false-positive PASS 를 막기 위함. fallback_targets 가 있으면 그쪽 사용.
+        Reject broad roles (link, button, etc.) without a ``name=`` qualifier —
+        prevents the false-positive PASS where 'first search result link' intent
+        wrongly matches the page header/logo. Use fallback_targets if present.
 
-        T-H (B) — ``role=X, name=Y`` 가 여러 element 와 매치할 때 (모바일 드로어
-        + 데스크탑 GNB 같이 같은 라벨이 두 곳에 있는 사이트) **visible 한 매치를 우선** 선택.
-        모두 hidden 이면 기존대로 ``.first`` 폴백 (Visibility Healer 가 후속 처리).
+        T-H (B) — when ``role=X, name=Y`` matches multiple elements (sites with
+        mobile drawer + desktop GNB sharing the same label), **prefer the visible
+        match**. If all are hidden, fall back to ``.first`` as before (Visibility
+        Healer handles the rest).
         """
         if not target_str.startswith(_ROLE_PREFIX):
             return None
@@ -187,17 +188,17 @@ class LocatorResolver:
             if self._safe_count(loc) == 0:
                 return None
             return _prefer_visible(loc)
-        # role만 있고 name이 없는 경우
+        # role only, no name
         role_only = target_str.replace(_ROLE_PREFIX, "", 1).strip()
-        # "role=link, text=X" 같은 복합 셀렉터 → role 부분만 추출
+        # Composite selectors like "role=link, text=X" → extract only the role part
         if "," in role_only:
             role_only = role_only.split(",", 1)[0].strip()
         if not role_only:
             return None
         if role_only.lower() in self._AMBIGUOUS_ROLES_WITHOUT_NAME:
             log.warning(
-                "[Resolver] role=%r 에 name= 없음 → 광범위 매치 위험으로 거부. "
-                "fallback_targets 또는 휴리스틱으로 처리",
+                "[Resolver] role=%r has no name= → rejected (broad-match risk). "
+                "Use fallback_targets or heuristics.",
                 role_only,
             )
             return None
@@ -205,10 +206,10 @@ class LocatorResolver:
         return loc.first if self._safe_count(loc) > 0 else None
 
     def _resolve_semantic_prefix(self, target_str: str) -> Locator | None:
-        """text=/label=/placeholder=/testid= 접두사를 매칭하여 해당 메서드를 호출한다.
+        """Match text= / label= / placeholder= / testid= prefixes and call the matching method.
 
-        ``count() > 0`` 존재 검증을 수행하여 요소가 없을 때
-        30초 타임아웃 없이 즉시 None 을 반환한다.
+        Performs a ``count() > 0`` existence check so that when no element is
+        present we return None immediately without the 30-second timeout.
         """
         prefix_map = {
             "text=": self.page.get_by_text,
@@ -224,21 +225,21 @@ class LocatorResolver:
         return None
 
     def _resolve_css_xpath(self, target_str: str) -> Locator | None:
-        """CSS 선택자 또는 XPath 로 요소를 탐색하고, count > 0 이면 반환한다."""
+        """Find by CSS selector or XPath; return when count > 0."""
         try:
             loc = self.page.locator(target_str)
             if self._safe_count(loc) > 0:
                 return loc.first
         except Exception:
-            log.debug("CSS/XPath 탐색 실패: %s", target_str)
+            log.debug("CSS/XPath lookup failed: %s", target_str)
         return None
 
     def _resolve_raw(self, base_str: str) -> Locator | None:
-        """T-A modifier 경로용. ``.first`` 미적용 multi-element Locator 반환.
+        """For the T-A modifier path. Returns a multi-element Locator without ``.first``.
 
-        ``_resolve_role`` / ``_resolve_semantic_prefix`` / ``_resolve_css_xpath``
-        와 같은 dispatch 순서를 따르되, 단일 element 로 reduce 하지 않는다.
-        modifier (`nth=N` / `has_text=...`) 가 있을 때만 호출.
+        Same dispatch order as ``_resolve_role`` / ``_resolve_semantic_prefix`` /
+        ``_resolve_css_xpath``, but does not reduce to a single element.
+        Called only when modifiers (`nth=N` / `has_text=...`) are present.
         """
         loc = self._raw_role(base_str)
         if loc is None:
@@ -248,8 +249,8 @@ class LocatorResolver:
         return loc
 
     def _raw_role(self, base_str: str) -> Locator | None:
-        """``role=...`` 패턴의 raw multi-element locator. modifier 가 명시됐으므로
-        ambiguous role 거부는 적용 안 한다."""
+        """Raw multi-element locator for the ``role=...`` pattern. Skips the
+        ambiguous-role rejection because a modifier is explicitly present."""
         if not base_str.startswith(_ROLE_PREFIX):
             return None
         m = re.match(r"role=(.+?),\s*name=(.+)", base_str)
@@ -267,7 +268,7 @@ class LocatorResolver:
         return loc if self._safe_count(loc) > 0 else None
 
     def _raw_semantic_prefix(self, base_str: str) -> Locator | None:
-        """``text=`` / ``label=`` / ``placeholder=`` / ``testid=`` 의 raw locator."""
+        """Raw locator for ``text=`` / ``label=`` / ``placeholder=`` / ``testid=``."""
         prefix_map = {
             "text=": self.page.get_by_text,
             "label=": self.page.get_by_label,
@@ -282,40 +283,41 @@ class LocatorResolver:
         return None
 
     def _raw_css_xpath(self, base_str: str) -> Locator | None:
-        """CSS/XPath 의 raw locator (``.first`` 미적용)."""
+        """Raw CSS/XPath locator (no ``.first``)."""
         try:
             loc = self.page.locator(base_str)
             if self._safe_count(loc) > 0:
                 return loc
         except Exception:
-            log.debug("[Resolver] raw CSS/XPath 탐색 실패: %s", base_str)
+            log.debug("[Resolver] raw CSS/XPath lookup failed: %s", base_str)
         return None
 
     # ─────────────────────────────────────────────────────────────────────
-    # Chain 해석 (T-A / P0.1 #2) — `>>` 로 연결된 nested locator
+    # Chain resolution (T-A / P0.1 #2) — nested locators joined by `>>`
     # ─────────────────────────────────────────────────────────────────────
 
     def _resolve_chain(self, base_str: str, *, raw: bool) -> Locator | None:
-        """``>>`` 로 연결된 segment 들을 누적 chain 으로 해석한다.
+        """Resolve segments joined by ``>>`` as a cumulative chain.
 
-        지원 segment:
-          - ``frame=<sel>`` → ``page.frame_locator(sel)`` (시작 segment 권장)
+        Supported segments:
+          - ``frame=<sel>`` → ``page.frame_locator(sel)`` (preferred as the first segment)
           - ``role=<r>`` / ``role=<r>, name=<n>`` → ``cur.get_by_role(...)``
           - ``text=<t>`` / ``label=<t>`` / ``placeholder=<t>`` / ``testid=<t>``
-          - 그 외 → ``cur.locator(seg)`` (CSS/XPath fallback)
+          - Other → ``cur.locator(seg)`` (CSS/XPath fallback)
 
-        Container 로 좁혀진 chain context 에서는 ambiguous role (name 없는
-        ``button``/``link``) 거부를 적용하지 않는다. ``#sidebar >> role=button``
-        같은 형태는 컨테이너 자체가 false-positive 위험을 충분히 낮춤.
+        In a chain context narrowed by a container, the ambiguous-role
+        rejection (name-less ``button`` / ``link``) does not apply. Forms like
+        ``#sidebar >> role=button`` already suppress the false-positive risk
+        via the container itself.
 
         Args:
-            base_str: ``>>`` 가 포함된 selector 문자열 (modifier 제외).
-            raw: True 면 ``.first`` 미적용 multi-element locator 반환 (modifier
-                 경로용). False 면 ``.first`` 적용된 단일 element 반환.
+            base_str: selector string containing ``>>`` (without modifiers).
+            raw: if True, return a multi-element locator (no ``.first``)
+                 for the modifier path; if False, return a single element with ``.first``.
 
         Returns:
-            매치된 ``Locator`` 또는 None. 중간 segment 에서 unsupported 형태가
-            나오면 None.
+            Matched ``Locator`` or None. None if any intermediate segment is
+            unsupported.
         """
         segments = [s.strip() for s in base_str.split(" >> ") if s.strip()]
         if not segments:
@@ -327,8 +329,8 @@ class LocatorResolver:
             if cur is None:
                 return None
 
-        # frame= 단독 (cur 가 FrameLocator) — 액션 대상이 될 수 없으므로 None.
-        # FrameLocator 는 .count()/.first 가 없으므로 hasattr 로 식별.
+        # frame= alone (cur is a FrameLocator) — cannot be an action target → None.
+        # FrameLocator has no .count()/.first, so we identify with hasattr.
         if not hasattr(cur, "first") or not hasattr(cur, "count"):
             return None
 
@@ -338,14 +340,14 @@ class LocatorResolver:
 
     @staticmethod
     def _apply_chain_segment(cur, seg: str):
-        """현재 root (Page / FrameLocator / Locator) 에 segment 한 마디를 적용.
+        """Apply one segment to the current root (Page / FrameLocator / Locator).
 
         Returns:
-            새로운 Locator / FrameLocator. 잘못된 입력은 None.
+            A new Locator / FrameLocator. None for invalid input.
 
         Raises:
-            ShadowAccessError: ``shadow=<host>`` segment 의 host element 가
-                mode=closed 인 shadow root 를 가져 piercing 불가능할 때.
+            ShadowAccessError: when the host element of the ``shadow=<host>``
+                segment has a mode=closed shadow root and piercing is impossible.
         """
         if seg.startswith("frame="):
             sel = seg[len("frame="):].strip()
@@ -357,10 +359,10 @@ class LocatorResolver:
                 return None
 
         if seg.startswith("shadow="):
-            # T-C (P0.2) — explicit shadow host marker. Playwright 는 open
-            # shadow 를 자동 piercing 하지만 closed shadow 는 0 매치라 영원히
-            # timeout. 사용자가 shadow= 로 의도를 표시하면 host 의 shadowRoot
-            # 모드를 검사해 closed 인 경우 즉시 ShadowAccessError 로 escalate.
+            # T-C (P0.2) — explicit shadow host marker. Playwright auto-pierces
+            # open shadow, but closed shadow is a 0-match that times out forever.
+            # When the user signals intent via shadow=, inspect the host's shadowRoot
+            # mode and immediately escalate to ShadowAccessError if closed.
             sel = seg[len("shadow="):].strip()
             if not sel:
                 return None
@@ -368,10 +370,10 @@ class LocatorResolver:
                 host = cur.locator(sel)
                 if host.count() == 0:
                     return None
-                # host element 의 shadowRoot 가 null 이면 (1) shadow 없음 or
-                # (2) closed shadow. tagName 에 하이픈 (custom element 표기)
-                # 이 있으면 (2) 로 추정 — Web Components 명세상 host 가 자동
-                # 화 대상일 때 99% 케이스가 일치한다.
+                # If the host's shadowRoot is null, it's either (1) no shadow or
+                # (2) closed shadow. If tagName has a hyphen (custom-element naming),
+                # we infer (2) — per the Web Components spec this matches 99% of
+                # cases when the host is the automation target.
                 mode = host.first.evaluate(
                     """el => {
                         if (el.shadowRoot) return 'open';
@@ -385,12 +387,12 @@ class LocatorResolver:
                 return None
             if mode == "closed":
                 raise ShadowAccessError(
-                    f"closed shadow root — automation 불가 (host={sel!r}). "
-                    f"브라우저 정책상 closed mode 의 shadow DOM 에는 자동화 도구가 "
-                    f"piercing 할 수 없습니다. 컴포넌트가 open mode 로 attach 되도록 "
-                    f"앱을 수정하거나 후속 step 을 frame/popup 으로 우회하세요."
+                    f"closed shadow root — automation impossible (host={sel!r}). "
+                    f"By browser policy, automation tools cannot pierce a closed-mode "
+                    f"shadow DOM. Modify the app so the component attaches in open mode, "
+                    f"or work around it by routing the next step through a frame/popup."
                 )
-            # open / none — 계속 진행. 후속 segment 가 host 를 scope 로 사용.
+            # open / none — continue. Subsequent segments use host as the scope.
             return host
 
         if seg.startswith(_ROLE_PREFIX):
@@ -428,20 +430,21 @@ class LocatorResolver:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Modifier 처리 (T-A / P0.4)
+# Modifier handling (T-A / P0.4)
 # ─────────────────────────────────────────────────────────────────────────
 
-# nth/has_text 후미 modifier 파싱 — base selector 안의 콤마 (예 'role=link, name=뉴스')
-# 와 구분. modifier 키 prefix 로만 매칭한다.
-# T-H (B) — 다중 매치 중 visible 한 것을 우선 선택. ktds.com 같은 사이트에서
-# 모바일 드로어 (DOM 순서상 앞) + 데스크탑 GNB 둘 다 같은 라벨을 가질 때
-# `.first` 가 hidden 모바일 드로어를 잡아 click timeout 으로 가는 것을 방지.
+# Trailing nth/has_text modifier parsing — distinguished from commas inside the
+# base selector (e.g. 'role=link, name=Top story'). Match only by modifier key prefix.
+# T-H (B) — among multiple matches, prefer the visible one. On sites like ktds.com
+# where mobile drawer (earlier in DOM order) + desktop GNB both share the same label,
+# this prevents `.first` from grabbing the hidden mobile drawer and click-timing-out.
 def _prefer_visible(loc: "Locator") -> "Locator":
-    """다중 매치 중 visible 한 가장 앞 element 반환. visible 0 건이면 ``.first``.
+    """Return the first visible element among multiple matches; ``.first`` if no visible match.
 
-    Playwright 1.36+ 의 ``filter(visible=True)`` 사용 — descendant 가 아닌
-    매치 본체에 visibility 필터 적용. count() == 0 인 경우 모두 hidden 이라는
-    뜻이니 기존 ``.first`` 로 폴백 (후속 Visibility Healer 가 처리).
+    Uses Playwright 1.36+'s ``filter(visible=True)`` — applies the visibility
+    filter to the matches themselves (not descendants). count() == 0 means all
+    are hidden, so we fall back to ``.first`` (the Visibility Healer handles
+    the rest).
     """
     try:
         visible = loc.filter(visible=True)
@@ -456,12 +459,12 @@ _MODIFIER_KEYS = ("nth", "has_text")
 
 
 def _split_modifiers(target_str: str) -> tuple[str, list[tuple[str, str]]]:
-    """target 문자열의 끝 부분에서 ``, nth=N`` / ``, has_text=T`` 를 분리.
+    """Split ``, nth=N`` / ``, has_text=T`` from the end of the target string.
 
-    ``role=link, name=뉴스, nth=1, has_text=메인`` → base=``role=link, name=뉴스``,
-    modifiers=[(``nth``, ``1``), (``has_text``, ``메인``)].
+    ``role=link, name=Top, nth=1, has_text=Main`` → base=``role=link, name=Top``,
+    modifiers=[(``nth``, ``1``), (``has_text``, ``Main``)].
 
-    base 문자열 안의 ``, name=...`` 은 modifier 가 아니므로 보존된다.
+    ``, name=...`` inside the base string is not a modifier and is preserved.
     """
     parts = target_str.split(", ")
     modifiers: list[tuple[str, str]] = []
@@ -482,18 +485,18 @@ def _split_modifiers(target_str: str) -> tuple[str, list[tuple[str, str]]]:
 def _apply_modifiers(
     loc: Locator, modifiers: list[tuple[str, str]],
 ) -> Locator | None:
-    """nth(N) / filter(has_text=T) 를 순서대로 적용. 잘못된 인자는 None 반환."""
+    """Apply nth(N) / filter(has_text=T) in order. Return None on bad arguments."""
     for key, value in modifiers:
         try:
             if key == "nth":
                 idx = int(value)
-                # nth(-1) 은 last() 와 동등 — Playwright 가 음수 지원
+                # nth(-1) is equivalent to last() — Playwright supports negatives
                 loc = loc.nth(idx)
             elif key == "has_text":
                 loc = loc.filter(has_text=value)
         except Exception as e:  # noqa: BLE001
             log.warning(
-                "[Resolver] modifier 적용 실패 (%s=%s): %s",
+                "[Resolver] failed to apply modifier (%s=%s): %s",
                 key, value, e,
             )
             return None

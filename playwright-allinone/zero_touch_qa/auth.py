@@ -1,17 +1,18 @@
-"""인증 (auth_login DSL 액션) 헬퍼 모듈 — T-D / P0.1 본체.
+"""Auth (auth_login DSL action) helper module — T-D / P0.1 core.
 
-설계: docs/PLAN_PRODUCTION_READINESS.md §"T-D — 인증 (form + OAuth + TOTP)"
+Design: docs/PLAN_PRODUCTION_READINESS.md §"T-D — Auth (form + OAuth + TOTP)"
 
-본 모듈은 executor 의 `_execute_auth_login` 에서 사용된다. 책임:
+Used by the executor's `_execute_auth_login`. Responsibilities:
 
 - credential alias → env var lookup (`AUTH_CRED_<ALIAS>_USER` / `_PASS` / `_TOTP_SECRET`)
-- 로그 마스킹 (`mask_secret` — 평문 password / TOTP 시크릿 노출 방지)
-- TOTP 코드 생성 (`pyotp` 위임)
-- target 옵션 파싱 (`mode=form, email_field=#x, password_field=#y, submit=#z`)
-- field 자동 탐지 (convention-based selectors — explicit selector 가 없을 때 fallback)
+- log masking (`mask_secret` — prevent plaintext password / TOTP secret leaks)
+- TOTP code generation (delegated to `pyotp`)
+- target option parsing (`mode=form, email_field=#x, password_field=#y, submit=#z`)
+- auto field detection (convention-based selectors — fallback when no explicit selector)
 
-본 모듈은 Playwright Page 객체 자체는 다루지 않는다 — page 측 동작은 executor
-가 수행. 본 모듈은 *credential / 옵션 파싱 / TOTP 계산 / selector 후보 제공* 만.
+This module does not touch the Playwright Page object — page-side actions are
+performed by the executor. This module handles only *credential / option parsing /
+TOTP computation / selector candidates*.
 """
 
 from __future__ import annotations
@@ -34,12 +35,12 @@ ENV_PREFIX = "AUTH_CRED"
 
 @dataclass
 class Credential:
-    """alias 로부터 resolve 한 자격 증명 묶음."""
+    """Bundle of credentials resolved from an alias."""
     alias: str
     user: str = ""
     password: str = ""
     totp_secret: str = ""
-    # 추가 메타 — 향후 OAuth provider id 등
+    # Extra metadata — e.g. OAuth provider id later
     extra: dict = field(default_factory=dict)
 
     def has_password(self) -> bool:
@@ -50,44 +51,45 @@ class Credential:
 
 
 class CredentialError(RuntimeError):
-    """credential resolve 실패. alias 가 env 에 등록 안 됐거나 필수 필드 누락."""
+    """Credential resolve failed. Either the alias is not registered in env or required fields are missing."""
 
 
 def resolve_credential(alias: str) -> Credential:
-    """alias 를 env var lookup 으로 Credential 객체로 변환.
+    """Resolve an alias to a Credential via env var lookup.
 
-    검색 키:
-      - ``AUTH_CRED_<ALIAS_NORM>_USER`` (선택 — 비어 있어도 됨)
-      - ``AUTH_CRED_<ALIAS_NORM>_PASS`` (선택)
-      - ``AUTH_CRED_<ALIAS_NORM>_TOTP_SECRET`` (선택)
+    Lookup keys:
+      - ``AUTH_CRED_<ALIAS_NORM>_USER`` (optional — may be empty)
+      - ``AUTH_CRED_<ALIAS_NORM>_PASS`` (optional)
+      - ``AUTH_CRED_<ALIAS_NORM>_TOTP_SECRET`` (optional)
 
-    ALIAS_NORM 은 대문자 + 영문/숫자/언더스코어 외 문자 → ``_``.
+    ALIAS_NORM = uppercase + non-alphanumeric/underscore chars → ``_``.
 
-    셋 다 비어 있으면 CredentialError. 적어도 하나는 있어야 의미 있는 alias.
+    If all three are empty, raise CredentialError. At least one must be set
+    for the alias to be meaningful.
     """
     if not alias:
-        raise CredentialError("auth_login 의 value (credential alias) 가 비어 있음")
+        raise CredentialError("auth_login value (credential alias) is empty")
     norm = re.sub(r"[^A-Z0-9_]", "_", alias.upper())
     user = os.environ.get(f"{ENV_PREFIX}_{norm}_USER", "")
     pwd = os.environ.get(f"{ENV_PREFIX}_{norm}_PASS", "")
     totp = os.environ.get(f"{ENV_PREFIX}_{norm}_TOTP_SECRET", "")
     if not (user or pwd or totp):
         raise CredentialError(
-            f"alias '{alias}' 의 credential 이 환경변수에 없음. "
-            f"필요 키: {ENV_PREFIX}_{norm}_USER / _PASS / _TOTP_SECRET"
+            f"credential for alias '{alias}' not in environment. "
+            f"required keys: {ENV_PREFIX}_{norm}_USER / _PASS / _TOTP_SECRET"
         )
     return Credential(alias=alias, user=user, password=pwd, totp_secret=totp)
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 로그 마스킹
+# Log masking
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def mask_secret(value: str, *, keep: int = 2) -> str:
-    """비밀 값을 마스킹. 끝 ``keep`` 자만 평문, 나머지는 ``*``.
+    """Mask a secret value. Show only the last ``keep`` chars; the rest become ``*``.
 
-    빈 문자열은 ``<empty>``, ``keep`` 보다 짧거나 ``keep<=0`` 이면 전체 마스킹.
+    Empty string returns ``<empty>``. If shorter than ``keep`` or if ``keep<=0``, mask everything.
     """
     if not value:
         return "<empty>"
@@ -97,40 +99,40 @@ def mask_secret(value: str, *, keep: int = 2) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# auth_login target 옵션 파싱
+# auth_login target option parsing
 # ─────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class AuthOptions:
-    """auth_login 의 target 옵션 파싱 결과."""
+    """Result of parsing the target options for auth_login."""
     mode: str = "form"           # form / oauth / totp
-    email_field: Optional[str] = None    # form 모드 — email/username field selector
-    password_field: Optional[str] = None # form 모드 — password field selector
-    submit: Optional[str] = None         # form/totp 공통 — submit 버튼 selector
-    totp_field: Optional[str] = None     # totp 모드 — OTP 입력 field selector
-    provider: Optional[str] = None       # oauth 모드 — provider id (google / github / mock)
+    email_field: Optional[str] = None    # form mode — email/username field selector
+    password_field: Optional[str] = None # form mode — password field selector
+    submit: Optional[str] = None         # form/totp shared — submit button selector
+    totp_field: Optional[str] = None     # totp mode — OTP input field selector
+    provider: Optional[str] = None       # oauth mode — provider id (google / github / mock)
 
 
 def parse_auth_target(target: str) -> AuthOptions:
-    """auth_login 의 target 문자열을 AuthOptions 로 파싱.
+    """Parse the auth_login target string into AuthOptions.
 
-    문법:
+    Grammar:
 
-    - ``form``                                          (default mode=form)
-    - ``form, email_field=#email, password_field=#pw``  (explicit selectors)
-    - ``totp``                                           (default totp 입력 자동 탐지)
-    - ``totp, totp_field=#code``                        (explicit)
-    - ``oauth, provider=mock``                          (mock OAuth provider — Phase 5 예정)
+    - ``form``                                           (default mode=form)
+    - ``form, email_field=#email, password_field=#pw``   (explicit selectors)
+    - ``totp``                                           (default totp input auto-detection)
+    - ``totp, totp_field=#code``                         (explicit)
+    - ``oauth, provider=mock``                           (mock OAuth provider — planned in Phase 5)
     """
     target = (target or "").strip()
     if not target:
-        return AuthOptions()  # default = form, 자동 탐지
+        return AuthOptions()  # default = form, auto-detect
 
     parts = [p.strip() for p in target.split(",")]
     opts = AuthOptions()
 
-    # 첫 토큰은 mode (key 없음) 또는 ``key=value`` 형태
+    # The first token is either the mode (no key) or ``key=value`` form
     first = parts[0]
     if "=" not in first:
         opts.mode = first.lower()
@@ -138,7 +140,7 @@ def parse_auth_target(target: str) -> AuthOptions:
 
     for p in parts:
         if "=" not in p:
-            log.warning("[auth_login] 알 수 없는 target 토큰 무시: %r", p)
+            log.warning("[auth_login] ignoring unknown target token: %r", p)
             continue
         key, _, value = p.partition("=")
         key = key.strip().lower()
@@ -156,17 +158,17 @@ def parse_auth_target(target: str) -> AuthOptions:
         elif key == "provider":
             opts.provider = value.lower()
         else:
-            log.warning("[auth_login] 알 수 없는 옵션 키 무시: %s=%s", key, value)
+            log.warning("[auth_login] ignoring unknown option key: %s=%s", key, value)
 
     return opts
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Field 자동 탐지 — convention-based selector 후보
+# Field auto-detection — convention-based selector candidates
 # ─────────────────────────────────────────────────────────────────────────
 
-# 우선순위 높은 순. 각 selector 는 Playwright `page.locator(...)` 와 호환.
-# 첫 매치 (count > 0) 사용.
+# Highest priority first. Each selector is compatible with Playwright `page.locator(...)`.
+# Use the first match (count > 0).
 
 EMAIL_FIELD_CANDIDATES = (
     'input[type="email"]',
@@ -213,21 +215,21 @@ SUBMIT_BUTTON_CANDIDATES = (
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# TOTP 코드 생성
+# TOTP code generation
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def generate_totp_code(secret: str) -> str:
-    """``pyotp`` 로 현재 시각 기준 6자리 TOTP 코드 생성.
+    """Generate a 6-digit TOTP code at the current time using ``pyotp``.
 
-    pyotp 미설치 시 명확한 에러 — agent setup 의 REQ_PKGS 에 포함되어야 한다.
+    Clear error if pyotp is not installed — must be in REQ_PKGS in agent setup.
     """
     if not secret:
-        raise CredentialError("TOTP 시크릿이 비어 있음")
+        raise CredentialError("TOTP secret is empty")
     try:
         import pyotp
     except ImportError as e:
         raise CredentialError(
-            "pyotp 미설치 — mac/wsl-agent-setup.sh 의 REQ_PKGS 에 포함되어야 합니다."
+            "pyotp not installed — must be in REQ_PKGS of mac/wsl-agent-setup.sh."
         ) from e
     return pyotp.TOTP(secret).now()

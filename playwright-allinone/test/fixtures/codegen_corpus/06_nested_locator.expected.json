@@ -1,5 +1,26 @@
 [
-  {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/dashboard", "description": "https://example.com/dashboard로 이동", "fallback_targets": []},
-  {"step": 2, "action": "click", "target": "#sidebar >> role=button, name=Settings", "value": "", "description": "클릭", "fallback_targets": []},
-  {"step": 3, "action": "click", "target": ".card >> button.confirm", "value": "", "description": "클릭", "fallback_targets": []}
+  {
+    "step": 1,
+    "action": "navigate",
+    "target": "",
+    "value": "https://example.com/dashboard",
+    "description": "navigate to https://example.com/dashboard",
+    "fallback_targets": []
+  },
+  {
+    "step": 2,
+    "action": "click",
+    "target": "#sidebar >> role=button, name=Settings",
+    "value": "",
+    "description": "click",
+    "fallback_targets": []
+  },
+  {
+    "step": 3,
+    "action": "click",
+    "target": ".card >> button.confirm",
+    "value": "",
+    "description": "click",
+    "fallback_targets": []
+  }
 ]

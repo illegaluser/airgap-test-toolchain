@@ -1,14 +1,14 @@
-"""토큰 예산 가드 (Phase 1 T1.4).
+"""Token-budget guard (Phase 1 T1.4).
 
-설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"T1.4 — 토큰 예산 가드"
+Design: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"T1.4 — Token Budget Guard"
 
-기본 한도 1500 토큰 (12288 컨텍스트 + RAG 동시 가정 안전 마진).
-한도 초과 시 단계별 축소:
-  1. 컨텍스트 role (heading/landmark) 제거
-  2. 가시성 외 요소 제거
-  3. 우선순위 낮은 인터랙티브 (option/menuitem) 제거
-  4. role 별 상위 N개로 추가 압축
-  5. 그래도 초과 시 truncate + flag
+Default limit 1500 tokens (safety margin assuming 12288 context + concurrent RAG).
+Step-down when over budget:
+  1. Drop context roles (heading/landmark)
+  2. Drop non-visible elements
+  3. Drop low-priority interactives (option/menuitem)
+  4. Further compress to per-role top-N
+  5. If still over, truncate + flag
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ DEFAULT_TOKEN_BUDGET = 1500
 
 
 def estimate_tokens(text: str) -> int:
-    """tiktoken cl100k_base 우선, 미설치 시 char/4 근사."""
+    """Prefer tiktoken cl100k_base; fall back to char/4 if not installed."""
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(text))
     except Exception:  # noqa: BLE001
-        # graceful fallback — tiktoken 미설치/모델 미캐시 경우
+        # Graceful fallback — tiktoken not installed / model not cached
         return max(1, len(text) // 4)
 
 
@@ -39,9 +39,9 @@ def fit_to_budget(
     *,
     budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> Inventory:
-    """직렬화 후 토큰이 budget 을 초과하면 단계별로 축소.
+    """If serialized tokens exceed budget, step down progressively.
 
-    원본 inv 를 그대로 변경(in-place). 잘리면 inv.truncated=True.
+    Mutates inv in place. Sets inv.truncated=True if anything is dropped.
     """
     rendered = serialize_block(inv)
     used = estimate_tokens(rendered)
@@ -49,31 +49,31 @@ def fit_to_budget(
         return inv
 
     log.info(
-        "[grounding/budget] 인벤토리 %d 토큰 > 한도 %d — 단계별 축소 시작",
+        "[grounding/budget] inventory %d tokens > limit %d — starting step-down",
         used, budget,
     )
 
-    # 축소 경로에 들어왔으면 최종 렌더는 truncated=True 가 된다 (~30 토큰 추가).
-    # _within 체크가 그 오버헤드를 미리 반영하도록 즉시 플래그를 세운다.
+    # Once on the step-down path the final render will be truncated=True (~30 extra tokens).
+    # Set the flag immediately so _within accounts for that overhead up front.
     inv.truncated = True
 
-    # 1단계: 컨텍스트 role (heading/landmark) 제거
+    # Step 1: drop context roles (heading/landmark)
     inv.elements = [e for e in inv.elements if e.role not in CONTEXT_ROLES]
     if _within(inv, budget):
         return inv
 
-    # 2단계: 가시성 외 / disabled 요소 제거
+    # Step 2: drop non-visible / disabled elements
     inv.elements = [e for e in inv.elements if e.visible and e.enabled]
     if _within(inv, budget):
         return inv
 
-    # 3단계: 우선순위 낮은 인터랙티브 (option / menuitem) 제거
+    # Step 3: drop low-priority interactives (option / menuitem)
     LOW_PRIO = {"option", "menuitem"}
     inv.elements = [e for e in inv.elements if e.role not in LOW_PRIO]
     if _within(inv, budget):
         return inv
 
-    # 4단계: role 별 상위 5개 만 유지
+    # Step 4: keep only the top 5 per role
     seen: dict[str, int] = {}
     keep: list[InventoryElement] = []
     for el in inv.elements:
@@ -85,7 +85,7 @@ def fit_to_budget(
     if _within(inv, budget):
         return inv
 
-    # 5단계: 마지막 — 첫 N개만 유지하고 truncate flag
+    # Step 5: last resort — keep the first N and set truncate flag
     head: list[InventoryElement] = []
     for el in inv.elements:
         head.append(el)
@@ -99,7 +99,7 @@ def fit_to_budget(
     inv.elements = head
     inv.truncated = True
     log.warning(
-        "[grounding/budget] 한도 %d 토큰 강제 truncate — %d 요소만 유지",
+        "[grounding/budget] forced truncate at limit %d tokens — keeping %d elements",
         budget, len(inv.elements),
     )
     return inv

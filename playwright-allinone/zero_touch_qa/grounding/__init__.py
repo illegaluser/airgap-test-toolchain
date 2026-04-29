@@ -1,9 +1,10 @@
-"""DOM Grounding 모듈 (Phase 1).
+"""DOM Grounding module (Phase 1).
 
-Planner LLM 호출 직전 target_url 의 실제 DOM 인벤토리를 추출해 srs_text 앞에
-prepend 한다. 셀렉터 추측을 "인벤토리에서 선택" 으로 전환한다.
+Right before the Planner LLM call, extract the actual DOM inventory of the
+target_url and prepend it to srs_text. This switches the model from "guess
+selectors" to "pick from the inventory".
 
-진입점:
+Entry point:
     from zero_touch_qa.grounding import fetch_inventory, serialize_block
 
     inv = fetch_inventory(target_url, token_budget=1500)

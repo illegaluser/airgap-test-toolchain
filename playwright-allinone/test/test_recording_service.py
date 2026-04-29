@@ -228,12 +228,12 @@ def test_start_invokes_codegen_and_records_pid(client, patched_codegen):
 
 
 def test_start_503_when_codegen_missing(client, monkeypatch):
-    """playwright 미설치 → CodegenError 그대로 503."""
+    """playwright not installed → CodegenError pass-through 503."""
     from recording_service import server as srv
     from recording_service.codegen_runner import CodegenError
 
     def fake_start(*a, **kw):
-        raise CodegenError("playwright 실행 파일을 찾을 수 없습니다.")
+        raise CodegenError("playwright executable not found.")
 
     monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
@@ -246,7 +246,7 @@ def test_start_400_on_invalid_url(client, monkeypatch):
     from recording_service.codegen_runner import CodegenError
 
     def fake_start(*a, **kw):
-        raise CodegenError("target_url 이 유효하지 않습니다: ''")
+        raise CodegenError("target_url is invalid: ''")
 
     monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
     r = client.post("/recording/start", json={"target_url": ""})
@@ -382,7 +382,7 @@ def test_stop_with_empty_output(client, monkeypatch):
     assert r2.status_code == 202
     body = r2.json()
     assert body["state"] == "error"
-    assert "0건" in body["error"]
+    assert "0 actions" in body["error"]
 
 
 def test_stop_is_idempotent_returns_409_second_time(client, patched_codegen):
@@ -412,7 +412,7 @@ def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
         return ConvertResult(
             returncode=1,
             stdout="",
-            stderr="ScenarioValidationError: step[0].action 이 유효하지 않음",
+            stderr="ScenarioValidationError: step[0].action is invalid",
             scenario_path=host_scenario_path,
             scenario_exists=False,
             elapsed_ms=8.0,
@@ -430,7 +430,7 @@ def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
     assert body["state"] == "error"
     assert body["returncode"] == 1
     assert "ScenarioValidationError" in body["stderr"]
-    assert "원본 original.py 는 보존" in body["error"]
+    assert "original.py is preserved" in body["error"]
 
 
 def test_stop_with_converter_proxy_error(client, monkeypatch):
@@ -551,7 +551,7 @@ def test_converter_proxy_timeout_raises(monkeypatch):
             container_session_dir="/data/recordings/x",
             host_scenario_path="/tmp/no.json",
         )
-    assert "안에 끝나지 않았습니다" in str(excinfo.value)
+    assert "did not finish within" in str(excinfo.value)
 
 
 # ── TR.4 — Web UI 정적 서빙 ─────────────────────────────────────────────────

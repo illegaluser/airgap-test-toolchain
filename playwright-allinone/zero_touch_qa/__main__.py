@@ -1,7 +1,7 @@
 """
-DSCORE Zero-Touch QA v4.0 — CLI 엔트리포인트.
+DSCORE Zero-Touch QA v4.0 — CLI entry point.
 
-사용법:
+Usage:
   python3 -m zero_touch_qa --mode chat
   python3 -m zero_touch_qa --mode doc --file upload.pdf
   python3 -m zero_touch_qa --mode convert --file recorded.py
@@ -37,10 +37,10 @@ log = logging.getLogger("zero_touch_qa")
 
 
 def main():
-    # ── auth 서브커맨드 라우팅 ──────────────────────────────────────────
-    # 기존 ``--mode`` CLI 와 호환성 유지를 위해 첫 위치 인자가 'auth' 면
-    # 별도 진입점으로 분기. (replay_proxy 등 외부 caller 의 ``--mode execute``
-    # 호출은 그대로 동작.)
+    # ── auth subcommand routing ─────────────────────────────────────────
+    # For compatibility with the existing ``--mode`` CLI, branch into a separate
+    # entry point when the first positional arg is 'auth'. (External callers like
+    # replay_proxy that use ``--mode execute`` continue to work as before.)
     if len(sys.argv) >= 2 and sys.argv[1] == "auth":
         sys.exit(_run_auth_cli(sys.argv[2:]))
 
@@ -51,37 +51,37 @@ def main():
         "--mode",
         choices=["chat", "doc", "convert", "execute"],
         required=True,
-        help="chat: 자연어, doc: 기획서 업로드, convert: Playwright 녹화 변환, execute: 기존 시나리오 재실행",
+        help="chat: natural language, doc: upload spec, convert: Playwright recording → DSL, execute: re-run an existing scenario",
     )
-    parser.add_argument("--file", default=None, help="기획서 또는 Playwright .py 파일 경로")
-    parser.add_argument("--scenario", default=None, help="기존 scenario.json 경로 (execute 모드)")
-    parser.add_argument("--target-url", default=None, help="테스트 시작 URL")
-    parser.add_argument("--srs-text", default=None, help="자연어 요구사항 (chat 모드)")
-    parser.add_argument("--api-docs", default=None, help="API 엔드포인트 힌트 텍스트 (선택)")
-    parser.add_argument("--headed", action="store_true", default=True, help="실제 브라우저 표시 (기본값)")
-    parser.add_argument("--headless", action="store_true", help="헤드리스 모드")
+    parser.add_argument("--file", default=None, help="path to a spec or Playwright .py file")
+    parser.add_argument("--scenario", default=None, help="path to an existing scenario.json (execute mode)")
+    parser.add_argument("--target-url", default=None, help="test start URL")
+    parser.add_argument("--srs-text", default=None, help="natural-language requirements (chat mode)")
+    parser.add_argument("--api-docs", default=None, help="API endpoint hint text (optional)")
+    parser.add_argument("--headed", action="store_true", default=True, help="show the actual browser (default)")
+    parser.add_argument("--headless", action="store_true", help="headless mode")
     parser.add_argument(
         "--convert-only",
         action="store_true",
         help=(
-            "convert 모드에서 변환 + 검증 + scenario.json 저장 후 즉시 종료 (executor 미실행). "
-            "Recording 서비스 같은 외부 호출자가 변환 결과만 필요할 때 사용."
+            "In convert mode, exit immediately after converting + validating + saving scenario.json "
+            "(do not run the executor). Used when external callers like the Recording service only need the conversion result."
         ),
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="상세 로그 출력")
-    # T-D / P0.1 — storage_state dump/restore (인증 후 세션 재사용).
-    # env AUTH_STORAGE_STATE_IN/OUT 도 동작 — CLI 인자가 우선.
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose log output")
+    # T-D / P0.1 — storage_state dump/restore (reuse session after auth).
+    # env AUTH_STORAGE_STATE_IN/OUT also work — CLI args take precedence.
     parser.add_argument(
         "--storage-state-in", default=None,
-        help="시작 시 복원할 storage_state JSON 경로 (인증 스킵용)",
+        help="path to storage_state JSON to restore at startup (skip auth)",
     )
     parser.add_argument(
         "--storage-state-out", default=None,
-        help="종료 후 덤프할 storage_state JSON 경로 (인증 결과 보존)",
+        help="path to dump storage_state JSON after run (preserve auth result)",
     )
     args = parser.parse_args()
 
-    # 로깅 설정
+    # Logging setup
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
         level=level,
@@ -89,15 +89,15 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    # Recording 서비스 계약상 convert-only 오용은 Dify retry 전에 즉시 실패해야 한다.
+    # Per the Recording-service contract, misuse of convert-only must fail before Dify retries.
     if args.convert_only and args.mode != "convert":
-        log.error("--convert-only 는 --mode convert 와 함께만 사용한다.")
+        log.error("--convert-only must be used only with --mode convert.")
         sys.exit(1)
 
     config = Config.from_env()
     headed = not args.headless
 
-    # 환경변수 폴백 (Jenkins에서 env로 전달하는 경우)
+    # Env-var fallback (when Jenkins passes them via env)
     target_url = args.target_url or os.getenv("TARGET_URL", "")
     srs_text = args.srs_text or os.getenv("SRS_TEXT", "")
     api_docs = args.api_docs or os.getenv("API_DOCS", "")
@@ -105,14 +105,14 @@ def main():
     try:
         scenario = _prepare_scenario(args, config, target_url, srs_text, api_docs)
     except DifyConnectionError as e:
-        log.error("Dify 연결 실패: %s", e)
+        log.error("Dify connection failed: %s", e)
         _generate_error_report(config.artifacts_dir, str(e))
         sys.exit(1)
     except ScenarioValidationError as e:
-        log.error("시나리오 구조 검증 실패: %s", e)
+        log.error("scenario structure validation failed: %s", e)
         _generate_error_report(
             config.artifacts_dir,
-            f"시나리오 구조 검증 실패: {e}",
+            f"scenario structure validation failed: {e}",
         )
         sys.exit(1)
     except FileNotFoundError as e:
@@ -120,51 +120,51 @@ def main():
         sys.exit(1)
 
     if not scenario:
-        log.error("시나리오가 비어 있습니다.")
+        log.error("scenario is empty.")
         sys.exit(1)
 
-    # --convert-only: Recording 서비스(또는 외부 호출자) 가 변환 결과만 필요한 경우
-    # 여기서 즉시 종료한다. executor 호출·navigate prepend·HTML 리포트 생성 전부 스킵.
-    # convert 분기에서 이미 _validate_scenario 통과한 시나리오만 도달하므로
-    # scenario.json 만 저장하고 빠진다.
+    # --convert-only: when an external caller (Recording service, etc.) only needs the
+    # conversion result, exit here. Skip executor, navigate prepend, and HTML report.
+    # The convert branch only reaches this point with scenarios that already passed
+    # _validate_scenario, so we just save scenario.json and exit.
     if args.convert_only:
         save_scenario(scenario, config.artifacts_dir)
         log.info(
-            "[convert-only] %d 스텝 변환 + 검증 완료 → %s/scenario.json",
+            "[convert-only] %d steps converted + validated → %s/scenario.json",
             len(scenario),
             config.artifacts_dir,
         )
         sys.exit(0)
 
-    # 방어: Planner LLM 이 step 1 navigate 를 drop 한 경우 자동 prepend.
-    # gemma4:e4b 같은 작은 모델이 Chatflow 의 navigate-first 지시를 무시할 때
-    # 브라우저가 about:blank 에서 시작해 모든 후속 step 이 실패하는 것을 막는다.
+    # Defense: when the Planner LLM drops the step-1 navigate, prepend it automatically.
+    # Prevents small models like gemma4:e4b from ignoring the Chatflow's navigate-first
+    # instruction and starting the browser on about:blank, which would fail every subsequent step.
     if target_url and scenario[0].get("action") != "navigate":
-        log.info("[Guard] scenario[0].action != navigate — TARGET_URL 로 navigate step 자동 prepend")
+        log.info("[Guard] scenario[0].action != navigate — auto-prepending a navigate step to TARGET_URL")
         scenario.insert(0, {
             "step": 1,
             "action": "navigate",
             "target": "",
             "value": target_url,
-            "description": "대상 페이지 로드 (엔진 자동 보강)",
+            "description": "load target page (engine auto-injected)",
         })
-        # prepend 후 step 번호 1..N 으로 재정렬 — _validate_scenario 가 수행하는
-        # renumber 가 prepend 이전에 끝나므로, 여기서도 동일 정책을 다시 적용해
-        # 리포트에 "Step 1 navigate, Step 1 hover" 같이 중복 번호가 노출되지 않게 한다.
+        # Renumber steps to 1..N after prepend — the renumber inside _validate_scenario
+        # ran before prepend, so reapply the same policy here to avoid duplicate numbers
+        # like "Step 1 navigate, Step 1 hover" in the report.
         for idx, st in enumerate(scenario):
             st["step"] = idx + 1
 
-    # 원본 시나리오 저장
+    # Save the original scenario
     save_scenario(scenario, config.artifacts_dir)
 
-    # 업로드 원본 파일 (기획서 / Playwright 녹화 / scenario.json) 을 artifacts 로
-    # 복사해 HTML 리포트에서 참조 가능하게 한다. 리포트를 공유받은 사람이
-    # "어떤 입력으로 이 결과가 나왔는지" 를 리포트 한 폴더로 전부 추적할 수 있다.
+    # Copy the uploaded original file (spec / Playwright recording / scenario.json) into
+    # artifacts so the HTML report can reference it. Anyone receiving the report can
+    # trace "which input produced these results" entirely from the report folder.
     upload_source = args.scenario if args.mode == "execute" else args.file
     uploaded_name = _copy_upload_to_artifacts(upload_source, config.artifacts_dir)
 
-    # 실행
-    log.info("시나리오 실행 시작 (%d스텝, headed=%s)", len(scenario), headed)
+    # Run
+    log.info("starting scenario execution (%d steps, headed=%s)", len(scenario), headed)
     executor = QAExecutor(config)
     results = executor.execute(
         scenario,
@@ -173,11 +173,12 @@ def main():
         storage_state_out=args.storage_state_out,
     )
 
-    # 산출물 생성
+    # Produce artifacts
     save_run_log(results, config.artifacts_dir)
     save_scenario(scenario, config.artifacts_dir, suffix=".healed")
-    # llm_calls.jsonl → llm_sla.json 집계 (S4C-05). 빌드별 LLM SLA 가
-    # archiveArtifacts 와 HTML 리포트의 운영 지표 섹션에 자동 노출된다.
+    # llm_calls.jsonl → llm_sla.json aggregation (S4C-05). The per-build LLM SLA
+    # is automatically exposed in archiveArtifacts and the operations-metrics
+    # section of the HTML report.
     aggregate_llm_sla(config.artifacts_dir)
     build_html_report(
         results,
@@ -188,23 +189,23 @@ def main():
     )
     generate_regression_test(scenario, results, config.artifacts_dir)
 
-    # 결과 요약
+    # Result summary
     passed = sum(1 for r in results if r.status in ("PASS", "HEALED"))
     failed = sum(1 for r in results if r.status == "FAIL")
-    log.info("실행 완료 — PASS: %d, FAIL: %d", passed, failed)
+    log.info("execution complete — PASS: %d, FAIL: %d", passed, failed)
 
     if failed > 0:
         sys.exit(1)
 
 
 class ScenarioValidationError(ValueError):
-    """Dify 가 반환한 scenario 가 구조적으로 무효."""
+    """Scenario returned by Dify is structurally invalid."""
 
 
-# [표준 액션] — 14 standard actions (Planner 가 emit) + 보조 액션
-# (auth_login, reset_state). 보조 액션은 LLM 이 emit 하지 않고 사용자가 작성한
-# 시나리오에 직접 들어오므로 dify-chatflow.yaml Planner prompt 와 동기화하지
-# 않는다 (executor 만 처리).
+# [Standard actions] — the 14 Planner-emitted standard actions + auxiliary
+# actions (auth_login, reset_state). Auxiliary actions are not emitted by the LLM;
+# they appear only in user-authored scenarios, so we do not sync them with the
+# Planner prompt in dify-chatflow.yaml (executor only).
 _VALID_ACTIONS = frozenset(
     {
         "navigate",
@@ -226,8 +227,8 @@ _VALID_ACTIONS = frozenset(
     }
 )
 
-# verify.condition 화이트리스트 — executor._perform_action 의 분기와 1:1 동기.
-# "" (빈 문자열) 은 "값이 들어 있으면 contains, 아니면 visible" 로 해석됨 → 허용.
+# verify.condition whitelist — 1:1 with the branches in executor._perform_action.
+# "" (empty) is interpreted as "contains if value present, else visible" → allowed.
 _VALID_VERIFY_CONDITIONS = frozenset(
     {
         "",
@@ -245,42 +246,42 @@ _VALID_VERIFY_CONDITIONS = frozenset(
 
 
 _TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state")
-# auth_login: target=mode (form/totp/oauth) 필수, value=credential alias 필수.
-# reset_state: target 무시, value=scope (cookie/storage/indexeddb/all) 필수.
+# auth_login: target=mode (form/totp/oauth) required, value=credential alias required.
+# reset_state: target ignored, value=scope (cookie/storage/indexeddb/all) required.
 _VALUE_REQUIRED_ACTIONS = frozenset(
     {"fill", "press", "select", "upload", "drag", "auth_login", "reset_state"}
 )
 _SCROLL_VALID_VALUES = frozenset({"into_view", "into-view", "into view"})
 _AUTH_LOGIN_MODES = frozenset({"form", "totp", "oauth"})
-# T-B (P0.3-A) — reset_state 의 value 화이트리스트.
+# T-B (P0.3-A) — value whitelist for reset_state.
 # cookie    → context.clear_cookies()
 # storage   → page.evaluate("localStorage.clear(); sessionStorage.clear();")
 # indexeddb → page.evaluate(deleteAllIDB)
-# all       → 위 3개 모두
+# all       → all three above
 _RESET_STATE_VALID_VALUES = frozenset({"cookie", "storage", "indexeddb", "all"})
 
 
 def _check_mock_times(i: int, step: dict) -> None:
-    """mock_* 의 선택적 ``times`` 가 양의 정수인지 검증한다."""
+    """Verify the optional ``times`` of mock_* is a positive integer."""
     if "times" not in step:
         return
     try:
         n = int(step["times"])
     except (TypeError, ValueError) as e:
         raise ScenarioValidationError(
-            f"step[{i}] action={step['action']} 의 times 가 정수 아님: {step['times']!r}"
+            f"step[{i}] action={step['action']} times is not an integer: {step['times']!r}"
         ) from e
     if n < 1:
         raise ScenarioValidationError(
-            f"step[{i}] action={step['action']} 의 times 는 1 이상이어야 함 (={n})"
+            f"step[{i}] action={step['action']} times must be >= 1 (={n})"
         )
 
 
 def _check_step_shape(i: int, step) -> dict:
-    """list[dict] 가정과 action 화이트리스트만 검사하고 step 을 반환한다."""
+    """Check the list[dict] assumption and the action whitelist; return the step."""
     if not isinstance(step, dict):
         raise ScenarioValidationError(
-            f"step[{i}] 가 dict 아님 (타입={type(step).__name__})"
+            f"step[{i}] is not a dict (type={type(step).__name__})"
         )
     action = step.get("action")
     if isinstance(action, str):
@@ -289,35 +290,35 @@ def _check_step_shape(i: int, step) -> dict:
             step["action"] = normalized
             action = normalized
     if action not in _VALID_ACTIONS:
-        raise ScenarioValidationError(f"step[{i}].action 이 유효하지 않음: {action!r}")
+        raise ScenarioValidationError(f"step[{i}].action is invalid: {action!r}")
     return step
 
 
 def _check_target_value_contract(i: int, step: dict) -> None:
-    """action 별 target/value 필수 여부를 검사한다."""
+    """Check whether target/value are required per action."""
     action = step["action"]
     if action not in _TARGET_OPTIONAL_ACTIONS and not step.get("target"):
         raise ScenarioValidationError(
-            f"step[{i}] action={action} 인데 target 이 비어 있음"
+            f"step[{i}] action={action} but target is empty"
         )
     if action == "press" and not (step.get("target") or step.get("value")):
         raise ScenarioValidationError(
-            f"step[{i}] action=press 인데 target/value 가 모두 비어 있음"
+            f"step[{i}] action=press but target and value are both empty"
         )
     if action in _VALUE_REQUIRED_ACTIONS and not str(step.get("value", "")).strip():
         raise ScenarioValidationError(
-            f"step[{i}] action={action} 인데 value 가 비어 있음"
+            f"step[{i}] action={action} but value is empty"
         )
 
 
 def _check_action_specific(i: int, step: dict) -> None:
-    """scroll/mock_*/verify 등 액션별 추가 계약을 검사한다."""
+    """Per-action extra contract checks (scroll / mock_* / verify, etc.)."""
     action = step["action"]
     if action == "scroll":
         scroll_value = str(step.get("value", "")).strip().lower()
         if scroll_value not in _SCROLL_VALID_VALUES:
             raise ScenarioValidationError(
-                f"step[{i}] action=scroll 인데 value 는 'into_view' 여야 함"
+                f"step[{i}] action=scroll but value must be 'into_view'"
             )
         return
     if action == "mock_status":
@@ -325,179 +326,187 @@ def _check_action_specific(i: int, step: dict) -> None:
             int(str(step.get("value", "")).strip())
         except ValueError as e:
             raise ScenarioValidationError(
-                f"step[{i}] action=mock_status 인데 value 가 정수 아님"
+                f"step[{i}] action=mock_status but value is not an integer"
             ) from e
         _check_mock_times(i, step)
         return
     if action == "mock_data":
         if step.get("value") in ("", None):
             raise ScenarioValidationError(
-                f"step[{i}] action=mock_data 인데 value 가 비어 있음"
+                f"step[{i}] action=mock_data but value is empty"
             )
         _check_mock_times(i, step)
         return
     if action == "auth_login":
-        # target = "form" | "totp" | "oauth" — 콤마 뒤에 ", email_field=#x, ..." 같은
-        # explicit selector 모디파이어가 따라올 수 있다. 첫 토큰만 모드로 취급.
+        # target = "form" | "totp" | "oauth" — explicit selector modifiers like
+        # ", email_field=#x, ..." can follow after the comma. Only the first token
+        # is treated as the mode.
         head = str(step.get("target", "")).split(",", 1)[0].strip().lower()
         if head not in _AUTH_LOGIN_MODES:
             raise ScenarioValidationError(
-                f"step[{i}] action=auth_login 의 target 은 "
-                f"{sorted(_AUTH_LOGIN_MODES)} 중 하나여야 함 (={head!r})"
+                f"step[{i}] action=auth_login target must be one of "
+                f"{sorted(_AUTH_LOGIN_MODES)} (={head!r})"
             )
         return
     if action == "reset_state":
-        # value = "cookie" | "storage" | "indexeddb" | "all". target 은 무시.
+        # value = "cookie" | "storage" | "indexeddb" | "all". target is ignored.
         scope = str(step.get("value", "")).strip().lower()
         if scope not in _RESET_STATE_VALID_VALUES:
             raise ScenarioValidationError(
-                f"step[{i}] action=reset_state 의 value 는 "
-                f"{sorted(_RESET_STATE_VALID_VALUES)} 중 하나여야 함 (={scope!r})"
+                f"step[{i}] action=reset_state value must be one of "
+                f"{sorted(_RESET_STATE_VALID_VALUES)} (={scope!r})"
             )
         return
     if action == "verify":
         condition = str(step.get("condition", "")).strip().lower()
         if condition not in _VALID_VERIFY_CONDITIONS:
-            # LLM 이 화이트리스트 밖의 자유 condition (empty / present / exists 등) 을 emit 하면
-            # reject 하지 말고 빈 문자열로 강등 — executor 의 default fallback ("value 있으면
-            # contains, 없으면 visible") 으로 안전 매핑한다. 시나리오 전체 폐기를 막는다.
+            # When the LLM emits a free-form condition outside the whitelist
+            # (empty / present / exists / etc.), do not reject — downgrade to
+            # empty string and let the executor's default fallback ("contains
+            # if value present, else visible") map it safely. Prevents
+            # discarding the entire scenario.
             step["condition"] = ""
 
 
 def _sanitize_scenario(scenario):
-    """LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 반환.
+    """First-pass absorption of LLM non-determinism — drop steps with missing/invalid actions and return.
 
-    Planner LLM 이 14스텝 중 1개 step 의 action 키를 누락하거나 typos 가 섞이는 케이스
-    가 빈번. 시나리오 전체를 reject + retry 하는 비용 (gemma4:26b 추론 ~30s+) 보다
-    invalid step 만 drop 하고 진행하는 게 결정적이고 빠르다. 단, drop 사유는 WARNING
-    으로 남겨 사용자가 추적 가능.
+    The Planner LLM frequently drops the action key on 1 of 14 steps or mixes in typos.
+    Dropping invalid steps and proceeding is more deterministic and faster than rejecting
+    + retrying the whole scenario (gemma4:26b inference is ~30s+). Drop reasons are logged
+    at WARNING so users can trace them.
 
-    빈 시나리오는 그대로 반환 — _validate_scenario 가 reject 처리.
+    Empty scenarios are returned as-is — _validate_scenario rejects them.
     """
     if not isinstance(scenario, list):
         return scenario
     keep = []
     for i, st in enumerate(scenario):
         if not isinstance(st, dict):
-            log.warning("[Sanitize] step[%d] 가 dict 아님 — drop: %r", i, st)
+            log.warning("[Sanitize] step[%d] is not a dict — drop: %r", i, st)
             continue
         action = st.get("action")
         if not isinstance(action, str):
-            log.warning("[Sanitize] step[%d] action 누락/None — drop: %r", i, st)
+            log.warning("[Sanitize] step[%d] action missing / None — drop: %r", i, st)
             continue
         normalized = action.strip().strip("`'\" ").lower()
         if normalized not in _VALID_ACTIONS:
-            # LLM 이 action 필드에 meta-reasoning 을 섞어 emit 하는 케이스 회복.
-            # 예: "verify, target: id=status, value: ..." 또는 "`verify`, ..."
-            # 앞쪽 첫 토큰이 valid action 이면 그것을 채택, 그 외는 drop.
+            # Recover the case where the LLM emits meta-reasoning inside the action field.
+            # e.g. "verify, target: id=status, value: ..." or "`verify`, ..."
+            # If the first token is a valid action, adopt it; otherwise drop.
             head = re.split(r"[\s,;:()`'\"*]", normalized, maxsplit=1)[0]
             if head in _VALID_ACTIONS:
                 log.warning(
-                    "[Sanitize] step[%d] action=%r → 첫 토큰 %r 로 회복 (LLM meta-reasoning leak)",
+                    "[Sanitize] step[%d] action=%r → recovered as first token %r (LLM meta-reasoning leak)",
                     i, action, head,
                 )
                 st = {**st, "action": head}
             else:
-                log.warning("[Sanitize] step[%d] 미지원 action=%r — drop", i, action)
+                log.warning("[Sanitize] step[%d] unsupported action=%r — drop", i, action)
                 continue
         keep.append(st)
     if len(keep) != len(scenario):
-        log.warning("[Sanitize] %d/%d step 유지", len(keep), len(scenario))
+        log.warning("[Sanitize] kept %d/%d steps", len(keep), len(scenario))
     return keep
 
 
 def _validate_scenario(scenario) -> None:
-    """Dify 응답 scenario 의 구조적 유효성 검증. 실패 시 ScenarioValidationError.
+    """Validate the structural integrity of a Dify-returned scenario. Raise ScenarioValidationError on failure.
 
-    LLM 비결정성으로 인해 드물게 발생하는 다음 케이스를 조기에 탐지:
-    - 빈 배열 / list 아닌 타입
-    - step 요소가 dict 아님 (문자열 / null 혼입)
-    - action 이 14대 표준 밖이거나 누락
-    - navigate/wait/press 이외 action 에서 target 이 비어 있음 (실행 시 locator 실패 확정)
-    - 신규 액션의 최소 입력 계약(value/condition 등) 위반
+    Catches the rare cases caused by LLM non-determinism early:
+    - empty array / not a list
+    - step element is not a dict (strings / nulls mixed in)
+    - action is missing or outside the 14 standard actions
+    - target is empty for actions other than navigate/wait/press
+      (which guarantees a locator failure at runtime)
+    - new actions violating their minimum input contract (value/condition/etc.)
 
-    이 검증을 통과해도 시맨틱상 잘못된 시나리오 (예: SRS 와 무관한 작업) 는 막을 수
-    없다. 그 경우는 executor 레벨의 Healer / Guard 가 후단에서 대응.
+    Passing this check does not catch semantically wrong scenarios (e.g. work
+    unrelated to the SRS). Those are handled later by the executor-level Healer / Guard.
     """
     if not isinstance(scenario, list) or not scenario:
-        raise ScenarioValidationError("시나리오 배열이 비어 있음")
+        raise ScenarioValidationError("scenario array is empty")
     for i, raw_step in enumerate(scenario):
         step = _check_step_shape(i, raw_step)
         _check_target_value_contract(i, step)
         _check_action_specific(i, step)
-        # LLM 이 emit 한 step 번호는 비순차·누락이 잦다 (예: 1, 18). list 순서 자체가
-        # 진짜 ordering 이므로 1..N 으로 강제 정렬해 리포트 가독성을 보장한다.
+        # LLM-emitted step numbers are often non-sequential / missing (e.g. 1, 18).
+        # The list order itself is the real ordering, so force-renumber to 1..N
+        # for report readability.
         step["step"] = i + 1
 
 
 def _prepare_scenario(
     args, config: Config, target_url: str, srs_text: str, api_docs: str
 ) -> list[dict]:
-    """모드에 따라 시나리오를 준비한다."""
+    """Prepare the scenario for the selected mode."""
     if args.mode == "execute":
         if not args.scenario:
-            raise FileNotFoundError("execute 모드에는 --scenario 인자가 필요합니다.")
+            raise FileNotFoundError("execute mode requires the --scenario argument.")
         with open(args.scenario, "r", encoding="utf-8") as f:
             scenario = json.load(f)
-        # 외부에서 들어온 시나리오도 chat/doc 과 동일한 14대 DSL 계약을 강제한다.
-        # 손으로 작성한 scenario.json 의 mock_status value 정수성 같은 계약 위반이
-        # 런타임 ValueError 로 흘러들어가 자가치유에 의해 가려지는 것을 막는다.
+        # Apply the same 14-DSL contract as chat/doc to scenarios coming from outside.
+        # Prevents contract violations like a non-integer mock_status value in a
+        # hand-written scenario.json from leaking into runtime ValueError and being
+        # masked by self-healing.
         _validate_scenario(scenario)
-        log.info("[Scenario] %s 로드 (%d스텝)", args.scenario, len(scenario))
+        log.info("[Scenario] loaded %s (%d steps)", args.scenario, len(scenario))
         return scenario
 
     if args.mode == "convert":
         if not args.file:
-            raise FileNotFoundError("convert 모드에는 --file 인자가 필요합니다.")
+            raise FileNotFoundError("convert mode requires the --file argument.")
         scenario = convert_playwright_to_dsl(args.file, config.artifacts_dir)
-        # 14대 DSL 계약 검증을 convert 경로에서도 강제 — 기존엔 누락되어
-        # 손상된 DSL 이 executor 단계에서 ValueError 로 흘러들었다.
-        # Recording 서비스(--convert-only) 도 이 검증으로 즉시 실패를 받음.
+        # Enforce the 14-DSL contract on the convert path too — previously it was
+        # missing, so corrupted DSL leaked into the executor stage as ValueError.
+        # The Recording service (--convert-only) also gets immediate failure via this check.
         _validate_scenario(scenario)
         return scenario
 
-    # chat / doc 모드: Dify 호출
+    # chat / doc mode: call Dify
     dify = DifyClient(config)
     file_id = None
 
     if args.mode == "doc":
         if not args.file:
-            log.warning("[Doc] --file 인자가 없습니다. SRS_TEXT로 대체합니다.")
+            log.warning("[Doc] no --file argument. Falling back to SRS_TEXT.")
         else:
-            # 클라이언트 측 파일 → 텍스트 추출 후 srs_text 에 prepend.
-            # Dify Chatflow 의 Planner 노드가 context.enabled=false 상태라 파일 업로드
-            # 경로로는 LLM 이 내용을 못 읽는다. 텍스트로 직접 넣어야 gemma4:e4b 가
-            # 문서를 보면서 시나리오를 생성할 수 있다.
+            # Client-side file → extract text and prepend to srs_text.
+            # The Dify Chatflow Planner node has context.enabled=false, so the LLM
+            # cannot read content via the file-upload path. Inserting the text
+            # directly is what lets gemma4:e4b see the document while generating
+            # the scenario.
             try:
                 doc_text = dify.extract_text_from_file(args.file)
                 if doc_text:
                     structured = parse_structured_doc_steps(doc_text)
                     if structured:
                         log.info(
-                            "[Doc] 구조화된 step marker 감지 — Dify 생략, 로컬 파서 결과 사용 (%d스텝)",
+                            "[Doc] structured step markers detected — skipping Dify, using local parser result (%d steps)",
                             len(structured),
                         )
                         return structured
                     if srs_text:
                         srs_text = (
-                            f"[첨부 문서 내용]\n{doc_text}\n\n"
-                            f"[추가 요구사항]\n{srs_text}"
+                            f"[Attached document content]\n{doc_text}\n\n"
+                            f"[Additional requirements]\n{srs_text}"
                         )
                     else:
-                        srs_text = f"[첨부 문서 내용]\n{doc_text}"
-                    log.info("[Doc] 문서에서 %d 자 추출, srs_text 에 병합", len(doc_text))
+                        srs_text = f"[Attached document content]\n{doc_text}"
+                    log.info("[Doc] extracted %d chars from document, merged into srs_text", len(doc_text))
                 else:
-                    log.warning("[Doc] 문서에서 추출된 텍스트가 비어있습니다.")
+                    log.warning("[Doc] extracted document text is empty.")
             except Exception as e:
                 log.warning(
-                    "[Doc] 파일 추출 실패 (%s) — 기존 upload_file 경로로 폴백", e
+                    "[Doc] file extraction failed (%s) — falling back to upload_file", e
                 )
                 file_id = dify.upload_file(args.file)
 
-    # LLM 비결정성 대비 — Dify 응답을 구조 검증 후, 무효면 최대 3 회까지 재생성.
-    # 가장 흔한 실패: (1) scenario 배열이 비었거나, (2) step.action 이 9대 표준 밖,
-    # (3) fill/click 등인데 target 이 비어있음. 이 조건들은 executor 로 넘기면
-    # selector 실패로 귀결되므로 여기서 조기 차단하고 재시도.
+    # Defense against LLM non-determinism — validate Dify response structure and
+    # regenerate up to 3 times on invalid output.
+    # Most common failures: (1) empty scenario array, (2) step.action outside the
+    # 9 standard actions, (3) empty target on fill/click etc. Passing these to the
+    # executor inevitably ends in selector failure, so block early and retry here.
     for attempt in range(1, 4):
         try:
             scenario = dify.generate_scenario(
@@ -508,12 +517,13 @@ def _prepare_scenario(
                 file_id=file_id,
                 enable_grounding=os.getenv("ENABLE_DOM_GROUNDING", "0") == "1",
             )
-            # LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 검증.
-            # 정상 step 만 ≥1개 남으면 retry 비용을 아끼고 그대로 진행.
+            # First-pass absorption of LLM non-determinism — drop missing/invalid
+            # action steps and validate. If at least 1 valid step remains, save
+            # the retry cost and proceed.
             scenario = _sanitize_scenario(scenario)
             _validate_scenario(scenario)
             log.info(
-                "[Dify] 시나리오 수신 (%d스텝) — attempt %d/3 성공",
+                "[Dify] received scenario (%d steps) — attempt %d/3 succeeded",
                 len(scenario), attempt,
             )
             return scenario
@@ -521,29 +531,29 @@ def _prepare_scenario(
             if attempt < 3:
                 backoff = 5 * attempt  # 5s, 10s, 15s
                 log.warning(
-                    "[Retry %d/3] 시나리오 수신/검증 실패 — %s (다음 시도까지 %ds 대기)",
+                    "[Retry %d/3] scenario receive/validate failed — %s (waiting %ds before next attempt)",
                     attempt, e, backoff,
                 )
                 time.sleep(backoff)
             else:
-                log.error("[Dify] 3 회 시도 모두 실패. 마지막 오류: %s", e)
+                log.error("[Dify] all 3 attempts failed. Last error: %s", e)
                 raise
 
 
 def _copy_upload_to_artifacts(source_path: str | None, artifacts_dir: str) -> str | None:
-    """사용자가 업로드한 원본 파일 (기획서 / Playwright 녹화 / scenario.json) 을
-    artifacts 디렉토리로 복사해 HTML 리포트의 "첨부 문서" 섹션에서 참조 가능하게 한다.
+    """Copy the user-uploaded original file (spec / Playwright recording / scenario.json)
+    into the artifacts directory so the HTML report's "Attached document" section can reference it.
 
-    doc / convert / execute 세 모드 공통 적용. chat 모드는 업로드 없음 → None 반환.
+    Applied across the doc / convert / execute modes. chat mode has no upload → returns None.
 
     Args:
-        source_path: Pipeline 이 저장한 업로드 파일 경로. None 이거나 실제 파일이
-            없으면 아무 것도 하지 않고 None 반환.
-        artifacts_dir: 저장 디렉토리. 없으면 생성.
+        source_path: path to the uploaded file saved by the Pipeline. Returns None
+            (no-op) if None or the file does not exist.
+        artifacts_dir: save directory; created if absent.
 
     Returns:
-        artifacts 에 복사된 파일의 basename (예: ``upload.pdf``).
-        원본이 없으면 None.
+        Basename of the file copied into artifacts (e.g. ``upload.pdf``).
+        None if there is no original.
     """
     if not source_path or not os.path.isfile(source_path):
         return None
@@ -556,37 +566,37 @@ def _copy_upload_to_artifacts(source_path: str | None, artifacts_dir: str) -> st
     except OSError:
         pass
     shutil.copy2(source_path, dest)
-    log.info("[Upload] 원본 파일 artifacts 에 복사: %s", basename)
+    log.info("[Upload] copied original file into artifacts: %s", basename)
     return basename
 
 
 def _generate_error_report(artifacts_dir: str, error_msg: str):
-    """Dify 연결 실패 시 최소한의 에러 리포트를 생성한다."""
+    """Generate a minimal error report on Dify connection failure."""
     os.makedirs(artifacts_dir, exist_ok=True)
     html = f"""<!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head><meta charset="utf-8"><title>Zero-Touch QA Error</title></head>
 <body style="font-family: sans-serif; margin: 40px; color: #991b1b;">
-  <h1>Zero-Touch QA 실행 실패</h1>
+  <h1>Zero-Touch QA execution failed</h1>
   <p style="background: #fee2e2; padding: 16px; border-radius: 8px;">
-    <strong>Dify 연결 실패:</strong> {error_msg}
+    <strong>Dify connection failed:</strong> {error_msg}
   </p>
-  <p>Dify 서비스 상태를 확인하십시오.</p>
+  <p>Check Dify service status.</p>
 </body>
 </html>"""
     path = os.path.join(artifacts_dir, "index.html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    log.info("[Error Report] %s 생성", path)
+    log.info("[Error Report] wrote %s", path)
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# auth 서브커맨드 — auth-profile 카탈로그 CLI (P2)
+# auth subcommand — auth-profile catalog CLI (P2)
 # ─────────────────────────────────────────────────────────────────────────
 #
-# 설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.5
+# Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.5
 #
-# 호출 형식:
+# Invocation format:
 #   python3 -m zero_touch_qa auth seed --name <name> --seed-url <url> ...
 #   python3 -m zero_touch_qa auth list [--json]
 #   python3 -m zero_touch_qa auth verify --name <name> [--json] [--no-naver-probe]
@@ -594,86 +604,86 @@ def _generate_error_report(artifacts_dir: str, error_msg: str):
 
 
 def _build_auth_parser() -> argparse.ArgumentParser:
-    """auth 서브커맨드 argparse 트리. seed/list/verify/delete sub-sub 분기."""
+    """auth subcommand argparse tree. seed/list/verify/delete sub-sub branches."""
     parser = argparse.ArgumentParser(
         prog="python3 -m zero_touch_qa auth",
-        description="Auth Profile 카탈로그 (Naver-OAuth 연동 서비스 E2E 테스트용)",
+        description="Auth Profile catalog (for E2E testing services that integrate with Naver OAuth)",
     )
     sub = parser.add_subparsers(dest="action", required=True, metavar="ACTION")
 
     # seed
     p_seed = sub.add_parser(
         "seed",
-        help="새 인증 세션 시드 (사람이 직접 로그인 + 2중 확인 통과)",
+        help="Seed a new auth session (a human logs in directly + passes 2FA)",
     )
-    p_seed.add_argument("--name", required=True, help="프로파일 식별 이름")
+    p_seed.add_argument("--name", required=True, help="profile identifier")
     p_seed.add_argument(
         "--seed-url",
         required=True,
-        help="⚠️ 테스트 대상 *서비스* 진입 URL (네이버 로그인 URL 이 아님!)",
+        help="⚠️ entry URL of the *service* under test (not the Naver login URL!)",
     )
     p_seed.add_argument(
         "--verify-service-url",
         required=True,
-        help="로그인된 사용자만 볼 수 있는 서비스 페이지 URL",
+        help="URL of a service page only visible to logged-in users",
     )
     p_seed.add_argument(
         "--verify-service-text",
         default="",
-        help="선택: 검증 URL 페이지에 로그인 상태에서만 보이는 문구 (비우면 URL 접근만 확인)",
+        help="Optional: text that appears on the verify URL only when logged in (empty to check URL access only)",
     )
     p_seed.add_argument(
         "--no-naver-probe",
         action="store_true",
-        help="naver-side weak probe 비활성화 (기본: 활성)",
+        help="Disable Naver-side weak probe (default: enabled)",
     )
     p_seed.add_argument(
         "--service-domain",
         default=None,
-        help="명시 안 하면 seed-url 에서 자동 추출",
+        help="auto-extracted from seed-url when not specified",
     )
     p_seed.add_argument(
         "--ttl-hint-hours", type=int, default=12,
-        help="UI 표시용 만료 추정값 (기본 12)",
+        help="UI-displayed expiry hint (default 12)",
     )
-    p_seed.add_argument("--notes", default="", help="자유 메모")
+    p_seed.add_argument("--notes", default="", help="free-form notes")
     p_seed.add_argument(
         "--timeout-sec", type=int, default=600,
-        help="사용자 입력 대기 한도 초 (기본 600 = 10분)",
+        help="user-input wait timeout in seconds (default 600 = 10 min)",
     )
 
     # list
-    p_list = sub.add_parser("list", help="등록된 프로파일 목록")
+    p_list = sub.add_parser("list", help="list registered profiles")
     p_list.add_argument(
         "--json", dest="as_json", action="store_true",
-        help="JSON 출력 (스크립트 통합용)",
+        help="JSON output (for script integration)",
     )
 
     # verify
     p_verify = sub.add_parser(
         "verify",
-        help="프로파일 검증 — service authoritative + naver weak probe (선택)",
+        help="Verify a profile — service authoritative + naver weak probe (optional)",
     )
     p_verify.add_argument("--name", required=True)
     p_verify.add_argument(
         "--no-naver-probe", action="store_true",
-        help="naver probe 건너뜀 (service-only 검증)",
+        help="skip the naver probe (service-only verification)",
     )
     p_verify.add_argument("--timeout-sec", type=int, default=30)
     p_verify.add_argument(
         "--json", dest="as_json", action="store_true",
-        help="JSON 출력",
+        help="JSON output",
     )
 
     # delete
-    p_delete = sub.add_parser("delete", help="프로파일 + storage 파일 삭제")
+    p_delete = sub.add_parser("delete", help="delete profile + storage file")
     p_delete.add_argument("--name", required=True)
 
     return parser
 
 
 def _run_auth_cli(argv: list) -> int:
-    """auth 서브커맨드 진입점. 성공 0 / 실패 1."""
+    """auth subcommand entry point. 0 on success / 1 on failure."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
@@ -682,8 +692,8 @@ def _run_auth_cli(argv: list) -> int:
     parser = _build_auth_parser()
     args = parser.parse_args(argv)
 
-    # auth_profiles 는 본 함수 시점에서만 import — 모듈 import 시 fcntl 등 POSIX
-    # 의존성을 끌어오므로 legacy --mode 경로에 영향 없도록.
+    # Import auth_profiles only at this function — importing the module pulls
+    # in POSIX dependencies (fcntl, etc.), so we keep the legacy --mode path unaffected.
     from . import auth_profiles as ap
 
     handlers = {
@@ -694,17 +704,17 @@ def _run_auth_cli(argv: list) -> int:
     }
     handler = handlers.get(args.action)
     if handler is None:
-        log.error("[auth] 알 수 없는 action: %s", args.action)
+        log.error("[auth] unknown action: %s", args.action)
         return 1
     try:
         return handler(args, ap)
     except KeyboardInterrupt:
-        log.warning("[auth] 사용자 중단")
+        log.warning("[auth] user-interrupted")
         return 130
 
 
 def _auth_handle_seed(args, ap_module) -> int:
-    """auth seed 핸들러."""
+    """auth seed handler."""
     from .auth_profiles import (
         AuthProfileError,
         NaverProbeSpec,
@@ -715,11 +725,11 @@ def _auth_handle_seed(args, ap_module) -> int:
         service_text=args.verify_service_text,
         naver_probe=None if args.no_naver_probe else NaverProbeSpec(),
     )
-    print(f"# 시드 시작 — name={args.name}")
+    print(f"# seed start — name={args.name}")
     print(f"#   seed_url    = {args.seed_url}")
     print(f"#   service     = {args.verify_service_url}")
-    print("#   ⚠ 별도 브라우저 창이 열립니다. 사람이 직접 로그인 + 2중 확인 통과 후")
-    print(f"#     서비스에서 본인 이름 확인 → 창을 닫으세요. (timeout {args.timeout_sec}s)")
+    print("#   ⚠ A separate browser window will open. A human logs in directly and passes 2FA, then")
+    print(f"#     verifies their name on the service → close the window. (timeout {args.timeout_sec}s)")
     try:
         prof = ap_module.seed_profile(
             name=args.name,
@@ -731,12 +741,12 @@ def _auth_handle_seed(args, ap_module) -> int:
             timeout_sec=args.timeout_sec,
         )
     except AuthProfileError as e:
-        log.error("[auth seed] 실패 — %s", e)
+        log.error("[auth seed] failed — %s", e)
         return 1
     except Exception as e:  # noqa: BLE001
-        log.exception("[auth seed] 예기치 못한 오류")
+        log.exception("[auth seed] unexpected error")
         return 1
-    print(f"# ✅ 시드 완료 — name={prof.name}")
+    print(f"# ✅ seed complete — name={prof.name}")
     print(f"#   storage  = {prof.storage_path}")
     print(f"#   verified = {prof.last_verified_at}")
     print(f"#   chips    = {prof.chips_supported}")
@@ -744,7 +754,7 @@ def _auth_handle_seed(args, ap_module) -> int:
 
 
 def _auth_handle_list(args, ap_module) -> int:
-    """auth list 핸들러. --json 시 JSON 한 줄 출력."""
+    """auth list handler. With --json, prints one-line JSON."""
     profiles = ap_module.list_profiles()
     if args.as_json:
         out = [
@@ -761,7 +771,7 @@ def _auth_handle_list(args, ap_module) -> int:
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
     if not profiles:
-        print("# (등록된 프로파일 없음)")
+        print("# (no profiles registered)")
         return 0
     print(f"# {len(profiles)} profiles")
     print(f"{'NAME':<30} {'SERVICE':<32} {'LAST VERIFIED':<28} {'TTL':>4}")
@@ -772,9 +782,9 @@ def _auth_handle_list(args, ap_module) -> int:
 
 
 def _auth_handle_verify(args, ap_module) -> int:
-    """auth verify 핸들러. service-side authoritative + (선택) naver weak probe."""
+    """auth verify handler. service-side authoritative + (optional) naver weak probe."""
     from .auth_profiles import AuthProfileError
-    # ProfileNotFoundError + 기타 AuthProfileError 한 번에 처리 (모두 종료 코드 1).
+    # Handle ProfileNotFoundError + other AuthProfileError together (all exit code 1).
     try:
         prof = ap_module.get_profile(args.name)
         ok, detail = ap_module.verify_profile(
@@ -786,7 +796,7 @@ def _auth_handle_verify(args, ap_module) -> int:
         log.error("[auth verify] %s", e)
         return 1
     except Exception:  # noqa: BLE001
-        log.exception("[auth verify] 예기치 못한 오류")
+        log.exception("[auth verify] unexpected error")
         return 1
     if args.as_json:
         print(json.dumps({"ok": ok, **detail}, ensure_ascii=False, indent=2))
@@ -802,15 +812,15 @@ def _auth_handle_verify(args, ap_module) -> int:
 
 
 def _auth_handle_delete(args, ap_module) -> int:
-    """auth delete 핸들러. 카탈로그 + storage 파일 둘 다 정리."""
+    """auth delete handler. Cleans up both the catalog entry and the storage file."""
     from .auth_profiles import AuthProfileError
-    # ProfileNotFoundError 가 AuthProfileError 의 서브클래스라 한 번에 처리.
+    # ProfileNotFoundError is a subclass of AuthProfileError, so handle them together.
     try:
         ap_module.delete_profile(args.name)
     except AuthProfileError as e:
         log.error("[auth delete] %s", e)
         return 1
-    print(f"# 삭제 완료 — name={args.name}")
+    print(f"# delete complete — name={args.name}")
     return 0
 
 

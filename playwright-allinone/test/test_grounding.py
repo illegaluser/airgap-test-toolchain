@@ -207,8 +207,8 @@ def test_serialize_block_marker_format():
     assert "=== END INVENTORY ===" in block
     assert "role=button" in block
     assert "selector_hint=getByRole" in block
-    # footer 가이드 포함
-    assert "selector_hint 를 그대로 사용" in block
+    # footer guide included
+    assert "prefer the selector_hint" in block
 
 
 def test_serialize_block_empty_returns_empty_string():

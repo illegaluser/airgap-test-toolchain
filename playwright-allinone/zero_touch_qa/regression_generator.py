@@ -15,12 +15,12 @@ def generate_regression_test(
     output_dir: str,
 ) -> str | None:
     """
-    모든 스텝이 성공(PASS/HEALED)한 경우,
-    LLM 없이 독립 실행 가능한 Playwright 스크립트를 생성한다.
-    실패 스텝이 있으면 생성하지 않고 None을 반환한다.
+    When every step succeeded (PASS/HEALED), generate a standalone
+    Playwright script that needs no LLM.
+    Returns None without generating anything if any step failed.
     """
     if any(r.status == "FAIL" for r in results):
-        log.info("[Regression] 실패 스텝 존재 — 생성 건너뜀")
+        log.info("[Regression] failed step exists — skipping generation")
         return None
 
     needs_auth_imports = any(
@@ -30,15 +30,16 @@ def generate_regression_test(
     lines = [
         '"""',
         "Auto-generated regression test from Zero-Touch QA scenario.",
-        "LLM 없이 독립 실행 가능한 Playwright 스크립트.",
+        "Standalone Playwright script that runs without an LLM.",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         '"""',
         "from playwright.sync_api import sync_playwright",
     ]
     if needs_auth_imports:
-        # auth_login 은 zero_touch_qa.auth 의 credential lookup + TOTP 생성을
-        # 재사용해야 자체 완결. 회귀 스크립트가 zero_touch_qa 패키지와 같은
-        # PYTHONPATH 에서 실행되는 것을 전제. (artifacts/ 위치 기본 가정.)
+        # auth_login must reuse zero_touch_qa.auth's credential lookup + TOTP
+        # generation to be self-contained. Assumes the regression script runs
+        # on the same PYTHONPATH as the zero_touch_qa package.
+        # (Default assumption: from the artifacts/ location.)
         lines.append(
             "from zero_touch_qa.auth import (\n"
             "    EMAIL_FIELD_CANDIDATES, PASSWORD_FIELD_CANDIDATES,\n"
@@ -88,21 +89,22 @@ def generate_regression_test(
     output_path = os.path.join(output_dir, "regression_test.py")
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    log.info("[Regression] 독립 테스트 생성 완료: %s", output_path)
+    log.info("[Regression] standalone test generated: %s", output_path)
     return output_path
 
 
 def _emit_step_code(
     action: str, target, value, step: dict, locator_code: str
 ) -> list[str]:
-    """단일 step 을 Playwright 호출 라인 목록으로 변환한다.
+    """Convert a single step into a list of Playwright call lines.
 
-    14대 DSL 액션 모두를 처리한다. 신규 5종(upload/drag/scroll/mock_*)도
-    executor 의 실제 동작과 1:1 로 매핑되어 회귀 테스트가 동등하게 재현한다.
+    Handles all 14 DSL actions. The new five (upload/drag/scroll/mock_*) map
+    1:1 to the executor's actual behavior so the regression test reproduces
+    them identically.
     """
     handler = _ACTION_EMITTERS.get(action)
     if handler is None:
-        return [f"            # [skip] 미지원 action: {action}"]
+        return [f"            # [skip] unsupported action: {action}"]
     return handler(target, value, step, locator_code)
 
 
@@ -149,8 +151,8 @@ def _emit_hover(target, value, step, locator_code):
 
 
 def _emit_upload(target, value, step, locator_code):
-    # 업로드 경로는 artifacts 기준 상대경로로 들어옴 — 회귀 테스트는 실행 위치
-    # (artifacts 디렉토리)에서 그대로 set_input_files 한다.
+    # The upload path arrives as a relative path under artifacts — the regression
+    # test calls set_input_files from its own run location (the artifacts directory).
     return [
         f"            {locator_code}.set_input_files({json.dumps(str(value))})"
     ]
@@ -215,11 +217,11 @@ def _emit_verify(target, value, step, locator_code):
 
 
 def _emit_auth_login(target, value, step, locator_code):
-    """auth_login emitter — credential alias + mode 분기.
+    """auth_login emitter — credential alias + mode branching.
 
-    회귀 스크립트는 zero_touch_qa.auth 모듈을 import 해 fixture 통합과
-    동일한 흐름을 재현한다. resolve_credential / generate_totp_code 가
-    이미 검증된 path 라 1:1 매핑.
+    The regression script imports the zero_touch_qa.auth module and reproduces
+    the same flow as the integrated fixture. Maps 1:1 because
+    resolve_credential / generate_totp_code is already a validated path.
     """
     target_str = json.dumps(str(target))
     alias = json.dumps(str(value))
@@ -261,7 +263,7 @@ def _emit_auth_login(target, value, step, locator_code):
 def _emit_reset_state(target, value, step, locator_code):
     """reset_state emitter — cookie / storage / indexeddb / all (+ permissions).
 
-    executor `_execute_reset_state` 와 1:1 매핑. all 은 permissions 도 reset.
+    Maps 1:1 to executor `_execute_reset_state`. `all` also resets permissions.
     """
     scope = str(value).strip().lower()
     out = [f"            # reset_state value={scope}"]
@@ -315,11 +317,11 @@ _ACTION_EMITTERS = {
 
 
 def _target_to_playwright_code(target) -> str:
-    """DSL target 을 독립 실행 가능한 Playwright 코드 스니펫으로 변환한다.
+    """Convert a DSL target into a standalone Playwright code snippet.
 
-    P0.1 #2 / T-C — ``>>`` 합성 chain (frame= / shadow= / role= / text= / ...
-    + 후미 modifier nth=/has_text=) 을 모두 지원한다. resolver 의 chain 처리와
-    동일 의미로 코드 스니펫을 누적한다.
+    P0.1 #2 / T-C — supports ``>>`` composite chains (frame= / shadow= /
+    role= / text= / ... + trailing modifiers nth=/has_text=). Builds the
+    code snippet with the same semantics as the resolver's chain handling.
     """
     if not target:
         return 'page.locator("body")'
@@ -341,21 +343,21 @@ def _target_to_playwright_code(target) -> str:
 
     t = str(target).strip()
 
-    # 후미 modifier 분리 — base_str 과 분리해 처리.
+    # Split trailing modifiers from base_str.
     base_str, modifiers = _split_trailing_modifiers(t)
 
     if " >> " in base_str:
         return _chain_to_playwright_code(base_str, modifiers)
 
-    # 단일 segment — 기존 분기.
+    # Single segment — existing branch.
     snippet = _segment_to_playwright_code(base_str, root="page")
     return _apply_modifier_suffix(snippet, modifiers)
 
 
 def _split_trailing_modifiers(t: str) -> tuple[str, list[tuple[str, str]]]:
-    """``, nth=N`` / ``, has_text=T`` 후미 modifier 만 분리. resolver 의
-    `_split_modifiers` 와 동일 의미. base 안의 콤마 (`role=link, name=뉴스`)
-    는 보존."""
+    """Split only the trailing ``, nth=N`` / ``, has_text=T`` modifiers. Same
+    semantics as the resolver's `_split_modifiers`. Preserves commas inside the
+    base (e.g. `role=link, name=Top story`)."""
     parts = t.split(", ")
     mods: list[tuple[str, str]] = []
     while parts:
@@ -372,7 +374,7 @@ def _split_trailing_modifiers(t: str) -> tuple[str, list[tuple[str, str]]]:
 
 
 def _chain_to_playwright_code(base_str: str, modifiers) -> str:
-    """``>>`` chain 을 Playwright 메서드 chain 코드로 변환."""
+    """Convert a ``>>`` chain into Playwright method-chain code."""
     segments = [s.strip() for s in base_str.split(" >> ") if s.strip()]
     if not segments:
         return 'page.locator("body")'
@@ -384,7 +386,7 @@ def _chain_to_playwright_code(base_str: str, modifiers) -> str:
             cur = f"{cur}.frame_locator({json.dumps(sel)})"
             continue
         if seg.startswith("shadow="):
-            # Playwright 가 open shadow 자동 piercing — 일반 locator 로 충분.
+            # Playwright auto-pierces open shadow — a regular locator is enough.
             sel = seg[len("shadow="):].strip()
             cur = f"{cur}.locator({json.dumps(sel)})"
             continue
@@ -394,11 +396,12 @@ def _chain_to_playwright_code(base_str: str, modifiers) -> str:
 
 
 def _segment_to_playwright_code(seg: str, *, root: str, in_chain: bool = False) -> str:
-    """단일 segment (role=/text=/label=/placeholder=/testid=/CSS) 를 Playwright 코드로.
+    """Convert a single segment (role=/text=/label=/placeholder=/testid=/CSS) into Playwright code.
 
-    ``in_chain=False`` 인 단일 segment 의 경우 ``.first`` 를 붙여 단일 element 로
-    축약 (기존 동작 보존). chain 안에서는 후속 segment 가 추가될 수 있으므로
-    ``.first`` 를 붙이지 않는다 — 마지막에 modifier 처리에서 단일 element 로 정리.
+    For a single segment with ``in_chain=False``, append ``.first`` to narrow to a
+    single element (preserves existing behavior). Inside a chain, do not append
+    ``.first`` because more segments may follow — the modifier step at the end
+    narrows to a single element.
     """
     suffix = "" if in_chain else ".first"
 
@@ -429,14 +432,14 @@ def _segment_to_playwright_code(seg: str, *, root: str, in_chain: bool = False) 
 
 
 def _apply_modifier_suffix(code: str, modifiers) -> str:
-    """nth=N / has_text=T 후미 modifier 를 Playwright .nth(N)/.filter(has_text=T) 로 변환.
+    """Convert trailing nth=N / has_text=T modifiers into Playwright .nth(N) / .filter(has_text=T).
 
-    modifier 가 없으면 코드 끝이 이미 ``.first`` (단일 segment 경로) 인 상태로 반환.
-    chain 경로에서 modifier 도 없는 경우 마지막에 ``.first`` 를 추가해 단일 element 로
-    축약한다.
+    If there are no modifiers, return as-is (the single-segment path already ends
+    with ``.first``). For the chain path with no modifiers, append ``.first`` at
+    the end to narrow to a single element.
     """
     if not modifiers:
-        # chain 경로의 무-모디파이어 케이스 — .first 미적용 상태이므로 추가.
+        # Chain path with no modifiers — .first not yet applied, so add it.
         return code if code.endswith(".first") else f"{code}.first"
 
     out = code

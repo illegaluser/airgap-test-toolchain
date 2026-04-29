@@ -75,16 +75,16 @@ def summarize_llm_calls(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def aggregate_llm_sla(artifacts_dir: str | None) -> str | None:
-    """`llm_calls.jsonl` 을 읽어 `llm_sla.json` 으로 집계 저장.
+    """Read `llm_calls.jsonl` and aggregate it into `llm_sla.json`.
 
-    빌드 종료 시점에 호출해 Zero-Touch QA Report 운영 지표 섹션에 LLM SLA 가
-    노출되도록 한다. `llm_calls.jsonl` 이 없거나 비어 있으면 no-op 으로 None 반환.
+    Called at build-end time so the Zero-Touch QA Report ops-metrics section
+    surfaces LLM SLA. No-op (returns None) if `llm_calls.jsonl` is absent or empty.
 
     Args:
-        artifacts_dir: artifacts 디렉토리 절대 경로. 없거나 디렉토리 부재 시 no-op.
+        artifacts_dir: absolute path to the artifacts directory. No-op if missing or absent.
 
     Returns:
-        생성된 `llm_sla.json` 절대 경로, 또는 입력 데이터가 없으면 None.
+        absolute path of the produced `llm_sla.json`, or None if there is no input data.
     """
     if not artifacts_dir:
         return None

@@ -1,8 +1,50 @@
 [
-  {"step": 1, "action": "navigate", "target": "", "value": "https://www.naver.com/", "description": "https://www.naver.com/로 이동", "fallback_targets": []},
-  {"step": 2, "action": "click", "target": "role=link, name=NAVER 로그인", "value": "", "description": "클릭", "fallback_targets": []},
-  {"step": 3, "action": "click", "target": "role=link, name=NAVER", "value": "", "description": "클릭", "fallback_targets": []},
-  {"step": 4, "action": "click", "target": "role=link, name=뉴스홈", "value": "", "description": "클릭", "fallback_targets": []},
-  {"step": 5, "action": "click", "target": "role=link, name=엔터", "value": "", "description": "클릭", "fallback_targets": []},
-  {"step": 6, "action": "click", "target": "role=link, name=기사 헤드라인", "value": "", "description": "클릭", "fallback_targets": []}
+  {
+    "step": 1,
+    "action": "navigate",
+    "target": "",
+    "value": "https://www.naver.com/",
+    "description": "navigate to https://www.naver.com/",
+    "fallback_targets": []
+  },
+  {
+    "step": 2,
+    "action": "click",
+    "target": "role=link, name=NAVER 로그인",
+    "value": "",
+    "description": "click",
+    "fallback_targets": []
+  },
+  {
+    "step": 3,
+    "action": "click",
+    "target": "role=link, name=NAVER",
+    "value": "",
+    "description": "click",
+    "fallback_targets": []
+  },
+  {
+    "step": 4,
+    "action": "click",
+    "target": "role=link, name=뉴스홈",
+    "value": "",
+    "description": "click",
+    "fallback_targets": []
+  },
+  {
+    "step": 5,
+    "action": "click",
+    "target": "role=link, name=엔터",
+    "value": "",
+    "description": "click",
+    "fallback_targets": []
+  },
+  {
+    "step": 6,
+    "action": "click",
+    "target": "role=link, name=기사 헤드라인",
+    "value": "",
+    "description": "click",
+    "fallback_targets": []
+  }
 ]

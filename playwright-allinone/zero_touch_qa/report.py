@@ -11,14 +11,14 @@ log = logging.getLogger(__name__)
 
 
 def save_run_log(results: list[StepResult], output_dir: str) -> str:
-    """실행 결과를 JSONL(한 줄에 한 스텝) 형식으로 저장하고 파일 경로를 반환한다.
+    """Save the execution results as JSONL (one line per step) and return the path.
 
     Args:
-        results: StepResult 리스트.
-        output_dir: 저장 디렉터리.
+        results: list of StepResult.
+        output_dir: directory to save into.
 
     Returns:
-        생성된 ``run_log.jsonl`` 의 절대 경로.
+        Absolute path of the generated ``run_log.jsonl``.
     """
     path = os.path.join(output_dir, "run_log.jsonl")
     with open(path, "w", encoding="utf-8") as f:
@@ -34,28 +34,28 @@ def save_run_log(results: list[StepResult], output_dir: str) -> str:
                 "ts": r.timestamp,
             }
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    log.info("[Log] run_log.jsonl 생성 완료: %s", path)
+    log.info("[Log] run_log.jsonl written: %s", path)
     return path
 
 
 def save_scenario(
     scenario: list[dict], output_dir: str, suffix: str = ""
 ) -> str:
-    """DSL 시나리오를 JSON 파일로 저장한다.
+    """Save the DSL scenario as a JSON file.
 
     Args:
-        scenario: DSL 스텝 dict 리스트.
-        output_dir: 저장 디렉터리.
-        suffix: 파일명 접미사. 예: ``".healed"`` → ``scenario.healed.json``.
+        scenario: list of DSL step dicts.
+        output_dir: directory to save into.
+        suffix: filename suffix. e.g. ``".healed"`` → ``scenario.healed.json``.
 
     Returns:
-        생성된 JSON 파일의 절대 경로.
+        Absolute path of the generated JSON file.
     """
     filename = f"scenario{suffix}.json"
     path = os.path.join(output_dir, filename)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(scenario, f, indent=2, ensure_ascii=False)
-    log.info("[Scenario] %s 저장 완료", filename)
+    log.info("[Scenario] %s saved", filename)
     return path
 
 
@@ -66,19 +66,20 @@ def build_html_report(
     uploaded_file: str | None = None,
     run_mode: str = "chat",
 ) -> str:
-    """Jenkins HTML Publisher 플러그인용 시각적 리포트(index.html)를 생성한다.
+    """Generate a visual report (index.html) for the Jenkins HTML Publisher plugin.
 
     Args:
-        results: StepResult 리스트.
-        output_dir: 저장 디렉터리.
-        version: 리포트에 표시할 버전 문자열.
-        uploaded_file: 사용자가 업로드해 artifacts 에 함께 저장된 원본 파일의
-            basename (예: ``upload.pdf``). ``None`` 이면 "첨부 문서" 섹션 생략.
-        run_mode: 실행 모드 (``chat`` / ``doc`` / ``convert`` / ``execute``).
-            "첨부 문서" 라벨을 모드별로 달리 표시하기 위해 사용.
+        results: list of StepResult.
+        output_dir: directory to save into.
+        version: version string shown on the report.
+        uploaded_file: basename of the original file the user uploaded that is also
+            saved in artifacts (e.g. ``upload.pdf``). When ``None``, the "Attached
+            document" section is skipped.
+        run_mode: execution mode (``chat`` / ``doc`` / ``convert`` / ``execute``).
+            Used to vary the "Attached document" label per mode.
 
     Returns:
-        생성된 ``index.html`` 의 절대 경로.
+        Absolute path of the generated ``index.html``.
     """
     total = len(results)
     passed = sum(1 for r in results if r.status == "PASS")
@@ -90,16 +91,16 @@ def build_html_report(
     upload_section = _build_upload_section(uploaded_file, run_mode, output_dir)
     operations_section = _build_operations_section(output_dir)
 
-    # 최종 상태 스크린샷 섹션 — 새 탭 전환 등으로 마지막 step_N_*.png 가
-    # click 직전 페이지만 보여주는 경우 실제 도달 페이지를 별도 표시.
+    # Final-state screenshot section — when the last step_N_*.png shows only
+    # the page before click (e.g. due to a new-tab switch), display the actual final page separately.
     final_state_path = os.path.join(output_dir, "final_state.png")
     if os.path.exists(final_state_path):
         final_section = (
-            '<h2 style="margin-top:24px;">최종 도달 페이지</h2>'
+            '<h2 style="margin-top:24px;">Final page reached</h2>'
             '<div class="final-state">'
-            '<img src="final_state.png" alt="최종 상태"/>'
-            '<p class="caption">모든 스텝 종료 후 활성 페이지의 상태입니다. '
-            'click 이 새 탭을 연 경우 전환 후 페이지가 표시됩니다.</p>'
+            '<img src="final_state.png" alt="final state"/>'
+            '<p class="caption">State of the active page after all steps finish. '
+            'When click opens a new tab, the page after the switch is shown.</p>'
             '</div>'
         )
     else:
@@ -122,31 +123,31 @@ def build_html_report(
     path = os.path.join(output_dir, "index.html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    log.info("[Report] HTML 리포트 생성 완료: %s", path)
+    log.info("[Report] HTML report written: %s", path)
     return path
 
 
 def _build_upload_section(
     uploaded_file: str | None, run_mode: str, output_dir: str
 ) -> str:
-    """업로드된 원본 파일을 리포트에서 다운로드 + 미리보기 할 수 있는 HTML 섹션.
+    """HTML section so the report can download + preview the originally uploaded file.
 
-    - PDF: ``<object>`` 로 inline preview (브라우저 내장 PDF 뷰어)
-    - 코드/JSON/텍스트: 파일 내용을 읽어 **인라인 ``<pre>`` 로 임베드** — Jenkins
-      HTML Publisher 등 정적 서버가 ``.py`` 를 어떤 Content-Type 으로 serving
-      하든 무관하게 동일하게 보인다. 파일이 200KB 를 넘으면 앞부분만 표시 +
-      전체 다운로드 링크.
-    - 그 외 확장자: 다운로드 링크만.
+    - PDF: inline preview via ``<object>`` (browser's built-in PDF viewer)
+    - Code/JSON/text: read the file content and **embed inline as ``<pre>``** —
+      renders identically regardless of the Content-Type a static server (Jenkins
+      HTML Publisher, etc.) serves ``.py`` with. If the file exceeds 200KB,
+      show only the prefix + a full-download link.
+    - Other extensions: download link only.
     """
     if not uploaded_file:
         return ""
 
     label_map = {
-        "doc": "업로드 기획서 (PDF)",
-        "convert": "업로드 Playwright 녹화 스크립트",
-        "execute": "업로드 시나리오 JSON",
+        "doc": "Uploaded specification (PDF)",
+        "convert": "Uploaded Playwright recording script",
+        "execute": "Uploaded scenario JSON",
     }
-    label = html_escape(label_map.get(run_mode, "업로드 파일"))
+    label = html_escape(label_map.get(run_mode, "Uploaded file"))
     safe_name = html_escape(uploaded_file)
     ext = uploaded_file.lower().rsplit(".", 1)[-1] if "." in uploaded_file else ""
 
@@ -155,8 +156,8 @@ def _build_upload_section(
         preview = (
             f'<object data="{safe_name}#view=FitH" type="application/pdf" '
             f'class="upload-preview">'
-            f'PDF 미리보기를 지원하지 않는 브라우저입니다 — '
-            f'<a href="{safe_name}">{safe_name}</a> 을(를) 직접 열어보세요.'
+            f'This browser does not support PDF preview — '
+            f'open <a href="{safe_name}">{safe_name}</a> directly.'
             f'</object>'
         )
     elif ext in ("py", "json", "txt", "yaml", "yml", "md"):
@@ -170,17 +171,17 @@ def _build_upload_section(
                 content = content[:200_000]
                 truncated = True
         except OSError as e:
-            log.warning("[Upload] %s 읽기 실패: %s", uploaded_file, e)
+            log.warning("[Upload] %s read failed: %s", uploaded_file, e)
         if content:
             preview = f'<pre class="upload-code"><code>{html_escape(content)}</code></pre>'
             if truncated:
                 preview += (
-                    '<p class="note">(파일이 200KB 를 넘어 앞부분만 표시됩니다. '
-                    '전체 내용은 위 다운로드 링크로 받아보세요.)</p>'
+                    '<p class="note">(File exceeds 200KB; only the prefix is shown. '
+                    'Use the download link above to retrieve the full content.)</p>'
                 )
 
     return (
-        '<h2 style="margin-top:24px;">첨부 문서</h2>'
+        '<h2 style="margin-top:24px;">Attached document</h2>'
         '<div class="upload-section">'
         f'<p><strong>{label}:</strong> '
         f'<a href="{safe_name}" download>{safe_name}</a></p>'
@@ -190,7 +191,7 @@ def _build_upload_section(
 
 
 def _build_table_rows(results: list[StepResult]) -> str:
-    """StepResult 리스트를 HTML 테이블 ``<tr>`` 행 문자열로 변환한다."""
+    """Convert a list of StepResult into HTML table ``<tr>`` row strings."""
     rows = []
     for r in results:
         badge_class = {"PASS": "ok", "HEALED": "warn", "FAIL": "fail"}.get(
@@ -234,10 +235,10 @@ def _build_operations_section(output_dir: str) -> str:
         rows.extend(
             [
                 _metric_row(
-                    "LLM 호출",
-                    f"{summary['total_calls']}회",
+                    "LLM calls",
+                    f"{summary['total_calls']}",
                     "llm_calls.jsonl",
-                    "Planner/Healer 전체 Dify 호출 수",
+                    "Total Dify calls (Planner + Healer)",
                 ),
                 _metric_row(
                     "LLM latency",
@@ -246,19 +247,19 @@ def _build_operations_section(output_dir: str) -> str:
                         f"p95 {latency['p95']}ms / p99 {latency['p99']}ms"
                     ),
                     "llm_calls.jsonl",
-                    "llm_calls.jsonl 기반 percentile",
+                    "Percentiles computed from llm_calls.jsonl",
                 ),
                 _metric_row(
                     "LLM timeout",
-                    f"{summary['timeout_count']}건 ({summary['timeout_rate'] * 100:.1f}%)",
+                    f"{summary['timeout_count']} ({summary['timeout_rate'] * 100:.1f}%)",
                     "llm_calls.jsonl",
-                    "timeout=true 레코드 비율",
+                    "Ratio of timeout=true records",
                 ),
                 _metric_row(
                     "LLM retry",
-                    f"{summary['retry_total']}회",
+                    f"{summary['retry_total']}",
                     "llm_calls.jsonl",
-                    "retry_count 합계",
+                    "Sum of retry_count",
                 ),
             ]
         )
@@ -268,12 +269,12 @@ def _build_operations_section(output_dir: str) -> str:
                 _metric_row(
                     f"LLM {kind}",
                     (
-                        f"{by_kind['total_calls']}회, "
+                        f"{by_kind['total_calls']} calls, "
                         f"p95 {kind_latency['p95']}ms, "
-                        f"timeout {by_kind['timeout_count']}건"
+                        f"timeout {by_kind['timeout_count']}"
                     ),
                     "llm_calls.jsonl",
-                    "kind 별 호출 요약",
+                    "Per-kind call summary",
                 )
             )
 
@@ -283,7 +284,7 @@ def _build_operations_section(output_dir: str) -> str:
         return ""
 
     return (
-        '<h2 style="margin-top:24px;">운영 지표</h2>'
+        '<h2 style="margin-top:24px;">Operations metrics</h2>'
         '<table class="ops-table">'
         '<thead><tr><th>Metric</th><th>Value</th><th>Source</th><th>Note</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody>"
@@ -293,8 +294,8 @@ def _build_operations_section(output_dir: str) -> str:
 
 def _build_json_metric_rows(output_dir: str) -> list[str]:
     metric_files = [
-        ("planner_accuracy.json", "Planner 정확도"),
-        ("healer_accuracy.json", "Healer 정확도"),
+        ("planner_accuracy.json", "Planner accuracy"),
+        ("healer_accuracy.json", "Healer accuracy"),
         ("llm_sla.json", "LLM SLA"),
         ("heal_metrics.json", "Healing"),
         ("flake_metrics.json", "Flake"),
@@ -310,7 +311,7 @@ def _build_json_metric_rows(output_dir: str) -> list[str]:
                 label,
                 _summarize_metric_payload(payload),
                 filename,
-                "원본 metric JSON 링크",
+                "Link to the source metric JSON",
             )
         )
     return rows
@@ -323,7 +324,7 @@ def _read_json_metric(path: str) -> object | None:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        log.warning("[Report] metric 파일 읽기 실패: %s (%s)", path, e)
+        log.warning("[Report] metric file read failed: %s (%s)", path, e)
         return None
 
 
@@ -365,12 +366,12 @@ def _metric_row(metric: str, value: str, source: str, note: str) -> str:
     )
 
 
-# ── HTML 템플릿 ──
+# ── HTML template ──
 _HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Zero-Touch QA 실행 리포트</title>
+  <title>Zero-Touch QA execution report</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
            margin: 24px; color: #0f172a; background: #f1f5f9; line-height: 1.45; }}
@@ -421,31 +422,31 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>Zero-Touch QA 실행 리포트</h1>
+  <h1>Zero-Touch QA execution report</h1>
   <div class="meta">
-    <p>실행 시각: <strong>{timestamp}</strong></p>
-    <p>버전: <strong>v{version}</strong></p>
+    <p>Run time: <strong>{timestamp}</strong></p>
+    <p>Version: <strong>v{version}</strong></p>
   </div>
   <div class="cards">
     <div class="card">
-      <div class="label">전체 스텝</div><div class="value">{total}</div>
+      <div class="label">Total steps</div><div class="value">{total}</div>
     </div>
     <div class="card">
-      <div class="label">성공 (PASS)</div><div class="value">{passed}</div>
+      <div class="label">Passed (PASS)</div><div class="value">{passed}</div>
     </div>
     <div class="card">
-      <div class="label">자가치유 (HEALED)</div><div class="value">{healed}</div>
+      <div class="label">Self-healed (HEALED)</div><div class="value">{healed}</div>
     </div>
     <div class="card">
-      <div class="label">실패 (FAIL)</div><div class="value">{failed}</div>
+      <div class="label">Failed (FAIL)</div><div class="value">{failed}</div>
     </div>
     <div class="card">
-      <div class="label">성공률</div><div class="value">{pass_rate}%</div>
+      <div class="label">Pass rate</div><div class="value">{pass_rate}%</div>
     </div>
   </div>
   {upload_section}
   {operations_section}
-  <h2 style="margin-top:24px;">스텝별 실행 결과</h2>
+  <h2 style="margin-top:24px;">Per-step results</h2>
   <table>
     <thead>
       <tr>

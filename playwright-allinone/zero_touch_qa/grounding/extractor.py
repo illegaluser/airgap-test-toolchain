@@ -1,10 +1,10 @@
-"""DOM 인벤토리 추출기 (Phase 1 T1.2).
+"""DOM inventory extractor (Phase 1 T1.2).
 
-Playwright 1.57+ 에서 `page.accessibility.snapshot()` 가 제거되어, CDP 의
-`Accessibility.getFullAXTree` 를 직접 호출한다. 결과를 InventoryElement
-리스트로 정규화한다.
+Playwright 1.57+ removed `page.accessibility.snapshot()`, so we call CDP's
+`Accessibility.getFullAXTree` directly and normalize the result into a list
+of InventoryElement.
 
-진입점:
+Entry point:
     fetch_inventory(target_url, token_budget=1500, wait_until="domcontentloaded")
 """
 
@@ -29,9 +29,9 @@ def fetch_inventory(
     user_agent: Optional[str] = None,
     viewport: Optional[dict] = None,
 ) -> Inventory:
-    """target_url 의 DOM 인벤토리를 추출한다.
+    """Extract the DOM inventory of target_url.
 
-    실패 시 Inventory.error 에 사유 기록. 호출자는 graceful degradation.
+    On failure, store the reason in Inventory.error. The caller graceful-degrades.
     """
     started = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
     inv = Inventory(target_url=target_url, fetched_at=started)
@@ -54,14 +54,14 @@ def fetch_inventory(
 
     except PWTimeout as e:
         inv.error = f"timeout: {e}"
-        log.warning("[grounding] %s 추출 timeout: %s", target_url, e)
-    except Exception as e:  # noqa: BLE001 — graceful degradation 정책
+        log.warning("[grounding] %s extraction timeout: %s", target_url, e)
+    except Exception as e:  # noqa: BLE001 — graceful degradation policy
         inv.error = f"{type(e).__name__}: {e}"
-        log.warning("[grounding] %s 추출 실패: %s", target_url, e)
+        log.warning("[grounding] %s extraction failed: %s", target_url, e)
 
     if inv.error is None:
         log.info(
-            "[grounding] %s 추출 완료 — %d 요소 (인터랙티브 %d)",
+            "[grounding] %s extracted — %d elements (interactive %d)",
             target_url, len(inv.elements), inv.interactive_count(),
         )
 
@@ -69,7 +69,7 @@ def fetch_inventory(
 
 
 def _extract_via_cdp(page: Page) -> list[InventoryElement]:
-    """CDP Accessibility.getFullAXTree 결과를 InventoryElement 로 정규화."""
+    """Normalize CDP Accessibility.getFullAXTree results into InventoryElement."""
     cdp = page.context.new_cdp_session(page)
     cdp.send("Accessibility.enable")
     tree = cdp.send("Accessibility.getFullAXTree") or {}
@@ -84,8 +84,8 @@ def _extract_via_cdp(page: Page) -> list[InventoryElement]:
             continue
 
         name = (_value_of(n.get("name")) or "").strip()
-        # heading 같은 컨텍스트 role 은 name 없어도 text 로 가치 있음.
-        # 인터랙티브 role 은 name 이 비면 LLM 이 식별 불가 → 스킵.
+        # Context roles like heading are still valuable via text even without a name.
+        # Interactive roles without a name are unidentifiable to the LLM → skip.
         if role in INTERACTIVE_ROLES and not name:
             continue
 
@@ -97,17 +97,17 @@ def _extract_via_cdp(page: Page) -> list[InventoryElement]:
                       for p in n.get("properties", []) if p.get("name")}
 
         visible = not properties.get("hidden", False)
-        # disabled / focusable 등을 enabled 로 환산
+        # Translate disabled / focusable etc. into enabled
         enabled = not properties.get("disabled", False)
 
-        # selector_hint — getByRole(role, {name}) 우선. 이름 없을 시 getByText.
+        # selector_hint — prefer getByRole(role, {name}). Fall back to getByText when no name.
         if name:
             selector_hint = f"getByRole('{role}', {{ name: {name!r} }})"
         else:
             selector_hint = f"getByRole('{role}')"
 
         extras: dict = {}
-        # heading level 은 토큰 비용 작고 의미 큼 — 노출.
+        # heading level — tiny token cost, big information gain → surface.
         if role == "heading" and "level" in properties:
             try:
                 extras["level"] = int(properties["level"])
@@ -117,7 +117,7 @@ def _extract_via_cdp(page: Page) -> list[InventoryElement]:
         elem = InventoryElement(
             role=role,
             name=name,
-            text=name,  # CDP 는 별도 text 필드를 안 줌. name 으로 일원화.
+            text=name,  # CDP does not provide a separate text field — unify with name.
             selector_hint=selector_hint,
             visible=visible,
             enabled=enabled,
@@ -130,7 +130,7 @@ def _extract_via_cdp(page: Page) -> list[InventoryElement]:
 
 
 def _value_of(field) -> str | bool | None:
-    """CDP property 형식 `{type: 'string', value: '...'}` 에서 value 추출."""
+    """Extract value from the CDP property shape `{type: 'string', value: '...'}`."""
     if field is None:
         return None
     if isinstance(field, dict):

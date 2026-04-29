@@ -31,10 +31,11 @@ from .local_healer import LocalHealer
 log = logging.getLogger(__name__)
 
 
-# Healer 가 action 자체를 변경하는 것은 false-PASS 위험이 크기 때문에, 의미적으로
-# 등가인 좁은 전이 집합만 허용한다. 그룹 간 전이 (예: navigate ↔ verify, drag → click)
-# 는 의도된 검증 자체를 무력화하므로 절대 통과시키지 않는다. dify-chatflow.yaml 의
-# Healer system prompt 와 1:1 동기화돼 있다.
+# Letting the Healer change the action itself carries a high false-PASS risk, so we
+# only allow a narrow set of semantically equivalent transitions. Cross-group transitions
+# (e.g. navigate <-> verify, drag -> click) defeat the intended verification entirely
+# and are never permitted. Kept 1:1 in sync with the Healer system prompt in
+# dify-chatflow.yaml.
 _HEAL_ACTION_TRANSITIONS = frozenset({
     ("select", "fill"), ("fill", "select"),
     ("check", "click"), ("click", "check"),
@@ -44,7 +45,7 @@ _HEAL_ACTION_TRANSITIONS = frozenset({
 
 
 def _is_allowed_action_transition(old_action: str, new_action: str) -> bool:
-    """Healer 가 제안한 action 변경이 화이트리스트 전이인지 검사한다."""
+    """Check whether a Healer-proposed action change is on the whitelist."""
     if not isinstance(old_action, str) or not isinstance(new_action, str):
         return False
     if old_action == new_action:
@@ -53,12 +54,12 @@ def _is_allowed_action_transition(old_action: str, new_action: str) -> bool:
 
 
 class VerificationAssertionError(AssertionError):
-    """요소 탐색은 성공했지만 verify 조건이 맞지 않을 때 사용한다."""
+    """Raised when element resolution succeeded but the verify condition did not match."""
 
 
 @dataclass
 class _StrategyAttempt:
-    """단일 전략 시도 결과. ``error`` 가 비어있으면 그 전략으로 PASS."""
+    """Result of a single strategy attempt. Empty ``error`` means the strategy PASSed."""
     name: str
     error: str = ""
 
@@ -68,18 +69,18 @@ class _StrategyAttempt:
 
 @dataclass
 class StepResult:
-    """단일 DSL 스텝의 실행 결과를 담는 데이터클래스.
+    """Dataclass holding the execution result of a single DSL step.
 
     Attributes:
-        step_id: 시나리오 내 스텝 번호 또는 식별자.
-        action: 수행된 DSL 액션 이름 (click, fill, navigate 등).
-        target: 실제로 사용된 로케이터 문자열.
-        value: 액션에 전달된 값 (입력 텍스트, URL, 키 이름 등).
-        description: 스텝에 대한 사람이 읽을 수 있는 설명.
-        status: 실행 결과. ``"PASS"`` | ``"HEALED"`` | ``"FAIL"`` | ``"SKIP"``.
-        heal_stage: 치유 성공 시 어느 단계에서 복구되었는지. ``"none"`` | ``"fallback"`` | ``"local"`` | ``"dify"``.
-        timestamp: 스텝 실행 시각 (Unix epoch).
-        screenshot_path: 스크린샷 파일 경로. 없으면 ``None``.
+        step_id: Step number or identifier within the scenario.
+        action: Name of the DSL action performed (click, fill, navigate, etc.).
+        target: Locator string actually used.
+        value: Value passed to the action (input text, URL, key name, etc.).
+        description: Human-readable description of the step.
+        status: Execution result. ``"PASS"`` | ``"HEALED"`` | ``"FAIL"`` | ``"SKIP"``.
+        heal_stage: Stage at which the step was recovered. ``"none"`` | ``"fallback"`` | ``"local"`` | ``"dify"``.
+        timestamp: Step execution time (Unix epoch).
+        screenshot_path: Screenshot file path. ``None`` if absent.
     """
 
     step_id: int | str
@@ -93,10 +94,11 @@ class StepResult:
     screenshot_path: str | None = None
 
 
-# Visibility Healer (T-H) JS — element 의 ancestor chain 에서 hoverable 후보 추출.
-# 우선순위: aria-haspopup > aria-expanded=false > role=menu/menubar/listbox/tooltip/combobox >
+# Visibility Healer (T-H) JS — extracts hoverable candidates from the element's
+# ancestor chain.
+# Priority: aria-haspopup > aria-expanded=false > role=menu/menubar/listbox/tooltip/combobox >
 #          tag=nav/details/summary > [data-state=closed] / [hidden] toggleable > :hover CSS rule.
-# 각 후보에 대해 stable CSS path 를 함께 반환 (id 우선 → nth-of-type chain).
+# Each candidate is returned with a stable CSS path (id first -> nth-of-type chain).
 _VISIBILITY_HEALER_JS = r"""
 el => {
   function cssPath(node) {
@@ -117,9 +119,9 @@ el => {
     return parts.join(' > ');
   }
 
-  // :hover CSS rule 의 trigger 인지 검사. selectorText 가 'A:hover B' 라면
-  // trigger 는 A — node 가 A 와 matches 하면 hoverable.
-  // 'ul#gnb > li:hover > .submenu' → trigger=`ul#gnb > li`.
+  // Check whether this is the trigger of a :hover CSS rule. If selectorText is
+  // 'A:hover B', the trigger is A — the node is hoverable iff it matches A.
+  // 'ul#gnb > li:hover > .submenu' -> trigger = `ul#gnb > li`.
   function hoverTriggerSelectors(rule) {
     const out = [];
     if (!rule.selectorText || !rule.selectorText.includes(':hover')) return out;
@@ -179,11 +181,11 @@ el => {
 """
 
 
-# T-H (G) — JS dispatchEvent('click') 폴백 안전 가드.
-# anchor/button/input/role=button/role=link/role=menuitem 만 허용. 일반 div 에
-# JS click 발사하면 실 사이트의 listener 가 없어 false-positive PASS 위험.
+# T-H (G) — Safety guard for the JS dispatchEvent('click') fallback.
+# Only allow anchor/button/input/role=button/role=link/role=menuitem. Firing a JS
+# click on a plain div risks a false-positive PASS because the real site has no listener.
 def _is_safe_for_js_click(locator) -> bool:
-    """element 가 anchor/button/clickable role 이면 JS click 안전. 그 외는 raise."""
+    """JS click is safe iff the element is an anchor/button/clickable role; otherwise raise."""
     try:
         info = locator.evaluate(
             """el => ({
@@ -208,31 +210,32 @@ def _is_safe_for_js_click(locator) -> bool:
 
 
 def _dump_storage_state(context, path: str) -> None:
-    """현재 BrowserContext 의 storage_state 를 path 에 JSON 으로 덤프 (T-D / P0.1).
+    """Dump the current BrowserContext's storage_state to ``path`` as JSON (T-D / P0.1).
 
-    실패 시 경고만 — 시나리오 실행 결과 자체에 영향 주지 않는다.
+    On failure only logs a warning — does not affect scenario execution results.
     """
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         context.storage_state(path=path)
-        log.info("[Auth] storage_state 덤프 완료 — %s", path)
+        log.info("[Auth] storage_state dump complete — %s", path)
     except Exception as e:  # noqa: BLE001
-        log.warning("[Auth] storage_state 덤프 실패 (%s): %s", path, e)
+        log.warning("[Auth] storage_state dump failed (%s): %s", path, e)
 
 
 def _apply_fingerprint_env(context_kwargs: dict) -> None:
-    """auth-profile fingerprint env override 를 ``context_kwargs`` 에 적용 (P4.1).
+    """Apply auth-profile fingerprint env overrides onto ``context_kwargs`` (P4.1).
 
-    설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.8 (D10).
+    Design: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.8 (D10).
 
-    ``replay_proxy`` 가 시드 시점의 fingerprint (viewport / locale / timezone /
-    color_scheme) 를 env 로 주입하면 본 함수가 기본값을 덮어쓴다. UA 는 의도적으로
-    빠짐 — sec-ch-ua Client Hints 와의 어긋남을 방지하기 위해 임의 spoof 안 함.
+    When ``replay_proxy`` injects the fingerprint captured at seed time (viewport /
+    locale / timezone / color_scheme) via env vars, this function overrides the
+    defaults. UA is intentionally omitted — to avoid mismatches with sec-ch-ua
+    Client Hints we do not spoof it.
 
-    영향:
-        - ``PLAYWRIGHT_VIEWPORT``      = ``"<W>x<H>"`` (예: ``1280x800``)
-        - ``PLAYWRIGHT_LOCALE``        = locale 문자열 (예: ``ko-KR``)
-        - ``PLAYWRIGHT_TIMEZONE``      = IANA timezone (예: ``Asia/Seoul``)
+    Effect:
+        - ``PLAYWRIGHT_VIEWPORT``      = ``"<W>x<H>"`` (e.g. ``1280x800``)
+        - ``PLAYWRIGHT_LOCALE``        = locale string (e.g. ``ko-KR``)
+        - ``PLAYWRIGHT_TIMEZONE``      = IANA timezone (e.g. ``Asia/Seoul``)
         - ``PLAYWRIGHT_COLOR_SCHEME``  = ``"light"`` / ``"dark"`` / ``"no-preference"``
     """
     viewport_env = os.environ.get("PLAYWRIGHT_VIEWPORT", "")
@@ -242,7 +245,7 @@ def _apply_fingerprint_env(context_kwargs: dict) -> None:
             context_kwargs["viewport"] = {"width": int(w_str), "height": int(h_str)}
         except (ValueError, IndexError):
             log.warning(
-                "[Auth] PLAYWRIGHT_VIEWPORT 형식 오류 (무시) — %r", viewport_env,
+                "[Auth] PLAYWRIGHT_VIEWPORT malformed (ignored) — %r", viewport_env,
             )
     locale_env = os.environ.get("PLAYWRIGHT_LOCALE")
     if locale_env:
@@ -257,20 +260,20 @@ def _apply_fingerprint_env(context_kwargs: dict) -> None:
 
 class QAExecutor:
     """
-    DSL 시나리오를 받아 실행하고, 3단계 하이브리드 자가 치유를 수행한다.
+    Execute a DSL scenario and run a three-stage hybrid self-healing loop.
 
-    치유 루프:
-      1. fallback_targets 순회 (무비용)
-      2. LocalHealer DOM 유사도 매칭
-      3. DifyClient LLM 치유
+    Healing loop:
+      1. Iterate fallback_targets (zero cost).
+      2. LocalHealer DOM similarity matching.
+      3. DifyClient LLM healing.
     """
 
     def __init__(self, config: Config):
         self.config = config
         self.dify = DifyClient(config)
-        # A: 직전 step 의 strategy chain 시도 기록. _perform_action 진입 시 reset.
-        # Dify healer 호출 시 LLM 컨텍스트로 주입 → "selector 만 바꾸면 같은 timeout"
-        # 같은 정보를 LLM 이 알 수 있게 한다.
+        # A: Record of the strategy-chain attempts from the previous step. Reset on
+        # _perform_action entry. Injected into the Dify healer call as LLM context so
+        # the LLM can see signals like "same timeout even when only the selector changed".
         self._latest_strategy_trace: list[_StrategyAttempt] = []
 
     def execute(
@@ -280,26 +283,28 @@ class QAExecutor:
         storage_state_in: Optional[str] = None,
         storage_state_out: Optional[str] = None,
     ) -> list[StepResult]:
-        """Playwright 브라우저를 실행하고 DSL 시나리오를 순차 실행한다.
+        """Launch a Playwright browser and execute the DSL scenario sequentially.
 
         Args:
-            scenario: DSL 스텝 dict 의 리스트.
-            headed: True 면 브라우저 창을 표시, False 면 headless.
-            storage_state_in: 미리 dump 된 storage_state JSON 경로 — 인증 후 세션
-                을 새 컨텍스트에 복원한다 (T-D / P0.1). None 이면 env
-                ``AUTH_STORAGE_STATE_IN``, 그것도 없으면 새 컨텍스트.
-            storage_state_out: 시나리오 종료 후 현재 컨텍스트의 storage_state 를
-                덤프할 경로. None 이면 env ``AUTH_STORAGE_STATE_OUT``, 그것도
-                없으면 덤프 안 함.
+            scenario: List of DSL step dicts.
+            headed: True shows the browser window, False runs headless.
+            storage_state_in: Path to a previously dumped storage_state JSON —
+                restores the post-auth session into a new context (T-D / P0.1).
+                If None, falls back to env ``AUTH_STORAGE_STATE_IN``; if that is
+                also unset, a fresh context is used.
+            storage_state_out: Path to which the current context's storage_state
+                will be dumped after the scenario finishes. If None, falls back
+                to env ``AUTH_STORAGE_STATE_OUT``; if that is also unset, no dump
+                is performed.
 
         Returns:
-            각 스텝의 실행 결과 ``StepResult`` 리스트. FAIL 발생 시 이후 스텝은 포함되지 않는다.
+            List of ``StepResult`` for each step. On FAIL, subsequent steps are not included.
         """
         results: list[StepResult] = []
         artifacts = self.config.artifacts_dir
         os.makedirs(artifacts, exist_ok=True)
 
-        # T-D / P0.1 — storage_state 경로 결정 (인자 우선, env fallback)
+        # T-D / P0.1 — resolve storage_state paths (arg first, env fallback).
         if storage_state_in is None:
             storage_state_in = os.environ.get("AUTH_STORAGE_STATE_IN") or None
         if storage_state_out is None:
@@ -315,15 +320,15 @@ class QAExecutor:
                 },
             }
             # P4.1 — auth-profile fingerprint env override (D10).
-            # replay_proxy 가 시드 시점의 fingerprint 를 env 로 주입하면 여기서
-            # context_kwargs 의 기본값을 덮어쓴다. UA 는 스푸핑하지 않는다 (D10).
+            # When replay_proxy injects the seed-time fingerprint as env vars, this
+            # overrides the defaults in context_kwargs. UA is not spoofed (D10).
             _apply_fingerprint_env(context_kwargs)
             if storage_state_in and os.path.isfile(storage_state_in):
-                log.info("[Auth] storage_state 복원 — %s", storage_state_in)
+                log.info("[Auth] storage_state restored — %s", storage_state_in)
                 context_kwargs["storage_state"] = storage_state_in
             elif storage_state_in:
                 log.warning(
-                    "[Auth] storage_state_in 파일 없음 — 새 컨텍스트로 진행 (%s)",
+                    "[Auth] storage_state_in file missing — proceeding with fresh context (%s)",
                     storage_state_in,
                 )
             context = browser.new_context(**context_kwargs)
@@ -344,30 +349,33 @@ class QAExecutor:
                             pass
                         time.sleep(self.config.headed_step_pause_ms / 1000.0)
                     if result.status == "FAIL":
-                        # 최종 실패 스크린샷
+                        # Final failure screenshot.
                         fail_path = os.path.join(artifacts, "error_final.png")
                         self._safe_screenshot(page, fail_path)
                         break
-                    # G-3: 스텝이 PASS/HEALED 로 판정됐어도 현재 page.url 이 봇 차단
-                    # 페이지(/sorry/, captcha challenge 등) 면 마지막 레이어로 FAIL 처리.
-                    # verify 가 없는 시나리오에서도 false positive 성공을 차단한다.
+                    # G-3: Even when the step is judged PASS/HEALED, treat it as FAIL
+                    # at this last layer if the current page.url is a bot-block page
+                    # (/sorry/, captcha challenge, etc.). Blocks false-positive success
+                    # in scenarios that have no verify step.
                     current_url = page.url or ""
                     if self._is_blocked_url(current_url):
                         log.error(
-                            "[Step %s] 스텝은 %s 로 판정됐지만 현재 URL 이 봇 차단 페이지: %s",
+                            "[Step %s] step was judged %s but current URL is a bot-block page: %s",
                             step.get("step", "-"), result.status, current_url,
                         )
                         result.status = "FAIL"
                         fail_path = os.path.join(artifacts, "error_final.png")
                         self._safe_screenshot(page, fail_path)
                         break
-                    # N. 새 탭 감지 — 검색 폼이 target=_blank 이거나 JS window.open
-                    # 으로 새 탭/창에 결과를 열면 원래 page 는 변동 없음. 후속 스텝을
-                    # 새 페이지에 적용하려면 여기서 전환해야 한다.
+                    # N. New-tab detection — when a search form has target=_blank or
+                    # uses JS window.open to open results in a new tab/window, the
+                    # original page is unchanged. We must switch here to apply
+                    # subsequent steps to the new page.
                     #
-                    # O. chrome-error/about:blank 필터 — 네트워크 실패나 봇 차단으로
-                    # 새 탭이 에러 페이지인 경우 전환하지 않고 무시 (유효 콘텐츠 없음).
-                    # G-3 연장: 새 탭 URL 이 봇 차단 페이지여도 전환 안 함.
+                    # O. chrome-error/about:blank filter — when a new tab is an error
+                    # page due to a network failure or bot block, do not switch and
+                    # ignore (no valid content). G-3 extension: do not switch when the
+                    # new tab URL is a bot-block page either.
                     if len(context.pages) > 1 and context.pages[-1] is not page:
                         new_page = context.pages[-1]
                         try:
@@ -377,13 +385,13 @@ class QAExecutor:
                         new_url = new_page.url
                         if new_url.startswith(("chrome-error://", "about:blank", "data:text/html")):
                             log.warning(
-                                "[Step %s] 새 탭이 에러/빈 페이지 (%s) — 전환 안 함. "
-                                "사이트가 Playwright 봇 차단 또는 네트워크 문제.",
+                                "[Step %s] new tab is error/blank page (%s) — not switching. "
+                                "Site is blocking Playwright as a bot, or network issue.",
                                 step.get("step", "-"), new_url,
                             )
                         elif self._is_blocked_url(new_url):
                             log.error(
-                                "[Step %s] 새 탭이 봇 차단 페이지 (%s) — 전환 안 함 + 스텝 FAIL 처리.",
+                                "[Step %s] new tab is a bot-block page (%s) — not switching, marking step FAIL.",
                                 step.get("step", "-"), new_url,
                             )
                             result.status = "FAIL"
@@ -392,7 +400,7 @@ class QAExecutor:
                             break
                         else:
                             log.info(
-                                "[Step %s] 새 탭 감지 → 활성 페이지 전환 (%s → %s)",
+                                "[Step %s] new tab detected -> switching active page (%s -> %s)",
                                 step.get("step", "-"),
                                 page.url, new_url,
                             )
@@ -401,12 +409,12 @@ class QAExecutor:
                                 page.bring_to_front()
                             except Exception:
                                 pass
-                            # resolver/healer 의 내부 page 참조 rebind.
+                            # Rebind the resolver/healer's internal page reference.
                             resolver.page = page
                             healer.page = page
-                    # 스텝 간 random jitter — 봇 패턴(즉시 연속 액션) 회피.
-                    # reCAPTCHA 등이 fill→press 100ms 이내 시퀀스를 트리거.
-                    # 마지막 스텝 또는 max==0 이면 sleep 생략.
+                    # Random jitter between steps — avoid bot patterns (immediate
+                    # back-to-back actions). reCAPTCHA etc. trigger on fill->press
+                    # sequences under 100ms. Skip sleep on the last step or when max==0.
                     if (
                         idx < len(scenario) - 1
                         and self.config.step_interval_max_ms > 0
@@ -417,10 +425,11 @@ class QAExecutor:
                         ) / 1000.0
                         time.sleep(jitter_s)
 
-                # P-1. 모든 스텝 종료 후 final_state.png — 마지막 click 이 새 탭을
-                # 열어 page 가 전환된 경우, 기존 step_N_*.png 는 전환 직전 화면만
-                # 담는다. 여기서 최종 활성 페이지의 상태를 별도 캡처해 '실제로
-                # 어디로 이동했는지' 시각 증거로 남긴다.
+                # P-1. final_state.png after all steps — when the last click opens
+                # a new tab and the page switches, the existing step_N_*.png only
+                # captures the screen right before the switch. Capture the final
+                # active page state here as visual evidence of "where we actually
+                # ended up".
                 try:
                     page.bring_to_front()
                     page.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -428,13 +437,14 @@ class QAExecutor:
                     pass
                 final_path = os.path.join(artifacts, "final_state.png")
                 self._safe_screenshot(page, final_path)
-                log.info("[Final] 최종 활성 페이지: %s → %s", page.url, final_path)
+                log.info("[Final] final active page: %s -> %s", page.url, final_path)
 
-                # P-2. headed 모드에선 browser.close() 전에 짧게 대기 (사용자 시각 확인).
+                # P-2. In headed mode, briefly wait before browser.close() so the
+                # user can visually confirm.
                 if headed:
                     time.sleep(3)
             finally:
-                # T-D / P0.1 — storage_state 덤프 (브라우저 종료 전, 인증 후 세션 보존)
+                # T-D / P0.1 — dump storage_state (before browser close, to preserve post-auth session).
                 if storage_state_out:
                     _dump_storage_state(context, storage_state_out)
                 browser.close()
@@ -449,23 +459,23 @@ class QAExecutor:
         healer: LocalHealer,
         artifacts: str,
     ) -> StepResult:
-        """단일 스텝을 실행하고 결과를 반환한다.
+        """Execute a single step and return the result.
 
-        3단계 자가 치유 순서: 1) fallback_targets → 2) LocalHealer DOM 유사도 → 3) Dify LLM.
+        Three-stage self-healing order: 1) fallback_targets -> 2) LocalHealer DOM similarity -> 3) Dify LLM.
         """
         action = step["action"].lower()
         step_id = step.get("step", "-")
         desc = step.get("description", "")
 
-        # ── 메타 액션 (타겟 불필요) ──
+        # ── meta actions (no target needed) ──
         if action in ("navigate", "maps"):
             raw_url = step.get("value") or step.get("target", "")
             url = self._normalize_url(str(raw_url))
             if url != str(raw_url):
-                log.info("[Step %s] URL 자동 normalize: %r → %r", step_id, raw_url, url)
-            # wait_until="domcontentloaded": 광고/트래커 로딩까지 기다리지 않고
-            # DOM 만 준비되면 진행. yahoo.com 처럼 무거운 페이지의 'load'
-            # event 30초 timeout 회피. timeout 도 60초로 상향.
+                log.info("[Step %s] URL auto-normalized: %r -> %r", step_id, raw_url, url)
+            # wait_until="domcontentloaded": proceed once the DOM is ready instead
+            # of waiting for ads/trackers. Avoids 30s 'load' event timeouts on
+            # heavy pages like yahoo.com. Bumped timeout to 60s as well.
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             ss = self._screenshot(page, artifacts, step_id, "pass")
             log.info("[Step %s] navigate -> PASS", step_id)
@@ -480,11 +490,11 @@ class QAExecutor:
             log.info("[Step %s] wait %dms -> PASS", step_id, ms)
             return StepResult(step_id, action, "", str(ms), desc, "PASS")
 
-        # ── LLM 출력 보정 ──
+        # ── LLM output normalization ──
         self._normalize_step(step)
         action = step["action"].lower()
 
-        # ── press + 타겟 없음: 페이지 전체에 키 입력 ──
+        # ── press without target: send key to whole page ──
         if action == "press" and not step.get("target"):
             key = step.get("value", "")
             page.keyboard.press(key)
@@ -504,14 +514,15 @@ class QAExecutor:
         if action == "reset_state":
             return self._execute_reset_state(page, step, artifacts)
 
-        # ── 타겟 필요 액션: 실행 + 다단계 자가 치유 ──
+        # ── target-bearing actions: execute + multi-stage self-healing ──
         log.info("[Step %s] %s: %s", step_id, action, desc)
         original_target = step.get("target")
         verification_error: VerificationAssertionError | None = None
 
-        # 1차 시도: 기본 타겟 (Resolver 가 healed_aliases 를 자동 적용)
-        # T-C (P0.2) — closed shadow 만나면 자동치유 무의미 + 30s timeout 위험.
-        # ShadowAccessError 는 fallback / healer 진입 전에 즉시 FAIL escalate.
+        # 1st attempt: original target (Resolver auto-applies healed_aliases).
+        # T-C (P0.2) — hitting a closed shadow makes auto-healing pointless and risks
+        # a 30s timeout. ShadowAccessError escalates to FAIL immediately, before
+        # entering fallback / healer.
         try:
             locator = resolver.resolve(original_target)
         except ShadowAccessError as e:
@@ -523,11 +534,12 @@ class QAExecutor:
                 "FAIL", screenshot_path=ss,
             )
         if locator:
-            # T-H (Visibility Healer) — element 가 hidden 이면 ancestor hover
-            # 시도, 그래도 안 되면 visible 한 형제 매치로 swap. 드롭다운 메뉴 /
-            # 호버 메뉴 / 모바일 드로어 케이스에서 codegen 원본이 hover step 을
-            # 빠뜨리거나 selector 가 모바일/데스크탑 두 곳에 매치되어 hidden 쪽이
-            # 잡히는 것을 막는다. 매칭만 되고 안 보이는 케이스만 트리거.
+            # T-H (Visibility Healer) — if the element is hidden, try ancestor
+            # hover; if that fails, swap to a visible sibling match. Covers
+            # dropdown menus / hover menus / mobile drawers where the codegen
+            # source omits a hover step, or the selector matches both mobile and
+            # desktop and the hidden one is picked. Only triggers when matched
+            # but not visible.
             swap = self._heal_visibility(page, locator, step_id)
             if swap is not None:
                 locator = swap
@@ -541,25 +553,25 @@ class QAExecutor:
                 )
             except VerificationAssertionError as e:
                 verification_error = e
-                log.warning("[Step %s] verify 조건 실패: %s", step_id, e)
+                log.warning("[Step %s] verify condition failed: %s", step_id, e)
             except Exception as e:
-                log.warning("[Step %s] 기본 타겟 실패: %s", step_id, e)
+                log.warning("[Step %s] original target failed: %s", step_id, e)
 
-        # ── [치유 1단계] fallback_targets ──
+        # ── [heal stage 1] fallback_targets ──
         for fb_target in step.get("fallback_targets", []):
             fb_loc = resolver.resolve(fb_target)
             if fb_loc:
                 try:
                     self._perform_action(page, fb_loc, step, resolver)
-                    # A: 후속 스텝이 같은 target 을 만나면 즉시 fb_target 사용
+                    # A: subsequent steps hitting the same target use fb_target immediately.
                     resolver.record_alias(original_target, fb_target)
-                    # S2-12: scenario.healed.json 이 fallback 치유 결과까지
-                    # 기록하도록 step dict 자체를 갱신한다. step 은 scenario
-                    # 리스트 원소이므로 in-place 변경이 그대로 healed.json 으로
-                    # 직렬화된다.
+                    # S2-12: update the step dict itself so scenario.healed.json
+                    # records the fallback healing result. Since step is a member
+                    # of the scenario list, in-place mutation serializes straight
+                    # into healed.json.
                     step["target"] = fb_target
                     ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] fallback 복구 성공: %s", step_id, fb_target)
+                    log.info("[Step %s] fallback recovery succeeded: %s", step_id, fb_target)
                     return StepResult(
                         step_id, action, str(fb_target),
                         str(step.get("value", "")), desc,
@@ -567,13 +579,14 @@ class QAExecutor:
                     )
                 except VerificationAssertionError as e:
                     verification_error = e
-                    log.warning("[Step %s] fallback verify 조건 실패: %s", step_id, e)
+                    log.warning("[Step %s] fallback verify condition failed: %s", step_id, e)
                 except Exception:
                     continue
 
-        # ── [치유 2단계] DSL action_alternatives (C) ──
-        # Planner LLM 이 명시한 등가 액션 (예: press Enter → click 검색버튼).
-        # LocalHealer/Dify heal 보다 먼저 시도 — 명시 의도가 가장 신뢰도 높음.
+        # ── [heal stage 2] DSL action_alternatives (C) ──
+        # Equivalent actions explicitly declared by the planner LLM (e.g. press
+        # Enter -> click search button). Tried before LocalHealer/Dify heal —
+        # explicit intent is the most trustworthy signal.
         for alt in step.get("action_alternatives", []) or []:
             if not isinstance(alt, dict) or not alt.get("action"):
                 continue
@@ -586,7 +599,7 @@ class QAExecutor:
                 self._perform_action(page, alt_loc, alt_step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
                 log.info(
-                    "[Step %s] action_alternatives 복구 성공: %s %s",
+                    "[Step %s] action_alternatives recovery succeeded: %s %s",
                     step_id, alt_step.get("action"), alt_step.get("target"),
                 )
                 return StepResult(
@@ -598,56 +611,58 @@ class QAExecutor:
             except VerificationAssertionError as e:
                 verification_error = e
                 log.warning(
-                    "[Step %s] action_alternatives verify 조건 실패: %s", step_id, e
+                    "[Step %s] action_alternatives verify condition failed: %s", step_id, e
                 )
             except Exception:
                 continue
 
         if verification_error:
             ss = self._screenshot(page, artifacts, step_id, "fail")
-            log.error("[Step %s] FAIL — verify 조건 불일치", step_id)
+            log.error("[Step %s] FAIL — verify condition mismatch", step_id)
             return StepResult(
                 step_id, action, str(original_target or ""),
                 str(step.get("value", "")), desc,
                 "FAIL", screenshot_path=ss,
             )
 
-        # ── [치유 3단계] 로컬 DOM 유사도 매칭 ──
+        # ── [heal stage 3] local DOM similarity matching ──
         healed_loc = healer.try_heal(step)
         if healed_loc:
             try:
                 self._perform_action(page, healed_loc, step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] LocalHealer DOM 유사도 복구 성공", step_id)
+                log.info("[Step %s] LocalHealer DOM-similarity recovery succeeded", step_id)
                 return StepResult(
                     step_id, action, str(original_target or ""),
                     str(step.get("value", "")), desc,
                     "HEALED", heal_stage="local", screenshot_path=ss,
                 )
             except Exception as e:
-                log.warning("[Step %s] 로컬 치유 실행 실패: %s", step_id, e)
+                log.warning("[Step %s] local heal execution failed: %s", step_id, e)
 
-        # ── [치유 4단계] Dify LLM 치유 (timeout 단축, retry 0) ──
-        log.info("[Step %s] Dify LLM 치유 요청 중 (timeout=%ds)...",
+        # ── [heal stage 4] Dify LLM healing (shorter timeout, retry 0) ──
+        log.info("[Step %s] Dify LLM heal request in flight (timeout=%ds)...",
                  step_id, self.config.heal_timeout_sec)
         try:
             dom_snapshot = page.content()[: self.config.dom_snapshot_limit]
-            # B: 직전 strategy chain 의 시도/실패 결과를 healer 프롬프트에 주입.
-            # "selector 만 바꿔도 같은 timeout 이었다" 정보를 LLM 에 전달한다.
+            # B: inject the previous strategy chain's attempts/failures into the
+            # healer prompt. Tells the LLM things like "even after changing only
+            # the selector the timeout was the same".
             new_target_info = self.dify.request_healing(
-                error_msg=f"요소 탐색/실행 실패: {original_target}",
+                error_msg=f"element resolution/execution failed: {original_target}",
                 dom_snapshot=dom_snapshot,
                 failed_step=step,
                 strategy_trace=[a.to_dict() for a in self._latest_strategy_trace],
             )
         except DifyConnectionError as e:
-            log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
+            log.error("[Step %s] Dify heal communication failed: %s", step_id, e)
             new_target_info = None
 
         if new_target_info:
-            # B: target / value / condition / fallback_targets 는 자유롭게 mutate 허용.
-            # action 변경은 _HEAL_ACTION_TRANSITIONS 화이트리스트 전이만 허용 (Sprint 6
-            # Option-2). 그 외 키는 무시. dify-chatflow.yaml Healer prompt 와 1:1 동기.
+            # B: target / value / condition / fallback_targets are freely mutable.
+            # action change is allowed only along _HEAL_ACTION_TRANSITIONS whitelist
+            # transitions (Sprint 6 Option-2). Other keys are ignored. Kept 1:1 in
+            # sync with the Healer prompt in dify-chatflow.yaml.
             allowed_keys = {"target", "value", "condition", "fallback_targets"}
             mutation = {k: v for k, v in new_target_info.items() if k in allowed_keys}
             proposed_action = new_target_info.get("action")
@@ -657,27 +672,27 @@ class QAExecutor:
                 if _is_allowed_action_transition(old_action, proposed_action):
                     if proposed_action != old_action:
                         log.warning(
-                            "[Step %s] Healer action 전이 허용: %s → %s (whitelist)",
+                            "[Step %s] Healer action transition allowed: %s -> %s (whitelist)",
                             step_id, old_action, proposed_action,
                         )
                     mutation["action"] = proposed_action
                 else:
                     log.warning(
-                        "[Step %s] Healer action 전이 거절: %s → %s (whitelist 외, false-PASS 위험)",
+                        "[Step %s] Healer action transition rejected: %s -> %s (off-whitelist, false-PASS risk)",
                         step_id, old_action, proposed_action,
                     )
             step.update(mutation)
             healed_loc = resolver.resolve(step.get("target"))
             if healed_loc:
                 try:
-                    # B3: post-condition 강제 — _perform_action 의 strategy chain 에
-                    # post-check 가 내장돼 있으므로, 이 호출이 성공하면 자동으로
-                    # 의미적 검증까지 통과한 것이다.
+                    # B3: enforce post-condition — _perform_action's strategy chain
+                    # has built-in post-checks, so a successful call here means
+                    # semantic verification has also passed automatically.
                     self._perform_action(page, healed_loc, step, resolver)
                     resolver.record_alias(original_target, step.get("target"))
                     ss = self._screenshot(page, artifacts, step_id, "healed")
                     log.info(
-                        "[Step %s] LLM 치유 성공. 새 타겟: %s",
+                        "[Step %s] LLM heal succeeded. New target: %s",
                         step_id, step.get("target"),
                     )
                     return StepResult(
@@ -687,15 +702,17 @@ class QAExecutor:
                         "HEALED", heal_stage="dify", screenshot_path=ss,
                     )
                 except Exception as e:
-                    log.error("[Step %s] LLM 치유 후 실행 실패: %s", step_id, e)
+                    log.error("[Step %s] execution after LLM heal failed: %s", step_id, e)
 
-        # ── [치유 5단계] press(Enter/Return) 휴리스틱 — 검색버튼 click (B) ──
-        # 사람이라면 엔터 안 먹을 때 검색버튼을 누른다. 이 마지막 안전망이
-        # Naver/Google 류 검색 페이지에서 가장 자주 PASS 를 살린다.
+        # ── [heal stage 5] press(Enter/Return) heuristic — click search button (B) ──
+        # When a human can't get Enter to work, they click the search button.
+        # This last safety net rescues PASS most often on Naver/Google-style
+        # search pages.
         #
-        # E-1: click 자체 성공만으로는 불충분. "검색/search" 의도 맥락이면
-        # click 후 navigation 효과(URL 변경 or 유효 새 탭) 까지 확인해서
-        # chrome-error 새 탭 같은 봇 차단 산물을 false PASS 로 흘려보내지 않는다.
+        # E-1: success of the click alone is not enough. In a "search" intent
+        # context, also confirm a navigation effect (URL change or valid new tab)
+        # after the click, so chrome-error new-tab artifacts from bot blocks
+        # don't slip through as false PASS.
         if action == "press" and str(step.get("value", "")).lower() in ("enter", "return"):
             needs_nav_check = bool(re.search(r"검색|search", desc, re.IGNORECASE))
             for sel in self._SEARCH_BUTTON_CANDIDATES:
@@ -710,12 +727,12 @@ class QAExecutor:
                         page, before_url, before_pages_count
                     ):
                         log.warning(
-                            "[Step %s] press→click 후 유효한 navigation 없음 — 다음 후보 시도 (sel=%s)",
+                            "[Step %s] no valid navigation after press->click — trying next candidate (sel=%s)",
                             step_id, sel,
                         )
                         continue
                     ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] press→click 휴리스틱 성공: %s", step_id, sel)
+                    log.info("[Step %s] press->click heuristic succeeded: %s", step_id, sel)
                     return StepResult(
                         step_id, "click", sel, "",
                         desc, "HEALED",
@@ -724,15 +741,17 @@ class QAExecutor:
                 except Exception:
                     continue
 
-        # ── [치유 6단계] click "첫 번째 결과/링크/항목" 의미적 휴리스틱 (E) ──
-        # LLM 의 site-specific selector 추측이 다 빗나가도, "첫 번째 검색결과 링크"
-        # 같은 의도가 description 에 있으면 main/article 영역의 첫 visible 링크 시도.
-        # Naver/Google/Yahoo 류 검색 결과에서 마지막 안전망 역할.
+        # ── [heal stage 6] click "first result/link/item" semantic heuristic (E) ──
+        # Even when every site-specific selector the LLM guessed misses, if the
+        # description carries an intent like "first search result link", try the
+        # first visible link inside main/article. Last-resort safety net for
+        # search results on sites like Naver/Google/Yahoo.
         #
-        # E-4: click 자체 성공만으로는 불충분. "첫 결과" click 은 본질적으로
-        # 다른 페이지로의 이동이므로 URL 변경 or 유효 새 탭을 반드시 확인.
-        # Yahoo 홈에서 search form 내부 엉뚱한 링크 매치해 "HEALED" 로 끝나는
-        # false positive (build #21 trending 이동) 를 차단.
+        # E-4: success of the click alone is not enough. A "first result" click
+        # is intrinsically a navigation to another page, so a URL change or a
+        # valid new tab must be confirmed. Blocks the false positive (build #21
+        # trending nav) where on Yahoo's home a stray link inside the search form
+        # matches and ends as "HEALED".
         if action == "click" and self._matches_first_result_intent(desc):
             for sel in self._FIRST_RESULT_CANDIDATES:
                 try:
@@ -746,12 +765,12 @@ class QAExecutor:
                         page, before_url, before_pages_count
                     ):
                         log.warning(
-                            "[Step %s] '첫 결과' 후보 click 후 navigation 없음 — 다음 후보 시도 (sel=%s)",
+                            "[Step %s] no navigation after 'first result' candidate click — trying next candidate (sel=%s)",
                             step_id, sel,
                         )
                         continue
                     ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] '첫 결과' 휴리스틱 성공: %s", step_id, sel)
+                    log.info("[Step %s] 'first result' heuristic succeeded: %s", step_id, sel)
                     return StepResult(
                         step_id, action, sel, "",
                         desc, "HEALED",
@@ -760,10 +779,11 @@ class QAExecutor:
                 except Exception:
                     continue
 
-        # ── [치유 ?단계] verify "검색결과 존재" 의미적 휴리스틱 (J) ──
-        # description 에 "검색 결과 (목록/존재/표시) 확인" 패턴 + verify 일 때,
-        # main/article/검색결과 컨테이너 중 하나라도 visible 이면 PASS 로 간주.
-        # LLM 의 잘못된 target/value 추측을 의미 기반으로 우회.
+        # ── [heal stage ?] verify "search results present" semantic heuristic (J) ──
+        # When the description matches "verify search results (list/present/visible)"
+        # AND the action is verify, treat any visible main/article/search-result
+        # container as PASS. Routes around an LLM's wrong target/value guess via
+        # semantics.
         if action == "verify" and self._matches_search_results_intent(desc):
             for sel in self._SEARCH_RESULTS_CANDIDATES:
                 try:
@@ -772,7 +792,7 @@ class QAExecutor:
                         continue
                     if loc.first.is_visible():
                         ss = self._screenshot(page, artifacts, step_id, "healed")
-                        log.info("[Step %s] '검색결과 존재' 휴리스틱 성공: %s", step_id, sel)
+                        log.info("[Step %s] 'search results present' heuristic succeeded: %s", step_id, sel)
                         return StepResult(
                             step_id, action, sel,
                             str(step.get("value", "")), desc,
@@ -782,10 +802,12 @@ class QAExecutor:
                 except Exception:
                     continue
 
-        # ── [치유 7단계] fill "검색창" 의미적 휴리스틱 (H) ──
-        # LLM 이 사이트별 검색창 name/id 를 추측하다 빗나가도 (Yahoo 의 textarea[name=q] 등),
-        # description 에 "검색" 키워드가 있으면 일반 search input selector 들로 fallback.
-        # input[type=search] / [role=searchbox] / placeholder/aria-label 매치 / name 빈출값 순.
+        # ── [heal stage 7] fill "search box" semantic heuristic (H) ──
+        # When the LLM's site-specific search-box name/id guess misses (e.g.
+        # Yahoo's textarea[name=q]), if the description has a "search" keyword
+        # fall back to generic search input selectors.
+        # Order: input[type=search] / [role=searchbox] / placeholder/aria-label
+        # match / common name attribute values.
         if action == "fill" and self._matches_search_input_intent(desc):
             for sel in self._SEARCH_INPUT_CANDIDATES:
                 try:
@@ -795,7 +817,7 @@ class QAExecutor:
                     loc.first.fill(str(step.get("value", "")))
                     resolver.record_alias(original_target, sel)
                     ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] '검색창' 휴리스틱 성공: %s", step_id, sel)
+                    log.info("[Step %s] 'search box' heuristic succeeded: %s", step_id, sel)
                     return StepResult(
                         step_id, action, sel,
                         str(step.get("value", "")), desc,
@@ -805,16 +827,17 @@ class QAExecutor:
                 except Exception:
                     continue
 
-        # ── 모든 치유 실패 ──
-        log.error("[Step %s] FAIL — 모든 치유 실패", step_id)
+        # ── all heal stages exhausted ──
+        log.error("[Step %s] FAIL — all heal stages exhausted", step_id)
         return StepResult(
             step_id, action, str(original_target or ""),
             str(step.get("value", "")), desc,
             "FAIL",
         )
 
-    # B: press(Enter) 가 모든 치유 다 실패했을 때 click 으로 시도해볼 검색/제출 버튼 후보.
-    # 가시성 필터와 한/영 라벨을 함께 고려. 우선순위는 좁은 것 → 넓은 것 순.
+    # B: Search/submit button candidates to click when press(Enter) failed every
+    # heal stage. Considers visibility filter and Korean/English labels together.
+    # Priority is narrow -> broad.
     _SEARCH_BUTTON_CANDIDATES = (
         "form[role=search] button:visible, [role=search] button:visible",
         "button[type=submit]:visible",
@@ -823,8 +846,9 @@ class QAExecutor:
         "[role=button]:has-text(/^(검색|Search|검색하기)$/i):visible",
     )
 
-    # E: "첫 번째 검색결과/링크/항목" 의도 매칭 정규식 (한/영).
-    # ordinal(첫/1번째/first/1st) ... result/link/item 패턴, 사이에 30자까지 허용.
+    # E: Intent-matching regex for "first/Nth search result/link/item" (Korean/English).
+    # Pattern: ordinal (첫/1번째/first/1st) ... result/link/item, with up to 30
+    # characters in between.
     _FIRST_RESULT_RE = re.compile(
         r"(첫\s*번?째|\d+\s*번\s*째?|first|1st)"
         r".{0,30}?"
@@ -834,29 +858,31 @@ class QAExecutor:
 
     @staticmethod
     def _matches_first_result_intent(desc: str) -> bool:
-        """description 에서 '첫 N번째 결과/링크/항목' 의도를 감지한다."""
+        """Detect 'first/Nth result/link/item' intent in the description."""
         return bool(QAExecutor._FIRST_RESULT_RE.search(desc or ""))
 
-    # E: '첫 결과 클릭' 의도일 때 시도할 일반 셀렉터 후보.
-    # 검색엔진별 정확한 검색결과 컨테이너 → 일반 시맨틱 → 광범위 fallback 순.
-    # (검색엔진 컨테이너가 main 보다 정확 — 추천뉴스/광고 카드를 회피)
+    # E: Generic selector candidates to try for 'click first result' intent.
+    # Order: per-search-engine accurate result containers -> generic semantic ->
+    # broad fallback. (Search-engine containers are more precise than main —
+    # avoids recommended-news/ad cards.)
     _FIRST_RESULT_CANDIDATES = (
-        "#main_pack a[href]:visible",       # Naver 통합검색 영역
-        "#search a[href]:visible",           # Google 검색 영역
-        "#web a[href]:visible",              # Yahoo 검색 영역
-        "#results a[href]:visible",          # 일반
+        "#main_pack a[href]:visible",       # Naver integrated search area
+        "#search a[href]:visible",           # Google search area
+        "#web a[href]:visible",              # Yahoo search area
+        "#results a[href]:visible",          # generic
         "[id*='result' i] a[href]:visible",
         "[class*='result' i] a[href]:visible",
         "[id*='search' i] a[href]:visible",
         "[class*='search' i] a[href]:visible",
-        "main a[href]:visible",              # 시맨틱 fallback
+        "main a[href]:visible",              # semantic fallback
         "[role=main] a[href]:visible",
         "article a[href]:visible",
         "[role=article] a[href]:visible",
     )
 
-    # H: "검색창에 입력" 의도 매칭 정규식 (한/영).
-    # search 단어는 search bar / search box 등 명사구 우선, 'research' 오매칭 회피.
+    # H: Intent-matching regex for "fill the search box" (Korean/English).
+    # Prefer noun phrases like search bar / search box for the word "search" to
+    # avoid mismatching "research".
     _SEARCH_INPUT_RE = re.compile(
         r"검색\s*(창|박스|필드|입력|어\s*입력)|search\s*(box|bar|input|field)",
         re.IGNORECASE,
@@ -864,10 +890,10 @@ class QAExecutor:
 
     @staticmethod
     def _matches_search_input_intent(desc: str) -> bool:
-        """description 에서 '검색창 입력' 의도를 감지한다."""
+        """Detect 'fill search box' intent in the description."""
         return bool(QAExecutor._SEARCH_INPUT_RE.search(desc or ""))
 
-    # J: "검색결과 (목록/존재/표시) 확인" 의도 매칭 정규식 (한/영).
+    # J: Intent-matching regex for "verify search results (list/present/visible)" (Korean/English).
     _SEARCH_RESULTS_RE = re.compile(
         r"검색\s*결과.*(목록|존재|표시|출력|확인|보이는)|"
         r"search\s*result.*(list|exist|visible|appear|show|display)",
@@ -876,17 +902,17 @@ class QAExecutor:
 
     @staticmethod
     def _matches_search_results_intent(desc: str) -> bool:
-        """description 에서 '검색결과 존재 확인' 의도를 감지한다."""
+        """Detect 'verify search results present' intent in the description."""
         return bool(QAExecutor._SEARCH_RESULTS_RE.search(desc or ""))
 
-    # G-1: 봇 차단 / captcha challenge / ratelimit 페이지 URL 패턴.
-    # URL 변경 자체는 일어났어도 "의도된 목적지" 가 아니므로 성공으로 인정하면 안 된다.
-    # 대표 사례:
-    #   - Google 봇 차단     : google.com/sorry/index?continue=... ("unusual traffic")
-    #   - Google reCAPTCHA   : /recaptcha/
-    #   - Cloudflare 챌린지  : /cdn-cgi/challenge-platform/
-    #   - Amazon 봇 체크     : /errors/validateCaptcha, /robot-check
-    #   - 일반 rate limit    : /blocked, /ratelimit, /too-many-requests, /429
+    # G-1: URL patterns for bot-block / captcha challenge / ratelimit pages.
+    # Even if the URL changed, it is not the "intended destination" so we must
+    # not count it as success. Representative cases:
+    #   - Google bot block    : google.com/sorry/index?continue=... ("unusual traffic")
+    #   - Google reCAPTCHA    : /recaptcha/
+    #   - Cloudflare challenge: /cdn-cgi/challenge-platform/
+    #   - Amazon bot check    : /errors/validateCaptcha, /robot-check
+    #   - Generic rate limit  : /blocked, /ratelimit, /too-many-requests, /429
     _BLOCKED_URL_RE = re.compile(
         r"/sorry/"
         r"|/recaptcha/"
@@ -905,11 +931,12 @@ class QAExecutor:
 
     @staticmethod
     def _is_blocked_url(url: str) -> bool:
-        """URL 이 봇 차단/captcha/ratelimit 페이지인지 판정."""
+        """Return True if the URL is a bot-block / captcha / ratelimit page."""
         return bool(QAExecutor._BLOCKED_URL_RE.search(url or ""))
 
-    # E-2: 검색결과 페이지 URL 패턴. 쿼리스트링에 검색어 key, 또는 /search/ /results/ /find/ path.
-    # 이 패턴에 매치 안 되면 "검색 결과 페이지에 있다" 고 간주할 수 없다.
+    # E-2: URL patterns for search-result pages. Either a search-query key in
+    # the query string, or a /search/ /results/ /find/ path. If a URL does not
+    # match this pattern, we cannot assume "we are on a search-results page".
     _SEARCH_RESULT_URL_RE = re.compile(
         r"[?&](q|p|query|search|keyword|wd|k|term|s|searchterm)=|"
         r"/search[/?]|/results?[/?]|/find[/?]|/web[/?]|/results?$|/search$",
@@ -920,20 +947,22 @@ class QAExecutor:
     def _had_navigation_effect(
         page: Page, before_url: str, before_pages_count: int
     ) -> bool:
-        """click/press 후 실제로 navigation 효과가 있었는지 판정.
+        """Determine whether a click/press actually produced a navigation effect.
 
-        효과 = (a) 현재 페이지 URL 이 변경되었거나, (b) 유효한 새 탭이 열렸다.
-        chrome-error:// / about:blank / data: 새 탭은 봇 차단 산물이므로 효과 없음.
-        G-2: 봇 차단(/sorry/ 등) 이나 captcha challenge URL 도 효과 없음으로 간주.
-        URL 은 변경됐지만 "의도된 목적지" 가 아니므로 false positive 차단.
+        Effect = (a) the current page URL changed, or (b) a valid new tab opened.
+        chrome-error:// / about:blank / data: new tabs are bot-block artifacts and
+        do not count as an effect.
+        G-2: Bot-block (/sorry/ etc.) and captcha challenge URLs also do not count
+        as an effect. The URL changed but it is not the "intended destination",
+        so false positives are blocked.
 
         Args:
-            page: 현재 활성 Playwright Page.
-            before_url: 액션 직전의 page.url.
-            before_pages_count: 액션 직전의 context.pages 길이.
+            page: The currently active Playwright Page.
+            before_url: page.url right before the action.
+            before_pages_count: Length of context.pages right before the action.
 
         Returns:
-            유효한 네비게이션 효과가 있었으면 True.
+            True if a valid navigation effect occurred.
         """
         current = page.url or ""
         if QAExecutor._is_blocked_url(current):
@@ -957,7 +986,7 @@ class QAExecutor:
         page: Page, before_url: str, before_pages_count: int,
         deadline_sec: float = 3.0,
     ) -> bool:
-        """polling 으로 최대 ``deadline_sec`` 초까지 navigation 효과를 대기한다."""
+        """Poll up to ``deadline_sec`` seconds for a navigation effect."""
         deadline = time.time() + deadline_sec
         while time.time() < deadline:
             if QAExecutor._had_navigation_effect(page, before_url, before_pages_count):
@@ -965,27 +994,29 @@ class QAExecutor:
             page.wait_for_timeout(100)
         return QAExecutor._had_navigation_effect(page, before_url, before_pages_count)
 
-    # J: '검색결과 존재 확인' 의도일 때 visible 인지 체크할 후보 컨테이너.
-    # 하나라도 visible 이면 검색결과가 있다고 간주.
+    # J: Container candidates whose visibility implies 'search results present'.
+    # Any single one being visible means search results exist.
     #
-    # 주의: main / [role=main] / article 은 검색 전 홈페이지에서도 항상 visible
-    # 이라 false positive PASS 를 만든다 (Yahoo 검색 실패 시 홈의 main 이 잡힘).
-    # 반드시 "검색결과" 의도를 가진 검색엔진 전용 컨테이너 또는 id/class 에
-    # 'result' 가 포함된 것만 유효로 취급한다.
+    # Note: main / [role=main] / article are always visible on the home page
+    # before any search, which would yield false-positive PASS (Yahoo home's
+    # main matches when search fails). Only treat as valid: search-engine-
+    # specific containers carrying "search results" intent, or those whose
+    # id/class contains 'result'.
     _SEARCH_RESULTS_CANDIDATES = (
-        "#main_pack",                     # Naver 통합검색
-        "#search",                          # Google 검색
-        "#results",                         # 일반
-        "#web",                             # Yahoo 검색결과
+        "#main_pack",                     # Naver integrated search
+        "#search",                          # Google search
+        "#results",                         # generic
+        "#web",                             # Yahoo search results
         "[id*='result' i]",
         "[class*='search-result' i]",
         "[class*='results' i]",
         "[data-testid*='result' i]",
     )
 
-    # H: '검색창 fill' 의도일 때 시도할 일반 search input 후보.
-    # 시맨틱(type=search/role=searchbox) 우선, placeholder/aria-label 매치 다음,
-    # 마지막으로 검색엔진별 흔한 name 속성(q, p, query, search, wd 등).
+    # H: Generic search-input candidates to try for 'fill search box' intent.
+    # Order: semantic (type=search/role=searchbox) first, then placeholder/aria-
+    # label match, finally common per-search-engine name attributes (q, p,
+    # query, search, wd, etc.).
     _SEARCH_INPUT_CANDIDATES = (
         "input[type=search]:visible",
         "[role=searchbox]:visible",
@@ -998,7 +1029,7 @@ class QAExecutor:
         "form[role=search] input:visible, [role=search] input:visible",
     )
 
-    # ── LLM 출력 보정 ──
+    # ── LLM output normalization ──
     KNOWN_KEYS = {
         "enter", "tab", "escape", "backspace", "delete", "arrowup",
         "arrowdown", "arrowleft", "arrowright", "space", "home", "end",
@@ -1006,7 +1037,7 @@ class QAExecutor:
         "f7", "f8", "f9", "f10", "f11", "f12",
     }
 
-    # 사설망/로컬 IP 패턴 — 자동 normalize 시 https 가 아닌 http 적용
+    # Private network / local IP patterns — auto-normalize uses http instead of https.
     _LOCAL_HOST_PREFIXES = ("localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.16.",
                             "172.17.", "172.18.", "172.19.", "172.20.", "172.21.",
                             "172.22.", "172.23.", "172.24.", "172.25.", "172.26.",
@@ -1015,10 +1046,11 @@ class QAExecutor:
 
     @staticmethod
     def _normalize_url(raw: str) -> str:
-        """스킴 없는 URL 에 자동으로 https:// (또는 로컬은 http://) 를 붙인다.
+        """Auto-prefix https:// (http:// for local hosts) to a URL with no scheme.
 
-        사용자가 Jenkins 파라미터에 ``www.naver.com`` 만 넣거나 LLM 이 스킴 없이
-        반환해도 ``page.goto()`` 의 'invalid URL' 에러를 막는다.
+        Prevents the 'invalid URL' error from ``page.goto()`` when the user puts
+        only ``www.naver.com`` into a Jenkins parameter or the LLM returns a URL
+        without a scheme.
 
         Examples:
             >>> QAExecutor._normalize_url("www.naver.com")
@@ -1043,9 +1075,9 @@ class QAExecutor:
     @staticmethod
     def _normalize_step(step: dict):
         """
-        LLM이 생성한 DSL 스텝의 흔한 오류를 자동 보정한다.
-        - press: target에 키 이름이 들어가고 value가 비어 있는 경우 swap
-        - navigate: value가 비고 target에 URL이 있는 경우 swap
+        Auto-correct common LLM mistakes in DSL steps.
+        - press: when a key name is in target and value is empty, swap them.
+        - navigate: when value is empty and target holds a URL, swap them.
         """
         action = step.get("action", "").lower()
         target = str(step.get("target", "")).strip()
@@ -1054,10 +1086,10 @@ class QAExecutor:
         if action == "press" and not value and target.lower() in QAExecutor.KNOWN_KEYS:
             step["value"] = target
             step["target"] = ""
-            log.debug("[보정] press: target '%s' → value로 이동", target)
+            log.debug("[normalize] press: target '%s' -> moved to value", target)
 
-        # navigate 의 흔한 LLM 실수: URL 을 target 에 넣음.
-        # 스킴 없어도 'foo.com', 'localhost:3000' 등 URL 같으면 swap.
+        # Common LLM mistake on navigate: putting the URL in target.
+        # Even without a scheme, swap when it looks like a URL (e.g. 'foo.com', 'localhost:3000').
         if action == "navigate" and not value and target:
             host_part = target.split("/", 1)[0].split("?", 1)[0]
             looks_url = (
@@ -1068,13 +1100,13 @@ class QAExecutor:
             if looks_url:
                 step["value"] = target
                 step["target"] = ""
-                log.debug("[보정] navigate: target → value로 이동")
+                log.debug("[normalize] navigate: target -> moved to value")
 
     def _resolve_upload_path(self, raw_path) -> str:
-        """upload.value 를 artifacts 루트 아래의 실제 파일 경로로 해석한다."""
+        """Resolve upload.value into a real file path under the artifacts root."""
         value = str(raw_path or "").strip()
         if not value:
-            raise ValueError("upload.value 가 비어 있음")
+            raise ValueError("upload.value is empty")
 
         allowed_root = os.path.abspath(self.config.artifacts_dir)
         candidates: list[str] = []
@@ -1095,19 +1127,19 @@ class QAExecutor:
                 return candidate
 
         raise FileNotFoundError(
-            f"업로드 파일을 찾을 수 없거나 허용 루트 밖 경로임: {value!r} "
-            f"(허용 루트: {allowed_root})"
+            f"upload file not found or outside allowed root: {value!r} "
+            f"(allowed root: {allowed_root})"
         )
 
     @staticmethod
     def _normalize_mock_body(value) -> str:
-        """mock_data.value 를 application/json body 문자열로 정규화한다."""
+        """Normalize mock_data.value into an application/json body string."""
         if isinstance(value, (dict, list)):
             return json.dumps(value, ensure_ascii=False)
 
         raw = str(value or "").strip()
         if not raw:
-            raise ValueError("mock_data.value 가 비어 있음")
+            raise ValueError("mock_data.value is empty")
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
@@ -1123,21 +1155,21 @@ class QAExecutor:
         body: str | None = None,
         times: int = 1,
     ) -> None:
-        """API 모킹 라우트를 설치한다.
+        """Install an API mock route.
 
         Args:
             page: Playwright Page.
-            url_pattern: glob 또는 정규식 URL 패턴.
-            status: 응답 status code (mock_status 용).
-            body: 응답 JSON body 문자열 (mock_data 용).
-            times: 라우트가 몇 번 매칭될 때까지 가로챌지. **기본값 1** —
-                후속 스텝 전역 오염을 막기 위함. step.value 와 별도로 step
-                dict 에 ``"times"`` 키가 있으면 호출자가 이를 전달해 폴링/
-                재시도 시나리오를 모킹할 수 있다.
+            url_pattern: Glob or regex URL pattern.
+            status: Response status code (for mock_status).
+            body: Response JSON body string (for mock_data).
+            times: Number of route matches to intercept. **Default 1** — to
+                prevent cross-step global pollution. If the step dict carries a
+                ``"times"`` key (separate from step.value), the caller can pass
+                it through to mock polling / retry scenarios.
         """
         pattern = str(url_pattern or "").strip()
         if not pattern:
-            raise ValueError("mock_* action 에 target(URL 패턴)이 필요함")
+            raise ValueError("mock_* action requires target (URL pattern)")
         QAExecutor._enforce_mock_scope(pattern)
 
         def _handler(route):
@@ -1158,7 +1190,7 @@ class QAExecutor:
         guard is opt-out via MOCK_OVERRIDE=1 for explicit operator actions.
         """
         if os.getenv("MOCK_OVERRIDE", "").strip() == "1":
-            log.warning("[MockGuard] MOCK_OVERRIDE=1 — mock scope guard 우회: %s", pattern)
+            log.warning("[MockGuard] MOCK_OVERRIDE=1 — bypassing mock scope guard: %s", pattern)
             return
 
         normalized = pattern.strip().lower()
@@ -1175,31 +1207,34 @@ class QAExecutor:
         is_broad = normalized in broad_patterns
         if is_broad and (target_host or blocked_hosts):
             raise ValueError(
-                "mock_* target 이 너무 넓어 false positive 위험이 큼: "
-                f"{pattern!r}. MOCK_OVERRIDE=1 로만 명시 우회 가능"
+                "mock_* target is too broad and risks false positives: "
+                f"{pattern!r}. Set MOCK_OVERRIDE=1 to explicitly bypass."
             )
 
         for host in blocked_hosts:
             if host and host in normalized:
                 raise ValueError(
-                    "mock_* target 이 차단된 host 와 매칭됨: "
+                    "mock_* target matches a blocked host: "
                     f"host={host!r}, pattern={pattern!r}. "
-                    "MOCK_OVERRIDE=1 로만 명시 우회 가능"
+                    "Set MOCK_OVERRIDE=1 to explicitly bypass."
                 )
 
     def _execute_mock_step(
         self, page: Page, step: dict, artifacts: str
     ) -> StepResult:
-        """mock_status / mock_data 스텝을 실행한다.
+        """Execute a mock_status / mock_data step.
 
-        DOM 이 아니라 URL 패턴이 입력이므로 LocalHealer 와 fallback_targets
-        DOM 매칭은 적용되지 않는다. 대신 다음 2단계 치유를 지원한다:
+        The input is a URL pattern, not a DOM element, so LocalHealer and
+        fallback_targets DOM matching do not apply. Instead, supports a
+        two-stage healing:
 
-        1. ``fallback_targets`` 가 대체 URL 패턴 문자열을 담고 있으면 순서대로 시도.
-        2. 위가 모두 실패하면 Dify LLM 치유 (yaml 의 healer 프롬프트가 mock_* 전용
-           가이드를 가진다 — 해당 분기를 활성화).
+        1. If ``fallback_targets`` carries alternative URL pattern strings, try
+           them in order.
+        2. If all of the above fail, do Dify LLM healing (the healer prompt in
+           the YAML has a mock_*-specific guide — that branch is activated).
 
-        ``step["times"]`` 가 정수면 mock 라우트의 매칭 횟수를 제어한다 (기본 1).
+        If ``step["times"]`` is an integer, it controls the mock route match
+        count (default 1).
         """
         action = step["action"]
         step_id = step.get("step", "-")
@@ -1215,16 +1250,16 @@ class QAExecutor:
                 "PASS", screenshot_path=ss,
             )
         except ValueError as e:
-            log.warning("[Step %s] mock 설치 실패: %s — fallback 시도", step_id, e)
+            log.warning("[Step %s] mock install failed: %s — trying fallback", step_id, e)
 
-        # 1단계: fallback_targets (대체 URL 패턴)
+        # Stage 1: fallback_targets (alternative URL patterns).
         for fb_target in step.get("fallback_targets", []) or []:
             try:
                 fb_step = {**step, "target": str(fb_target)}
                 self._apply_mock_route(page, fb_step)
-                step["target"] = str(fb_target)  # healed.json 반영
+                step["target"] = str(fb_target)  # reflect into healed.json
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] mock fallback 패턴 복구: %s", step_id, fb_target)
+                log.info("[Step %s] mock fallback pattern recovery: %s", step_id, fb_target)
                 return StepResult(
                     step_id, action, str(fb_target), str(step.get("value", "")), desc,
                     "HEALED", heal_stage="fallback", screenshot_path=ss,
@@ -1232,16 +1267,16 @@ class QAExecutor:
             except ValueError:
                 continue
 
-        # 2단계: Dify LLM 치유 (URL 패턴/value 교정)
+        # Stage 2: Dify LLM healing (URL pattern / value correction).
         try:
             new_target_info = self.dify.request_healing(
-                error_msg=f"mock 설치 실패: {original_target}",
-                dom_snapshot="",  # mock_* 는 DOM 무관 — 빈 컨텍스트로 호출
+                error_msg=f"mock install failed: {original_target}",
+                dom_snapshot="",  # mock_* is DOM-agnostic — pass empty context
                 failed_step=step,
                 strategy_trace=[a.to_dict() for a in self._latest_strategy_trace],
             )
         except DifyConnectionError as e:
-            log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
+            log.error("[Step %s] Dify heal communication failed: %s", step_id, e)
             new_target_info = None
 
         if new_target_info:
@@ -1249,14 +1284,14 @@ class QAExecutor:
             try:
                 self._apply_mock_route(page, step)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] mock LLM 치유 성공: %s", step_id, step.get("target"))
+                log.info("[Step %s] mock LLM heal succeeded: %s", step_id, step.get("target"))
                 return StepResult(
                     step_id, action, str(step.get("target", "")),
                     str(step.get("value", "")), desc,
                     "HEALED", heal_stage="dify", screenshot_path=ss,
                 )
             except ValueError as e:
-                log.error("[Step %s] LLM 치유 후에도 mock 실패: %s", step_id, e)
+                log.error("[Step %s] mock still failed after LLM heal: %s", step_id, e)
 
         ss = self._screenshot(page, artifacts, step_id, "fail")
         return StepResult(
@@ -1265,7 +1300,7 @@ class QAExecutor:
         )
 
     def _apply_mock_route(self, page: Page, step: dict) -> None:
-        """step dict 의 action/target/value/times 를 _install_mock_route 로 변환."""
+        """Convert the step dict's action/target/value/times into _install_mock_route."""
         action = step["action"]
         pattern = str(step.get("target", ""))
         times = int(step.get("times", 1))
@@ -1283,16 +1318,17 @@ class QAExecutor:
     def _execute_reset_state(
         self, page: Page, step: dict, artifacts: str,
     ) -> StepResult:
-        """reset_state 액션 — 시나리오 도중 client-side 상태를 비운다.
+        """reset_state action — clear client-side state mid-scenario.
 
-        DSL 형태:
-          {"action": "reset_state", "target": "", "value": "cookie"}     # 쿠키만
+        DSL forms:
+          {"action": "reset_state", "target": "", "value": "cookie"}     # cookies only
           {"action": "reset_state", "target": "", "value": "storage"}    # local + session
           {"action": "reset_state", "target": "", "value": "indexeddb"}  # IDB
-          {"action": "reset_state", "target": "", "value": "all"}        # 위 셋 모두
+          {"action": "reset_state", "target": "", "value": "all"}        # all of the above
 
-        value 화이트리스트는 `__main__._RESET_STATE_VALID_VALUES` 와 동기.
-        BrowserContext / Page level API 만 사용 — 백엔드 hook 없이 자체 완결.
+        The value whitelist is kept in sync with `__main__._RESET_STATE_VALID_VALUES`.
+        Uses only BrowserContext / Page level APIs — self-contained without any
+        backend hook.
         """
         step_id = step.get("step", "-")
         desc = step.get("description", "")
@@ -1304,22 +1340,22 @@ class QAExecutor:
                 log.info("[Step %s] reset_state cookie -> cleared", step_id)
 
             if scope == "all":
-                # docs/PLAN_PRODUCTION_READINESS.md §"T-B Day 2" — all 은
-                # cookie + storage + indexeddb + permissions reset 까지 포함.
-                # geolocation/notifications/clipboard 등 grant 된 권한 초기화.
+                # docs/PLAN_PRODUCTION_READINESS.md §"T-B Day 2" — "all" includes
+                # cookie + storage + indexeddb + permissions reset. Resets granted
+                # permissions like geolocation/notifications/clipboard.
                 try:
                     page.context.clear_permissions()
                     log.info("[Step %s] reset_state permissions -> cleared", step_id)
                 except Exception as e:  # noqa: BLE001
-                    # 일부 Playwright 버전 / 컨텍스트는 미지원 — soft fail.
+                    # Unsupported on some Playwright versions / contexts — soft fail.
                     log.warning(
-                        "[Step %s] reset_state permissions 미지원 (skip): %s",
+                        "[Step %s] reset_state permissions unsupported (skip): %s",
                         step_id, e,
                     )
 
             if scope in ("storage", "all"):
-                # localStorage / sessionStorage 는 SecurityError 가 about:blank
-                # 같은 origin 없는 페이지에서 발생할 수 있어 try 안에서 처리.
+                # localStorage / sessionStorage can throw SecurityError on
+                # origin-less pages like about:blank, so handle inside try.
                 page.evaluate(
                     """() => {
                         try { localStorage.clear(); } catch (e) { /* no-op */ }
@@ -1339,13 +1375,13 @@ class QAExecutor:
                                 const req = indexedDB.deleteDatabase(d.name);
                                 req.onsuccess = req.onerror = req.onblocked = () => res();
                             })));
-                        } catch (e) { /* no-op — Safari 등 미지원 시 */ }
+                        } catch (e) { /* no-op — when unsupported on Safari etc. */ }
                     }"""
                 )
                 log.info("[Step %s] reset_state indexeddb -> cleared", step_id)
 
         except Exception as e:  # noqa: BLE001
-            log.error("[Step %s] reset_state %s 실패: %s", step_id, scope, e)
+            log.error("[Step %s] reset_state %s failed: %s", step_id, scope, e)
             ss = self._screenshot(page, artifacts, step_id, "fail")
             return StepResult(
                 step_id, "reset_state", "", scope, desc,
@@ -1365,16 +1401,17 @@ class QAExecutor:
     def _execute_auth_login(
         self, page: Page, step: dict, artifacts: str,
     ) -> StepResult:
-        """auth_login 액션 — form / totp / oauth 모드 분기.
+        """auth_login action — branches into form / totp / oauth modes.
 
-        DSL 형태:
+        DSL forms:
           {"action": "auth_login", "target": "form", "value": "<credential_alias>"}
           {"action": "auth_login", "target": "totp", "value": "<credential_alias>"}
           {"action": "auth_login", "target": "form, email_field=#email, password_field=#pw, submit=#login",
            "value": "<credential_alias>"}
 
-        credential 은 환경변수 `AUTH_CRED_<ALIAS>_USER` / `_PASS` / `_TOTP_SECRET`
-        에서 lookup. 자세한 spec 은 zero_touch_qa.auth 모듈 docstring 참조.
+        Credentials are looked up from env vars `AUTH_CRED_<ALIAS>_USER` /
+        `_PASS` / `_TOTP_SECRET`. See the zero_touch_qa.auth module docstring
+        for the full spec.
         """
         step_id = step.get("step", "-")
         desc = step.get("description", "")
@@ -1385,7 +1422,7 @@ class QAExecutor:
         try:
             cred = resolve_credential(alias)
         except CredentialError as e:
-            log.error("[Step %s] auth_login credential 실패: %s", step_id, e)
+            log.error("[Step %s] auth_login credential resolution failed: %s", step_id, e)
             ss = self._screenshot(page, artifacts, step_id, "fail")
             return StepResult(
                 step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
@@ -1405,9 +1442,9 @@ class QAExecutor:
         if opts.mode == "totp":
             return self._auth_login_totp(page, step, opts, cred, artifacts)
         if opts.mode == "oauth":
-            # T-D Phase 5 — OAuth mock server 통합 후 활성화
+            # T-D Phase 5 — to be enabled after OAuth mock server integration.
             log.error(
-                "[Step %s] auth_login oauth 모드는 T-D Phase 5 (mock OAuth) 미완료",
+                "[Step %s] auth_login oauth mode pending T-D Phase 5 (mock OAuth)",
                 step_id,
             )
             ss = self._screenshot(page, artifacts, step_id, "fail")
@@ -1416,7 +1453,7 @@ class QAExecutor:
                 "FAIL", screenshot_path=ss,
             )
 
-        log.error("[Step %s] auth_login 알 수 없는 mode=%r", step_id, opts.mode)
+        log.error("[Step %s] auth_login unknown mode=%r", step_id, opts.mode)
         ss = self._screenshot(page, artifacts, step_id, "fail")
         return StepResult(
             step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
@@ -1427,14 +1464,15 @@ class QAExecutor:
         self, page: Page, step: dict, opts: AuthOptions, cred: Credential,
         artifacts: str,
     ) -> StepResult:
-        """form 로그인 — email + password 필드 채우고 submit 클릭."""
+        """Form login — fill email + password fields and click submit."""
         step_id = step.get("step", "-")
         desc = step.get("description", "")
         target_str = str(step.get("target", ""))
         alias = str(step.get("value", ""))
 
-        # 민감 input locator 를 미리 잡아 mask 리스트로 사용. fill 전이라도
-        # _find_auth_field 가 RuntimeError 일 수 있어 None 으로 초기화하고 try 안에서 갱신.
+        # Capture sensitive input locators ahead of time to use in the mask list.
+        # _find_auth_field may raise RuntimeError before fill, so initialize as
+        # None and update inside the try.
         email_loc = pwd_loc = None
         try:
             email_loc = self._find_auth_field(
@@ -1452,7 +1490,7 @@ class QAExecutor:
             submit_loc.click(timeout=5000)
             page.wait_for_load_state("domcontentloaded", timeout=10000)
         except Exception as e:
-            log.error("[Step %s] auth_login form 실패: %s", step_id, e)
+            log.error("[Step %s] auth_login form failed: %s", step_id, e)
             ss = self._screenshot_masked(
                 page, artifacts, step_id, "fail",
                 mask=[loc for loc in (email_loc, pwd_loc) if loc is not None],
@@ -1462,8 +1500,9 @@ class QAExecutor:
                 "FAIL", screenshot_path=ss,
             )
 
-        # P0.1 #3 — credential 평문이 PASS 스크린샷에 남지 않도록 입력 필드를 mask.
-        # submit 후 navigation 으로 detached 된 locator 는 Playwright 내부에서 no-op.
+        # P0.1 #3 — Mask the input fields so plaintext credentials do not remain
+        # in the PASS screenshot. Locators detached by post-submit navigation
+        # are no-ops inside Playwright.
         ss = self._screenshot_masked(
             page, artifacts, step_id, "pass", mask=[email_loc, pwd_loc],
         )
@@ -1477,7 +1516,7 @@ class QAExecutor:
         self, page: Page, step: dict, opts: AuthOptions, cred: Credential,
         artifacts: str,
     ) -> StepResult:
-        """TOTP 로그인 — pyotp 로 6자리 코드 생성 후 입력."""
+        """TOTP login — generate the 6-digit code with pyotp and fill it."""
         step_id = step.get("step", "-")
         desc = step.get("description", "")
         target_str = str(step.get("target", ""))
@@ -1485,7 +1524,7 @@ class QAExecutor:
 
         if not cred.has_totp():
             log.error(
-                "[Step %s] auth_login totp 실패 — alias '%s' 에 TOTP 시크릿 없음",
+                "[Step %s] auth_login totp failed — alias '%s' has no TOTP secret",
                 step_id, alias,
             )
             ss = self._screenshot(page, artifacts, step_id, "fail")
@@ -1501,7 +1540,8 @@ class QAExecutor:
                 page, opts.totp_field, TOTP_FIELD_CANDIDATES, "totp",
             )
             otp_loc.fill(code, timeout=5000)
-            # submit — 별도 버튼 있으면 클릭, 없으면 그대로 (auto-submit form 가정)
+            # submit — click a separate button if present, otherwise leave as-is
+            # (assume an auto-submit form).
             submit_loc = self._try_find_auth_field(
                 page, opts.submit, SUBMIT_BUTTON_CANDIDATES,
             )
@@ -1509,7 +1549,7 @@ class QAExecutor:
                 submit_loc.click(timeout=5000)
                 page.wait_for_load_state("domcontentloaded", timeout=10000)
         except Exception as e:
-            log.error("[Step %s] auth_login totp 실패: %s", step_id, e)
+            log.error("[Step %s] auth_login totp failed: %s", step_id, e)
             ss = self._screenshot_masked(
                 page, artifacts, step_id, "fail",
                 mask=[loc for loc in (otp_loc,) if loc is not None],
@@ -1519,7 +1559,7 @@ class QAExecutor:
                 "FAIL", screenshot_path=ss,
             )
 
-        # P0.1 #3 — TOTP 코드가 PASS 스크린샷에 남지 않도록 마스킹.
+        # P0.1 #3 — Mask so the TOTP code does not remain in the PASS screenshot.
         ss = self._screenshot_masked(
             page, artifacts, step_id, "pass", mask=[otp_loc],
         )
@@ -1533,9 +1573,10 @@ class QAExecutor:
     def _find_auth_field(
         page: Page, explicit: Optional[str], candidates: tuple, field_name: str,
     ) -> Locator:
-        """explicit selector 가 있으면 그것, 없으면 후보 selector 순서대로 시도.
+        """If an explicit selector is provided use it, else try candidate selectors in order.
 
-        매치 0건이면 RuntimeError. 첫 일치하는 element 의 ``.first`` 반환.
+        Raises RuntimeError if there are zero matches. Returns ``.first`` of the
+        first matching element.
         """
         if explicit:
             loc = page.locator(explicit)
@@ -1544,7 +1585,7 @@ class QAExecutor:
                     return loc.first
             except Exception:  # noqa: BLE001
                 pass
-            raise RuntimeError(f"auth_login {field_name} field 매치 0 (explicit={explicit!r})")
+            raise RuntimeError(f"auth_login {field_name} field 0 matches (explicit={explicit!r})")
         for sel in candidates:
             try:
                 loc = page.locator(sel)
@@ -1553,14 +1594,14 @@ class QAExecutor:
             except Exception:  # noqa: BLE001
                 continue
         raise RuntimeError(
-            f"auth_login {field_name} field 자동 탐지 실패 — 후보: {list(candidates)}"
+            f"auth_login {field_name} field auto-detect failed — candidates: {list(candidates)}"
         )
 
     @staticmethod
     def _try_find_auth_field(
         page: Page, explicit: Optional[str], candidates: tuple,
     ) -> Optional[Locator]:
-        """``_find_auth_field`` 의 optional 버전 — 미발견 시 RuntimeError 대신 None."""
+        """Optional variant of ``_find_auth_field`` — returns None instead of raising RuntimeError."""
         if explicit:
             try:
                 loc = page.locator(explicit)
@@ -1580,7 +1621,7 @@ class QAExecutor:
 
     @staticmethod
     def _assert_locator_contains_value(locator: Locator, expected: str) -> None:
-        """기존 verify 호환을 위해 text_content 와 input_value 를 모두 고려한다."""
+        """For verify-backward-compat, considers both text_content and input_value."""
         actual = ""
         try:
             actual = (locator.inner_text() or "").strip()
@@ -1598,28 +1639,30 @@ class QAExecutor:
                 actual = ""
         if str(expected) not in actual:
             raise VerificationAssertionError(
-                f"텍스트/값 불일치: 기대='{expected}', 실제='{actual}'"
+                f"text/value mismatch: expected='{expected}', actual='{actual}'"
             )
 
-    # ── A: action 별 strategy chain (multi-strategy + post-condition) ──
+    # ── A: per-action strategy chain (multi-strategy + post-condition) ──
     #
-    # 동기: 단일 매핑 강제 (예: select_option(label=...)) 가 LLM healer 로도 못 고치는
-    # 클래스의 실패를 만든다. 각 액션이 자체적으로 여러 매핑/형태를 시도하고 직접
-    # 결과를 검증하면, healer 호출 전에 결정적으로 회복 가능한 케이스를 모두 흡수한다.
+    # Motivation: forcing a single mapping (e.g. select_option(label=...)) creates a
+    # class of failures even an LLM healer can't fix. Letting each action try multiple
+    # mappings/forms and verify the result itself absorbs every deterministically
+    # recoverable case before the healer is even called.
     #
-    # 시도 결과는 ``self._latest_strategy_trace`` 에 누적되어 Dify healer 호출 시
-    # 컨텍스트로 주입된다 ("selector 만 바꿔도 같은 timeout 이었다" 정보 보존).
+    # Attempt results accumulate in ``self._latest_strategy_trace`` and are injected
+    # as context on the Dify healer call (preserves signals like "even after changing
+    # only the selector the timeout was the same").
 
     @staticmethod
     def _normalize_check_state(value) -> bool:
         s = str(value or "").strip().lower()
         if s in ("false", "off", "no", "0", "uncheck", "unchecked"):
             return False
-        # 빈 값은 default = check
+        # Empty value defaults to check.
         return True
 
     def _do_select(self, locator: Locator, value: str) -> None:
-        """select 다중 전략. positional → value= → label= 순. post-check: 실 selected."""
+        """Multi-strategy select. Order: positional -> value= -> label=. Post-check: actually selected."""
         trace: list[_StrategyAttempt] = []
         last_err: Exception | None = None
 
@@ -1637,7 +1680,7 @@ class QAExecutor:
                 sel_text = ""
             if value and value != actual and value not in str(sel_text):
                 raise RuntimeError(
-                    f"select post-check 실패: 기대={value!r}, "
+                    f"select post-check failed: expected={value!r}, "
                     f"actual_value={actual!r}, label={sel_text!r}"
                 )
 
@@ -1658,10 +1701,10 @@ class QAExecutor:
                 last_err = e
 
         self._latest_strategy_trace = trace
-        raise last_err if last_err else RuntimeError("select 모든 전략 실패")
+        raise last_err if last_err else RuntimeError("select: all strategies failed")
 
     def _do_check(self, locator: Locator, value: str) -> None:
-        """check 다중 전략. native → click 토글 → JS force-set. post-check: is_checked()."""
+        """Multi-strategy check. Order: native -> click toggle -> JS force-set. Post-check: is_checked()."""
         desired = self._normalize_check_state(value)
         trace: list[_StrategyAttempt] = []
         last_err: Exception | None = None
@@ -1704,13 +1747,14 @@ class QAExecutor:
                 last_err = e
 
         self._latest_strategy_trace = trace
-        raise last_err if last_err else RuntimeError("check 모든 전략 실패")
+        raise last_err if last_err else RuntimeError("check: all strategies failed")
 
     def _upload_path_candidates(self, value: str) -> list[tuple[str, str]]:
-        """upload.value 를 여러 경로 변형으로 확장. (전략명, 절대경로) 리스트.
+        """Expand upload.value into multiple path variants. List of (strategy name, absolute path).
 
-        마지막 후보는 항상 ``upload_sample.txt`` default 더미 — LLM 이 ``test.txt``
-        같은 placeholder 를 emit 했을 때도 결정적으로 PASS 시키기 위함.
+        The last candidate is always the ``upload_sample.txt`` default dummy —
+        ensures deterministic PASS even when the LLM emits a placeholder like
+        ``test.txt``.
         """
         artifacts_root = os.path.abspath(self.config.artifacts_dir)
         candidates: list[tuple[str, str]] = []
@@ -1734,8 +1778,9 @@ class QAExecutor:
                     ),
                 ))
 
-        # default 더미 fallback — Pipeline 이 artifacts 안에 ``upload_sample.txt`` 를
-        # 미리 생성하므로 항상 존재한다. LLM 의 placeholder value 도 결정적으로 흡수.
+        # Default dummy fallback — the pipeline pre-creates ``upload_sample.txt``
+        # inside artifacts, so it always exists. Deterministically absorbs LLM
+        # placeholder values too.
         candidates.append((
             "artifacts/default-sample",
             os.path.abspath(os.path.join(artifacts_root, "upload_sample.txt")),
@@ -1751,9 +1796,9 @@ class QAExecutor:
         return uniq
 
     def _do_upload(self, locator: Locator, value: str) -> None:
-        """upload 다중 전략. 후보 경로 순회 + post-check (input.value endswith basename)."""
+        """Multi-strategy upload. Iterates candidate paths + post-check (input.value endswith basename)."""
         if not value:
-            raise ValueError("upload.value 가 비어 있음")
+            raise ValueError("upload.value is empty")
 
         trace: list[_StrategyAttempt] = []
         last_err: Exception | None = None
@@ -1762,14 +1807,14 @@ class QAExecutor:
             if not os.path.exists(path):
                 trace.append(_StrategyAttempt(name, f"not found: {path}"))
                 continue
-            # 보안 가드: artifacts root 또는 SCRIPTS_HOME 하위만 허용
+            # Security guard: only allow paths under artifacts root or SCRIPTS_HOME.
             allowed_roots = [os.path.abspath(self.config.artifacts_dir)]
             sh = os.environ.get("SCRIPTS_HOME") or ""
             if sh:
                 allowed_roots.append(os.path.abspath(sh))
             if not any(path.startswith(root + os.sep) or path == root for root in allowed_roots):
                 trace.append(_StrategyAttempt(
-                    name, f"보안 가드: 허용 루트 밖 — {path}"
+                    name, f"security guard: outside allowed roots — {path}"
                 ))
                 continue
             try:
@@ -1790,11 +1835,11 @@ class QAExecutor:
 
         self._latest_strategy_trace = trace
         raise last_err if last_err else FileNotFoundError(
-            f"업로드 후보 경로 모두 사용 불가: {value!r}"
+            f"all upload candidate paths unusable: {value!r}"
         )
 
     def _do_fill(self, locator: Locator, value: str) -> None:
-        """fill 다중 전략. clear+fill → type → JS evaluate. post-check: input_value()."""
+        """Multi-strategy fill. Order: clear+fill -> type -> JS evaluate. Post-check: input_value()."""
         trace: list[_StrategyAttempt] = []
         last_err: Exception | None = None
 
@@ -1835,40 +1880,43 @@ class QAExecutor:
                 last_err = e
 
         self._latest_strategy_trace = trace
-        raise last_err if last_err else RuntimeError("fill 모든 전략 실패")
+        raise last_err if last_err else RuntimeError("fill: all strategies failed")
 
-    # ── 14대 DSL 액션 수행 ──
+    # ── execute the 14 DSL actions ──
     def _perform_action(
         self, page: Page, locator: Locator, step: dict, resolver: LocatorResolver
     ):
-        """14대 DSL 액션을 실제 Playwright 동작으로 수행한다.
+        """Perform the 14 DSL actions as actual Playwright operations.
 
         Args:
-            page: Playwright Page (verify 에서 사용).
-            locator: 대상 요소의 Playwright Locator.
-            step: DSL 스텝 dict. ``action`` 과 ``value`` 키를 참조한다.
-            resolver: drag 목적지 같은 추가 target 을 해석할 LocatorResolver.
+            page: Playwright Page (used by verify).
+            locator: Playwright Locator for the target element.
+            step: DSL step dict. References ``action`` and ``value`` keys.
+            resolver: LocatorResolver used to resolve extra targets like drag destinations.
 
         Raises:
-            ValueError: 미지원 액션일 때.
-            VerificationAssertionError: verify 액션에서 조건 불일치 시.
+            ValueError: when the action is unsupported.
+            VerificationAssertionError: when a verify action's condition does not match.
         """
         action = step["action"].lower()
         value = step.get("value", "")
-        # A: 매 step 마다 strategy trace reset. healer 가 마지막 step 의 trace 만 본다.
+        # A: Reset strategy trace every step. The healer only sees the last step's trace.
         self._latest_strategy_trace = []
 
         if action == "click":
-            # 1) viewport 안으로 명시적 스크롤 (best-effort, 실패 무시).
-            #    Playwright 가 click 시 자동 스크롤하긴 하지만 동적 재배치가 잦은
-            #    페이지(Yahoo 광고 등)에서 stability 못 잡고 timeout 나는 케이스 회피.
-            # 2) timeout 5s → 10s — 광고/이미지 lazy load 로 stability 늦은 페이지 대응.
+            # 1) Explicitly scroll into the viewport (best-effort, ignore failures).
+            #    Playwright auto-scrolls on click, but on pages with frequent
+            #    dynamic reflow (e.g. Yahoo ads) it can fail to acquire stability
+            #    and time out — this avoids that.
+            # 2) timeout 5s -> 10s — accommodates pages where ads/lazy image loads
+            #    delay stability.
             try:
                 locator.scroll_into_view_if_needed(timeout=3000)
             except Exception:
                 pass
-            # P-3. 클릭 대상의 href 미리 로깅 — stretched-box 같은 invisible overlay
-            # 를 클릭해 navigation 이 일어날 경우 어느 링크였는지 사후 추적 가능.
+            # P-3. Pre-log the click target's href — when a stretched-box-style
+            # invisible overlay is clicked and triggers navigation, we can trace
+            # which link it was after the fact.
             try:
                 target_href = locator.get_attribute("href", timeout=1000)
                 target_text = (locator.text_content(timeout=1000) or "").strip()[:60]
@@ -1876,9 +1924,10 @@ class QAExecutor:
                     log.info("[Click] href=%r text=%r", target_href, target_text)
             except Exception:
                 pass
-            # E-3: "첫 결과/링크/항목" click 은 **반드시** navigation 효과가 있어야 한다.
-            # Yahoo 홈의 stretched-box overlay 처럼 click 자체는 성공해도 이동이 안 되는
-            # false positive 를 막는다. 효과 없으면 RuntimeError → fallback chain 진행.
+            # E-3: A "first result/link/item" click MUST produce a navigation effect.
+            # Blocks the false positive (e.g. Yahoo home's stretched-box overlay)
+            # where the click succeeds but no navigation happens. If there is no
+            # effect, raise RuntimeError -> proceed through the fallback chain.
             desc = str(step.get("description", ""))
             need_nav = QAExecutor._matches_first_result_intent(desc)
             before_url = page.url if need_nav else ""
@@ -1886,11 +1935,11 @@ class QAExecutor:
             try:
                 locator.click(timeout=10000)
             except Exception as click_err:
-                # T-H (G) — Playwright click actionability 거부 (height:0 / outside
-                # viewport / hidden) 케이스 마지막 수단. element 가 anchor/button
-                # 류일 때만 JS dispatchEvent('click') 시도. ktds.com 처럼 GNB link
-                # 의 computed style 이 height:0 / line-height:0 라 normal click 이
-                # 영원히 actionability 거부하는 사이트 대응.
+                # T-H (G) — last resort for the case where Playwright rejects click
+                # actionability (height:0 / outside viewport / hidden). Try JS
+                # dispatchEvent('click') only if the element is an anchor/button.
+                # Handles sites like ktds.com whose GNB link has computed style
+                # height:0 / line-height:0 so normal click forever rejects actionability.
                 if not _is_safe_for_js_click(locator):
                     raise
                 msg = str(click_err)
@@ -1902,7 +1951,7 @@ class QAExecutor:
                 ):
                     raise
                 log.warning(
-                    "[Click] Playwright click 거부 (%s) → JS dispatch click 폴백 시도",
+                    "[Click] Playwright click rejected (%s) → trying JS dispatch click fallback",
                     msg.split("\n", 1)[0][:120],
                 )
                 locator.evaluate("el => el.click()")
@@ -1910,33 +1959,34 @@ class QAExecutor:
                 page, before_url, before_pages_count
             ):
                 raise RuntimeError(
-                    f"'첫 결과' click 후 navigation 없음 — "
-                    f"URL 유지({before_url}), 유효한 새 탭 없음. "
-                    f"링크가 overlay 에 가려졌거나 봇 차단 가능성."
+                    f"no navigation after 'first result' click — "
+                    f"URL unchanged ({before_url}), no valid new tab. "
+                    f"Link may be obscured by an overlay or blocked by bot detection."
                 )
         elif action == "fill":
             # A: multi-strategy + post-condition (clear+fill / type / js-set).
             self._do_fill(locator, str(value))
         elif action == "press":
-            # M+N. post-press 검증 — press Enter + '검색' 의도 맥락이면 둘 중
-            # 하나여야 진짜 submit 된 것: (a) URL 변경, (b) 새 탭/창이 열리고
-            # 그 URL 이 유효한 콘텐츠 페이지 (chrome-error/about:blank 아님).
-            # 둘 다 없으면 예외 던져 fallback/alternatives/B 휴리스틱 진행.
+            # M+N. post-press check — when in a press Enter + 'search' intent context,
+            # one of these must hold for a real submit: (a) URL changed, (b) a new tab/window
+            # opened and its URL is a valid content page (not chrome-error/about:blank).
+            # If neither holds, raise to drive fallback/alternatives/B heuristics.
             #
-            # chrome-error 필터를 추가한 이유: Yahoo 등이 봇으로 판정해 폼 submit
-            # 을 차단하면 새 탭이 chrome-error 로 뜨는데, 그걸 "submit 성공"으로
-            # 오판하면 후속 verify/click 이 원래 홈페이지 기준으로 false positive PASS.
+            # We added the chrome-error filter because sites like Yahoo, when they detect a bot
+            # and block the form submit, open the new tab on chrome-error. Mistaking that for
+            # "submit success" would produce a false-positive PASS on the original homepage.
             before_url = page.url
             context = page.context
             before_pages = len(context.pages)
             locator.press(str(value))
             if str(value).lower() in ("enter", "return"):
                 desc = str(step.get("description", ""))
-                # 검색 폼에 대한 anti-flake 휴리스틱 — 외부 검색 사이트가 봇 차단으로
-                # chrome-error 새 탭을 띄우면 후속 verify 가 false PASS 되는 것을 방지.
-                # 단, localhost/file:// 같은 fixture 환경은 단순 DOM 업데이트(예: #echo
-                # 텍스트 변경)만 하는 것이 정상이므로 strict 검사 대상에서 제외한다.
-                # 후속 verify step 이 실제 동작을 검증하므로 여기서 막을 필요 없음.
+                # Anti-flake heuristic for search forms — prevents the case where an
+                # external search site blocks bots and opens a chrome-error new tab,
+                # which would otherwise let the next verify step PASS falsely.
+                # However, fixture environments (localhost / file://) typically just do a
+                # DOM update (e.g. changing #echo text), so we exclude them from the strict check.
+                # The following verify step covers real behavior validation, so no need to block here.
                 is_local_fixture = before_url.startswith(
                     ("http://localhost", "http://127.0.0.1", "file://")
                 )
@@ -1957,20 +2007,20 @@ class QAExecutor:
                         for pg in new_pages
                     )
                     if not url_changed and not valid_new_tab:
-                        new_tab_urls = [pg.url for pg in new_pages] or ["(없음)"]
+                        new_tab_urls = [pg.url for pg in new_pages] or ["(none)"]
                         raise RuntimeError(
-                            f"press Enter 후 검색 제출 실패 — "
-                            f"URL 유지({before_url}) + 유효한 새 탭 없음. "
-                            f"새 탭 URL: {new_tab_urls} "
-                            f"(chrome-error/about:blank 은 봇 차단으로 간주)"
+                            f"search submit failed after press Enter — "
+                            f"URL unchanged ({before_url}) + no valid new tab. "
+                            f"new tab URLs: {new_tab_urls} "
+                            f"(chrome-error/about:blank treated as bot-blocked)"
                         )
         elif action == "upload":
-            # A: 후보 경로 다중 전략 + post-condition (input.value endswith basename).
+            # A: multi-strategy on the candidate path + post-condition (input.value endswith basename).
             self._do_upload(locator, str(value))
         elif action == "drag":
             target_locator = resolver.resolve(value)
             if not target_locator:
-                raise RuntimeError(f"drag 목적지 탐색 실패: {value!r}")
+                raise RuntimeError(f"failed to resolve drag destination: {value!r}")
             try:
                 locator.scroll_into_view_if_needed(timeout=3000)
             except Exception:
@@ -1983,7 +2033,7 @@ class QAExecutor:
         elif action == "scroll":
             locator.scroll_into_view_if_needed(timeout=5000)
         elif action == "select":
-            # A: multi-strategy + post-condition. positional → value= → label= 순.
+            # A: multi-strategy + post-condition. Order: positional → value= → label=.
             self._do_select(locator, str(value))
         elif action == "check":
             # A: multi-strategy + post-condition. native → click → JS force-set.
@@ -1991,17 +2041,17 @@ class QAExecutor:
         elif action == "hover":
             locator.hover()
         elif action == "verify":
-            # E-2: "검색결과 (목록/존재/표시) 확인" 의도 verify 는 **URL 자체가
-            # 검색결과 페이지** 여야 한다. 봇 차단으로 홈에 머문 상태에서
-            # 홈의 임의 요소(main/article)가 visible 이라고 false PASS 내는 것 차단.
+            # E-2: a "verify search results (list/exists/visible)" intent verify must run
+            # on a URL that is **actually the search-results page**. Prevents a false PASS where
+            # bot-blocking keeps us on the homepage and an arbitrary main/article is visible.
             desc = str(step.get("description", ""))
             if QAExecutor._matches_search_results_intent(desc):
                 current_url = page.url or ""
                 if not QAExecutor._SEARCH_RESULT_URL_RE.search(current_url):
                     raise VerificationAssertionError(
-                        f"검색결과 verify 실패 — 현재 URL 이 검색결과 페이지가 아님: "
+                        f"search-results verify failed — current URL is not a search-results page: "
                         f"{current_url} "
-                        f"(검색 제출이 실제로 이뤄졌는지 이전 스텝 확인 필요)"
+                        f"(verify whether search submission actually happened in the previous step)"
                     )
             condition = str(step.get("condition", "")).strip().lower()
             try:
@@ -2024,81 +2074,81 @@ class QAExecutor:
                     expect(locator).to_contain_text(str(value))
                 else:
                     raise ValueError(
-                        f"미지원 verify.condition: {condition!r} "
-                        f"(허용: visible, hidden, disabled, enabled, checked, value, text)"
+                        f"unsupported verify.condition: {condition!r} "
+                        f"(allowed: visible, hidden, disabled, enabled, checked, value, text)"
                     )
             except AssertionError as e:
                 raise VerificationAssertionError(str(e)) from e
         else:
             raise ValueError(
-                f"미지원 DSL 액션: '{action}'. "
-                "허용: navigate, click, fill, press, select, check, hover, wait, "
+                f"unsupported DSL action: '{action}'. "
+                "allowed: navigate, click, fill, press, select, check, hover, wait, "
                 "verify, upload, drag, scroll, mock_status, mock_data"
             )
 
     # ── Visibility Healer (T-H) ──
-    # codegen 이 hover-then-click sequence 의 hover 를 빠뜨려 element 가 hidden
-    # 인 상태로 click 시도되는 케이스. ancestor 중 hoverable 후보 (aria-haspopup
-    # / role=menu / nav / dropdown class / :hover CSS rule) 를 찾아 hover 후
-    # 재검사한다. 1차 시도 직전에만 호출 — 정상 케이스(이미 visible)엔 영향 0.
+    # Case where codegen drops the hover from a hover-then-click sequence and we try
+    # to click while the element is hidden. Find a hoverable ancestor (aria-haspopup /
+    # role=menu / nav / dropdown class / :hover CSS rule), hover it, and recheck.
+    # Called only right before the first attempt — zero impact on normal (already visible) cases.
 
     def _heal_visibility(
         self, page: Page, locator: Locator, step_id,
     ) -> Optional[Locator]:
-        """element 가 hidden 이면 5단계로 visible 화 시도.
+        """If the element is hidden, try to make it visible in 5 stages.
 
-        순서 (각 단계는 visible 되면 즉시 단축):
-          (1) `scroll_into_view_if_needed` — Intersection Observer 트리거 사이트.
-          (2) cascade ancestor hover — `_VISIBILITY_HEALER_JS` 가 추출한
-              hoverable 후보를 outermost → innermost 순서로 누적 hover. 다단
-              메뉴 (회사소개 > 회사연혁 > ~2013) 는 outer 부터 hover 해야 다음
-              level 이 visible 됨.
+        Order (each stage short-circuits as soon as the element is visible):
+          (1) `scroll_into_view_if_needed` — for sites triggered by Intersection Observer.
+          (2) cascade ancestor hover — accumulate hover on the hoverable candidates
+              extracted by `_VISIBILITY_HEALER_JS` from outermost → innermost. Multi-level
+              menus (e.g. About > Company history > ~2013) need the outer hover first
+              so the next level becomes visible.
           (3) page-level activator probe — `<header>`/`<nav>`/`<main>`/`<body>` hover.
-              사이트 전역 hover 이벤트로 menu 활성화하는 케이스.
-          (4) size-aware poll — bounding_box.height/width > 0 가 될 때까지
-              최대 2s 대기. 폰트/CSS 비동기 로딩으로 늦게 expand 되는 사이트.
-          (5) sibling swap — `filter(visible=True).first` 로 visible 매치 교체.
+              Handles sites where global hover events activate the menu.
+          (4) size-aware poll — wait up to 2s for bounding_box.height/width > 0.
+              Handles sites where font/CSS async loading expands the menu late.
+          (5) sibling swap — replace the match with `filter(visible=True).first`.
 
-        모든 단계 합산 한도 ~6s. 정상 visible element 에는 (0) 검사만 발생.
+        Total budget ~6s across stages. For already-visible elements, only check (0) runs.
 
         Returns:
-            visible 한 다른 형제 매치를 찾았으면 그 Locator. 그 외 None
-            (locator 자체를 그대로 사용해도 OK 임을 의미).
+            A Locator if we found a visible sibling match; otherwise None
+            (meaning: it is OK to use the original locator as-is).
         """
         try:
             if locator.is_visible():
                 return None
         except Exception:
-            return None  # locator 가 invalid 한 케이스는 후속 healer 가 처리
+            return None  # invalid-locator case is handled by the next healer
 
         # ── (1) D — scroll_into_view ─────────────────────────────────────
-        # Playwright 가 viewport 에 element 를 가져옴. Intersection Observer
-        # 기반 lazy menu 가 펼쳐지는 케이스에 효과적. 0-size 도 위치만 있으면
-        # 동작. 실패는 silent (다음 단계로).
+        # Playwright brings the element into the viewport. Effective for lazy menus
+        # backed by Intersection Observer. Works even on 0-size elements as long as a
+        # position is known. Failures are silent (move to the next stage).
         try:
             locator.scroll_into_view_if_needed(timeout=1500)
             page.wait_for_timeout(150)
             if locator.is_visible():
-                log.info("[Step %s] visibility-healer 복구 — scroll_into_view", step_id)
+                log.info("[Step %s] visibility-healer recovered via scroll_into_view", step_id)
                 return None
         except Exception:
             pass
 
         # ── (2) cascade ancestor hover (outermost → innermost) ──────────
-        # `_VISIBILITY_HEALER_JS` 는 leaf 에서 위로 walk → candidates[0] 가
-        # leaf 에 가장 가깝고 [-1] 이 outermost. 다단 hover 메뉴 (예: ktds.com
-        # 의 회사소개 > 회사연혁 > ~2013) 는 outermost 부터 차례로 hover 해야
-        # 각 단계의 :hover 가 cascade 되어 다음 trigger 가 visible 해진다.
-        # 단일 ancestor hover 는 1-level 만 풀고 2-level+ 에서 실패.
-        # Playwright hover() 는 mouse 를 element 중심으로 이동 — 다음 hover 가
-        # descendant 라면 ancestor 의 :hover 는 자동 유지 (browser 동작).
+        # `_VISIBILITY_HEALER_JS` walks from leaf upward → candidates[0] is closest
+        # to the leaf and [-1] is the outermost. Multi-level hover menus (e.g. ktds.com's
+        # About > Company history > ~2013) require hover from outermost first, so each
+        # stage's :hover cascades and the next trigger becomes visible.
+        # A single ancestor hover only opens 1 level and fails at 2 levels or more.
+        # Playwright hover() moves the mouse to the element center — if the next hover
+        # is a descendant, the ancestor's :hover is automatically preserved (browser behavior).
         try:
             candidates = locator.evaluate(_VISIBILITY_HEALER_JS)
         except Exception as e:  # noqa: BLE001
-            log.debug("[Step %s] visibility-healer evaluate 실패: %s", step_id, e)
+            log.debug("[Step %s] visibility-healer evaluate failed: %s", step_id, e)
             candidates = []
 
-        chain = list(reversed(candidates))[:5]  # 최대 5단계 cascade
+        chain = list(reversed(candidates))[:5]  # cascade up to 5 levels
         hovered_path: list[str] = []
         for cand in chain:
             sel = cand.get("path") or ""
@@ -2108,11 +2158,11 @@ class QAExecutor:
             try:
                 ancestor = page.locator(sel).first
                 ancestor.hover(timeout=1500)
-                page.wait_for_timeout(150)  # 메뉴 transition
+                page.wait_for_timeout(150)  # menu transition
                 hovered_path.append(f"{sel}({reason})")
                 if locator.is_visible():
                     log.info(
-                        "[Step %s] visibility-healer 복구 — cascade hover %s",
+                        "[Step %s] visibility-healer recovered — cascade hover %s",
                         step_id, " > ".join(hovered_path),
                     )
                     return None
@@ -2120,9 +2170,9 @@ class QAExecutor:
                 continue
 
         # ── (3) E — page-level activator probe ──────────────────────────
-        # 사이트 전체에 mousemove/hover 이벤트를 주어 사용자 상호작용 시작을
-        # 시뮬레이션. ktds.com 같이 GNB 가 lazy expand 되는 케이스에서 header
-        # 영역 hover 만으로 menu 가 펼쳐질 수 있다.
+        # Fire mousemove/hover events at the page level to simulate the start of
+        # user interaction. On sites like ktds.com where the GNB lazy-expands, just
+        # hovering the header region can be enough to open the menu.
         for activator_sel in ("header", "nav", "main", "body"):
             try:
                 target = page.locator(activator_sel).first
@@ -2132,7 +2182,7 @@ class QAExecutor:
                 page.wait_for_timeout(200)
                 if locator.is_visible():
                     log.info(
-                        "[Step %s] visibility-healer 복구 — page-level hover (%s)",
+                        "[Step %s] visibility-healer recovered — page-level hover (%s)",
                         step_id, activator_sel,
                     )
                     return None
@@ -2140,34 +2190,34 @@ class QAExecutor:
                 continue
 
         # ── (4) F — size-aware poll ─────────────────────────────────────
-        # bounding_box.height/width 가 > 0 이 될 때까지 최대 2s. 페이지 로드
-        # 직후 menu 가 점진적으로 expand 되는 transition (CSS/JS animation) 케이스.
+        # Wait up to 2s for bounding_box.height/width > 0. Handles the case where
+        # the menu expands gradually right after page load (CSS/JS animation transitions).
         try:
             for _ in range(10):  # 200ms x 10 = 2s
                 page.wait_for_timeout(200)
                 if locator.is_visible():
-                    log.info("[Step %s] visibility-healer 복구 — size poll", step_id)
+                    log.info("[Step %s] visibility-healer recovered — size poll", step_id)
                     return None
         except Exception:  # noqa: BLE001
             pass
 
-        # ── (5) C — 형제 매치 swap ───────────────────────────────────────
+        # ── (5) C — sibling-match swap ────────────────────────────────────
         sibling = self._find_visible_sibling(locator, step_id)
         if sibling is not None:
             return sibling
 
         log.debug(
-            "[Step %s] visibility-healer — 모든 전략 무력 (scroll/ancestor/page-hover/size-poll/sibling)",
+            "[Step %s] visibility-healer — all strategies ineffective (scroll/ancestor/page-hover/size-poll/sibling)",
             step_id,
         )
         return None
 
     @staticmethod
     def _find_visible_sibling(locator: Locator, step_id) -> Optional[Locator]:
-        """Locator 가 다중 매치이고 ``.first`` 가 hidden 일 때 visible 한 형제 swap.
+        """When a Locator has multiple matches and ``.first`` is hidden, swap to a visible sibling.
 
-        Playwright 1.36+ 의 ``filter(visible=True)`` 사용. ``.first`` 의 부모
-        scope (= 원래 매치 집합) 에서 visible 만 추려 그 첫 element 를 반환.
+        Uses Playwright 1.36+'s ``filter(visible=True)``. Filters only the visible
+        elements from ``.first``'s parent scope (= original match set) and returns the first.
         """
         try:
             visible = locator.filter(visible=True)
@@ -2175,7 +2225,7 @@ class QAExecutor:
                 first = visible.first
                 if first.is_visible():
                     log.info(
-                        "[Step %s] visibility-healer — 형제 매치 swap (filter(visible=True).first)",
+                        "[Step %s] visibility-healer — sibling-match swap (filter(visible=True).first)",
                         step_id,
                     )
                     return first
@@ -2183,10 +2233,10 @@ class QAExecutor:
             pass
         return None
 
-    # ── 스크린샷 ──
+    # ── Screenshots ──
     @staticmethod
     def _screenshot(page: Page, artifacts: str, step_id, suffix: str) -> str:
-        """스텝 실행 후 스크린샷을 저장하고 파일 경로를 반환한다."""
+        """Save a screenshot after step execution and return the file path."""
         path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
         page.screenshot(path=path)
         return path
@@ -2196,22 +2246,22 @@ class QAExecutor:
         page: Page, artifacts: str, step_id, suffix: str,
         mask: Optional[list] = None,
     ) -> str:
-        """``_screenshot`` 의 마스킹 버전 — 지정된 locator 위치를 검정 박스 처리.
+        """Masking variant of ``_screenshot`` — black-boxes the specified locator positions.
 
-        T-D (P0.1 #3) — auth_login 의 email/password/TOTP input 처럼 평문이
-        화면에 남는 element 가 PNG 캡처에 그대로 노출되는 것을 방지한다.
-        ``mask`` 는 Locator 의 list 또는 None. detached/0건 locator 는 Playwright
-        내부에서 no-op 처리되므로 제출 후 navigation 된 페이지에 그대로 넘겨도
-        안전하다.
+        T-D (P0.1 #3) — prevents elements that leave plaintext on the screen
+        (auth_login email/password/TOTP inputs, etc.) from leaking through PNG
+        captures. ``mask`` is a list of Locator or None. detached / 0-count locators
+        are no-op'd internally by Playwright, so it is safe to pass them through
+        even on a page that has navigated after submit.
         """
         path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
         try:
             page.screenshot(path=path, mask=mask or [])
         except TypeError:
-            # 일부 구버전 Playwright 가 mask 인자 미지원 — 안전을 위해 mask 적용
-            # 못한 채라도 스크린샷은 남기지 말고 실패 처리 (자격증명 노출 방지).
+            # Some older Playwright versions do not support the mask argument — for
+            # safety, do not save the screenshot at all (avoid leaking credentials).
             log.warning(
-                "[Step %s] mask 미지원 Playwright — auth_login 스크린샷 생략 (security)",
+                "[Step %s] mask unsupported in this Playwright — skipping auth_login screenshot (security)",
                 step_id,
             )
             return ""
@@ -2219,7 +2269,7 @@ class QAExecutor:
 
     @staticmethod
     def _safe_screenshot(page: Page, path: str):
-        """스크린샷을 저장하되, 실패해도 예외를 무시한다."""
+        """Save a screenshot; suppress exceptions on failure."""
         try:
             page.screenshot(path=path)
         except Exception:

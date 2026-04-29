@@ -5,22 +5,24 @@ import base64
 
 
 def extract_json_safely(text: str):
-    """LLM 응답 텍스트에서 JSON 배열 또는 객체를 안전하게 추출한다.
+    """Safely extract a JSON array or object from LLM response text.
 
-    복구 전략 (순차 시도):
-      1) <think>/마크다운 제거 후 regex 매칭 + json.loads
-      2) trailing comma 제거
-      3) 작은따옴표 → 큰따옴표 변환
-      4) JSONDecoder.raw_decode 로 개별 ``{...}`` object 선형 스캔
-      5) markdown 분석 노트 파싱 — 작은 LLM (gemma4:e4b 등) 이 JSON 대신
-         ``**Step 01. ...** / Action: / Target: / Value: / Description:`` 형식으로
-         답할 때의 실측 대응. **원본에서** 직접 추출 (``<think>`` 가 닫히지
-         않고 그 안에 step 분석이 포함된 케이스까지 커버).
+    Recovery strategy (in order):
+      1) Strip <think> / markdown, then regex match + json.loads
+      2) Remove trailing commas
+      3) Convert single quotes → double quotes
+      4) Linear scan of individual ``{...}`` objects via JSONDecoder.raw_decode
+      5) Parse markdown analysis notes — observed handling for small LLMs
+         (gemma4:e4b etc.) that respond as ``**Step 01. ...** / Action: /
+         Target: / Value: / Description:`` instead of JSON. Extracts directly
+         from **the original** text (covers cases where ``<think>`` was opened
+         and never closed but step analysis lives inside it).
     """
     original = text
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    # 닫힘 태그가 없는 비대칭 <think> 는 태그만 제거 — 본문(개별 JSON object 라인)을 보존.
-    # 작은 LLM 이 <think> 만 열고 그 안에 분석 + step JSON 을 함께 쏟는 케이스 대응.
+    # An asymmetric <think> with no closing tag — strip only the tag and keep the body
+    # (so individual JSON object lines remain). Covers small LLMs that open <think>
+    # and dump analysis + step JSON inside it.
     cleaned = re.sub(r"</?think>", "", cleaned)
     cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
     cleaned = re.sub(r"//.*?\n|/\*.*?\*/", "", cleaned, flags=re.S)
@@ -66,7 +68,7 @@ def extract_json_safely(text: str):
 
 
 def _parse_markdown_steps(text: str):
-    """Markdown 스타일 step 분석 노트를 DSL step dict 리스트로 변환. 없으면 None."""
+    """Convert markdown-style step analysis notes into DSL step dicts. None if absent."""
     step_pattern = re.compile(
         r"(?:\*\*)?Step\s*(\d{1,3})[\.\s].*?(?=(?:\*\*)?Step\s*\d{1,3}[\.\s]|\Z)",
         re.S | re.I,
@@ -101,17 +103,18 @@ def _parse_markdown_steps(text: str):
 
 
 def parse_structured_doc_steps(text: str):
-    """구조화된 문서 안의 machine-readable step marker 를 DSL step 리스트로 변환.
+    """Convert machine-readable step markers in a structured document into a DSL step list.
 
-    지원 포맷:
+    Supported format:
       ZTQA_STEP|<step>|<action>|<target>|<value>|<description>
 
-    예:
-      ZTQA_STEP|1|navigate||https://playwright.dev/|메인 페이지로 이동
-      ZTQA_STEP|2|verify|a[href="/docs/intro"]|Docs|Docs 링크 표시 확인
+    Example:
+      ZTQA_STEP|1|navigate||https://playwright.dev/|Navigate to the main page
+      ZTQA_STEP|2|verify|a[href="/docs/intro"]|Docs|Confirm the Docs link is shown
 
-    PDF 텍스트 추출 과정에서 일반 표 구조는 줄바꿈/열 순서가 깨지기 쉬우므로,
-    문서 말미에 위와 같은 1-line marker 블록을 넣어 두고 우선 파싱한다.
+    PDF text extraction frequently breaks line ordering and column structure of
+    regular tables, so we expect a 1-line marker block at the end of the document
+    and parse it first.
     """
     step_re = re.compile(
         r"^ZTQA_STEP\|(\d{1,4})\|([a-zA-Z_]+)\|([^|]*)\|([^|]*)\|(.+)$",
@@ -135,7 +138,7 @@ def parse_structured_doc_steps(text: str):
 def compress_image_to_b64(
     file_path: str, max_size: int = 1024, quality: int = 60
 ) -> str:
-    """이미지를 리사이즈 후 JPEG 압축하여 base64 문자열로 반환한다."""
+    """Resize and JPEG-compress the image, returning a base64 string."""
     from PIL import Image
 
     with Image.open(file_path) as img:

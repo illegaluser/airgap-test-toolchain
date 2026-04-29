@@ -165,7 +165,7 @@ class TestListHandler:
     def test_empty_human_readable(self, isolated_root: Path):
         rc, out = _capture(_auth_handle_list, SimpleNamespace(as_json=False))
         assert rc == 0
-        assert "(등록된 프로파일 없음)" in out
+        assert "(no profiles registered)" in out
 
     def test_empty_json(self, isolated_root: Path):
         rc, out = _capture(_auth_handle_list, SimpleNamespace(as_json=True))
@@ -297,7 +297,7 @@ class TestDeleteHandler:
 
         rc, out = _capture(_auth_handle_delete, SimpleNamespace(name="alpha"))
         assert rc == 0
-        assert "삭제 완료" in out
+        assert "delete complete" in out
         with pytest.raises(ProfileNotFoundError):
             ap.get_profile("alpha")
         assert not prof.storage_path.exists()
@@ -333,7 +333,7 @@ class TestSeedHandler:
         monkeypatch.setattr(ap, "seed_profile", fake_seed)
         rc, out = _capture(_auth_handle_seed, self._args(notes="first"))
         assert rc == 0
-        assert "✅ 시드 완료" in out
+        assert "✅ seed complete" in out
         assert captured["name"] == "booking-via-naver"
         assert captured["seed_url"] == "https://booking.example.com/"
         assert captured["notes"] == "first"
@@ -394,7 +394,7 @@ class TestLegacyModeCompat:
         )
         assert result.returncode == 1, f"stderr: {result.stderr}"
         combined = result.stdout + result.stderr
-        assert "execute 모드에는 --scenario 인자가 필요합니다" in combined
+        assert "execute mode requires the --scenario argument" in combined
 
     def test_auth_subcommand_does_not_trigger_mode_arg(self, tmp_path: Path):
         """``auth list`` 호출 시 ``--mode`` required 에러가 나면 안 됨."""
@@ -406,5 +406,5 @@ class TestLegacyModeCompat:
         assert result.returncode == 0, f"stderr: {result.stderr}"
         combined = result.stdout + result.stderr
         # 빈 카탈로그 메시지가 보여야지, --mode 에러가 보이면 안 됨.
-        assert "(등록된 프로파일 없음)" in combined
+        assert "(no profiles registered)" in combined
         assert "--mode" not in combined

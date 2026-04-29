@@ -206,12 +206,12 @@ def test_resolve_credential_partial(monkeypatch):
 
 def test_resolve_credential_missing_raises():
     # 환경변수 셋 다 없으면 에러
-    with pytest.raises(CredentialError, match="credential 이 환경변수에 없음"):
+    with pytest.raises(CredentialError, match="not in environment"):
         resolve_credential("nonexistent_alias_zzz_unique")
 
 
 def test_resolve_credential_empty_alias_raises():
-    with pytest.raises(CredentialError, match="비어 있음"):
+    with pytest.raises(CredentialError, match="empty"):
         resolve_credential("")
 
 
@@ -275,7 +275,7 @@ def test_generate_totp_code_returns_six_digits():
 
 
 def test_generate_totp_code_empty_secret_raises():
-    with pytest.raises(CredentialError, match="비어 있음"):
+    with pytest.raises(CredentialError, match="empty"):
         generate_totp_code("")
 
 

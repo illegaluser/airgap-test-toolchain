@@ -88,7 +88,7 @@ def test_convert_only_rejects_non_convert_mode_before_dify_call(tmp_path: Path):
     assert proc.returncode == 1
     assert elapsed < 2
     combined = proc.stdout + proc.stderr
-    assert "--convert-only 는 --mode convert 와 함께만 사용한다" in combined
+    assert "--convert-only must be used only with --mode convert" in combined
     assert "Retry" not in combined
 
 
