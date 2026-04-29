@@ -196,3 +196,33 @@ def test_healer_page_scope_for_non_frame_target(page_shadow_open):
     step = {"action": "click", "target": "Submitt"}
     loc = healer.try_heal(step)
     assert loc is not None
+
+
+def test_healer_handles_real_ast_emit_form_role_name(page_payment):
+    """리뷰 #2 회귀 — converter_ast 가 실제로 emit 하는 형태
+    (`frame=... >> role=button, name=Pay`) 가 healer 에서 작동해야 한다.
+    이전엔 _clean_target 이 'button, name=Pay' 로 만들어 매칭 실패."""
+    from zero_touch_qa.local_healer import LocalHealer
+
+    healer = LocalHealer(page_payment, threshold=0.5)
+    step = {
+        "action": "click",
+        "target": "frame=#payment-iframe >> role=button, name=Pay",
+    }
+    loc = healer.try_heal(step)
+    assert loc is not None, (
+        "converter_ast 가 emit 하는 실제 chain 형태에서 healer 가 fallback 실패"
+    )
+    txt = (loc.inner_text() or "").strip()
+    assert "Pay" in txt
+
+
+def test_healer_skips_anonymous_role_only_target(page_payment):
+    """role=X (name 없음) 단독은 텍스트 매칭 불가능 → _clean_target 이 빈 문자열
+    반환하고 try_heal 이 None 으로 안전 종료 (false-positive 매치 방지)."""
+    from zero_touch_qa.local_healer import LocalHealer
+
+    healer = LocalHealer(page_payment, threshold=0.5)
+    step = {"action": "click", "target": "frame=#payment-iframe >> role=button"}
+    loc = healer.try_heal(step)
+    assert loc is None

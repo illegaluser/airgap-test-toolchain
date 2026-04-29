@@ -1142,6 +1142,20 @@ class QAExecutor:
                 page.context.clear_cookies()
                 log.info("[Step %s] reset_state cookie -> cleared", step_id)
 
+            if scope == "all":
+                # PLAN_PRODUCTION_READINESS.md §"T-B Day 2" — all 은
+                # cookie + storage + indexeddb + permissions reset 까지 포함.
+                # geolocation/notifications/clipboard 등 grant 된 권한 초기화.
+                try:
+                    page.context.clear_permissions()
+                    log.info("[Step %s] reset_state permissions -> cleared", step_id)
+                except Exception as e:  # noqa: BLE001
+                    # 일부 Playwright 버전 / 컨텍스트는 미지원 — soft fail.
+                    log.warning(
+                        "[Step %s] reset_state permissions 미지원 (skip): %s",
+                        step_id, e,
+                    )
+
             if scope in ("storage", "all"):
                 # localStorage / sessionStorage 는 SecurityError 가 about:blank
                 # 같은 origin 없는 페이지에서 발생할 수 있어 try 안에서 처리.

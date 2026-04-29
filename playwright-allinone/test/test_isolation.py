@@ -169,6 +169,56 @@ def test_reset_state_indexeddb_clears_idb_only(make_executor, run_scenario):
     assert statuses == ["PASS"] * 4, f"실제: {statuses}"
 
 
+def test_reset_state_all_invokes_clear_permissions(monkeypatch):
+    """리뷰 #3 회귀 — value=all 은 cookie + storage + indexeddb +
+    permissions reset 까지 한다 (PLAN_PRODUCTION_READINESS.md §T-B Day 2).
+
+    실제 Playwright 호출을 흉내내는 stub context 로 clear_permissions 가
+    호출되는지 확인. 이전엔 cookie/storage/IDB 만 처리되어 권한 노출 위험."""
+    from zero_touch_qa.config import Config
+    from zero_touch_qa.executor import QAExecutor
+
+    calls: list[str] = []
+
+    class _Ctx:
+        def clear_cookies(self): calls.append("clear_cookies")
+        def clear_permissions(self): calls.append("clear_permissions")
+
+    class _Page:
+        def __init__(self): self.context = _Ctx()
+        def evaluate(self, script): calls.append(f"evaluate:{script[:30]}")
+
+    cfg = Config(
+        dify_base_url="http://test/v1", dify_api_key="x",
+        artifacts_dir="/tmp/_t_b_perm_test",
+        viewport=(1280, 800), slow_mo=0,
+        headed_step_pause_ms=0, step_interval_min_ms=0, step_interval_max_ms=0,
+        heal_threshold=0.8, heal_timeout_sec=10, scenario_timeout_sec=60,
+        dom_snapshot_limit=4000,
+    )
+    executor = QAExecutor(cfg)
+    # _screenshot 은 실제 page.screenshot 을 호출하므로 우회.
+    monkeypatch.setattr(executor, "_screenshot", lambda *a, **kw: "")
+
+    import os as _os
+    _os.makedirs("/tmp/_t_b_perm_test", exist_ok=True)
+
+    result = executor._execute_reset_state(
+        _Page(),
+        {"step": 1, "action": "reset_state", "target": "", "value": "all",
+         "description": "test"},
+        "/tmp/_t_b_perm_test",
+    )
+    assert result.status == "PASS"
+    assert "clear_cookies" in calls
+    assert "clear_permissions" in calls, (
+        f"reset_state all 이 clear_permissions 를 호출하지 않음 (review #3). 호출: {calls}"
+    )
+    # localStorage / IDB 도 호출됐는지 확인 (소문자 매칭).
+    joined = "|".join(calls)
+    assert "evaluate" in joined
+
+
 def test_isolation_pass_rate_meets_95pct_threshold(
     make_executor, run_scenario, monkeypatch,
 ):
