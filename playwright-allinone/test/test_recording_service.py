@@ -34,9 +34,8 @@ def temp_host_root(monkeypatch):
 
 
 @pytest.fixture
-def rplus_on(monkeypatch):
-    """R-Plus 게이트를 활성. P0.1 #5 — 기본은 비활성, 실험 엔드포인트 테스트만 켠다."""
-    monkeypatch.setenv("RPLUS_ENABLED", "1")
+def rplus_on():
+    """TR.4+.4 — R-Plus 게이트 폐기 후 no-op. 기존 테스트 시그니처 호환용."""
     yield
 
 
@@ -134,42 +133,13 @@ def test_healthz_returns_ok(client):
     assert "version" in body
     assert "codegen_available" in body  # bool
     assert "host_root" in body
-    assert "rplus_enabled" in body  # P0.1 #5 — UI 가 실험 링크 노출 판단에 사용
-    assert body["rplus_enabled"] is False  # 기본 OFF
+    # TR.4+.4 — rplus_enabled 필드 제거 (게이트 폐기). 회귀: 응답에 없어야 한다.
+    assert "rplus_enabled" not in body
 
 
-def test_healthz_reflects_rplus_enabled(client, rplus_on):
-    """RPLUS_ENABLED=1 일 때 healthz 가 true 반환 (P0.1 #5)."""
-    body = client.get("/healthz").json()
-    assert body["rplus_enabled"] is True
-
-
-# ── R-Plus 게이트 (P0.1 #5) — RPLUS_ENABLED 미설정 시 /experimental/* 차단 ──
-
-def test_experimental_replay_404_when_rplus_disabled(client):
-    """기본 (RPLUS_ENABLED 미설정) 에서 /experimental/* 는 404."""
-    r = client.post("/experimental/sessions/anything/replay")
-    assert r.status_code == 404
-    assert "RPLUS_ENABLED" in r.json()["detail"]
-
-
-def test_experimental_enrich_404_when_rplus_disabled(client):
-    r = client.post("/experimental/sessions/anything/enrich", json={})
-    assert r.status_code == 404
-
-
-def test_experimental_compare_404_when_rplus_disabled(client):
-    r = client.post(
-        "/experimental/sessions/anything/compare",
-        json={"doc_dsl": [{"step": 1, "action": "click", "target": "x"}]},
-    )
-    assert r.status_code == 404
-
-
-# 메인 UI 가 R-Plus 섹션을 갖고 있고 별도 experimental SPA 는 없으므로
-# `/experimental/` 자체에 대한 GET 라우트는 정의하지 않는다 — FastAPI 가
-# 자동 404. 동작 엔드포인트 `/experimental/sessions/{sid}/...` 에 대한 게이트
-# 회귀는 위쪽 test_experimental_*_when_rplus_disabled 가 커버.
+# 메인 UI 가 R-Plus 섹션을 항상 노출하므로 별도 experimental SPA index 없음.
+# `/experimental/` GET 라우트 미정의 → FastAPI 자동 404. (Recording stop 후
+# state=done 일 때 메인 결과 화면에 R-Plus 섹션이 함께 노출됨.)
 
 
 # ── /recording/start ─────────────────────────────────────────────────────────
@@ -328,6 +298,49 @@ def test_get_session_scenario_returns_dsl(client, patched_codegen):
     assert isinstance(body, list)
     # patched_codegen 의 fake_convert 가 만들어 둔 2-스텝 시나리오 형태 확인.
     assert all(isinstance(step, dict) and "action" in step for step in body)
+
+
+def test_get_session_scenario_download_returns_attachment(client, patched_codegen):
+    """TR.4+.2 — ?download=1 일 때 Content-Disposition: attachment 응답."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    client.post(f"/recording/stop/{sid}")
+
+    r2 = client.get(f"/recording/sessions/{sid}/scenario?download=1")
+    assert r2.status_code == 200
+    cd = r2.headers.get("content-disposition", "")
+    assert "attachment" in cd
+    assert f"{sid}-scenario.json" in cd
+
+
+def test_get_session_original_returns_python_source(client, patched_codegen):
+    """TR.4+.1 — codegen 원본 .py 본문을 그대로 반환."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    client.post(f"/recording/stop/{sid}")
+
+    r2 = client.get(f"/recording/sessions/{sid}/original")
+    assert r2.status_code == 200
+    # patched_codegen 의 fake_start 가 써 둔 내용
+    assert "page.click('button')" in r2.text
+
+
+def test_get_session_original_download_returns_attachment(client, patched_codegen):
+    """TR.4+.1 — ?download=1 일 때 attachment 응답."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    client.post(f"/recording/stop/{sid}")
+
+    r2 = client.get(f"/recording/sessions/{sid}/original?download=1")
+    assert r2.status_code == 200
+    cd = r2.headers.get("content-disposition", "")
+    assert "attachment" in cd
+    assert f"{sid}-original.py" in cd
+
+
+def test_get_session_original_404_unknown_session(client):
+    r = client.get("/recording/sessions/nonexistent/original")
+    assert r.status_code == 404
 
 
 def test_get_session_scenario_404_unknown_session(client):

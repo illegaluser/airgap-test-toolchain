@@ -10,7 +10,6 @@ TR.2 단계에서 /start /stop 이 실 codegen subprocess 와 연동된다.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Optional
 
@@ -99,12 +98,6 @@ def _run_convert_impl(
     )
 
 
-# ── R-Plus 게이팅 (P0.1 #5) ──────────────────────────────────────────────────
-# `RPLUS_ENABLED=1` 일 때만 `/experimental/*` 가 활성. router 자체는 항상
-# include 하고, request-time 의존성 (`rplus.router._require_rplus_enabled`) 이
-# 미활성 시 404 를 던진다. 평가 증거 수집이 끝나면 운영자가 환경변수로 켠다.
-def _is_rplus_enabled() -> bool:
-    return os.getenv("RPLUS_ENABLED") == "1"
 
 
 # ── 요청/응답 모델 ────────────────────────────────────────────────────────────
@@ -129,7 +122,6 @@ class HealthResp(BaseModel):
     version: str
     codegen_available: bool
     host_root: str
-    rplus_enabled: bool = False
 
 
 class SessionResp(BaseModel):
@@ -148,13 +140,12 @@ class SessionResp(BaseModel):
 
 @app.get("/healthz", response_model=HealthResp)
 def healthz() -> HealthResp:
-    """서비스 헬스체크. codegen 가용 여부 + R-Plus 게이트 상태 반환."""
+    """서비스 헬스체크. codegen 가용 여부 반환."""
     return HealthResp(
         ok=True,
         version=__version__,
         codegen_available=codegen_runner.is_codegen_available(),
         host_root=str(storage.host_root()),
-        rplus_enabled=_is_rplus_enabled(),
     )
 
 
@@ -389,8 +380,12 @@ def get_session(sid: str) -> SessionResp:
 
 
 @app.get("/recording/sessions/{sid}/scenario", include_in_schema=False)
-def get_session_scenario(sid: str):
-    """세션의 변환된 14-DSL scenario.json 본문을 그대로 반환 (TR.4).
+def get_session_scenario(sid: str, download: int = 0):
+    """세션의 변환된 14-DSL scenario.json 본문을 반환 (TR.4 / TR.4+.2).
+
+    Args:
+        download: 1 이면 ``Content-Disposition: attachment`` 로 파일 첨부.
+            0 이면 JSON 본문 그대로 (브라우저 표시용 — 기본).
 
     프론트 UI 가 결과 패널에 DSL 을 표시해 사용자가 assertion 추가 전에
     구조를 검토할 수 있게 한다. state=done 이고 파일이 존재할 때만 200,
@@ -399,13 +394,48 @@ def get_session_scenario(sid: str):
     sess = _registry.get(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    data = storage.load_scenario(sid)
-    if data is None:
+    p = storage.scenario_path(sid)
+    if not p.is_file():
         raise HTTPException(
             status_code=404,
             detail=f"scenario.json 없음 (state={sess.state})",
         )
-    return data
+    if download:
+        return FileResponse(
+            str(p),
+            media_type="application/json",
+            filename=f"{sid}-scenario.json",
+        )
+    return storage.load_scenario(sid)
+
+
+@app.get("/recording/sessions/{sid}/original", include_in_schema=False)
+def get_session_original(sid: str, download: int = 0):
+    """codegen 이 생성한 원본 ``.py`` 본문을 반환 (TR.4+.1).
+
+    Args:
+        download: 1 이면 첨부 다운로드, 0 이면 ``text/x-python`` 본문 표시.
+
+    state ∈ {recording 도중 stop 직전 / done / error} 모두에서 동작 — 변환에
+    실패해도 사용자가 원본을 검토하여 수동 수정 가능하게 한다.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    p = storage.original_py_path(sid)
+    if not p.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"original.py 없음 (state={sess.state})",
+        )
+    if download:
+        return FileResponse(
+            str(p),
+            media_type="text/x-python",
+            filename=f"{sid}-original.py",
+        )
+    # 브라우저 표시용 — text/plain 이 안전 (브라우저가 .py 를 다운로드로 처리하는 것 회피).
+    return FileResponse(str(p), media_type="text/plain")
 
 
 @app.delete("/recording/sessions/{sid}", status_code=204)
@@ -608,14 +638,9 @@ if _WEB_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_WEB_DIR)), name="static")
 
 
-# ── R-Plus router include (P0.1 #5) ──────────────────────────────────────────
-# router 는 항상 include 하지만 의존성 _require_rplus_enabled 가 RPLUS_ENABLED
-# 미설정 상태에서는 모든 `/experimental/*` 요청을 404 로 차단한다. import 는
-# side-effect 가 작아 항상 안전 (네트워크 호출 없음, 설정 조회만).
+# R-Plus router — `/experimental/sessions/{sid}/replay|enrich|compare`.
+# 사용자 요구로 게이트 폐기 (TR.4+.4) — 항상 활성. URL prefix `/experimental/` 는
+# 코드 조직상 의미 보존 (replay/enrich/compare 가 R-MVP 와 별개 트랙임을 명시).
 from .rplus.router import router as _rplus_router  # noqa: E402
 
 app.include_router(_rplus_router)
-if _is_rplus_enabled():
-    log.info("[startup] R-Plus router 활성화 (/experimental/*)")
-else:
-    log.info("[startup] R-Plus 비활성 (RPLUS_ENABLED 미설정 — /experimental/* 는 404)")

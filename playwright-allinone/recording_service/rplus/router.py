@@ -9,10 +9,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -23,28 +22,7 @@ from ..replay_proxy import ReplayProxyError
 log = logging.getLogger("recording_service.rplus")
 
 
-def is_rplus_enabled() -> bool:
-    """request-time 환경변수 확인. 테스트가 env 를 토글할 수 있도록 매 요청마다 평가."""
-    return os.getenv("RPLUS_ENABLED") == "1"
-
-
-def _require_rplus_enabled() -> None:
-    """게이트 의존성. 미활성 상태에서 모든 엔드포인트를 404 처리."""
-    if not is_rplus_enabled():
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "R-Plus 기능이 비활성 상태입니다 (RPLUS_ENABLED 미설정). "
-                "평가 증거 수집이 끝난 후 운영자가 환경변수로 활성화합니다."
-            ),
-        )
-
-
-router = APIRouter(
-    prefix="/experimental",
-    tags=["rplus"],
-    dependencies=[Depends(_require_rplus_enabled)],
-)
+router = APIRouter(prefix="/experimental", tags=["rplus"])
 
 
 # ── monkeypatch hook ────────────────────────────────────────────────────────

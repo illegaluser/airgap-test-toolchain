@@ -205,3 +205,14 @@ dialog textarea {
   background: var(--ok);
   color: #fff;
 }
+
+/* TR.4+.1/.2 — 결과 카드 헤더의 다운로드 링크 */
+.dl-link {
+  font-size: 0.75rem;
+  font-weight: normal;
+  margin-left: 8px;
+  text-decoration: none;
+  color: var(--accent);
+  vertical-align: middle;
+}
+.dl-link:hover { text-decoration: underline; }
