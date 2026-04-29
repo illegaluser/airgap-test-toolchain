@@ -513,3 +513,39 @@ def test_all_critical_ids_present_in_dom(e2e_page: Page, e2e_daemon):
         if e2e_page.locator(f"#{elem_id}").count() == 0:
             missing.append(elem_id)
     assert not missing, f"누락된 핵심 ID: {missing}"
+
+
+# ── 13. Play Script from File — 사용자 .py 업로드 ─────────────────────────
+
+
+def test_import_script_button_is_visible(e2e_page: Page):
+    btn = e2e_page.locator("#btn-import-script")
+    expect(btn).to_be_visible()
+    expect(btn).to_contain_text("Play Script from File")
+
+
+def test_import_script_uploads_and_opens_result_panel(
+    e2e_page: Page, e2e_daemon, tmp_path,
+):
+    """파일 선택 → 업로드 → 결과 패널 진입 → original.py 미리보기 노출."""
+    # 임시 .py 작성
+    script = tmp_path / "uploaded_e2e.py"
+    script.write_text(
+        "from playwright.sync_api import sync_playwright\n"
+        "with sync_playwright() as p:\n"
+        "    page = p.chromium.launch().new_context().new_page()\n"
+        "    page.goto('https://e2e-uploaded.test/')\n"
+        "    page.click('#hello')\n",
+        encoding="utf-8",
+    )
+    # 파일 input 에 set_input_files — 네이티브 picker 우회
+    e2e_page.set_input_files("#import-file-input", str(script))
+    # 결과 화면 진입 대기 (openSession 후 result-section unhide)
+    e2e_page.wait_for_selector("#result-section:not([hidden])", timeout=5000)
+    e2e_page.wait_for_selector("#original-card:not([hidden])", timeout=5000)
+    # 코드 본문 확인
+    code = e2e_page.locator("#result-original").text_content() or ""
+    assert "e2e-uploaded.test" in code
+    # 세션 목록에도 imported 표시 진입
+    rows_text = e2e_page.locator("#session-tbody").text_content() or ""
+    assert "imported" in rows_text.lower()

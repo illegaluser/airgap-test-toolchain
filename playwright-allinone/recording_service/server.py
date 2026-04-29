@@ -17,7 +17,7 @@ from typing import Optional
 
 from pathlib import Path as _Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -149,6 +149,139 @@ def healthz() -> HealthResp:
         codegen_available=codegen_runner.is_codegen_available(),
         host_root=str(storage.host_root()),
     )
+
+
+# ── 항목 (import-script) — 사용자 제공 .py 업로드 + 세션 등록 ──────────────
+
+# 업로드 검증 — sanity 수준만. 신뢰 모델: 사용자 본인이 신뢰하는 스크립트만
+# 업로드 (host venv 직접 실행 = python script.py 와 동일 위험). localhost-only
+# 데몬 가정. 크기 제한 없음 — 사용자가 자신의 스크립트 크기를 안다.
+_IMPORT_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_STEP_HINT_RE = re.compile(
+    r"\.(click|fill|press|select_option|check|hover|goto|drag_to|set_input_files)\s*\(",
+)
+
+
+def _estimate_import_step_count(text: str) -> int:
+    """업로드 스크립트의 step 수 거친 추정 — Playwright API 호출 개수."""
+    return len(_STEP_HINT_RE.findall(text))
+
+
+@app.post("/recording/import-script", status_code=201)
+async def import_script(file: UploadFile = File(...)) -> dict:
+    """Playwright Python 스크립트 업로드 → 새 세션 디렉토리 등록.
+
+    이후 결과 화면의 ``▶ Codegen 녹화코드 실행`` 으로 host venv 에서 직접 실행.
+    "Start Recording" 의 대안 진입점 — 이미 작성된 스크립트를 codegen 녹화 없이
+    바로 재생.
+
+    검증 (sanity 수준):
+      - 확장자 ``.py``
+      - UTF-8 디코딩 + Python AST 파싱 통과
+      - 본문에 ``playwright`` 토큰 존재 (오타 방지)
+
+    Raises:
+        400: 검증 실패
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="filename 필수")
+    safe_name = _IMPORT_FILENAME_SAFE_RE.sub("_", file.filename)
+    if not safe_name.endswith(".py"):
+        raise HTTPException(status_code=400, detail=".py 파일만 업로드 가능")
+
+    body = await file.read()
+    if not body.strip():
+        raise HTTPException(status_code=400, detail="빈 파일")
+
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="UTF-8 디코딩 실패")
+
+    import ast as _ast
+    try:
+        _ast.parse(text)
+    except SyntaxError as e:
+        raise HTTPException(status_code=400, detail=f"Python 구문 오류: {e}")
+
+    if "playwright" not in text:
+        raise HTTPException(
+            status_code=400,
+            detail="`playwright` import 미발견 — Playwright 스크립트가 아닌 것 같습니다",
+        )
+
+    # 세션 등록 — uuid 그대로 사용. target_url 은 imported 표시.
+    sess = _registry.create(target_url=f"(imported: {safe_name})")
+    sid = sess.id
+    sess_dir = storage.session_dir(sid)
+    (sess_dir / "original.py").write_text(text, encoding="utf-8")
+
+    step_count = _estimate_import_step_count(text)
+    import time as _time
+    storage.save_metadata(sid, {
+        "id": sid,
+        "target_url": sess.target_url,
+        "created_at": storage.now_iso(),
+        "created_at_ts": _time.time(),
+        "state": session.STATE_DONE,
+        "step_count": step_count,
+        "imported_filename": safe_name,
+    })
+    _registry.update(
+        sid,
+        state=session.STATE_DONE,
+        action_count=step_count,
+    )
+
+    # 변환 시도 — codegen 세션과 동일하게 14-DSL scenario.json 생성. 실패는
+    # silent (Play with LLM 만 미사용 — 테스트코드 원본 실행 은 그대로 가능).
+    convert_summary = _convert_imported_script(sid)
+
+    log.info(
+        "[/recording/import-script] %s — '%s' 업로드 (%d bytes, ~%d step) convert=%s",
+        sid, safe_name, len(body), step_count, convert_summary,
+    )
+    return {
+        "id": sid,
+        "imported_filename": safe_name,
+        "step_count": step_count,
+        "size_bytes": len(body),
+        "convert": convert_summary,
+    }
+
+
+def _convert_imported_script(sid: str) -> dict:
+    """업로드된 ``original.py`` → ``scenario.json`` 변환 (silent fail).
+
+    docker 미설치 / 컨테이너 미가동 / converter 실패 모두 silent — 사용자는
+    여전히 ``테스트코드 원본 실행`` (host venv 직접) 으로 재생 가능. 결과
+    summary 만 응답에 포함.
+    """
+    container_dir = storage.container_path_for(sid)
+    host_scenario = str(storage.scenario_path(sid))
+    try:
+        result = _run_convert_impl(
+            container_session_dir=container_dir,
+            host_scenario_path=host_scenario,
+        )
+    except ConverterProxyError as e:
+        log.warning("[/recording/import-script] %s — converter 실패: %s", sid, e)
+        return {"ok": False, "scenario_exists": False, "error": str(e)}
+    if result.returncode != 0 or not result.scenario_exists:
+        msg = (result.stderr or "").strip()[:500] or f"rc={result.returncode}"
+        log.warning("[/recording/import-script] %s — convert rc=%d, stderr=%s",
+                    sid, result.returncode, msg)
+        return {
+            "ok": False,
+            "scenario_exists": result.scenario_exists,
+            "returncode": result.returncode,
+            "stderr_tail": msg,
+        }
+    return {
+        "ok": True,
+        "scenario_exists": True,
+        "elapsed_ms": result.elapsed_ms,
+    }
 
 
 @app.post("/recording/start", response_model=RecordingStartResp, status_code=201)
