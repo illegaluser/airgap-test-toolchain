@@ -278,6 +278,17 @@ $("#btn-stop").addEventListener("click", async () => {
   }
 });
 
+// action 변경 시 value 입력 보조 — scroll 은 into_view 자동 채움, hover 는 비움.
+$("#assertion-form select[name='action']").addEventListener("change", (e) => {
+  const action = e.target.value;
+  const valueInput = $("#assertion-form input[name='value']");
+  if (action === "scroll") {
+    valueInput.value = valueInput.value || "into_view";
+  } else if (action === "hover" && (valueInput.value === "into_view" || valueInput.value === "")) {
+    valueInput.value = "";
+  }
+});
+
 $("#assertion-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const sid = e.target.dataset.sid;
@@ -286,7 +297,7 @@ $("#assertion-form").addEventListener("submit", async (e) => {
   const payload = {
     action: fd.get("action"),
     target: fd.get("target").trim(),
-    value: fd.get("value").trim(),
+    value: (fd.get("value") || "").trim(),
     description: (fd.get("description") || "").trim(),
   };
   const cond = (fd.get("condition") || "").trim();
@@ -298,7 +309,7 @@ $("#assertion-form").addEventListener("submit", async (e) => {
     await openSession(sid);
     alert(`Step ${data.step_added} 추가됨 (총 ${data.step_count} 스텝)`);
   } catch (err) {
-    alert("Assertion 추가 실패: " + err.message);
+    alert("Step 추가 실패: " + err.message);
   }
 });
 

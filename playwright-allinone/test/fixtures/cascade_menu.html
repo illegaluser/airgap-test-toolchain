@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>3-level cascade hover menu fixture</title>
+  <style>
+    /* 3-level cascade 호버 메뉴 — ktds.com 의 회사소개 > 회사연혁 > ~2013 패턴 모사.
+       각 level 은 부모 li:hover 일 때만 펼쳐진다. 단일 hover 로는 leaf 도달 불가.
+       outer → middle → inner 순으로 hover 해야 leaf link 가 visible 된다. */
+    ul#gnb { display: flex; gap: 16px; padding: 12px; background: #f7f7f7; list-style: none; margin: 0; }
+    ul#gnb li { position: relative; list-style: none; }
+    ul#gnb a { display: block; padding: 8px 12px; cursor: pointer; color: #1d1d1f; text-decoration: none; }
+
+    /* level-1 → level-2 */
+    ul#gnb > li > .submenu-2 {
+      position: absolute; top: 100%; left: 0;
+      display: none;
+      background: #fff; border: 1px solid #ddd;
+      min-width: 160px; padding: 4px 0; margin: 0;
+    }
+    ul#gnb > li:hover > .submenu-2 { display: block; }
+
+    /* level-2 → level-3 */
+    ul#gnb > li > .submenu-2 > li > .submenu-3 {
+      position: absolute; top: 0; left: 100%;
+      display: none;
+      background: #fcfcfc; border: 1px solid #ccc;
+      min-width: 140px; padding: 4px 0; margin: 0;
+      list-style: none;
+    }
+    ul#gnb > li > .submenu-2 > li:hover > .submenu-3 { display: block; }
+
+    #last-clicked { margin-top: 16px; padding: 12px; background: #eaeaea; }
+  </style>
+</head>
+<body>
+  <ul id="gnb">
+    <li id="lvl1-company"><a href="#" data-tag="company">회사소개</a>
+      <ul class="submenu-2">
+        <li id="lvl2-history"><a href="#" data-tag="history">회사연혁</a>
+          <ul class="submenu-3">
+            <li><a href="#" id="link-2013" data-tag="2013">~2013</a></li>
+            <li><a href="#" id="link-2009" data-tag="2009">~2009</a></li>
+          </ul>
+        </li>
+        <li id="lvl2-ci"><a href="#" data-tag="ci">CI</a></li>
+      </ul>
+    </li>
+    <li id="lvl1-products"><a href="#" data-tag="products">제품</a>
+      <ul class="submenu-2">
+        <li><a href="#" id="link-prod-a" data-tag="prod-a">Product A</a></li>
+      </ul>
+    </li>
+  </ul>
+  <p id="last-clicked">idle</p>
+  <script>
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (t.tagName === "A" && t.dataset.tag) {
+        document.getElementById("last-clicked").textContent = t.dataset.tag;
+      }
+    });
+  </script>
+</body>
+</html>

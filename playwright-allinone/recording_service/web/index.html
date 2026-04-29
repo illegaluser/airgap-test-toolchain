@@ -18,6 +18,15 @@
     <!-- 섹션 1: 새 녹화 시작 -->
     <section class="card">
       <h2>새 녹화 시작</h2>
+      <p class="muted hover-hint">
+        💡 <strong>호버 메뉴 (드롭다운/GNB) 녹화 팁</strong> — codegen 은
+        <em>클릭만</em> 기록하고 마우스 hover 는 기록하지 않습니다.
+        상위 메뉴는 <strong>마우스만 올리고 클릭하지 마세요</strong>
+        (클릭하면 페이지가 이동되어 의도와 다른 시나리오가 됩니다). 서브메뉴가
+        펼쳐지면 원하는 항목만 클릭하세요. 다단(2~3 level) 메뉴도 동일 —
+        leaf 항목 클릭만 1회 기록되며, 재생 시 visibility healer 가 자동으로
+        부모 메뉴를 cascade hover 해 펼칩니다.
+      </p>
       <form id="start-form">
         <label>
           <span>target_url</span>
@@ -77,11 +86,14 @@
       <pre id="result-original" class="json-preview">— original.py 미로드 —</pre>
     </section>
 
-    <!-- 섹션 4: Assertion 추가 (TR.4 핵심) -->
+    <!-- 섹션 4: Step 추가 (TR.4 — codegen 미생성 액션 보충) -->
     <section class="card" id="assertion-section" hidden>
-      <h2>Assertion 추가 (verify / mock_*)</h2>
+      <h2>Step 추가 (codegen 미생성 액션)</h2>
       <p class="muted">
-        codegen 은 사용자 행동만 녹화합니다. 다음 14-DSL 액션은 직접 추가해야 합니다.
+        codegen 은 click / fill / press / select / check / navigate 만 녹화합니다.
+        다음 14-DSL 액션은 직접 추가하세요:
+        <strong>verify</strong> · <strong>mock_status</strong> · <strong>mock_data</strong> ·
+        <strong>scroll</strong> (lazy/무한스크롤) · <strong>hover</strong> (드롭다운 메뉴).
       </p>
       <form id="assertion-form">
         <label>
@@ -90,15 +102,17 @@
             <option value="verify">verify</option>
             <option value="mock_status">mock_status</option>
             <option value="mock_data">mock_data</option>
+            <option value="scroll">scroll</option>
+            <option value="hover">hover</option>
           </select>
         </label>
         <label>
           <span>target <em>(셀렉터 또는 URL 패턴)</em></span>
-          <input type="text" name="target" required placeholder="#status 또는 https://api.example.com/list">
+          <input type="text" name="target" required placeholder="#status / https://api.example.com/list / #footer / role=link, name=회사소개">
         </label>
         <label>
-          <span>value</span>
-          <input type="text" name="value" required placeholder='clicked / 500 / {"items":[]}'>
+          <span>value <em>(hover 는 빈값, scroll 은 into_view)</em></span>
+          <input type="text" name="value" placeholder='clicked / 500 / {"items":[]} / into_view'>
         </label>
         <label class="optional">
           <span>condition <em>(verify 한정, 선택)</em></span>

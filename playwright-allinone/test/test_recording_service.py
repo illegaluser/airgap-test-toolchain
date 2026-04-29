@@ -705,6 +705,61 @@ def test_assertion_persists_to_scenario_json(client, patched_codegen, temp_host_
     )
 
 
+# ── codegen 미녹화 액션 (scroll / hover) 보충 ──────────────────────────────
+
+
+def test_assertion_appends_scroll_step_with_into_view(client, patched_codegen):
+    """scroll 액션 — value=into_view 가 14-DSL executor 의 화이트리스트와 정합."""
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "scroll", "target": "#footer", "value": "into_view"},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    added = body["added_step"]
+    assert added["action"] == "scroll"
+    assert added["target"] == "#footer"
+    assert added["value"] == "into_view"
+    assert "into view" in added["description"]
+
+
+def test_assertion_scroll_400_when_value_not_in_whitelist(client, patched_codegen):
+    """scroll 의 value 는 화이트리스트 (into_view 등) 외엔 거부 — DSL validator 와 정합."""
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "scroll", "target": "#footer", "value": "down"},
+    )
+    assert r.status_code == 400
+    assert "into_view" in r.json()["detail"]
+
+
+def test_assertion_appends_hover_step_with_empty_value(client, patched_codegen):
+    """hover 액션 — value 비어도 허용 (DSL _VALUE_REQUIRED_ACTIONS 와 정합)."""
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "hover", "target": "role=link, name=회사소개", "value": ""},
+    )
+    assert r.status_code == 201
+    added = r.json()["added_step"]
+    assert added["action"] == "hover"
+    assert added["target"] == "role=link, name=회사소개"
+    assert added["value"] == ""
+    assert "hover" in added["description"]
+
+
+def test_assertion_hover_400_when_target_empty(client, patched_codegen):
+    """hover 도 target 은 필수 — value 만 optional."""
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "hover", "target": "  ", "value": ""},
+    )
+    assert r.status_code == 400
+
+
 # ── TR.8 — 영속화 / 마운트 / 디스크 세션 흡수 ────────────────────────────────
 
 def test_storage_container_path_for_default_is_recordings(monkeypatch):
@@ -1224,6 +1279,62 @@ def test_play_llm_invokes_zero_touch_qa_with_scenario(monkeypatch, tmp_path):
     assert captured["env"]["ARTIFACTS_DIR"] == str(tmp_path)
     # --headless 미지정 (default: headed)
     assert "--headless" not in captured["cmd"]
+
+
+def test_play_llm_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
+    """play-llm subprocess 의 stdout/stderr 가 세션 디렉토리에 떨어진다.
+
+    데몬 log 에는 자식 프로세스 출력이 안 들어가서, 시나리오 실행과 실제
+    healer 동작 사이 연결고리가 끊겼던 문제 (visibility-healer 의 cascade
+    hover 로그 추적 불가) 를 보강.
+    """
+    from recording_service import replay_proxy
+    from types import SimpleNamespace
+
+    (tmp_path / "scenario.json").write_text("[]", encoding="utf-8")
+
+    fake_stdout = b"[Step 2] visibility-healer cascade hover\n"
+    fake_stderr = b"INFO:zero_touch_qa.executor:done\n"
+
+    def fake_run(cmd, **kw):
+        return SimpleNamespace(returncode=0, stdout=fake_stdout, stderr=fake_stderr)
+
+    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
+
+    replay_proxy.run_llm_play(
+        host_session_dir=str(tmp_path),
+        project_root="/fake/project",
+        venv_py="/fake/python",
+    )
+
+    log_path = tmp_path / "play-llm.log"
+    assert log_path.is_file(), "play-llm.log 가 세션 디렉토리에 안 떨어짐"
+    content = log_path.read_text(encoding="utf-8")
+    assert "visibility-healer cascade hover" in content
+    assert "executor:done" in content
+    assert "# returncode: 0" in content
+
+
+def test_play_codegen_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
+    """play-codegen 도 동일 정책 — original.py 실행 출력을 별도 파일로 보존."""
+    from recording_service import replay_proxy
+    from types import SimpleNamespace
+
+    (tmp_path / "original.py").write_text("print('hi')", encoding="utf-8")
+
+    def fake_run(cmd, **kw):
+        return SimpleNamespace(returncode=0, stdout=b"hi\n", stderr=b"")
+
+    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
+
+    replay_proxy.run_codegen_replay(
+        host_session_dir=str(tmp_path), venv_py="/fake/python",
+    )
+
+    log_path = tmp_path / "play-codegen.log"
+    assert log_path.is_file()
+    content = log_path.read_text(encoding="utf-8")
+    assert "hi" in content
 
 
 # ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────

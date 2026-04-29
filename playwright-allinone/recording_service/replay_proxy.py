@@ -53,6 +53,30 @@ def _resolve_venv_py(venv_py: str | None) -> str:
     return venv_py or os.environ.get("RECORDING_VENV_PY") or sys.executable
 
 
+def _dump_play_log(cwd: str, log_name: str, cmd: list[str], stdout: str, stderr: str,
+                   returncode: int, elapsed_ms: float) -> None:
+    """subprocess 의 stdout/stderr 를 세션 디렉토리에 떨어뜨려 healer/executor
+    내부 동작을 사후 추적 가능하게 한다. 데몬 log 에는 안 들어가는 자식 프로세스
+    출력의 유일한 보존 경로 — 시나리오와 실제 액션 사이 연결고리.
+
+    실패는 silent — 본 dump 가 막히면 시나리오 결과 자체엔 영향 없음.
+    """
+    try:
+        path = Path(cwd) / log_name
+        with path.open("w", encoding="utf-8") as f:
+            f.write(f"# cmd: {' '.join(cmd)}\n")
+            f.write(f"# returncode: {returncode}\n")
+            f.write(f"# elapsed_ms: {elapsed_ms:.0f}\n")
+            f.write("# ── stdout ──────────────────────────────────────\n")
+            f.write(stdout or "(empty)\n")
+            if not (stdout or "").endswith("\n"):
+                f.write("\n")
+            f.write("# ── stderr ──────────────────────────────────────\n")
+            f.write(stderr or "(empty)\n")
+    except OSError as e:
+        log.warning("[play-log] dump 실패 (%s): %s", cwd, e)
+
+
 def _run_subprocess(
     cmd: list[str],
     *,
@@ -60,6 +84,7 @@ def _run_subprocess(
     env: dict | None,
     timeout_sec: int,
     started: float,
+    log_name: str = "play.log",
 ) -> PlayResult:
     """공용 subprocess 실행 + PlayResult 변환."""
     try:
@@ -68,8 +93,17 @@ def _run_subprocess(
         )
     except subprocess.TimeoutExpired as e:
         elapsed = (time.time() - started) * 1000
+        # timeout 케이스도 그동안 누적된 출력을 dump — 어디서 멈췄는지 추적용
+        partial_stdout = ""
+        partial_stderr = ""
+        if e.stdout:
+            partial_stdout = e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else str(e.stdout)
+        if e.stderr:
+            partial_stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
+        _dump_play_log(cwd, log_name, cmd, partial_stdout, partial_stderr, -1, elapsed)
         raise ReplayProxyError(
-            f"play 가 {timeout_sec}s 안에 끝나지 않았습니다 (elapsed={elapsed:.0f}ms)."
+            f"play 가 {timeout_sec}s 안에 끝나지 않았습니다 (elapsed={elapsed:.0f}ms). "
+            f"부분 출력은 {log_name} 참조."
         ) from e
     except FileNotFoundError as e:
         raise ReplayProxyError(f"python 호출 실패: {e}") from e
@@ -77,6 +111,7 @@ def _run_subprocess(
     elapsed_ms = (time.time() - started) * 1000
     stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
     stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
+    _dump_play_log(cwd, log_name, cmd, stdout, stderr, proc.returncode, elapsed_ms)
     return PlayResult(
         returncode=proc.returncode,
         stdout=stdout, stderr=stderr,
@@ -114,6 +149,7 @@ def run_codegen_replay(
     return _run_subprocess(
         cmd, cwd=host_session_dir, env=None,
         timeout_sec=timeout_sec, started=time.time(),
+        log_name="play-codegen.log",
     )
 
 
@@ -150,4 +186,5 @@ def run_llm_play(
     return _run_subprocess(
         cmd, cwd=host_session_dir, env=env,
         timeout_sec=timeout_sec, started=time.time(),
+        log_name="play-llm.log",
     )
