@@ -146,3 +146,58 @@ def test_visibility_healer_activates_lazy_menu_via_page_hover(
     assert loc.is_visible(), "page-level hover 후에도 lazy menu 가 펼쳐지지 않음"
 
 
+# ── T-H (H) — multi-level cascade hover ──────────────────────────────────
+
+
+@pytest.fixture
+def cascade_menu_page(_ctx):
+    """3-level cascade hover 메뉴 fixture — 회사소개 > 회사연혁 > ~2013 패턴."""
+    p = _ctx.new_page()
+    p.goto((FIXTURES_DIR / "cascade_menu.html").as_uri())
+    yield p
+    p.close()
+
+
+def test_cascade_menu_leaf_initially_hidden(cascade_menu_page):
+    """베이스라인 — 3-level 의 leaf link `~2013` 은 hover 전에 hidden."""
+    leaf = cascade_menu_page.locator("#link-2013")
+    assert leaf.count() == 1
+    assert not leaf.first.is_visible()
+
+
+def test_cascade_menu_single_hover_insufficient(cascade_menu_page):
+    """베이스라인 — 단 1단계 hover (leaf 의 직계 부모) 만으론 leaf 가 visible 안 됨.
+
+    현재 healer 의 단일 ancestor hover 로는 풀 수 없는 케이스임을 보증.
+    """
+    leaf = cascade_menu_page.locator("#link-2013").first
+    # 직계 부모 li 만 hover (level-3 만 활성)
+    direct_parent_li = cascade_menu_page.locator("#lvl2-history").first
+    try:
+        direct_parent_li.hover(timeout=1500)
+    except Exception:
+        pass
+    cascade_menu_page.wait_for_timeout(200)
+    # outer level-1 이 hover 안 되어 submenu-2 가 열리지 않음 → leaf 도 hidden
+    assert not leaf.is_visible(), "단일 hover 만으로 cascade 가 풀리면 cascade 회귀 의미 없음"
+
+
+def test_visibility_healer_cascade_unlocks_three_level_menu(
+    cascade_menu_page, make_executor,
+):
+    """T-H (H) — cascade hover (outermost → innermost) 로 3-level 메뉴 leaf 도달.
+
+    healer 가 candidates 를 reverse 후 outermost 부터 누적 hover →
+    각 level 의 :hover cascade 가 활성화되어 leaf link 가 visible 됨.
+    """
+    executor = make_executor()
+    leaf = cascade_menu_page.locator("#link-2013").first
+    assert not leaf.is_visible()
+
+    swap = executor._heal_visibility(cascade_menu_page, leaf, step_id=77)
+
+    # 단일 매치라 swap 은 None. leaf 자체가 cascade 후 visible 되어야 함.
+    assert swap is None
+    assert leaf.is_visible(), "cascade hover 후에도 3-level leaf 가 펼쳐지지 않음"
+
+

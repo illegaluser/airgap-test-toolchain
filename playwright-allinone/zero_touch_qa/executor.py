@@ -2010,7 +2010,10 @@ class QAExecutor:
 
         순서 (각 단계는 visible 되면 즉시 단축):
           (1) `scroll_into_view_if_needed` — Intersection Observer 트리거 사이트.
-          (2) ancestor hover — `_VISIBILITY_HEALER_JS` 가 추출한 hoverable 후보.
+          (2) cascade ancestor hover — `_VISIBILITY_HEALER_JS` 가 추출한
+              hoverable 후보를 outermost → innermost 순서로 누적 hover. 다단
+              메뉴 (회사소개 > 회사연혁 > ~2013) 는 outer 부터 hover 해야 다음
+              level 이 visible 됨.
           (3) page-level activator probe — `<header>`/`<nav>`/`<main>`/`<body>` hover.
               사이트 전역 hover 이벤트로 menu 활성화하는 케이스.
           (4) size-aware poll — bounding_box.height/width > 0 가 될 때까지
@@ -2042,26 +2045,36 @@ class QAExecutor:
         except Exception:
             pass
 
-        # ── (2) ancestor hover 시도 ─────────────────────────────────────
+        # ── (2) cascade ancestor hover (outermost → innermost) ──────────
+        # `_VISIBILITY_HEALER_JS` 는 leaf 에서 위로 walk → candidates[0] 가
+        # leaf 에 가장 가깝고 [-1] 이 outermost. 다단 hover 메뉴 (예: ktds.com
+        # 의 회사소개 > 회사연혁 > ~2013) 는 outermost 부터 차례로 hover 해야
+        # 각 단계의 :hover 가 cascade 되어 다음 trigger 가 visible 해진다.
+        # 단일 ancestor hover 는 1-level 만 풀고 2-level+ 에서 실패.
+        # Playwright hover() 는 mouse 를 element 중심으로 이동 — 다음 hover 가
+        # descendant 라면 ancestor 의 :hover 는 자동 유지 (browser 동작).
         try:
             candidates = locator.evaluate(_VISIBILITY_HEALER_JS)
         except Exception as e:  # noqa: BLE001
             log.debug("[Step %s] visibility-healer evaluate 실패: %s", step_id, e)
             candidates = []
 
-        for cand in candidates[:5]:  # 최대 5개 ancestor 까지만 시도 (시간 한도)
+        chain = list(reversed(candidates))[:5]  # 최대 5단계 cascade
+        hovered_path: list[str] = []
+        for cand in chain:
             sel = cand.get("path") or ""
             reason = cand.get("reason") or "unknown"
             if not sel:
                 continue
             try:
                 ancestor = page.locator(sel).first
-                ancestor.hover(timeout=2000)
-                page.wait_for_timeout(200)  # 메뉴 transition
+                ancestor.hover(timeout=1500)
+                page.wait_for_timeout(150)  # 메뉴 transition
+                hovered_path.append(f"{sel}({reason})")
                 if locator.is_visible():
                     log.info(
-                        "[Step %s] visibility-healer 복구 — hover %s (reason=%s)",
-                        step_id, sel, reason,
+                        "[Step %s] visibility-healer 복구 — cascade hover %s",
+                        step_id, " > ".join(hovered_path),
                     )
                     return None
             except Exception:  # noqa: BLE001

@@ -119,6 +119,17 @@ code {
 }
 
 .muted { color: var(--muted); }
+.hover-hint {
+  background: #fff8e1;
+  border-left: 3px solid #f9c846;
+  padding: 10px 14px;
+  margin: 10px 0 16px;
+  border-radius: 4px;
+  color: #5c4d1a;
+  line-height: 1.55;
+}
+.hover-hint strong { color: #3a2f10; }
+.hover-hint em { font-style: normal; color: #5c4d1a; opacity: 0.85; }
 .ok { color: var(--ok); font-weight: 600; }
 .warn { color: var(--warn); font-weight: 600; }
 .err { color: var(--err); font-weight: 600; }

@@ -458,16 +458,25 @@ def delete_session(sid: str):
 
 # ── /recording/sessions/{id}/assertion (TR.4 — codegen 미생성 액션 보충) ───
 
-ASSERTION_ALLOWED_ACTIONS = {"verify", "mock_status", "mock_data"}
+# verify / mock_* 외에 codegen 이 기록 안 하는 scroll / hover 도 같은 폼으로
+# 추가 가능. lazy-render / Intersection Observer / GNB hover-only 메뉴 같이
+# 사용자가 명시 의도를 가진 행동을 시나리오에 보충.
+ASSERTION_ALLOWED_ACTIONS = {
+    "verify", "mock_status", "mock_data", "scroll", "hover",
+}
+# value 비어도 되는 action — DSL 의 _VALUE_REQUIRED_ACTIONS 와 정합 (hover 만).
+_ASSERTION_VALUE_OPTIONAL = {"hover"}
+# scroll value 화이트리스트 — zero_touch_qa.__main__._SCROLL_VALID_VALUES 와 동일.
+_ASSERTION_SCROLL_VALUES = {"into_view", "into-view", "into view"}
 
 
 class AssertionAddReq(BaseModel):
     action: str = Field(
         ...,
-        description="verify / mock_status / mock_data 중 하나. codegen 이 emit 하지 않는 14-DSL 액션을 사용자가 수동 추가.",
+        description="verify / mock_status / mock_data / scroll / hover 중 하나. codegen 이 emit 하지 않는 14-DSL 액션을 사용자가 수동 추가.",
     )
     target: str = Field(..., description="CSS 셀렉터 또는 URL 패턴")
-    value: str = Field(..., description="기대값 / status code / JSON body")
+    value: str = Field("", description="기대값 / status code / JSON body / scroll mode (hover 는 빈값 허용)")
     description: str = ""
     condition: Optional[str] = Field(
         None, description="verify 의 조건 (예: text / visible / url)",
@@ -476,11 +485,11 @@ class AssertionAddReq(BaseModel):
 
 @app.post("/recording/sessions/{sid}/assertion", status_code=201)
 def add_assertion(sid: str, req: AssertionAddReq) -> dict:
-    """녹화 후 사용자가 verify / mock_status / mock_data step 을 수동 추가.
+    """녹화 후 사용자가 codegen 미생성 step (verify/mock_*/scroll/hover) 을 수동 추가.
 
     PLAN §"TR.4 Assertion 추가 영역" 의 비대칭 보완. codegen 은 page.route /
-    expect 를 emit 하지 않으므로 운영자가 직접 입력해 14-DSL 풀 시나리오로
-    완성한다.
+    expect / scroll / hover 를 emit 하지 않으므로 운영자가 직접 입력해 14-DSL
+    풀 시나리오로 완성한다.
     """
     sess = _registry.get(sid)
     if sess is None:
@@ -489,7 +498,7 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Assertion 추가는 변환 완료(state=done) 세션만 가능합니다. "
+                f"Step 추가는 변환 완료(state=done) 세션만 가능합니다. "
                 f"현재 state={sess.state}"
             ),
         )
@@ -503,8 +512,18 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
         )
     if not req.target.strip():
         raise HTTPException(status_code=400, detail="target 이 비어있습니다.")
-    if not req.value.strip():
+    if req.action not in _ASSERTION_VALUE_OPTIONAL and not req.value.strip():
         raise HTTPException(status_code=400, detail="value 가 비어있습니다.")
+    if req.action == "scroll":
+        scroll_v = req.value.strip().lower()
+        if scroll_v not in _ASSERTION_SCROLL_VALUES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"scroll 의 value 는 {sorted(_ASSERTION_SCROLL_VALUES)} "
+                    f"중 하나여야 합니다. 받은 값: {req.value!r}"
+                ),
+            )
 
     scenario = storage.load_scenario(sid)
     if scenario is None:
@@ -553,6 +572,10 @@ def _default_description(action: str, target: str, value: str) -> str:
         return f"{target} → status {value}"
     if action == "mock_data":
         return f"{target} → mock body"
+    if action == "scroll":
+        return f"scroll {target} into view"
+    if action == "hover":
+        return f"hover {target}"
     return ""
 
 
