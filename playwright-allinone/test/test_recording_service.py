@@ -1067,48 +1067,35 @@ def test_compare_html_endpoint_404_when_no_report(client, temp_host_root, rplus_
     assert r.status_code == 404
 
 
-# ── TR.7 R-Plus — replay (docker exec --mode execute) ──────────────────────
+# ── TR.7 R-Plus — replay (호스트에서 original.py 직접 실행, headed) ──────────
 
-def test_replay_success_returns_counts(client, monkeypatch, temp_host_root, rplus_on):
-    """fake docker exec → executor 실행 결과 시뮬레이션."""
-    from pathlib import Path
-    import json as _j
-    from recording_service import server as srv
+def test_replay_success(client, monkeypatch, temp_host_root, rplus_on):
+    """fake subprocess → original.py 실행 결과 시뮬레이션."""
     from recording_service.replay_proxy import ReplayResult
 
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
-        {"step": 2, "action": "click", "target": "#btn", "value": ""},
     ])
 
-    def fake_replay(*, container_session_dir, host_session_dir):
-        # run_log.json 시뮬레이션 — host 측에 작성
-        rlp = Path(host_session_dir) / "run_log.json"
-        rlp.write_text(_j.dumps([
-            {"step": 1, "status": "PASS"},
-            {"step": 2, "status": "PASS"},
-        ]), encoding="utf-8")
+    def fake_replay(*, host_session_dir):
         return ReplayResult(
-            returncode=0, stdout="", stderr="",
-            run_log_path=str(rlp), run_log_exists=True,
-            pass_count=2, fail_count=0, healed_count=0,
-            elapsed_ms=2345.0,
+            returncode=0, stdout="ok\n", stderr="", elapsed_ms=2345.0,
         )
 
-    from recording_service.rplus import router as rplus_router  # P0.1 #5
+    from recording_service.rplus import router as rplus_router
     monkeypatch.setattr(rplus_router, "_run_replay_impl", fake_replay)
     r = client.post(f"/experimental/sessions/{sid}/replay")
     assert r.status_code == 201
     body = r.json()
     assert body["returncode"] == 0
-    assert body["pass_count"] == 2
-    assert body["fail_count"] == 0
-    assert body["step_count"] == 2
-    assert body["run_log_exists"] is True
+    assert body["elapsed_ms"] == 2345.0
+    assert "ok" in body["stdout_tail"]
+    # 이전 응답의 pass_count / run_log_* 필드는 폐기됨.
+    assert "pass_count" not in body
+    assert "run_log_exists" not in body
 
 
 def test_replay_502_when_proxy_error(client, monkeypatch, temp_host_root, rplus_on):
-    from recording_service import server as srv
     from recording_service.replay_proxy import ReplayProxyError
 
     sid = _setup_done_session(temp_host_root, scenario=[
@@ -1116,56 +1103,48 @@ def test_replay_502_when_proxy_error(client, monkeypatch, temp_host_root, rplus_
     ])
 
     def fake_replay(*a, **kw):
-        raise ReplayProxyError("docker 실행 파일을 찾을 수 없습니다.")
+        raise ReplayProxyError("original.py 없음: ...")
 
-    from recording_service.rplus import router as rplus_router  # P0.1 #5
+    from recording_service.rplus import router as rplus_router
     monkeypatch.setattr(rplus_router, "_run_replay_impl", fake_replay)
     r = client.post(f"/experimental/sessions/{sid}/replay")
     assert r.status_code == 502
 
 
-def test_replay_proxy_module_no_docker(monkeypatch):
+def test_replay_proxy_raises_when_original_py_missing(tmp_path):
+    """original.py 가 없으면 ReplayProxyError."""
     from recording_service import replay_proxy
     from recording_service.replay_proxy import ReplayProxyError
 
-    monkeypatch.setattr(replay_proxy, "is_docker_available", lambda: False)
-    with pytest.raises(ReplayProxyError):
-        replay_proxy.run_replay(
-            container_session_dir="/recordings/x",
-            host_session_dir="/tmp/no",
-        )
+    with pytest.raises(ReplayProxyError, match="original.py"):
+        replay_proxy.run_replay(host_session_dir=str(tmp_path))
 
 
-def test_replay_proxy_counts_run_log_statuses(monkeypatch, tmp_path):
-    """run_log.json 의 PASS/FAIL/HEALED 카운팅 검증."""
+def test_replay_proxy_invokes_python_subprocess(monkeypatch, tmp_path):
+    """run_replay 가 host 측에서 <venv_py> original.py 형태로 subprocess 호출."""
     from recording_service import replay_proxy
     from types import SimpleNamespace
-    import json as _j
 
-    monkeypatch.setattr(replay_proxy, "is_docker_available", lambda: True)
+    # 가짜 original.py
+    (tmp_path / "original.py").write_text("print('hi')", encoding="utf-8")
 
-    # subprocess.run fake
-    fake_completed = SimpleNamespace(
-        returncode=0, stdout=b"ok", stderr=b"",
-    )
-    monkeypatch.setattr(replay_proxy.subprocess, "run", lambda *a, **kw: fake_completed)
+    captured = {}
 
-    rlp = tmp_path / "run_log.json"
-    rlp.write_text(_j.dumps([
-        {"step": 1, "status": "PASS"},
-        {"step": 2, "status": "FAIL"},
-        {"step": 3, "status": "HEALED"},
-        {"step": 4, "status": "PASS"},
-    ]), encoding="utf-8")
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        captured["cwd"] = kw.get("cwd")
+        return SimpleNamespace(returncode=0, stdout=b"hi\n", stderr=b"")
+
+    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
 
     res = replay_proxy.run_replay(
-        container_session_dir="/recordings/x",
-        host_session_dir=str(tmp_path),
+        host_session_dir=str(tmp_path), venv_py="/fake/python",
     )
-    assert res.pass_count == 2
-    assert res.fail_count == 1
-    assert res.healed_count == 1
-    assert res.run_log_exists is True
+    assert res.returncode == 0
+    assert res.stdout == "hi\n"
+    assert captured["cmd"][0] == "/fake/python"
+    assert captured["cmd"][1].endswith("original.py")
+    assert captured["cwd"] == str(tmp_path)
 
 
 # ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────
