@@ -815,7 +815,12 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 | 태스크 | 상태 | 참조 |
 |---|---|---|
 | T-A (P0.4 converter AST 화) | ✅ **완료** | commit 0cc419f, 250 → 회귀 0 |
+| T-A 후속 — resolver 합성 체인 (`>>` 분리, frame_locator chain 실행) | ✅ **완료** | P0.1 #2, test_locator_chain.py 10/10 |
 | T-D (P0.1 인증) Phase 1~4,7 + form/TOTP fixture | ✅ **부분 완료** | commit 52477d1, 281 passed |
+| T-D 후속 — CLI `_VALID_ACTIONS` 에 auth_login 등록 + target/value 검증 | ✅ **완료** | P0.1 #1, test_auth.py CLI 검증 4/4 |
+| T-D 후속 — auth_login 스크린샷 마스킹 (Playwright `mask=`) | ✅ **완료** | P0.1 #3, test_auth.py 마스킹 회귀 3/3 |
+| TR.4 후속 — `/recording/sessions/{sid}/scenario` 프리뷰 | ✅ **완료** | P0.1 #4, test_recording_service.py 5/5 |
+| R-Plus 분리 (`/experimental/*` + RPLUS_ENABLED 게이팅) | ✅ **완료** | P0.1 #5, test_recording_service.py 게이트 6/6 |
 | T-D Phase 5 (OAuth mock 컨테이너) | ⏸ 연기 | follow-up commit |
 | T-D Jenkins Credentials seed | ⏸ 연기 | follow-up commit |
 | T-D 실 IdP 검증 (Google OAuth) | ⏸ 운영 검증 단계 | 별도 |
@@ -825,8 +830,26 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 | T-F (P1.5 orphan watchdog) | ⏳ 대기 | P0 완료 후 |
 | T-G (P1.3 retention GC) | ⏳ 대기 | T-F 후 |
 
-**현 시점 P0 완료율**: 100% (T-A) + 80% (T-D, OAuth mock 만 미완료) + 0% (T-B / T-C / T-E)
-≈ 5 P0 태스크 중 1.8 완료. 영업일 환산 약 8/33 (24%).
+**현 시점 P0 완료율**: 100% (T-A + 후속 패치) + 85% (T-D, OAuth mock 만 미완료) + 0% (T-B / T-C / T-E)
+≈ 5 P0 태스크 중 1.85 완료. 영업일 환산 약 8.5/33 (26%).
+
+### P0.1 리뷰 후속 패치 (2026-04-29) — 5건 일괄 처리
+
+리뷰에서 식별된 5개 이슈를 모두 해소했다. 변경 영역 277 passed (이전 261).
+
+| # | 영역 | 변경 | 회귀 가드 |
+|---|---|---|---|
+| 1 | CLI 검증 | [`zero_touch_qa/__main__.py`](zero_touch_qa/__main__.py) — `_VALID_ACTIONS` / `_VALUE_REQUIRED_ACTIONS` 에 `auth_login` 추가, `_check_action_specific` 에 mode (form/totp/oauth) 분기 검증 | `test_cli_validates_auth_login_*` (4) |
+| 2 | resolver 합성 체인 | [`zero_touch_qa/locator_resolver.py`](zero_touch_qa/locator_resolver.py) — `_resolve_chain` / `_apply_chain_segment` 신규. `>>` 로 연결된 segment 를 `frame_locator` / `get_by_role` / `get_by_text` / ... / CSS 누적 chain 으로 풀이. ambiguous role 거부는 page-level 에서만 적용 | [`test/test_locator_chain.py`](test/test_locator_chain.py) (10), [`test/fixtures/nested_locator.html`](test/fixtures/nested_locator.html) |
+| 3 | 스크린샷 마스킹 | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) — `_screenshot_masked` 헬퍼. `_auth_login_form` / `_auth_login_totp` 의 PASS/FAIL 스크린샷에 `mask=[email_loc, pwd_loc]` / `[otp_loc]` 전달. 구버전 Playwright (mask 미지원) 는 fail-secure 로 캡처 생략 | `test_screenshot_masked_*` (3) |
+| 4 | scenario.json 프리뷰 | [`recording_service/server.py`](recording_service/server.py) `GET /recording/sessions/{sid}/scenario` 신규. [`recording_service/web/app.js`](recording_service/web/app.js) `openSession` 에서 fetch 후 `#result-json` 에 본문 표시 | `test_get_session_scenario_*` (3) |
+| 5 | R-Plus 분리 (백엔드만, UI 통합) | [`recording_service/rplus/`](recording_service/rplus/) 신규 모듈 — replay/enrich/compare 핸들러 + `prefix="/experimental"` APIRouter + `_require_rplus_enabled` Depends. healthz 응답에 `rplus_enabled` 추가. UI 는 메인 결과 화면([`web/index.html`](recording_service/web/index.html))에 R-Plus 섹션을 둔 채 `state=done` AND `rplus_enabled=true` 조건일 때만 노출 — 운영자가 자주 쓰는 기능이라 별도 SPA 분리는 비효율. 환경변수 `RPLUS_ENABLED=1` 미설정 시 `/experimental/*` 전부 404 | `test_experimental_*_when_rplus_disabled` (3) + `test_healthz_reflects_rplus_enabled` |
+
+**의사결정 기록 (2026-04-29):**
+- #5 분리 정책: **백엔드 코드/URL 은 분리** (`/experimental/*` + `recording_service/rplus/` 모듈), **UI 는 메인 결과 화면에 통합**. 사용자 결정 — R-Plus 가 평가 단계지만 일상 사용 빈도가 높아 메인 화면에서 한 번에 접근하는 것이 실효적. UI 노출 조건은 `state=done && rplus_enabled` 두 가지 모두. 별도 SPA (`/experimental/`) 는 폐기.
+- router 게이팅은 import-time 이 아닌 request-time (Depends) 으로 구현해 테스트가 env 토글로 ON/OFF 검증 가능하게 함. 클라이언트 관점에서 미활성 시 404 동일.
+- #2 chain segment 의 ambiguous role 거부 (`button`/`link` name 없는 광범위 매치) 는 chain 컨테이너로 좁혀진 경우 false-positive 위험이 충분히 낮아 적용 안 함 — `#sidebar >> role=button` 같은 합법 케이스가 통과되어야 하기 때문.
+- R-Plus URL prefix 는 `/experimental/`. 기존 `/recording/sessions/{sid}/replay|enrich|compare` 경로는 R-Plus 트랙의 평가 게이트 의도를 명확히 하기 위해 `/experimental/sessions/{sid}/...` 으로 이동 (테스트 16개 마이그레이션, 메인 UI 의 R-Plus 섹션이 새 경로로 호출).
 
 ## 다음 액션
 

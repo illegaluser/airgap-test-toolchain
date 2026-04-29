@@ -189,7 +189,9 @@ class ScenarioValidationError(ValueError):
     """Dify 가 반환한 scenario 가 구조적으로 무효."""
 
 
-# [14대 표준 액션] — dify-chatflow.yaml Planner system prompt 와 동기화
+# [표준 액션] — 14 standard actions (Planner 가 emit) + 인증 보조 액션 auth_login.
+# auth_login 은 LLM 이 emit 하지 않고 사용자가 작성한 시나리오에 직접 들어오므로
+# dify-chatflow.yaml Planner prompt 와는 동기화하지 않는다 (executor 만 처리).
 _VALID_ACTIONS = frozenset(
     {
         "navigate",
@@ -206,6 +208,7 @@ _VALID_ACTIONS = frozenset(
         "scroll",
         "mock_status",
         "mock_data",
+        "auth_login",
     }
 )
 
@@ -228,8 +231,12 @@ _VALID_VERIFY_CONDITIONS = frozenset(
 
 
 _TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press")
-_VALUE_REQUIRED_ACTIONS = frozenset({"fill", "press", "select", "upload", "drag"})
+# auth_login: target=mode (form/totp/oauth) 필수, value=credential alias 필수.
+_VALUE_REQUIRED_ACTIONS = frozenset(
+    {"fill", "press", "select", "upload", "drag", "auth_login"}
+)
 _SCROLL_VALID_VALUES = frozenset({"into_view", "into-view", "into view"})
+_AUTH_LOGIN_MODES = frozenset({"form", "totp", "oauth"})
 
 
 def _check_mock_times(i: int, step: dict) -> None:
@@ -307,6 +314,16 @@ def _check_action_specific(i: int, step: dict) -> None:
                 f"step[{i}] action=mock_data 인데 value 가 비어 있음"
             )
         _check_mock_times(i, step)
+        return
+    if action == "auth_login":
+        # target = "form" | "totp" | "oauth" — 콤마 뒤에 ", email_field=#x, ..." 같은
+        # explicit selector 모디파이어가 따라올 수 있다. 첫 토큰만 모드로 취급.
+        head = str(step.get("target", "")).split(",", 1)[0].strip().lower()
+        if head not in _AUTH_LOGIN_MODES:
+            raise ScenarioValidationError(
+                f"step[{i}] action=auth_login 의 target 은 "
+                f"{sorted(_AUTH_LOGIN_MODES)} 중 하나여야 함 (={head!r})"
+            )
         return
     if action == "verify":
         condition = str(step.get("condition", "")).strip().lower()

@@ -243,8 +243,40 @@ RuntimeError: auth_login email/username field 자동 탐지 실패 — 후보: [
 
 ---
 
-## 9. 변경 이력
+## 9. 스크린샷 마스킹 (P0.1 #3)
+
+`auth_login` 의 PASS / FAIL 스크린샷은 자동으로 입력 필드를 검정 박스로 마스킹한다 — Playwright `page.screenshot(mask=[locator, ...])` 사용.
+
+| 모드 | 마스킹 대상 |
+|---|---|
+| form | email/username input + password input |
+| totp | TOTP code input |
+| oauth | (현재 미지원 — Phase 5 후 IdP 페이지 마스킹 정책 별도 결정) |
+
+- 비밀번호는 브라우저가 ●● 로 표시하지만 username/email/TOTP 코드는 평문 표시되므로 마스킹이 필수
+- 구버전 Playwright (`mask` 인자 미지원) 환경에서는 fail-secure — 스크린샷을 생략하고 빈 경로 반환 (자격증명 노출 방지)
+- `submit` 후 navigation 으로 detached 된 locator 는 Playwright 가 no-op 처리
+
+회귀 가드는 `test/test_auth.py::test_screenshot_masked_*` 3개.
+
+## 10. CLI 검증 통과 (P0.1 #1)
+
+`auth_login` 액션은 14대 표준 액션이 아닌 인증 보조 액션이지만, `_VALID_ACTIONS` 화이트리스트에 등록되어 `python3 -m zero_touch_qa --mode execute --scenario ...` 흐름의 `_validate_scenario` 를 정상 통과한다.
+
+| step 필드 | 계약 |
+|---|---|
+| `action` | `"auth_login"` (소문자 고정) |
+| `target` | `"form"` / `"totp"` / `"oauth"` 중 하나로 시작. `, key=val` 모디파이어 (`email_field=#x`, `password_field=#pw`, `submit=#login`, `totp_field=#otp`, `provider=mock`) 가 따라올 수 있음 |
+| `value` | credential alias (필수 — 비어 있으면 `ScenarioValidationError`) |
+| `description` | 자유 텍스트 |
+
+Planner LLM 은 `auth_login` 을 emit 하지 않는다 — 사용자가 손작성 시나리오나 변환된 codegen 결과에 직접 step 을 추가해야 한다.
+
+---
+
+## 11. 변경 이력
 
 | 일자 | 내용 |
 |---|---|
 | 2026-04-29 | 초안 작성 — T-D Phase 1~4,7 완료에 맞춘 사용자 가이드. OAuth mock 은 follow-up commit 후 §3.4 갱신 예정 |
+| 2026-04-29 | P0.1 리뷰 후속 패치 §9~§10 추가 — 스크린샷 마스킹 + CLI 검증 통과 명시 |

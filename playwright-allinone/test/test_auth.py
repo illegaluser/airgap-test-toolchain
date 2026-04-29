@@ -39,6 +39,122 @@ AUTH_TOTP_URL = (FIXTURES_DIR / "auth_totp.html").as_uri()
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# CLI 검증 — auth_login 이 _validate_scenario 를 통과하는지 회귀 (P0.1 #1).
+# CLI 가 auth_login 액션을 화이트리스트 밖이라 reject 하던 버그의 회귀 가드.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _scenario_with(step: dict) -> list[dict]:
+    return [
+        {
+            "step": 1, "action": "navigate", "target": "",
+            "value": "https://example.com", "description": "nav",
+            "fallback_targets": [],
+        },
+        step,
+    ]
+
+
+def test_cli_validates_auth_login_form_mode():
+    from zero_touch_qa.__main__ import _validate_scenario
+
+    _validate_scenario(_scenario_with({
+        "step": 2, "action": "auth_login", "target": "form",
+        "value": "demo_alias", "description": "form 로그인",
+        "fallback_targets": [],
+    }))
+
+
+def test_cli_validates_auth_login_totp_with_modifiers():
+    from zero_touch_qa.__main__ import _validate_scenario
+
+    _validate_scenario(_scenario_with({
+        "step": 2, "action": "auth_login",
+        "target": "totp, totp_field=#otp, submit=#submit",
+        "value": "demo_alias", "description": "totp",
+        "fallback_targets": [],
+    }))
+
+
+def test_cli_rejects_auth_login_with_invalid_mode():
+    from zero_touch_qa.__main__ import _validate_scenario, ScenarioValidationError
+
+    with pytest.raises(ScenarioValidationError, match="target"):
+        _validate_scenario(_scenario_with({
+            "step": 2, "action": "auth_login", "target": "saml",
+            "value": "demo_alias", "description": "잘못된 모드",
+            "fallback_targets": [],
+        }))
+
+
+def test_cli_rejects_auth_login_with_empty_value():
+    from zero_touch_qa.__main__ import _validate_scenario, ScenarioValidationError
+
+    with pytest.raises(ScenarioValidationError, match="value"):
+        _validate_scenario(_scenario_with({
+            "step": 2, "action": "auth_login", "target": "form",
+            "value": "", "description": "alias 누락",
+            "fallback_targets": [],
+        }))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 스크린샷 마스킹 — _screenshot_masked 가 Playwright 의 mask= 인자를 정확히
+# 전달하는지 확인 (P0.1 #3). credential 평문이 PNG 캡처에 노출되는 것을 막는
+# 유일한 게이트이므로 회귀 가드가 필요.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class _PageStub:
+    """page.screenshot(...) 호출 인자를 기록만 하는 stub."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def screenshot(self, **kw) -> None:
+        self.calls.append(kw)
+
+
+def test_screenshot_masked_passes_mask_list(tmp_path):
+    from zero_touch_qa.executor import QAExecutor
+
+    page = _PageStub()
+    sentinel_a, sentinel_b = object(), object()
+    out = QAExecutor._screenshot_masked(
+        page, str(tmp_path), 7, "pass", mask=[sentinel_a, sentinel_b],
+    )
+
+    assert out.endswith("step_7_pass.png")
+    assert len(page.calls) == 1
+    assert page.calls[0]["mask"] == [sentinel_a, sentinel_b]
+
+
+def test_screenshot_masked_with_none_uses_empty_mask(tmp_path):
+    from zero_touch_qa.executor import QAExecutor
+
+    page = _PageStub()
+    QAExecutor._screenshot_masked(page, str(tmp_path), 1, "fail", mask=None)
+
+    assert page.calls[0]["mask"] == []
+
+
+def test_screenshot_masked_skips_when_playwright_missing_mask_arg(tmp_path):
+    """구버전 Playwright 가 mask= 인자를 거부하면 자격증명 노출 방지를 위해
+    스크린샷 자체를 생략하고 빈 경로 반환 (Fail-secure)."""
+    from zero_touch_qa.executor import QAExecutor
+
+    class _OldPage:
+        def screenshot(self, **kw):
+            if "mask" in kw:
+                raise TypeError("unexpected keyword argument 'mask'")
+
+    out = QAExecutor._screenshot_masked(
+        _OldPage(), str(tmp_path), 1, "pass", mask=[object()],
+    )
+    assert out == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # mask_secret
 # ─────────────────────────────────────────────────────────────────────────
 

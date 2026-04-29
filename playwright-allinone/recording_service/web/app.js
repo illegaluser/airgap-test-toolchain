@@ -29,9 +29,13 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// 마지막 healthz 응답을 캐시 — experimental 링크 노출 여부 판단에 사용 (P0.1 #5).
+let _lastHealth = null;
+
 async function loadHealth() {
   try {
     const h = await api("/healthz");
+    _lastHealth = h;
     const badge = $("#health-badge");
     if (h.codegen_available) {
       badge.textContent = `✓ healthy · v${h.version}`;
@@ -41,9 +45,14 @@ async function loadHealth() {
       badge.className = "warn";
     }
   } catch (e) {
+    _lastHealth = null;
     $("#health-badge").textContent = "✗ unreachable";
     $("#health-badge").className = "err";
   }
+}
+
+function _isRplusEnabled() {
+  return _lastHealth != null && _lastHealth.rplus_enabled === true;
 }
 
 async function loadSessions() {
@@ -96,6 +105,10 @@ async function getSession(sid) {
   return api(`/recording/sessions/${sid}`);
 }
 
+async function getSessionScenario(sid) {
+  return api(`/recording/sessions/${sid}/scenario`);
+}
+
 async function addAssertion(sid, payload) {
   return api(`/recording/sessions/${sid}/assertion`, {
     method: "POST",
@@ -103,20 +116,20 @@ async function addAssertion(sid, payload) {
   });
 }
 
-// R-Plus
+// R-Plus — 백엔드는 /experimental/* 로 분리. UI 는 메인 결과 화면에 함께 노출.
 async function replaySession(sid) {
-  return api(`/recording/sessions/${sid}/replay`, { method: "POST" });
+  return api(`/experimental/sessions/${sid}/replay`, { method: "POST" });
 }
 
 async function enrichSession(sid) {
-  return api(`/recording/sessions/${sid}/enrich`, {
+  return api(`/experimental/sessions/${sid}/enrich`, {
     method: "POST",
     body: JSON.stringify({}),
   });
 }
 
 async function compareSession(sid, doc_dsl, threshold) {
-  return api(`/recording/sessions/${sid}/compare`, {
+  return api(`/experimental/sessions/${sid}/compare`, {
     method: "POST",
     body: JSON.stringify({ doc_dsl, threshold: Number(threshold) }),
   });
@@ -180,11 +193,22 @@ async function openSession(sid) {
   setStatePill("#result-state", s.state);
   $("#result-step-count").textContent = s.action_count || 0;
 
-  // scenario.json 은 직접 fetch — 호스트 디렉토리 표시만
+  // scenario.json 본문을 백엔드에서 직접 가져와 표시 (TR.4 #4).
+  // state=done 인 경우에만 시도하고, 그 외/실패 시 metadata 표시로 폴백.
   if (s.error) {
     $("#result-json").textContent = `[error]\n${s.error}`;
+  } else if (s.state === "done") {
+    try {
+      const scenario = await getSessionScenario(sid);
+      $("#result-json").textContent = JSON.stringify(scenario, null, 2);
+    } catch (err) {
+      $("#result-json").textContent =
+        `(scenario.json 로드 실패: ${err.message})\n\n` +
+        `metadata: ${JSON.stringify(s, null, 2)}`;
+    }
   } else {
-    $("#result-json").textContent = `(scenario.json 은 호스트 디렉토리에 저장됨)\n` +
+    $("#result-json").textContent =
+      `(state=${s.state} — scenario.json 미생성)\n\n` +
       `metadata: ${JSON.stringify(s, null, 2)}`;
   }
 
@@ -195,12 +219,17 @@ async function openSession(sid) {
   // 후속 assertion add 시 사용
   $("#assertion-form").dataset.sid = sid;
 
-  // R-Plus 영역도 done 일 때만 노출
+  // R-Plus 섹션 — state=done 이면서 RPLUS_ENABLED=1 일 때만 노출.
+  // 백엔드는 /experimental/* 로 분리되어 있고 UI 만 메인 결과 화면에 통합.
   const rplus = $("#rplus-section");
-  rplus.hidden = s.state !== "done";
-  rplus.dataset.sid = sid;
-  $("#rplus-sid").textContent = sid;
-  $("#rplus-output").hidden = true;
+  const showRplus = s.state === "done" && _isRplusEnabled();
+  rplus.hidden = !showRplus;
+  if (showRplus) {
+    rplus.dataset.sid = sid;
+    $("#rplus-sid").textContent = sid;
+    $("#rplus-output").hidden = true;
+    $("#rplus-output").textContent = "—";
+  }
 }
 
 // ── 폼 핸들러 ────────────────────────────────────────────────────────────────
@@ -263,18 +292,19 @@ $("#assertion-form").addEventListener("submit", async (e) => {
   }
 });
 
-// R-Plus 핸들러
+// R-Plus 핸들러 — RPLUS_ENABLED 미설정 시 백엔드가 404 던지므로 알림으로 안내.
 function _rplusOutputBox() {
   const box = $("#rplus-output");
   box.hidden = false;
   return box;
 }
-function _currentSid() {
+
+function _currentRplusSid() {
   return $("#rplus-section").dataset.sid;
 }
 
 $("#btn-replay").addEventListener("click", async () => {
-  const sid = _currentSid();
+  const sid = _currentRplusSid();
   if (!sid) return;
   $("#btn-replay").disabled = true;
   _rplusOutputBox().textContent = "⏳ Replay 진행 중...";
@@ -296,7 +326,7 @@ $("#btn-replay").addEventListener("click", async () => {
 });
 
 $("#btn-enrich").addEventListener("click", async () => {
-  const sid = _currentSid();
+  const sid = _currentRplusSid();
   if (!sid) return;
   $("#btn-enrich").disabled = true;
   _rplusOutputBox().textContent = "⏳ Ollama 역추정 진행 중... (수십 초~수 분 소요 가능)";
@@ -316,18 +346,14 @@ $("#btn-enrich").addEventListener("click", async () => {
 
 $("#btn-compare-open").addEventListener("click", () => {
   const dlg = $("#compare-dialog");
-  if (typeof dlg.showModal === "function") {
-    dlg.showModal();
-  } else {
-    dlg.setAttribute("open", "");
-  }
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
 });
 
 $("#compare-form").addEventListener("submit", async (e) => {
-  // dialog form: e.submitter.value 가 'cancel' 이면 그냥 닫음
   if (e.submitter && e.submitter.value === "cancel") return;
   e.preventDefault();
-  const sid = _currentSid();
+  const sid = _currentRplusSid();
   if (!sid) return;
   const fd = new FormData(e.target);
   let docDsl;
@@ -346,10 +372,9 @@ $("#compare-form").addEventListener("submit", async (e) => {
     const c = data.counts;
     _rplusOutputBox().textContent =
       `✓ Compare 완료\n\n` +
-      `정확: ${c.exact} · 값차이: ${c.value_diff} · 누락: ${c.missing} · 추가: ${c.extra} · 녹화 외 의도: ${c.intent_only}\n` +
-      `리포트 HTML: http://localhost:18092${data.report_html_url}\n` +
-      `(새 탭에서 직접 열어보세요)\n`;
-    // 리포트 새 탭 열기
+      `정확: ${c.exact} · 값차이: ${c.value_diff} · 누락: ${c.missing} · ` +
+      `추가: ${c.extra} · 녹화 외 의도: ${c.intent_only}\n` +
+      `리포트 HTML: ${data.report_html_url}\n`;
     window.open(data.report_html_url, "_blank");
     $("#compare-dialog").close();
   } catch (err) {

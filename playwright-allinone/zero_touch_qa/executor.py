@@ -1176,6 +1176,9 @@ class QAExecutor:
         target_str = str(step.get("target", ""))
         alias = str(step.get("value", ""))
 
+        # 민감 input locator 를 미리 잡아 mask 리스트로 사용. fill 전이라도
+        # _find_auth_field 가 RuntimeError 일 수 있어 None 으로 초기화하고 try 안에서 갱신.
+        email_loc = pwd_loc = None
         try:
             email_loc = self._find_auth_field(
                 page, opts.email_field, EMAIL_FIELD_CANDIDATES, "email/username",
@@ -1193,13 +1196,20 @@ class QAExecutor:
             page.wait_for_load_state("domcontentloaded", timeout=10000)
         except Exception as e:
             log.error("[Step %s] auth_login form 실패: %s", step_id, e)
-            ss = self._screenshot(page, artifacts, step_id, "fail")
+            ss = self._screenshot_masked(
+                page, artifacts, step_id, "fail",
+                mask=[loc for loc in (email_loc, pwd_loc) if loc is not None],
+            )
             return StepResult(
                 step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
                 "FAIL", screenshot_path=ss,
             )
 
-        ss = self._screenshot(page, artifacts, step_id, "pass")
+        # P0.1 #3 — credential 평문이 PASS 스크린샷에 남지 않도록 입력 필드를 mask.
+        # submit 후 navigation 으로 detached 된 locator 는 Playwright 내부에서 no-op.
+        ss = self._screenshot_masked(
+            page, artifacts, step_id, "pass", mask=[email_loc, pwd_loc],
+        )
         log.info("[Step %s] auth_login form -> PASS", step_id)
         return StepResult(
             step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
@@ -1227,6 +1237,7 @@ class QAExecutor:
                 "FAIL", screenshot_path=ss,
             )
 
+        otp_loc = None
         try:
             code = generate_totp_code(cred.totp_secret)
             otp_loc = self._find_auth_field(
@@ -1242,13 +1253,19 @@ class QAExecutor:
                 page.wait_for_load_state("domcontentloaded", timeout=10000)
         except Exception as e:
             log.error("[Step %s] auth_login totp 실패: %s", step_id, e)
-            ss = self._screenshot(page, artifacts, step_id, "fail")
+            ss = self._screenshot_masked(
+                page, artifacts, step_id, "fail",
+                mask=[loc for loc in (otp_loc,) if loc is not None],
+            )
             return StepResult(
                 step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
                 "FAIL", screenshot_path=ss,
             )
 
-        ss = self._screenshot(page, artifacts, step_id, "pass")
+        # P0.1 #3 — TOTP 코드가 PASS 스크린샷에 남지 않도록 마스킹.
+        ss = self._screenshot_masked(
+            page, artifacts, step_id, "pass", mask=[otp_loc],
+        )
         log.info("[Step %s] auth_login totp -> PASS (code=******)", step_id)
         return StepResult(
             step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
@@ -1746,6 +1763,32 @@ class QAExecutor:
         """스텝 실행 후 스크린샷을 저장하고 파일 경로를 반환한다."""
         path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
         page.screenshot(path=path)
+        return path
+
+    @staticmethod
+    def _screenshot_masked(
+        page: Page, artifacts: str, step_id, suffix: str,
+        mask: Optional[list] = None,
+    ) -> str:
+        """``_screenshot`` 의 마스킹 버전 — 지정된 locator 위치를 검정 박스 처리.
+
+        T-D (P0.1 #3) — auth_login 의 email/password/TOTP input 처럼 평문이
+        화면에 남는 element 가 PNG 캡처에 그대로 노출되는 것을 방지한다.
+        ``mask`` 는 Locator 의 list 또는 None. detached/0건 locator 는 Playwright
+        내부에서 no-op 처리되므로 제출 후 navigation 된 페이지에 그대로 넘겨도
+        안전하다.
+        """
+        path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
+        try:
+            page.screenshot(path=path, mask=mask or [])
+        except TypeError:
+            # 일부 구버전 Playwright 가 mask 인자 미지원 — 안전을 위해 mask 적용
+            # 못한 채라도 스크린샷은 남기지 말고 실패 처리 (자격증명 노출 방지).
+            log.warning(
+                "[Step %s] mask 미지원 Playwright — auth_login 스크린샷 생략 (security)",
+                step_id,
+            )
+            return ""
         return path
 
     @staticmethod

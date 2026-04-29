@@ -97,26 +97,11 @@
       </form>
     </section>
 
-    <!-- 섹션 5: 세션 목록 -->
-    <section class="card">
-      <h2>최근 세션</h2>
-      <table id="session-table">
-        <thead>
-          <tr>
-            <th>id</th><th>state</th><th>target_url</th>
-            <th>steps</th><th>created</th><th></th>
-          </tr>
-        </thead>
-        <tbody id="session-tbody">
-          <tr class="muted"><td colspan="6">— 세션 없음 —</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <!-- R-Plus 버튼 (활성) -->
+    <!-- 섹션 5: R-Plus (Replay / Generate Doc / Compare) -->
+    <!-- state=done 이면서 healthz.rplus_enabled=true 일 때만 노출 -->
     <section class="card r-plus" id="rplus-section" hidden>
       <h2>결합 시나리오 <span class="badge ok">R-Plus</span></h2>
-      <p class="muted">현재 선택된 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.</p>
+      <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.</p>
       <div class="plus-buttons">
         <button id="btn-replay" title="컨테이너 측 executor 로 14-DSL 재실행 (TR.7)">▶ Replay</button>
         <button id="btn-enrich" title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)">📝 Generate Doc</button>
@@ -141,6 +126,23 @@
         </div>
       </form>
     </dialog>
+
+    <!-- 섹션 6: 세션 목록 -->
+    <section class="card">
+      <h2>최근 세션</h2>
+      <table id="session-table">
+        <thead>
+          <tr>
+            <th>id</th><th>state</th><th>target_url</th>
+            <th>steps</th><th>created</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="session-tbody">
+          <tr class="muted"><td colspan="6">— 세션 없음 —</td></tr>
+        </tbody>
+      </table>
+    </section>
+
   </main>
 
   <footer>

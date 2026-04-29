@@ -92,6 +92,17 @@ class LocatorResolver:
         # 본체 selector 와 modifier 를 분리.
         base_str, modifiers = _split_modifiers(target_str)
 
+        # P0.1 #2 — `>>` chain (예: ``#sidebar >> role=button, name=Settings``,
+        # ``frame=#x >> role=textbox, name=Card``). AST 변환기가 codegen 의 nested
+        # locator 를 보존해 emit 한 형태를 segment 단위로 누적 적용한다.
+        if " >> " in base_str:
+            if modifiers:
+                raw = self._resolve_chain(base_str, raw=True)
+                if raw is None:
+                    return None
+                return _apply_modifiers(raw, modifiers)
+            return self._resolve_chain(base_str, raw=False)
+
         if not modifiers:
             # 기존 경로 — .first 가 즉시 적용된 단일 element locator 반환.
             loc = self._resolve_role(base_str)
@@ -264,6 +275,100 @@ class LocatorResolver:
         except Exception:
             log.debug("[Resolver] raw CSS/XPath 탐색 실패: %s", base_str)
         return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Chain 해석 (T-A / P0.1 #2) — `>>` 로 연결된 nested locator
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _resolve_chain(self, base_str: str, *, raw: bool) -> Locator | None:
+        """``>>`` 로 연결된 segment 들을 누적 chain 으로 해석한다.
+
+        지원 segment:
+          - ``frame=<sel>`` → ``page.frame_locator(sel)`` (시작 segment 권장)
+          - ``role=<r>`` / ``role=<r>, name=<n>`` → ``cur.get_by_role(...)``
+          - ``text=<t>`` / ``label=<t>`` / ``placeholder=<t>`` / ``testid=<t>``
+          - 그 외 → ``cur.locator(seg)`` (CSS/XPath fallback)
+
+        Container 로 좁혀진 chain context 에서는 ambiguous role (name 없는
+        ``button``/``link``) 거부를 적용하지 않는다. ``#sidebar >> role=button``
+        같은 형태는 컨테이너 자체가 false-positive 위험을 충분히 낮춤.
+
+        Args:
+            base_str: ``>>`` 가 포함된 selector 문자열 (modifier 제외).
+            raw: True 면 ``.first`` 미적용 multi-element locator 반환 (modifier
+                 경로용). False 면 ``.first`` 적용된 단일 element 반환.
+
+        Returns:
+            매치된 ``Locator`` 또는 None. 중간 segment 에서 unsupported 형태가
+            나오면 None.
+        """
+        segments = [s.strip() for s in base_str.split(" >> ") if s.strip()]
+        if not segments:
+            return None
+
+        cur = self.page
+        for seg in segments:
+            cur = self._apply_chain_segment(cur, seg)
+            if cur is None:
+                return None
+
+        # frame= 단독 (cur 가 FrameLocator) — 액션 대상이 될 수 없으므로 None.
+        # FrameLocator 는 .count()/.first 가 없으므로 hasattr 로 식별.
+        if not hasattr(cur, "first") or not hasattr(cur, "count"):
+            return None
+
+        if self._safe_count(cur) == 0:
+            return None
+        return cur if raw else cur.first
+
+    @staticmethod
+    def _apply_chain_segment(cur, seg: str):
+        """현재 root (Page / FrameLocator / Locator) 에 segment 한 마디를 적용.
+
+        Returns:
+            새로운 Locator / FrameLocator. 잘못된 입력은 None.
+        """
+        if seg.startswith("frame="):
+            sel = seg[len("frame="):].strip()
+            if not sel:
+                return None
+            try:
+                return cur.frame_locator(sel)
+            except Exception:
+                return None
+
+        if seg.startswith(_ROLE_PREFIX):
+            m = re.match(r"role=(.+?),\s*name=(.+)", seg)
+            if m:
+                return cur.get_by_role(
+                    m.group(1).strip(), name=m.group(2).strip(),
+                )
+            role_only = seg[len(_ROLE_PREFIX):].strip()
+            if "," in role_only:
+                role_only = role_only.split(",", 1)[0].strip()
+            if not role_only:
+                return None
+            return cur.get_by_role(role_only)
+
+        prefix_map = {
+            "text=": "get_by_text",
+            "label=": "get_by_label",
+            "placeholder=": "get_by_placeholder",
+            "testid=": "get_by_test_id",
+        }
+        for prefix, method_name in prefix_map.items():
+            if seg.startswith(prefix):
+                value = seg[len(prefix):].strip()
+                method = getattr(cur, method_name, None)
+                if method is None:
+                    return None
+                return method(value)
+
+        # CSS/XPath fallback
+        try:
+            return cur.locator(seg)
+        except Exception:
+            return None
 
 
 # ─────────────────────────────────────────────────────────────────────────
