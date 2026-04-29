@@ -805,27 +805,43 @@ def _normalize_domain(d: str) -> str:
 
 
 def _domain_matches(cookie_domain: str, expected: str) -> bool:
-    """쿠키 도메인이 expected 와 매칭? (C8 — endsWith 기반).
+    """쿠키 도메인이 expected 와 같은 도메인 트리에 속하나? (C8).
 
-    매칭 규칙:
-        cookie_domain == expected  또는  cookie_domain.endsWith('.' + expected)
+    매칭 규칙 — 다음 중 하나라도 참이면 True:
+        1. cookie_domain == expected                    (자기 자신)
+        2. cookie_domain.endsWith('.' + expected)        (cookie 가 expected 의 하위)
+        3. expected.endsWith('.' + cookie_domain)        (cookie 가 expected 의 부모 — RFC 6265
+                                                         상 부모 도메인 쿠키는 자식 호스트로 전송)
+
+    규칙 3 은 SSO 게이트웨이가 부모 도메인(예: ``.koreaconnect.kr``)에 세션 쿠키를
+    발급하고 자식(``portal.koreaconnect.kr``) 페이지에서 그 쿠키로 인증하는 흔한
+    패턴을 위해 필요. 빠지면 시드는 성공해도 validate_dump 가 false-fail.
 
     예:
-        cookie=".naver.com",        expected="naver.com"        → True
-        cookie="accounts.naver.com", expected="naver.com"        → True
-        cookie="naver.com",          expected="naver.com"        → True
-        cookie="evilnaver.com",      expected="naver.com"        → False
-        cookie="naver.com",          expected="api.naver.com"    → False
+        cookie=".naver.com",         expected="naver.com"             → True  (1/2)
+        cookie="accounts.naver.com", expected="naver.com"             → True  (2)
+        cookie="naver.com",          expected="naver.com"             → True  (1)
+        cookie="naver.com",          expected="api.naver.com"         → True  (3 — parent cookie)
+        cookie=".koreaconnect.kr",   expected="portal.koreaconnect.kr"→ True  (3)
+        cookie="evilnaver.com",      expected="naver.com"             → False
+        cookie="naver.com.evil.com", expected="naver.com"             → False
     """
     cd = _normalize_domain(cookie_domain)
     exp = _normalize_domain(expected)
     if not cd or not exp:
         return False
-    return cd == exp or cd.endswith("." + exp)
+    return (
+        cd == exp
+        or cd.endswith("." + exp)
+        or exp.endswith("." + cd)
+    )
 
 
 def validate_dump(storage_path: Path, expected_domains: list[str]) -> None:
-    """D12 — storage dump 가 비어있지 않고 expected 도메인 쿠키를 모두 포함.
+    """D12 — storage dump 가 비어있지 않고 expected 도메인 트리 안의 쿠키를 모두 포함.
+
+    "도메인 트리" 매칭은 ``_domain_matches`` 참조 — expected 의 자기/하위/부모
+    어느 한 곳의 쿠키라도 있으면 매칭으로 본다 (SSO 부모 도메인 쿠키 케이스 포함).
 
     Raises:
         EmptyDumpError: cookies + origins 둘 다 0건
