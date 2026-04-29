@@ -457,11 +457,13 @@ class QAExecutor:
             )
         if locator:
             # T-H (Visibility Healer) — element 가 hidden 이면 ancestor hover
-            # 시도 후 재검사. 드롭다운 메뉴 / 호버 메뉴 / aria-haspopup 케이스에서
-            # codegen 원본이 hover step 을 빠뜨려 click 이 30s timeout 으로 가는
-            # 것을 막는다. 매칭만 되고 안 보이는 케이스만 트리거 (정상 click 흐름엔
-            # 영향 없음).
-            self._heal_visibility(page, locator, step_id)
+            # 시도, 그래도 안 되면 visible 한 형제 매치로 swap. 드롭다운 메뉴 /
+            # 호버 메뉴 / 모바일 드로어 케이스에서 codegen 원본이 hover step 을
+            # 빠뜨리거나 selector 가 모바일/데스크탑 두 곳에 매치되어 hidden 쪽이
+            # 잡히는 것을 막는다. 매칭만 되고 안 보이는 케이스만 트리거.
+            swap = self._heal_visibility(page, locator, step_id)
+            if swap is not None:
+                locator = swap
             try:
                 self._perform_action(page, locator, step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "pass")
@@ -1951,27 +1953,31 @@ class QAExecutor:
     # / role=menu / nav / dropdown class / :hover CSS rule) 를 찾아 hover 후
     # 재검사한다. 1차 시도 직전에만 호출 — 정상 케이스(이미 visible)엔 영향 0.
 
-    def _heal_visibility(self, page: Page, locator: Locator, step_id) -> None:
-        """element 가 hidden 이면 hoverable ancestor 를 hover 하여 노출 시도.
+    def _heal_visibility(
+        self, page: Page, locator: Locator, step_id,
+    ) -> Optional[Locator]:
+        """element 가 hidden 이면 (1) hoverable ancestor hover 후 재검사 →
+        (2) 같은 selector 의 다른 visible 매치로 swap.
 
         매칭은 됐지만 visible 하지 않은 element 한정. true positive (이미 보이는 element)
         에는 evaluate 1회 외 부수 효과 없음.
+
+        Returns:
+            visible 한 다른 형제 매치를 찾았으면 그 Locator. 그 외 None
+            (locator 자체를 그대로 사용해도 OK 임을 의미).
         """
         try:
-            # is_visible 은 timeout 안 잡히면 즉시 검사 (Playwright > 1.30 기본).
             if locator.is_visible():
-                return
+                return None
         except Exception:
-            return  # locator 가 invalid 한 케이스는 후속 healer 가 처리
+            return None  # locator 가 invalid 한 케이스는 후속 healer 가 처리
 
+        # ── (1) ancestor hover 시도 ─────────────────────────────────────
         try:
             candidates = locator.evaluate(_VISIBILITY_HEALER_JS)
         except Exception as e:  # noqa: BLE001
             log.debug("[Step %s] visibility-healer evaluate 실패: %s", step_id, e)
-            return
-
-        if not candidates:
-            return
+            candidates = []
 
         for cand in candidates[:5]:  # 최대 5개 ancestor 까지만 시도 (시간 한도)
             sel = cand.get("path") or ""
@@ -1987,10 +1993,42 @@ class QAExecutor:
                         "[Step %s] visibility-healer 복구 — hover %s (reason=%s)",
                         step_id, sel, reason,
                     )
-                    return
+                    return None
             except Exception:  # noqa: BLE001
                 continue
-        log.debug("[Step %s] visibility-healer — 적용된 ancestor 없음", step_id)
+
+        # ── (2) T-H (C) 형제 매치 swap ─────────────────────────────────
+        # `.first` 가 hidden 인데 ancestor hover 도 통하지 않는 경우 (햄버거
+        # 메뉴 같이 click 으로 열리는 드로어). selector 가 가리키는 element 가
+        # 여러 개라면 그중 visible 한 것으로 swap. ktds.com 의 "회사소개" 가
+        # 모바일 드로어 + 데스크탑 GNB 두 곳에 있는 케이스.
+        sibling = self._find_visible_sibling(locator, step_id)
+        if sibling is not None:
+            return sibling
+
+        log.debug("[Step %s] visibility-healer — 적용된 ancestor 없음 + 형제 매치 없음", step_id)
+        return None
+
+    @staticmethod
+    def _find_visible_sibling(locator: Locator, step_id) -> Optional[Locator]:
+        """Locator 가 다중 매치이고 ``.first`` 가 hidden 일 때 visible 한 형제 swap.
+
+        Playwright 1.36+ 의 ``filter(visible=True)`` 사용. ``.first`` 의 부모
+        scope (= 원래 매치 집합) 에서 visible 만 추려 그 첫 element 를 반환.
+        """
+        try:
+            visible = locator.filter(visible=True)
+            if visible.count() > 0:
+                first = visible.first
+                if first.is_visible():
+                    log.info(
+                        "[Step %s] visibility-healer — 형제 매치 swap (filter(visible=True).first)",
+                        step_id,
+                    )
+                    return first
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     # ── 스크린샷 ──
     @staticmethod

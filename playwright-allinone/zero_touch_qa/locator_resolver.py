@@ -172,6 +172,10 @@ class LocatorResolver:
         ``name=`` 한정자 없는 광범위 role (link, button 등) 은 거부한다 —
         '첫 번째 검색 결과 링크' 의도가 페이지 헤더/로고에 잘못 매치되는
         false-positive PASS 를 막기 위함. fallback_targets 가 있으면 그쪽 사용.
+
+        T-H (B) — ``role=X, name=Y`` 가 여러 element 와 매치할 때 (모바일 드로어
+        + 데스크탑 GNB 같이 같은 라벨이 두 곳에 있는 사이트) **visible 한 매치를 우선** 선택.
+        모두 hidden 이면 기존대로 ``.first`` 폴백 (Visibility Healer 가 후속 처리).
         """
         if not target_str.startswith(_ROLE_PREFIX):
             return None
@@ -180,7 +184,9 @@ class LocatorResolver:
             loc = self.page.get_by_role(
                 m.group(1).strip(), name=m.group(2).strip()
             )
-            return loc.first if self._safe_count(loc) > 0 else None
+            if self._safe_count(loc) == 0:
+                return None
+            return _prefer_visible(loc)
         # role만 있고 name이 없는 경우
         role_only = target_str.replace(_ROLE_PREFIX, "", 1).strip()
         # "role=link, text=X" 같은 복합 셀렉터 → role 부분만 추출
@@ -427,6 +433,25 @@ class LocatorResolver:
 
 # nth/has_text 후미 modifier 파싱 — base selector 안의 콤마 (예 'role=link, name=뉴스')
 # 와 구분. modifier 키 prefix 로만 매칭한다.
+# T-H (B) — 다중 매치 중 visible 한 것을 우선 선택. ktds.com 같은 사이트에서
+# 모바일 드로어 (DOM 순서상 앞) + 데스크탑 GNB 둘 다 같은 라벨을 가질 때
+# `.first` 가 hidden 모바일 드로어를 잡아 click timeout 으로 가는 것을 방지.
+def _prefer_visible(loc: "Locator") -> "Locator":
+    """다중 매치 중 visible 한 가장 앞 element 반환. visible 0 건이면 ``.first``.
+
+    Playwright 1.36+ 의 ``filter(visible=True)`` 사용 — descendant 가 아닌
+    매치 본체에 visibility 필터 적용. count() == 0 인 경우 모두 hidden 이라는
+    뜻이니 기존 ``.first`` 로 폴백 (후속 Visibility Healer 가 처리).
+    """
+    try:
+        visible = loc.filter(visible=True)
+        if visible.count() > 0:
+            return visible.first
+    except Exception:
+        pass
+    return loc.first
+
+
 _MODIFIER_KEYS = ("nth", "has_text")
 
 
