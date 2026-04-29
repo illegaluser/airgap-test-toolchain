@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from .. import comparator, enricher, replay_proxy, session, storage
 from ..enricher import EnrichError, EnrichResult
-from ..replay_proxy import ReplayProxyError
+from ..replay_proxy import ReplayAuthExpiredError, ReplayProxyError
 
 log = logging.getLogger("recording_service.rplus")
 
@@ -130,11 +130,21 @@ def _play_response(sid: str, result) -> dict:
     }
 
 
+def _is_imported_session(sid: str) -> bool:
+    """metadata 의 ``imported_filename`` 필드로 사용자 업로드 세션 판별."""
+    meta = storage.load_metadata(sid) or {}
+    return bool(meta.get("imported_filename"))
+
+
 def _annotate_for_session(sid: str) -> dict:
     """play-codegen 진입 직전 자동 호출용 — annotate 결과 dict 반환.
 
     실패는 silent (annotation 없이도 codegen 원본 그대로 실행 가능). 호출자가
     응답에 합쳐 사용자에게 노출.
+
+    **Imported 세션 (사용자 .py 업로드) 은 annotate 스킵** — 사용자의 의도된
+    스크립트를 휴리스틱이 변형하는 부수 효과 차단. stale `original_annotated.py`
+    존재 시 제거.
     """
     from .. import annotator
     host_dir = storage.session_dir(sid)
@@ -142,6 +152,19 @@ def _annotate_for_session(sid: str) -> dict:
     if not src.is_file():
         return {"injected": 0, "examined_clicks": 0, "triggers": [], "skipped": "no original.py"}
     dst = host_dir / "original_annotated.py"
+    if _is_imported_session(sid):
+        # 업로드 스크립트는 그대로 실행 — stale annotated 제거
+        if dst.is_file():
+            try:
+                dst.unlink()
+            except OSError:  # noqa: BLE001
+                pass
+        return {
+            "injected": 0,
+            "examined_clicks": 0,
+            "triggers": [],
+            "skipped": "imported script — annotator 우회 (사용자 의도 보존)",
+        }
     try:
         r = annotator.annotate_script(str(src), str(dst))
         return {
@@ -170,6 +193,21 @@ def play_codegen(sid: str) -> dict:
 
     try:
         result = _run_codegen_replay_impl(host_session_dir=host_dir)
+    except ReplayAuthExpiredError as e:
+        # post-review fix — auth-profile 만료/미존재는 502 가 아니라 409 +
+        # 구조화된 detail 로 반환. UI 가 만료 모달 + [재시드] 분기로 가도록.
+        log.warning("[/experimental/play-codegen] %s — auth expired: %s", sid, e)
+        # ``e.detail`` 에 ``reason`` 키가 있을 수 있어 spread 순서가 중요.
+        # router 의 ``reason="profile_expired"`` 가 inner detail 의 reason
+        # (예: ``verify_failed``) 에 덮이지 않도록 우리 키를 뒤에 둔다.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "profile_name": e.profile_name,
+                **e.detail,
+                "reason": "profile_expired",
+            },
+        )
     except ReplayProxyError as e:
         log.error("[/experimental/play-codegen] %s — %s", sid, e)
         raise HTTPException(status_code=502, detail=str(e))
@@ -206,6 +244,21 @@ def play_llm(sid: str) -> dict:
         result = _run_llm_play_impl(
             host_session_dir=host_dir,
             project_root=_project_root(),
+        )
+    except ReplayAuthExpiredError as e:
+        # post-review fix — auth-profile 만료/미존재 → 409 + 구조화 detail.
+        # UI 가 만료 모달 + [재시드] 분기로 갈 수 있게.
+        log.warning("[/experimental/play-llm] %s — auth expired: %s", sid, e)
+        # ``e.detail`` 에 ``reason`` 키가 있을 수 있어 spread 순서가 중요.
+        # router 의 ``reason="profile_expired"`` 가 inner detail 의 reason
+        # (예: ``verify_failed``) 에 덮이지 않도록 우리 키를 뒤에 둔다.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "profile_name": e.profile_name,
+                **e.detail,
+                "reason": "profile_expired",
+            },
         )
     except ReplayProxyError as e:
         log.error("[/experimental/play-llm] %s — %s", sid, e)

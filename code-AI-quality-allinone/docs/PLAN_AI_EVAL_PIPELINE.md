@@ -149,7 +149,7 @@
   - **정규화 규칙**: 타임스탬프(ISO8601) → `<TIMESTAMP>`, build_number/ID → `<BUILD>`, UUID → `<UUID>`, latency_ms 실수치 → `<LATENCY>` 치환 후 diff.
   - **실행 명령**: `LANGFUSE_PUBLIC_KEY="" OLLAMA_BASE_URL=http://127.0.0.1:0 pytest eval_runner/tests/test_golden.py -v`
 - **0.3** 리포트 acceptance spec 문서화
-  - `eval_runner/docs/REPORT_SPEC.md` 신규 — R1~R6 의 레이아웃 목업·필수 필드 명시
+  - `docs/REPORT_SPEC.md` 신규 — R1~R6 의 레이아웃 목업·필수 필드 명시
   - Phase 2 의 설계 기준이 됨
 
 **검증 게이트**:
@@ -209,7 +209,7 @@
     - `SUMMARY_LLM_TIMEOUT_SEC`: 기본 20 (개별 호출 실패 시 fallback)
   - **(e) 프롬프트 가드레일**: 각 role 별 system prompt 고정화, 공통 문구 — "주어진 JSON 필드의 사실만 사용. 추측·새 해석·외부 지식 금지. score/case_id/숫자/URL 원문 유지. 출력 길이 N 문장 제한."
   - **(f) Fallback 체계**: LLM timeout/error/네트워크 실패 시 기존 하드코딩 텍스트(`_easy_explanation` if-else, `_fallback_localize_common_phrases`) 로 graceful degrade. 리포트에 "🤖 LLM 생성" 또는 "📋 기본 메시지" 배지로 구분.
-  - **(g) REPORT_SPEC 업데이트**: `eval_runner/docs/REPORT_SPEC.md` 에 §3.1.1 (R1.1), §3.2.1 (R2.1), §3.3.1 (R3.1), §3.3.2 (R3.2) 신규 섹션 추가. AC9~AC12 acceptance criteria 추가 (예: AC9 "실패 빌드 리포트에 LLM 요약이 30단어 이내, JSON 사실 포함 여부 체크").
+  - **(g) REPORT_SPEC 업데이트**: `docs/REPORT_SPEC.md` 에 §3.1.1 (R1.1), §3.2.1 (R2.1), §3.3.1 (R3.1), §3.3.2 (R3.2) 신규 섹션 추가. AC9~AC12 acceptance criteria 추가 (예: AC9 "실패 빌드 리포트에 LLM 요약이 30단어 이내, JSON 사실 포함 여부 체크").
   - **(h) 골든 하네스 확장**: `generate_with_ollama` 를 monkeypatch stub 으로 주입해 결정론 테스트 가능하도록. LLM off 상태에서도 리포트 정상 생성 확인.
 
 - **2.1** R1 + **R1.1** — 임원 요약 헤더 + LLM 요약 문단
@@ -411,7 +411,7 @@
 - `eval_runner/reporting/narrative.py` (Phase 2.0 — role 별 프롬프트 + fallback 체계. R1.1/R2.1/R3.1/R3.2 호출 지점)
 - `eval_runner/{dataset,policy,scoring,runner}.py` (Phase 4)
 - `eval_runner/tests/{test_golden.py, fixtures/tiny_dataset.csv, fixtures/expected_golden.json}` (Phase 0 완료)
-- `eval_runner/docs/REPORT_SPEC.md` (Phase 0 작성, Phase 2.0 에서 §3.1.1/§3.2.1/§3.3.1/§3.3.2 + AC9~AC12 추가)
+- `docs/REPORT_SPEC.md` (Phase 0 작성, Phase 2.0 에서 §3.1.1/§3.2.1/§3.3.1/§3.3.2 + AC9~AC12 추가)
 - (이연) `eval_runner/openai_wrapper_api.py`, `eval_runner/gemini_wrapper_api.py` — G1/G2, 별도 phase
 
 ---

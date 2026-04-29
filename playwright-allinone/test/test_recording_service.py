@@ -84,8 +84,9 @@ def patched_codegen(monkeypatch):
 
     captured: dict = {"started": [], "stopped": [], "converted": []}
 
-    def fake_start(target_url, output_path, *, timeout_sec):
-        captured["started"].append((target_url, str(output_path), timeout_sec))
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
+        # P3.1 (auth-profile) 후 _start_codegen_impl 시그니처에 extra_args 가 추가됨.
+        captured["started"].append((target_url, str(output_path), timeout_sec, extra_args))
         return _make_fake_handle(Path(output_path), write_actions=True)
 
     def fake_stop(handle):
@@ -363,7 +364,7 @@ def test_stop_with_empty_output(client, monkeypatch):
     from recording_service import server as srv
     from pathlib import Path
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         # 핵심: 파일을 생성하지 않거나 0 byte 만들기
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("", encoding="utf-8")
@@ -401,7 +402,7 @@ def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
     from recording_service import server as srv
     from recording_service.converter_proxy import ConvertResult
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         return _make_fake_handle(Path(output_path), write_actions=True)
 
     def fake_stop(handle):
@@ -437,7 +438,7 @@ def test_stop_with_converter_proxy_error(client, monkeypatch):
     from recording_service import server as srv
     from recording_service.converter_proxy import ConverterProxyError
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         return _make_fake_handle(Path(output_path), write_actions=True)
 
     def fake_stop(handle):
@@ -465,7 +466,7 @@ def test_stop_after_codegen_empty_skips_conversion(client, monkeypatch):
 
     convert_calls = []
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("", encoding="utf-8")
         return _make_fake_handle(Path(output_path), write_actions=False)
@@ -1733,6 +1734,261 @@ def test_diff_analysis_returns_markdown(
     assert body["elapsed_ms"] >= 0
     # fake 가 입력 받은 파일 본문 확인
     assert "page.click('#healed')" in captured["reg"]
+
+
+# ── /recording/import-script — 사용자 .py 업로드 ─────────────────────────
+
+
+def test_import_script_creates_session_and_persists_original(
+    client, temp_host_root,
+):
+    from pathlib import Path
+
+    src = (
+        b"from playwright.sync_api import sync_playwright\n"
+        b"with sync_playwright() as p:\n"
+        b"    page = p.chromium.launch().new_context().new_page()\n"
+        b"    page.goto('https://example.com/')\n"
+        b"    page.click('#btn')\n"
+    )
+    files = {"file": ("uploaded.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 201
+    body = r.json()
+    sid = body["id"]
+    assert body["imported_filename"] == "uploaded.py"
+    assert body["step_count"] >= 2  # goto + click
+
+    # session 등록 + state=done
+    r2 = client.get(f"/recording/sessions/{sid}")
+    assert r2.status_code == 200
+    assert r2.json()["state"] == "done"
+
+    # original.py 디스크에 저장
+    p = Path(temp_host_root) / sid / "original.py"
+    assert p.is_file()
+    content = p.read_text(encoding="utf-8")
+    assert "example.com" in content
+    assert "page.click" in content
+
+
+def test_import_script_rejects_non_py_extension(client):
+    files = {"file": ("evil.sh", b"rm -rf /\n", "application/x-shellscript")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 400
+    assert ".py" in r.json()["detail"]
+
+
+def test_import_script_rejects_invalid_python_syntax(client):
+    src = b"def \xff invalid syntax !!!\n"
+    files = {"file": ("bad.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 400
+
+
+def test_import_script_rejects_non_playwright(client):
+    src = b"print('hello world')\n"
+    files = {"file": ("simple.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 400
+    assert "playwright" in r.json()["detail"].lower()
+
+
+def test_import_script_rejects_empty_file(client):
+    files = {"file": ("empty.py", b"   \n", "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 400
+
+
+def test_import_script_estimates_step_count(client):
+    src = (
+        b"from playwright.sync_api import sync_playwright\n"
+        b"def run(p):\n"
+        b"    page = p.chromium.launch().new_context().new_page()\n"
+        b"    page.goto('https://x')\n"
+        b"    page.click('#a')\n"
+        b"    page.fill('#b', 'x')\n"
+        b"    page.press('#c', 'Enter')\n"
+        b"    page.hover('#d')\n"
+        b"    page.check('#e')\n"
+    )
+    files = {"file": ("multi.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 201
+    # goto + click + fill + press + hover + check = 6
+    assert r.json()["step_count"] == 6
+
+
+def test_import_script_listed_in_sessions(client, temp_host_root):
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    files = {"file": ("imp.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    sid = r.json()["id"]
+    sessions = client.get("/recording/sessions").json()
+    assert any(s["id"] == sid for s in sessions)
+    target = next(s["target_url"] for s in sessions if s["id"] == sid)
+    assert "imported" in target.lower()
+
+
+def test_import_script_filename_sanitized(client, temp_host_root):
+    """파일명 path traversal / 특수문자 제거."""
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    files = {"file": ("../../etc/passwd.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 201
+    body = r.json()
+    # 슬래시는 _ 로 변환되지만 .py 는 보존
+    assert "/" not in body["imported_filename"]
+    assert body["imported_filename"].endswith(".py")
+
+
+def test_import_script_runs_converter_to_produce_scenario_json(
+    client, temp_host_root, monkeypatch,
+):
+    """업로드 후 convert 호출 → scenario.json 생성 (codegen 세션과 동일 흐름).
+
+    convert 실패는 silent — 그래도 세션 등록은 성공 (테스트코드 원본 실행 가능).
+    """
+    from pathlib import Path
+
+    from recording_service import server as srv
+    from recording_service.converter_proxy import ConvertResult
+
+    # convert 결과 fake — scenario.json 을 디스크에 직접 생성
+    def fake_convert(*, container_session_dir, host_scenario_path):
+        Path(host_scenario_path).write_text(
+            '[{"step":1,"action":"navigate","target":"","value":"https://x","fallback_targets":[]}]',
+            encoding="utf-8",
+        )
+        return ConvertResult(
+            returncode=0, stdout="", stderr="",
+            scenario_path=host_scenario_path,
+            scenario_exists=True, elapsed_ms=42.0,
+        )
+
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert)
+
+    src = (
+        b"from playwright.sync_api import sync_playwright\n"
+        b"with sync_playwright() as p:\n"
+        b"    page = p.chromium.launch().new_context().new_page()\n"
+        b"    page.goto('https://x')\n"
+    )
+    files = {"file": ("user.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 201
+    body = r.json()
+    sid = body["id"]
+    assert body["convert"]["ok"] is True
+    assert body["convert"]["scenario_exists"] is True
+
+    # scenario.json 디스크에 실제 생성됨 → Play with LLM 가능
+    scenario_path = Path(temp_host_root) / sid / "scenario.json"
+    assert scenario_path.is_file()
+    assert "navigate" in scenario_path.read_text(encoding="utf-8")
+
+
+def test_import_script_silent_fails_when_converter_errors(
+    client, temp_host_root, monkeypatch,
+):
+    """converter 실패해도 import 자체는 성공 — 사용자가 테스트코드 원본 실행 으로 재생 가능."""
+    from recording_service import server as srv
+    from recording_service.converter_proxy import ConverterProxyError
+
+    def fake_convert_fails(*, container_session_dir, host_scenario_path):
+        raise ConverterProxyError("docker 미설치 (test stub)")
+
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert_fails)
+
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    files = {"file": ("user.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 201  # 여전히 성공
+    body = r.json()
+    assert body["convert"]["ok"] is False
+    assert "docker" in body["convert"].get("error", "").lower()
+
+
+def test_imported_session_play_codegen_skips_annotator(
+    client, temp_host_root, monkeypatch, rplus_on,
+):
+    """업로드 스크립트는 annotator 우회 — 사용자 의도된 코드 변형 방지.
+
+    사용자 시나리오: 사용자가 직접 작성한 .py 를 업로드 → annotator 가 hover
+    추가하면 의도와 다른 동작. 본 테스트는 imported_filename 메타가 있을 때
+    annotator.annotate_script 가 호출되지 않음을 검증.
+    """
+    from pathlib import Path
+
+    from recording_service import annotator
+    from recording_service.replay_proxy import PlayResult
+    from recording_service.rplus import router as rplus_router
+
+    src = (
+        b"from playwright.sync_api import sync_playwright\n"
+        b"with sync_playwright() as p:\n"
+        b"    page = p.chromium.launch().new_context().new_page()\n"
+        b"    page.goto('https://x')\n"
+        b"    page.click('#a')\n"
+    )
+    files = {"file": ("user_script.py", src, "text/x-python")}
+    r = client.post("/recording/import-script", files=files)
+    assert r.status_code == 201
+    sid = r.json()["id"]
+
+    # annotator 호출 추적
+    called = {"count": 0}
+
+    def fake_annotate(*args, **kwargs):
+        called["count"] += 1
+        return annotator.AnnotateResult(
+            src_path="x", dst_path="y", injected=99, examined_clicks=99, triggers=[],
+        )
+
+    def fake_replay(*, host_session_dir):
+        return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
+
+    monkeypatch.setattr(annotator, "annotate_script", fake_annotate)
+    monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_replay)
+
+    # play-codegen 호출 — annotator 호출 0 + skipped 메시지
+    r2 = client.post(f"/experimental/sessions/{sid}/play-codegen")
+    assert r2.status_code == 201
+    summary = r2.json()["annotate"]
+    assert summary["injected"] == 0
+    assert summary["examined_clicks"] == 0
+    assert "imported" in (summary.get("skipped") or "").lower()
+    assert called["count"] == 0  # annotate_script 호출 안 됨
+
+
+def test_codegen_session_play_still_runs_annotator(
+    client, patched_codegen, monkeypatch, rplus_on,
+):
+    """일반 codegen 세션은 annotator 그대로 호출 — 회귀 가드."""
+    from recording_service import annotator
+    from recording_service.replay_proxy import PlayResult
+    from recording_service.rplus import router as rplus_router
+
+    sid = _create_done_session(client, patched_codegen)
+    called = {"count": 0}
+
+    def fake_annotate(src_path, dst_path):
+        called["count"] += 1
+        return annotator.AnnotateResult(
+            src_path=src_path, dst_path=dst_path,
+            injected=2, examined_clicks=4, triggers=["x", "y"],
+        )
+
+    def fake_replay(*, host_session_dir):
+        return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
+
+    monkeypatch.setattr(annotator, "annotate_script", fake_annotate)
+    monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_replay)
+
+    r = client.post(f"/experimental/sessions/{sid}/play-codegen")
+    assert r.status_code == 201
+    assert called["count"] == 1  # codegen 세션은 annotator 호출됨
+    assert r.json()["annotate"]["injected"] == 2
 
 
 def test_diff_analysis_502_when_ollama_fails(

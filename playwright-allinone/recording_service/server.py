@@ -3,7 +3,7 @@
 기동:
     uvicorn recording_service.server:app --host 0.0.0.0 --port 18092
 
-엔드포인트 표는 PLAN_GROUNDING_RECORDING_AGENT.md §"TR.1" 참조.
+엔드포인트 표는 docs/PLAN_GROUNDING_RECORDING_AGENT.md §"TR.1" 참조.
 TR.2 단계에서 /start /stop 이 실 codegen subprocess 와 연동된다.
 """
 
@@ -17,7 +17,7 @@ from typing import Optional
 
 from pathlib import Path as _Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from . import (
-    codegen_runner, converter_proxy, session, storage,
+    codegen_runner, converter_proxy, post_process, session, storage,
 )
 from .codegen_runner import CodegenError, CodegenHandle
 from .converter_proxy import ConverterProxyError
@@ -80,9 +80,18 @@ def _get_handle(sid: str) -> Optional[CodegenHandle]:
 
 # 테스트가 실 subprocess 대신 fake handle 을 반환하도록 patch 할 hook.
 # server module 의 _start_codegen_impl 을 monkeypatch 하면 됨.
-def _start_codegen_impl(target_url: str, output_path, *, timeout_sec: int) -> CodegenHandle:
+def _start_codegen_impl(
+    target_url: str,
+    output_path,
+    *,
+    timeout_sec: int,
+    extra_args: Optional[list[str]] = None,
+) -> CodegenHandle:
+    """codegen 시작 hook. ``extra_args`` 는 ``playwright codegen`` 에 그대로 전달
+    (예: ``--load-storage <path>`` + fingerprint 옵션 — P3.7).
+    """
     return codegen_runner.start_codegen(
-        target_url, output_path, timeout_sec=timeout_sec,
+        target_url, output_path, timeout_sec=timeout_sec, extra_args=extra_args,
     )
 
 
@@ -100,6 +109,90 @@ def _run_convert_impl(
     )
 
 
+def _save_metadata_preserving_auth(sid: str, new_meta: dict) -> None:
+    """``recording_stop`` 의 metadata 갱신이 ``auth_profile`` 키를 잃지 않도록 보존.
+
+    post-review fix — ``save_metadata`` 가 *전체 덮어쓰기* 라서 stop 의 done/error
+    분기들이 start 시점에 박은 auth_profile 을 silent-drop 했음. 결과: 재생 시
+    ``_resolve_auth_for_replay`` 가 메타에서 auth_profile 을 못 찾아 verify 게이트
+    스킵 → 만료 감지 안 됨.
+
+    호출자가 새 메타 dict 를 넘기면, 기존 메타에서 auth_profile 만 lift 해 머지.
+    """
+    existing = storage.load_metadata(sid) or {}
+    auth = existing.get("auth_profile")
+    if auth and "auth_profile" not in new_meta:
+        new_meta = dict(new_meta)
+        new_meta["auth_profile"] = auth
+    storage.save_metadata(sid, new_meta)
+
+
+# ── auth-profile 통합 헬퍼 (P3.7) ────────────────────────────────────────
+
+def _resolve_auth_profile_extras(
+    profile_name: Optional[str],
+) -> tuple[Optional[list[str]], bool]:
+    """auth_profile 이름 → codegen extra_args + machine_mismatch 플래그.
+
+    Returns:
+        (extra_args, machine_mismatch). extra_args 는 ``--load-storage <path> +
+        fingerprint 옵션``. profile 이 None 이면 ``(None, False)``.
+
+    Raises:
+        HTTPException(404): 프로파일 미발견.
+        HTTPException(409): verify 실패 (만료) — UI 가 재시드 모달로 분기.
+        HTTPException(503): CHIPS 미지원 등 환경 문제.
+    """
+    if not profile_name:
+        return None, False
+    # auth_profiles 는 fcntl 등 POSIX 의존성이 있어 lazy import.
+    from zero_touch_qa import auth_profiles
+    from zero_touch_qa.auth_profiles import (
+        AuthProfileError,
+        ChipsNotSupportedError,
+        ProfileNotFoundError,
+    )
+
+    try:
+        prof = auth_profiles.get_profile(profile_name)
+    except ProfileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail={"reason": "profile_not_found", "name": profile_name},
+        )
+    except AuthProfileError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason": "profile_error", "message": str(e)},
+        )
+
+    try:
+        ok, vdetail = auth_profiles.verify_profile(prof)
+    except ChipsNotSupportedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={"reason": "chips_not_supported", "message": str(e)},
+        )
+    except AuthProfileError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason": "verify_failed", "message": str(e)},
+        )
+
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": "profile_expired", **vdetail},
+        )
+
+    # 머신 결속 (D11) — 차단 안 함, 헤더로만 알림.
+    machine_mismatch = (prof.host_machine_id != auth_profiles.current_machine_id())
+
+    extra_args: list[str] = ["--load-storage", str(prof.storage_path)]
+    extra_args += prof.fingerprint.to_playwright_open_args()
+    return extra_args, machine_mismatch
+
+
 
 
 # ── 요청/응답 모델 ────────────────────────────────────────────────────────────
@@ -109,6 +202,13 @@ class RecordingStartReq(BaseModel):
     planning_doc_ref: Optional[str] = Field(
         None,
         description="기획서 참조 (Phase R-Plus 시나리오 A 에서 사용. R-MVP 는 메타데이터만)",
+    )
+    auth_profile: Optional[str] = Field(
+        None,
+        description=(
+            "(P3.7) auth_profiles 카탈로그의 프로파일 이름. 지정 시 codegen 시작 전 "
+            "verify_profile 통과 강제 + storage_state + fingerprint 옵션 자동 주입."
+        ),
     )
 
 
@@ -136,6 +236,7 @@ class SessionResp(BaseModel):
     action_count: int
     error: Optional[str]
     planning_doc_ref: Optional[str]
+    auth_profile: Optional[str] = None
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────────
@@ -151,9 +252,153 @@ def healthz() -> HealthResp:
     )
 
 
+# ── 항목 (import-script) — 사용자 제공 .py 업로드 + 세션 등록 ──────────────
+
+# 업로드 검증 — sanity 수준만. 신뢰 모델: 사용자 본인이 신뢰하는 스크립트만
+# 업로드 (host venv 직접 실행 = python script.py 와 동일 위험). localhost-only
+# 데몬 가정. 크기 제한 없음 — 사용자가 자신의 스크립트 크기를 안다.
+_IMPORT_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_STEP_HINT_RE = re.compile(
+    r"\.(click|fill|press|select_option|check|hover|goto|drag_to|set_input_files)\s*\(",
+)
+
+
+def _estimate_import_step_count(text: str) -> int:
+    """업로드 스크립트의 step 수 거친 추정 — Playwright API 호출 개수."""
+    return len(_STEP_HINT_RE.findall(text))
+
+
+@app.post("/recording/import-script", status_code=201)
+async def import_script(file: UploadFile = File(...)) -> dict:
+    """Playwright Python 스크립트 업로드 → 새 세션 디렉토리 등록.
+
+    이후 결과 화면의 ``▶ Codegen 녹화코드 실행`` 으로 host venv 에서 직접 실행.
+    "Start Recording" 의 대안 진입점 — 이미 작성된 스크립트를 codegen 녹화 없이
+    바로 재생.
+
+    검증 (sanity 수준):
+      - 확장자 ``.py``
+      - UTF-8 디코딩 + Python AST 파싱 통과
+      - 본문에 ``playwright`` 토큰 존재 (오타 방지)
+
+    Raises:
+        400: 검증 실패
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="filename 필수")
+    safe_name = _IMPORT_FILENAME_SAFE_RE.sub("_", file.filename)
+    if not safe_name.endswith(".py"):
+        raise HTTPException(status_code=400, detail=".py 파일만 업로드 가능")
+
+    body = await file.read()
+    if not body.strip():
+        raise HTTPException(status_code=400, detail="빈 파일")
+
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="UTF-8 디코딩 실패")
+
+    import ast as _ast
+    try:
+        _ast.parse(text)
+    except SyntaxError as e:
+        raise HTTPException(status_code=400, detail=f"Python 구문 오류: {e}")
+
+    if "playwright" not in text:
+        raise HTTPException(
+            status_code=400,
+            detail="`playwright` import 미발견 — Playwright 스크립트가 아닌 것 같습니다",
+        )
+
+    # 세션 등록 — uuid 그대로 사용. target_url 은 imported 표시.
+    sess = _registry.create(target_url=f"(imported: {safe_name})")
+    sid = sess.id
+    sess_dir = storage.session_dir(sid)
+    (sess_dir / "original.py").write_text(text, encoding="utf-8")
+
+    step_count = _estimate_import_step_count(text)
+    import time as _time
+    storage.save_metadata(sid, {
+        "id": sid,
+        "target_url": sess.target_url,
+        "created_at": storage.now_iso(),
+        "created_at_ts": _time.time(),
+        "state": session.STATE_DONE,
+        "step_count": step_count,
+        "imported_filename": safe_name,
+    })
+    _registry.update(
+        sid,
+        state=session.STATE_DONE,
+        action_count=step_count,
+    )
+
+    # 변환 시도 — codegen 세션과 동일하게 14-DSL scenario.json 생성. 실패는
+    # silent (Play with LLM 만 미사용 — 테스트코드 원본 실행 은 그대로 가능).
+    convert_summary = _convert_imported_script(sid)
+
+    log.info(
+        "[/recording/import-script] %s — '%s' 업로드 (%d bytes, ~%d step) convert=%s",
+        sid, safe_name, len(body), step_count, convert_summary,
+    )
+    return {
+        "id": sid,
+        "imported_filename": safe_name,
+        "step_count": step_count,
+        "size_bytes": len(body),
+        "convert": convert_summary,
+    }
+
+
+def _convert_imported_script(sid: str) -> dict:
+    """업로드된 ``original.py`` → ``scenario.json`` 변환 (silent fail).
+
+    docker 미설치 / 컨테이너 미가동 / converter 실패 모두 silent — 사용자는
+    여전히 ``테스트코드 원본 실행`` (host venv 직접) 으로 재생 가능. 결과
+    summary 만 응답에 포함.
+    """
+    container_dir = storage.container_path_for(sid)
+    host_scenario = str(storage.scenario_path(sid))
+    try:
+        result = _run_convert_impl(
+            container_session_dir=container_dir,
+            host_scenario_path=host_scenario,
+        )
+    except ConverterProxyError as e:
+        log.warning("[/recording/import-script] %s — converter 실패: %s", sid, e)
+        return {"ok": False, "scenario_exists": False, "error": str(e)}
+    if result.returncode != 0 or not result.scenario_exists:
+        msg = (result.stderr or "").strip()[:500] or f"rc={result.returncode}"
+        log.warning("[/recording/import-script] %s — convert rc=%d, stderr=%s",
+                    sid, result.returncode, msg)
+        return {
+            "ok": False,
+            "scenario_exists": result.scenario_exists,
+            "returncode": result.returncode,
+            "stderr_tail": msg,
+        }
+    return {
+        "ok": True,
+        "scenario_exists": True,
+        "elapsed_ms": result.elapsed_ms,
+    }
+
+
 @app.post("/recording/start", response_model=RecordingStartResp, status_code=201)
-def recording_start(req: RecordingStartReq) -> RecordingStartResp:
-    """새 녹화 세션 생성 + codegen subprocess 시작 (TR.2)."""
+def recording_start(req: RecordingStartReq, response: Response) -> RecordingStartResp:
+    """새 녹화 세션 생성 + codegen subprocess 시작 (TR.2).
+
+    P3.7 — auth_profile 지정 시 verify 게이트 + extra_args 자동 주입. 머신 불일치
+    검출 시 ``X-Auth-Machine-Mismatch: 1`` 응답 헤더로 UI 에 경고 시그널.
+
+    순서 (post-review fix): auth 검증을 ``registry.create`` *전에* 수행.
+    검증 실패 시 orphan pending 세션이 메모리에 남는 회귀를 차단.
+    """
+    # P3.7 — auth_profile 지정 시 verify 게이트 + extra_args 빌드.
+    # 세션 생성 전에 호출 — 검증 실패가 곧 4xx 이므로 orphan 세션이 남지 않게.
+    extra_args, machine_mismatch = _resolve_auth_profile_extras(req.auth_profile)
+
     sess = _registry.create(
         target_url=req.target_url,
         planning_doc_ref=req.planning_doc_ref,
@@ -167,6 +412,7 @@ def recording_start(req: RecordingStartReq) -> RecordingStartResp:
             req.target_url,
             output_path,
             timeout_sec=codegen_runner.DEFAULT_TIMEOUT_SEC,
+            extra_args=extra_args,
         )
     except CodegenError as e:
         _registry.update(sess.id, state=session.STATE_ERROR, error=str(e))
@@ -186,19 +432,29 @@ def recording_start(req: RecordingStartReq) -> RecordingStartResp:
     )
 
     # 영속화 디렉토리 + 메타데이터 (recording 상태로)
-    storage.save_metadata(sess.id, {
+    # P3.8 — auth_profile 메타는 metadata.json 에만 박힘 (D15: scenario.json 미수정).
+    # in-memory session.extras 에도 동일 값 보존 → SessionResp 응답에 노출.
+    meta: dict = {
         "id": sess.id,
         "target_url": sess.target_url,
         "planning_doc_ref": sess.planning_doc_ref,
         "created_at": storage.now_iso(),
         "state": session.STATE_RECORDING,
         "pid": handle.pid,
-    })
+    }
+    if req.auth_profile:
+        meta["auth_profile"] = req.auth_profile
+        sess.extras["auth_profile"] = req.auth_profile
+    storage.save_metadata(sess.id, meta)
 
     log.info(
-        "[/recording/start] 세션 %s — codegen 시작 (PID=%d, output=%s)",
-        sess.id, handle.pid, output_path,
+        "[/recording/start] 세션 %s — codegen 시작 (PID=%d, output=%s, auth=%s)",
+        sess.id, handle.pid, output_path, req.auth_profile or "-",
     )
+    # 머신 불일치 경고는 헤더로 — UI 가 모달 표시. FastAPI 가 주입한 Response 에
+    # 직접 헤더를 set 하면 응답 모델은 그대로 RecordingStartResp 으로 유지된다.
+    if machine_mismatch:
+        response.headers["X-Auth-Machine-Mismatch"] = "1"
     return RecordingStartResp(
         id=sess.id,
         state=session.STATE_RECORDING,
@@ -231,6 +487,15 @@ def recording_stop(sid: str) -> dict:
     handle = _stop_codegen_impl(handle)
     output_size = codegen_runner.output_size_bytes(handle)
     action_count_estimate = _estimate_action_count(handle.output_path) if output_size > 0 else 0
+
+    # P3.10 — codegen 출력 .py 의 storage 절대 경로를 env var 로 치환 (D3).
+    # 시드 환경에서 ``--load-storage=<abs>`` 로 시작했으면 codegen 이 출력에
+    # ``storage_state="<abs>"`` 를 박아둔다. 그대로 두면 다른 머신에서 재생 불가.
+    # ``original.py`` 에 매칭이 없으면 silent no-op (인증 없이 녹화한 세션).
+    try:
+        post_process.portabilize_storage_path(handle.output_path)
+    except Exception as e:  # noqa: BLE001 — 후처리 실패가 stop 흐름을 깨뜨리지 않게.
+        log.warning("[/recording/stop] portabilize 실패 (계속 진행) — %s", e)
 
     if output_size == 0:
         msg = "녹화 액션 0건 — codegen 출력 파일이 비어있습니다."
@@ -278,7 +543,7 @@ def recording_stop(sid: str) -> dict:
     if convert_error is not None:
         # docker 미설치 / timeout — state=error 마감
         _registry.update(sid, state=session.STATE_ERROR, error=convert_error)
-        storage.save_metadata(sid, {
+        _save_metadata_preserving_auth(sid, {
             "id": sid,
             "state": session.STATE_ERROR,
             "error": convert_error,
@@ -298,7 +563,7 @@ def recording_stop(sid: str) -> dict:
             + (convert_result.stderr[:500] if convert_result.stderr else "(stderr 없음)")
         )
         _registry.update(sid, state=session.STATE_ERROR, error=msg)
-        storage.save_metadata(sid, {
+        _save_metadata_preserving_auth(sid, {
             "id": sid,
             "state": session.STATE_ERROR,
             "error": msg,
@@ -323,7 +588,7 @@ def recording_stop(sid: str) -> dict:
         state=session.STATE_DONE,
         action_count=final_step_count,
     )
-    storage.save_metadata(sid, {
+    _save_metadata_preserving_auth(sid, {
         "id": sid,
         "target_url": sess.target_url,
         "state": session.STATE_DONE,
@@ -368,9 +633,18 @@ def _estimate_action_count(py_path) -> int:
     return sum(1 for line in text.splitlines() if any(k in line for k in keywords))
 
 
+def _session_to_resp(s) -> SessionResp:
+    """Session → SessionResp. ``extras['auth_profile']`` 를 top-level 로 lift (P5.8)."""
+    d = s.to_dict()
+    extras = d.pop("extras", None) or {}
+    if "auth_profile" in extras:
+        d["auth_profile"] = extras["auth_profile"]
+    return SessionResp(**d)
+
+
 @app.get("/recording/sessions", response_model=list[SessionResp])
 def list_sessions() -> list[SessionResp]:
-    return [SessionResp(**s.to_dict()) for s in _registry.list()]
+    return [_session_to_resp(s) for s in _registry.list()]
 
 
 @app.get("/recording/sessions/{sid}", response_model=SessionResp)
@@ -378,7 +652,7 @@ def get_session(sid: str) -> SessionResp:
     sess = _registry.get(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    return SessionResp(**sess.to_dict())
+    return _session_to_resp(sess)
 
 
 @app.get("/recording/sessions/{sid}/scenario", include_in_schema=False)
@@ -784,6 +1058,9 @@ def _absorb_disk_sessions() -> None:
             if error_msg:
                 sess.error = error_msg
             sess.action_count = meta.get("step_count", meta.get("action_count_estimate", 0))
+            # P5.8 — auth_profile 메타 복원 (서버 재시작 시 세션 테이블에 유지).
+            if "auth_profile" in meta:
+                sess.extras["auth_profile"] = meta["auth_profile"]
             _registry._sessions[sid] = sess
         absorbed += 1
 
@@ -822,3 +1099,305 @@ if _WEB_DIR.is_dir():
 from .rplus.router import router as _rplus_router  # noqa: E402
 
 app.include_router(_rplus_router)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Auth Profile 엔드포인트 (P3.2 ~ P3.6)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.6
+#
+# - GET    /auth/profiles                       — 카탈로그 목록 (드롭다운용)
+# - POST   /auth/profiles/seed                  — 시드 시작 (background thread)
+# - GET    /auth/profiles/seed/{seed_sid}       — 시드 진행 폴링
+# - POST   /auth/profiles/{name}/verify         — 명시적 verify
+# - DELETE /auth/profiles/{name}                — 삭제
+
+import time as _time_auth  # noqa: E402  (별칭으로 격리 — 동명 변수 회피)
+import uuid as _uuid_auth  # noqa: E402
+
+from dataclasses import dataclass as _dataclass_auth, field as _field_auth  # noqa: E402
+
+
+# ── 시드 진행 트래킹 (P3.3 / P3.4) ──────────────────────────────────────
+
+@_dataclass_auth
+class _SeedJob:
+    """시드 background thread 의 상태 추적."""
+    seed_sid: str
+    state: str                          # "running" / "ready" / "error"
+    started_at: float
+    timeout_sec: int
+    phase: str = "starting"             # "starting" / "login_waiting" / "verifying" / "ready" / "error"
+    message: str = "시드 시작 중"
+    profile_name: Optional[str] = None
+    error: Optional[str] = None
+    error_kind: Optional[str] = None    # 'timeout' / 'subprocess' / 'validate' / 'verify' / 'unknown'
+
+
+_seed_jobs: dict[str, _SeedJob] = {}
+_seed_jobs_lock = threading.Lock()
+
+
+class AuthProfileSummary(BaseModel):
+    """드롭다운/리스트용 간략 정보."""
+    name: str
+    service_domain: str
+    last_verified_at: Optional[str]
+    ttl_hint_hours: int
+    chips_supported: bool
+    session_storage_warning: bool
+
+
+class AuthProfileDetail(AuthProfileSummary):
+    """단일 프로파일 detail — 만료 모달의 [재시드] prefill 에 사용 (P2.1).
+
+    Summary + verify spec (service_url / service_text / naver_probe 활성 여부).
+    seed_url 은 카탈로그에 저장 안 되므로 클라이언트가 verify_service_url 의
+    origin 으로 추정. 사용자가 수정 가능.
+    """
+    verify_service_url: str
+    verify_service_text: str
+    naver_probe_enabled: bool
+
+
+class AuthSeedReq(BaseModel):
+    name: str
+    seed_url: str = Field(
+        ..., description="⚠️ 테스트 대상 *서비스* 진입 URL (네이버 로그인 URL 이 아님)",
+    )
+    verify_service_url: str
+    verify_service_text: str = ""
+    naver_probe: bool = True
+    service_domain: Optional[str] = None
+    ttl_hint_hours: int = 12
+    notes: str = ""
+    timeout_sec: int = 600
+
+
+class AuthSeedStartResp(BaseModel):
+    seed_sid: str
+    state: str
+
+
+class AuthSeedPollResp(BaseModel):
+    seed_sid: str
+    state: str
+    phase: str
+    message: str
+    profile_name: Optional[str] = None
+    error: Optional[str] = None
+    error_kind: Optional[str] = None
+    elapsed_sec: float
+    timeout_sec: int
+
+
+class AuthVerifyResp(BaseModel):
+    ok: bool
+    service_ms: Optional[int] = None
+    naver_probe_ms: Optional[int] = None
+    naver_ok: Optional[bool] = None
+    fail_reason: Optional[str] = None
+
+
+_AUTH_ERROR_KIND_MAP = {
+    "SeedTimeoutError": "timeout",
+    "SeedSubprocessError": "subprocess",
+    "EmptyDumpError": "validate",
+    "MissingDomainError": "validate",
+    "SeedVerifyFailedError": "verify",
+    "ChipsNotSupportedError": "chips",
+    "InvalidProfileNameError": "input",
+    "InvalidServiceDomainError": "input",
+}
+
+
+def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
+    """background thread — auth_profiles.seed_profile 호출 + 상태 업데이트."""
+    from zero_touch_qa import auth_profiles
+    from zero_touch_qa.auth_profiles import (
+        AuthProfileError, NaverProbeSpec, VerifySpec,
+    )
+
+    def _progress(phase: str, message: str) -> None:
+        with _seed_jobs_lock:
+            job.phase = phase
+            job.message = message
+        log.info(
+            "[/auth/profiles/seed] phase=%s — seed_sid=%s msg=%s",
+            phase, job.seed_sid, message,
+        )
+
+    try:
+        verify = VerifySpec(
+            service_url=req.verify_service_url,
+            service_text=req.verify_service_text,
+            naver_probe=NaverProbeSpec() if req.naver_probe else None,
+        )
+        prof = auth_profiles.seed_profile(
+            name=req.name,
+            seed_url=req.seed_url,
+            verify=verify,
+            service_domain=req.service_domain,
+            ttl_hint_hours=req.ttl_hint_hours,
+            notes=req.notes,
+            timeout_sec=req.timeout_sec,
+            progress_callback=_progress,
+        )
+        with _seed_jobs_lock:
+            job.state = "ready"
+            job.phase = "ready"
+            job.message = f"시드 완료 — 프로파일 '{prof.name}' 이 저장되었습니다."
+            job.profile_name = prof.name
+        log.info("[/auth/profiles/seed] 완료 — seed_sid=%s name=%s", job.seed_sid, prof.name)
+    except AuthProfileError as e:
+        kind = _AUTH_ERROR_KIND_MAP.get(type(e).__name__, "auth_error")
+        with _seed_jobs_lock:
+            job.state = "error"
+            job.phase = "error"
+            job.message = f"시드 실패 — {e}"
+            job.error = str(e)
+            job.error_kind = kind
+        log.warning(
+            "[/auth/profiles/seed] 실패 (%s) — seed_sid=%s err=%s",
+            kind, job.seed_sid, e,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("[/auth/profiles/seed] worker 예기치 못한 예외")
+        with _seed_jobs_lock:
+            job.state = "error"
+            job.phase = "error"
+            job.message = f"시드 실패 — {e!r}"
+            job.error = repr(e)
+            job.error_kind = "unknown"
+
+
+@app.get("/auth/profiles", response_model=list[AuthProfileSummary])
+def auth_profiles_list() -> list[AuthProfileSummary]:
+    """등록된 auth-profile 목록 (드롭다운용)."""
+    from zero_touch_qa import auth_profiles
+    return [
+        AuthProfileSummary(
+            name=p.name,
+            service_domain=p.service_domain,
+            last_verified_at=p.last_verified_at,
+            ttl_hint_hours=p.ttl_hint_hours,
+            chips_supported=p.chips_supported,
+            session_storage_warning=p.session_storage_warning,
+        )
+        for p in auth_profiles.list_profiles()
+    ]
+
+
+@app.get("/auth/profiles/{name}", response_model=AuthProfileDetail)
+def auth_profile_get(name: str) -> AuthProfileDetail:
+    """단일 프로파일 detail — 만료 모달의 [재시드] prefill 용 (P2.1).
+
+    Summary + verify spec 노출. UI 가 시드 모달 prefill 시 사용.
+    """
+    from zero_touch_qa import auth_profiles
+    from zero_touch_qa.auth_profiles import ProfileNotFoundError
+    try:
+        p = auth_profiles.get_profile(name)
+    except ProfileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail={"reason": "profile_not_found", "name": name},
+        )
+    return AuthProfileDetail(
+        name=p.name,
+        service_domain=p.service_domain,
+        last_verified_at=p.last_verified_at,
+        ttl_hint_hours=p.ttl_hint_hours,
+        chips_supported=p.chips_supported,
+        session_storage_warning=p.session_storage_warning,
+        verify_service_url=p.verify.service_url,
+        verify_service_text=p.verify.service_text,
+        naver_probe_enabled=p.verify.naver_probe is not None,
+    )
+
+
+@app.post("/auth/profiles/seed", response_model=AuthSeedStartResp, status_code=201)
+def auth_profiles_seed_start(req: AuthSeedReq) -> AuthSeedStartResp:
+    """시드 시작 — background thread 에서 ``playwright open --save-storage`` 실행.
+
+    Returns immediately with a ``seed_sid`` for ``GET /auth/profiles/seed/{seed_sid}``
+    polling. 사용자가 별도 창에서 로그인 + 2중 확인을 통과하고 창을 닫으면 thread
+    가 verify 까지 마치고 ``state=ready`` 로 전환.
+    """
+    seed_sid = _uuid_auth.uuid4().hex[:12]
+    job = _SeedJob(
+        seed_sid=seed_sid,
+        state="running",
+        started_at=_time_auth.time(),
+        timeout_sec=req.timeout_sec,
+    )
+    with _seed_jobs_lock:
+        _seed_jobs[seed_sid] = job
+    threading.Thread(target=_seed_worker, args=(job, req), daemon=True).start()
+    log.info(
+        "[/auth/profiles/seed] 시작 — seed_sid=%s name=%s seed_url=%s",
+        seed_sid, req.name, req.seed_url,
+    )
+    return AuthSeedStartResp(seed_sid=seed_sid, state=job.state)
+
+
+@app.get("/auth/profiles/seed/{seed_sid}", response_model=AuthSeedPollResp)
+def auth_profiles_seed_poll(seed_sid: str) -> AuthSeedPollResp:
+    """시드 진행 상태 폴링."""
+    with _seed_jobs_lock:
+        job = _seed_jobs.get(seed_sid)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"seed job 미발견: {seed_sid}")
+    return AuthSeedPollResp(
+        seed_sid=seed_sid,
+        state=job.state,
+        phase=job.phase,
+        message=job.message,
+        profile_name=job.profile_name,
+        error=job.error,
+        error_kind=job.error_kind,
+        elapsed_sec=_time_auth.time() - job.started_at,
+        timeout_sec=job.timeout_sec,
+    )
+
+
+@app.post("/auth/profiles/{name}/verify", response_model=AuthVerifyResp)
+def auth_profile_verify(name: str, naver_probe: bool = True) -> AuthVerifyResp:
+    """명시적 verify — UI 의 ``↻ verify`` 버튼이 호출."""
+    from zero_touch_qa import auth_profiles
+    from zero_touch_qa.auth_profiles import AuthProfileError, ProfileNotFoundError
+    try:
+        prof = auth_profiles.get_profile(name)
+        ok, detail = auth_profiles.verify_profile(prof, naver_probe=naver_probe)
+    except ProfileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail={"reason": "profile_not_found", "name": name},
+        )
+    except AuthProfileError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason": "profile_error", "message": str(e)},
+        )
+    return AuthVerifyResp(ok=ok, **detail)
+
+
+@app.delete("/auth/profiles/{name}", status_code=204)
+def auth_profile_delete(name: str) -> Response:
+    """auth-profile 삭제 (카탈로그 + storage 파일)."""
+    from zero_touch_qa import auth_profiles
+    from zero_touch_qa.auth_profiles import AuthProfileError, ProfileNotFoundError
+    try:
+        auth_profiles.delete_profile(name)
+    except ProfileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail={"reason": "profile_not_found", "name": name},
+        )
+    except AuthProfileError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason": "delete_failed", "message": str(e)},
+        )
+    return Response(status_code=204)

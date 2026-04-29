@@ -1,6 +1,6 @@
 """인증 (auth_login DSL 액션) 헬퍼 모듈 — T-D / P0.1 본체.
 
-설계: PLAN_PRODUCTION_READINESS.md §"T-D — 인증 (form + OAuth + TOTP)"
+설계: docs/PLAN_PRODUCTION_READINESS.md §"T-D — 인증 (form + OAuth + TOTP)"
 
 본 모듈은 executor 의 `_execute_auth_login` 에서 사용된다. 책임:
 

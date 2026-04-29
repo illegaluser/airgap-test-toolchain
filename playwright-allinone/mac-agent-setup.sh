@@ -325,7 +325,7 @@ fi
 # pip / playwright 를 console script 대신 `python -m` 으로 호출 — shebang 깨짐 회피
 VENV_PY="$VENV_DIR/bin/python3"
 "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright fastapi uvicorn httpx pyotp)
+REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright fastapi uvicorn httpx pyotp python-multipart)
 log "  pip install: ${REQ_PKGS[*]}"
 "$VENV_PY" -m pip install --quiet "${REQ_PKGS[@]}"
 
@@ -430,7 +430,19 @@ cat > "$REC_RUN_SCRIPT" <<REC_EOF
 set -e
 export PYTHONPATH="$ROOT_DIR:\${PYTHONPATH:-}"
 export RECORDING_HOST_ROOT="\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}"
+export PYTHONUNBUFFERED="\${PYTHONUNBUFFERED:-1}"
+LOG_FILE="\${RECORDING_SERVICE_LOG:-$REC_LOG_FILE}"
+PID_FILE="\${RECORDING_SERVICE_PID:-$REC_PID_FILE}"
+mkdir -p "$AGENT_DIR"
 mkdir -p "\$RECORDING_HOST_ROOT"
+echo "\$\$" > "\$PID_FILE"
+{
+  printf '\\n[%s] recording_service starting\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')"
+  printf '[%s] cwd=%s\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')" "\$(pwd)"
+  printf '[%s] log=%s\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')" "\$LOG_FILE"
+  printf '[%s] pid_file=%s pid=%s\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')" "\$PID_FILE" "\$\$"
+} >> "\$LOG_FILE"
+exec >> "\$LOG_FILE" 2>&1
 exec "$VENV_PY" -m uvicorn recording_service.server:app \\
   --host 127.0.0.1 --port $REC_PORT --workers 1 --log-level info
 REC_EOF
