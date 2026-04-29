@@ -316,7 +316,7 @@ curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/original?download=1  # 
 | Converter heuristic | LLM 변환 시점 (codegen → 14-DSL) | chain 안에 `nav` / `menu` / `dropdown` / `gnb` / `aria-haspopup` 같은 신호가 보이면 click 앞에 hover step 자동 prepend. 정적이라 codegen 이 ancestor 를 chain 안에 emit 한 경우만 동작. |
 | Static Annotator | **Codegen Output Replay** (원본 .py 직접 실행) | play-codegen 진입 시 자동 호출. AST 분석으로 `<chain>.click()` 의 chain 안 hover-trigger ancestor 를 찾아 `<ancestor>.hover()` 라인을 click 직전에 삽입한 `original_annotated.py` 생성. 결과 패널에 `annotate: examined N → injected M` 표시. |
 
-### Visibility Healer 5단계 (LLM 경로)
+### Visibility Healer 5단계 + Click 폴백 (LLM 경로)
 
 각 단계에서 visible 되면 즉시 단축, 모두 실패해도 silently None 반환 (후속 fallback_targets / LocalHealer / Dify 치유 진입):
 
@@ -327,6 +327,14 @@ curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/original?download=1  # 
 5. **(C) sibling swap** — `filter(visible=True).first` 로 같은 selector 의 visible 형제 교체.
 
 총 추가 시간: hidden 케이스에서 ~6s 한도. 정상 케이스 영향 0.
+
+#### (G) JS dispatch click 폴백 — click 시점 마지막 수단
+
+위 5단계 + Playwright 의 자체 stability retry (~30s) 가 모두 통과 못한 마지막 케이스. `_perform_action` 의 click 분기에서 actionability 거부 메시지 (`not visible` / `outside of the viewport` / `intercepts pointer events` / `Element is not stable`) 잡으면 **element 가 anchor/button 류일 때만** `locator.evaluate("el => el.click()")` 로 DOM click event 직접 발화.
+
+- **적용 조건**: `<a>` / `<button>` / `<input type="button"|submit>` / `[role=button|link|menuitem|tab|option|checkbox]` / 명시적 `onclick` listener 보유.
+- **ktds.com 같은 케이스**: GNB anchor 의 computed `height:0 / line-height:0` 으로 normal/force click 모두 거부. JS click 은 DOM event 만 발화 → href 처리 + listener 동작.
+- **위험 통제**: 일반 `<div>` 같은 비-clickable 에는 발사 안 함 (false-positive PASS 방지).
 
 ### Annotate 가 `injected: 0` 을 반환할 때
 

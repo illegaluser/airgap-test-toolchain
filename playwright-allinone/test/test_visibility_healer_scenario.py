@@ -68,3 +68,37 @@ def test_full_scenario_lazy_menu_click_passes(make_executor, run_scenario):
     results, _, _ = run_scenario(executor, scenario)
     statuses = [r.status for r in results]
     assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"
+
+
+# T-H (G) — height:0 / line-height:0 anchor 에 JS dispatch click 폴백
+ZERO_HEIGHT_ANCHOR_URL = (FIXTURES_DIR / "zero_height_anchor.html").as_uri()
+
+
+def test_full_scenario_zero_height_anchor_click_passes_via_js_click(
+    make_executor, run_scenario,
+):
+    """ktds.com 패턴 — anchor 의 computed style 이 height:0/line-height:0 이라
+    Playwright 의 normal/force click 모두 거부. JS dispatchEvent('click') 폴백이
+    DOM event 를 직접 발화하여 listener 가 동작 → verify PASS.
+    """
+    executor = make_executor()
+    scenario = [
+        {
+            "step": 1, "action": "navigate", "target": "",
+            "value": ZERO_HEIGHT_ANCHOR_URL,
+            "description": "nav", "fallback_targets": [],
+        },
+        {
+            "step": 2, "action": "click", "target": "role=link, name=회사소개",
+            "value": "", "description": "zero-height anchor 클릭",
+            "fallback_targets": [],
+        },
+        {
+            "step": 3, "action": "verify", "target": "#last-clicked",
+            "value": "zero", "description": "verdict",
+            "fallback_targets": [], "condition": "text",
+        },
+    ]
+    results, _, _ = run_scenario(executor, scenario)
+    statuses = [r.status for r in results]
+    assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"

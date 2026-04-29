@@ -915,7 +915,7 @@ R-MVP TR.4 결과 화면 운영 사용 도중 5건의 사용자 피드백 + 1건
 | (2) Static Annotator | [`recording_service/annotator.py`](recording_service/annotator.py) | Codegen Output Replay (원본 .py 직접 실행) | `play-codegen` 진입 시 자동 호출 (β 통합). AST 분석으로 `<chain>.click()` 의 chain 안 hover-trigger ancestor 식별 → `ast.get_source_segment` 로 원본 구문 보존하며 `<segment>.hover()` 라인 click 직전 삽입 → `original_annotated.py` 생성 |
 | (B) visible-first 우선 선택 | [`zero_touch_qa/locator_resolver.py`](zero_touch_qa/locator_resolver.py) `_prefer_visible` | 모든 경로 (resolver 본체) | `role=X, name=Y` 다중 매치 시 `filter(visible=True).first` 우선. 모두 hidden 이면 `.first` 폴백 → Healer 가 후속 처리 |
 
-#### Visibility Healer 5단계 (D/E/F 추가 — 2026-04-29 후속)
+#### Visibility Healer 5단계 + Click 폴백 (D/E/F/G 추가 — 2026-04-29 후속)
 
 | 단계 | 메커니즘 | 적용 케이스 |
 |---|---|---|
@@ -924,8 +924,11 @@ R-MVP TR.4 결과 화면 운영 사용 도중 5건의 사용자 피드백 + 1건
 | E | page-level activator probe (`<header>` / `<nav>` / `<main>` / `<body>` 순환 hover, 각 1s 한도) | ktds.com 처럼 페이지 어디든 mouseover 들어오면 GNB 활성화하는 사이트 |
 | F | size-aware poll (`is_visible()` 200ms × 10) | 폰트/CSS 비동기 로딩으로 늦게 expand 되는 사이트 (FOUC 방지) |
 | C | `filter(visible=True).first` swap | 같은 selector 가 multi-match 일 때 visible 한 형제 매치 |
+| **G** (click 시점) | `locator.evaluate("el => el.click()")` JS dispatch click 폴백 | element computed style 이 height:0 / line-height:0 라 Playwright actionability 가 영구 거부하는 anchor/button. ktds.com GNB 가 정확히 이 케이스. tag a/button/input + role=button/link/menuitem/tab/option/checkbox 류만 적용 (false-positive 방지) |
 
-각 단계 visible 되면 즉시 단축. 모두 실패해도 healer 가 None 반환 후 기존 fallback_targets / LocalHealer / Dify 치유 단계 진입.
+D~F 는 healer 안에서 visible 화 시도. C 는 sibling swap. **G 는 _perform_action 의 click 처리 단계에 위치** — Playwright click 이 actionability 거부 메시지 (`not visible` / `outside of the viewport` / `intercepts pointer events`) 를 던졌을 때 마지막 수단.
+
+각 단계 visible/click 성공 시 즉시 단축. 모두 실패해도 healer 가 None 반환 후 기존 fallback_targets / LocalHealer / Dify 치유 단계 진입.
 
 **검증**: `test_visibility_healer.py` (6) + `test_visibility_healer_scenario.py` (2) + `test_converter_ast.py +3` + `test_annotator.py` (5) + `test_recording_service.py +2` (play-codegen auto annotate). 회귀 영역 356 passed (이전 331 → +25).
 
@@ -939,6 +942,7 @@ R-MVP TR.4 결과 화면 운영 사용 도중 5건의 사용자 피드백 + 1건
 | Annotate 버튼 통합 | "play-codegen 안으로 자동 (β)" | `/annotate` 엔드포인트 + UI 버튼 폐기. play-codegen 응답에 annotate 결과 합쳐 노출 |
 | visible-first 적용 범위 | "B+C 결합" | resolver `_prefer_visible` (B) + healer `_find_visible_sibling` (C) |
 | ktds.com 같은 lazy GNB | "사전 대비 — 직접 편집 금지, 자동 검출만" | D scroll_into_view + E page-level activator + F size poll 3단계 추가 |
+| ktds.com GNB 의 진짜 원인 (height:0 / line-height:0 anchor) | 진단 후 추가 대응 필요 | (G) JS dispatch click 폴백 추가 — Playwright actionability 거부 시 anchor/button 한정 JS click |
 | (3) codegen recorder fork | 보류 | 유지비 큼 — 다른 layer 로 95% 커버 가정 |
 
 ## 다음 액션
