@@ -125,12 +125,26 @@ class LocalHealer:
         T-C (P0.2) — ``frame=...>>`` chain 일 때는 마지막 segment 만 사용한다.
         healer 가 frame-scoped fallback 을 수행할 때 텍스트 매칭은 leaf
         descriptor 기준이어야 의미 있다.
+
+        ``role=X, name=Y`` 패턴은 사람이 읽을 수 있는 ``Y`` 만 추출 (X 는
+        accessibility role 이라 텍스트 매칭에 의미 없음). 모디파이어
+        (``, nth=N`` / ``, has_text=T``) 는 검사 전에 떨어낸다 — converter
+        AST 가 emit 하는 실제 형태에 그대로 작동하도록 하기 위함.
         """
         s = str(target)
         if " >> " in s:
             s = s.split(" >> ")[-1]
-        s = re.sub(r"^(text|role|label|placeholder|testid|frame|shadow)=", "", s)
-        s = re.sub(r"role=.+?,\s*name=", "", s)
+        # 후미 modifier (nth / has_text) — 텍스트 매칭에 noise.
+        s = re.sub(r",\s*(nth|has_text)=.*$", "", s).strip()
+        # `role=X, name=Y` → Y. accessibility role 자체는 텍스트 노이즈.
+        m = re.match(r"role=.+?,\s*name=(.+)$", s)
+        if m:
+            return m.group(1).strip()
+        # name 없는 단독 role= 은 텍스트 매칭 불가 — 빈 문자열 반환 (try_heal 에서 skip).
+        if s.startswith("role="):
+            return ""
+        # text/label/placeholder/testid/frame/shadow prefix 단독은 안전하게 strip.
+        s = re.sub(r"^(text|label|placeholder|testid|frame|shadow)=", "", s)
         return s.strip()
 
     @staticmethod
