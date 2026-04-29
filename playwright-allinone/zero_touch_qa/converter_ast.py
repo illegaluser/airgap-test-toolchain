@@ -1,6 +1,6 @@
 """AST 기반 Playwright codegen → 14-DSL 변환기 (T-A / P0.4 본체).
 
-설계: PLAN_PRODUCTION_READINESS.md §"T-A — converter AST 화"
+설계: docs/PLAN_PRODUCTION_READINESS.md §"T-A — converter AST 화"
 
 기존 [converter.py](converter.py) 의 line-based regex 가 가지는 한계 해소:
 - popup 탭 변수 (page1, page2, …) 의 액션 누락

@@ -1,6 +1,6 @@
 """토큰 예산 가드 (Phase 1 T1.4).
 
-설계: PLAN_GROUNDING_RECORDING_AGENT.md §"T1.4 — 토큰 예산 가드"
+설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"T1.4 — 토큰 예산 가드"
 
 기본 한도 1500 토큰 (12288 컨텍스트 + RAG 동시 가정 안전 마진).
 한도 초과 시 단계별 축소:

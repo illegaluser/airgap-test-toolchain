@@ -1,6 +1,6 @@
 """TR.6 — Doc-DSL ↔ Recording-DSL 의미 비교 (R-Plus).
 
-설계: PLAN_GROUNDING_RECORDING_AGENT.md §"TR.6"
+설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"TR.6"
 
 핵심 결정 — 입력 비대칭 처리:
   codegen 은 verify / mock_status / mock_data 를 emit 하지 않는다. 따라서

@@ -22,8 +22,13 @@ eval_runner/
 ├── configs/           # schema.json (Format Compliance), security.yaml/security_assert.py (Policy)
 ├── tests/             # test_runner.py (pytest 기반 파이프라인 실행)
 ├── ollama_wrapper_api.py  # 로컬 Ollama → OpenAI-compatible HTTP 래퍼
-├── Jenkinsfile        # 서브 파이프라인 정의
-└── SUCCESS_CRITERIA_GUIDE.md  # success_criteria DSL 사용법
+└── Jenkinsfile        # 서브 파이프라인 정의
+
+# 관련 문서 (../docs/ 로 일원화)
+docs/
+├── SUCCESS_CRITERIA_GUIDE.md   # success_criteria DSL 사용법 (이전 위치: eval_runner/)
+├── PLAN_AI_EVAL_PIPELINE.md    # 개선 로드맵
+└── CONVERSATION_LOG.md         # 세션별 설계 결정 이력
 ```
 
 ## 현 phase 동작 범위
@@ -36,5 +41,5 @@ eval_runner/
 
 - [../../readme.md](../../readme.md) §5.1 — 정본 스펙
 - [../docs/PLAN_AI_EVAL_PIPELINE.md](../docs/PLAN_AI_EVAL_PIPELINE.md) — 개선 계획서
-- [SUCCESS_CRITERIA_GUIDE.md](./SUCCESS_CRITERIA_GUIDE.md) — Golden dataset 작성 가이드
-- [../CONVERSATION_LOG.md](../CONVERSATION_LOG.md) — 세션별 설계 결정 이력
+- [SUCCESS_CRITERIA_GUIDE.md](../docs/SUCCESS_CRITERIA_GUIDE.md) — Golden dataset 작성 가이드
+- [../docs/CONVERSATION_LOG.md](../docs/CONVERSATION_LOG.md) — 세션별 설계 결정 이력

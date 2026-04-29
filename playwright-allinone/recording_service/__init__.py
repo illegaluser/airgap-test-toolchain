@@ -7,7 +7,7 @@
 진입점:
     uvicorn recording_service.server:app --host 0.0.0.0 --port 18092
 
-설계: PLAN_GROUNDING_RECORDING_AGENT.md §"Phase R" / §"T0.3"
+설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"Phase R" / §"T0.3"
 """
 
 __version__ = "0.2.0-rplus"
