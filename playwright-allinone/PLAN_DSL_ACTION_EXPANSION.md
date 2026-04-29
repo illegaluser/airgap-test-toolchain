@@ -164,6 +164,16 @@ DSL 형태:
 
 target 은 무시 (빈 문자열 권장). value 화이트리스트 외 값은 `_validate_scenario` 가 reject.
 
+### 2.7 hidden-click 자동 복구 (T-H 메모, 2026-04-29)
+
+DSL 새 액션은 아니지만 click step 의 동작에 영향. 드롭다운/메뉴 항목이 hover-then-click sequence 인데 codegen 이 hover 를 빠뜨려 element 가 hidden 인 상태로 click 시도되는 케이스를 3 layer 가 자동 복구한다:
+
+1. **converter_ast** 가 변환 시 chain 안의 nav/menu/dropdown/gnb/aria-haspopup 신호를 보면 click 앞에 `hover` step 자동 prepend
+2. **executor `_heal_visibility`** 가 1차 시도 직전 element `is_visible()` 검사 후 ancestor 기반 hover 후 재시도 (DOM 직접 분석)
+3. (codegen 원본 .py 직접 실행 경로) **annotator** 가 `<chain>.click()` 의 chain 안 hover-trigger ancestor 식별 → `<ancestor>.hover()` 라인 자동 삽입 (`/experimental/sessions/{sid}/annotate` 엔드포인트)
+
+세부는 `PLAN_PRODUCTION_READINESS.md §"T-H 완료 기록"` + `docs/recording-troubleshooting.md §"hidden-click 자동 복구"` 참조.
+
 ---
 
 ## 3. 상세 구현 계획 (How)
