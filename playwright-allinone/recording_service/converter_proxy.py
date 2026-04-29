@@ -1,6 +1,6 @@
 """컨테이너 CLI 위임 변환 (Phase R-MVP TR.3).
 
-설계: PLAN_GROUNDING_RECORDING_AGENT.md §"T0.3" / §"TR.3"
+설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"T0.3" / §"TR.3"
 
 호스트 측은 converter.py 를 import 하지 않는다. 변환은 컨테이너 CLI 에 위임:
 

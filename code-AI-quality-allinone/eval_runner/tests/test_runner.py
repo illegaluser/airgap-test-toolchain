@@ -982,7 +982,7 @@ def _json_get_path(obj, path: str):
 
 def _evaluate_rule_based_criteria(criteria_str: str, result) -> bool:
     """
-    SUCCESS_CRITERIA_GUIDE.md의 규칙 기반 문법을 해석합니다.
+    docs/SUCCESS_CRITERIA_GUIDE.md의 규칙 기반 문법을 해석합니다.
     조건들은 모두 AND 관계로 처리하며, 하나라도 불일치하면 즉시 실패합니다.
     """
     if not criteria_str:

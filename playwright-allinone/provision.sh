@@ -376,7 +376,7 @@ SQL
   # 2-3f. Embedding 모델 등록 — Test Planning RAG 트랙용 (별도 트랙, KB 검색에 사용)
   # `bona/bge-m3-korean:latest` 모델을 text-embedding type 으로 추가 등록한다.
   # Dify Knowledge Base 가 청크를 임베딩할 때 이 provider 를 사용한다. LLM 등록과
-  # 동일한 endpoint 를 쓰되 model_type 이 다르다. 자세한 설계는 PLAN_TEST_PLANNING_RAG.md.
+  # 동일한 endpoint 를 쓰되 model_type 이 다르다. 자세한 설계는 docs/PLAN_TEST_PLANNING_RAG.md.
   EMBEDDING_MODEL="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
   log "2-3f. Embedding 모델 등록: ${EMBEDDING_MODEL} (text-embedding)"
   EMB_REG_BODY=$($PY - << PYEOF

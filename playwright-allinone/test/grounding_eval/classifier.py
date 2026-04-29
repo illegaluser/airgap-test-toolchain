@@ -2,7 +2,7 @@
 
 골든 스텝의 셀렉터와 LLM 출력의 셀렉터를 비교해 정확/부분/실패 3분류로 라벨링한다.
 
-분류 정의 (PLAN_GROUNDING_RECORDING_AGENT.md §"DoD §분류 정의"):
+분류 정의 (docs/PLAN_GROUNDING_RECORDING_AGENT.md §"DoD §분류 정의"):
 
 | 분류 | 정의 |
 | --- | --- |

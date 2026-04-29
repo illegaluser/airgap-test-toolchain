@@ -171,7 +171,7 @@ def test_reset_state_indexeddb_clears_idb_only(make_executor, run_scenario):
 
 def test_reset_state_all_invokes_clear_permissions(monkeypatch):
     """리뷰 #3 회귀 — value=all 은 cookie + storage + indexeddb +
-    permissions reset 까지 한다 (PLAN_PRODUCTION_READINESS.md §T-B Day 2).
+    permissions reset 까지 한다 (docs/PLAN_PRODUCTION_READINESS.md §T-B Day 2).
 
     실제 Playwright 호출을 흉내내는 stub context 로 clear_permissions 가
     호출되는지 확인. 이전엔 cookie/storage/IDB 만 처리되어 권한 노출 위험."""
@@ -225,7 +225,7 @@ def test_isolation_pass_rate_meets_95pct_threshold(
     """T-B 수락 기준 — 동일 시나리오 N회 연속 통과율 ≥95%.
 
     기본 N=5 (CI 친화). 환경변수 ``T_B_REPEAT=100`` 으로 풀 측정 가능.
-    PLAN_PRODUCTION_READINESS.md §"T-B Day 5 — 측정" 의 ≥95% 기준을 회귀
+    docs/PLAN_PRODUCTION_READINESS.md §"T-B Day 5 — 측정" 의 ≥95% 기준을 회귀
     형태로 가두는 것이 목적 — 통과율 회귀가 발생하면 즉시 노출된다.
     """
     import os as _os

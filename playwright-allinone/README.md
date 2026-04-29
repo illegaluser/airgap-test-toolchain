@@ -31,7 +31,7 @@ Jenkins master + Dify + DB 를 **단일 Docker 이미지**로 묶고, 추론 (Ol
 - `index.html` 리포트는 metric 파일이 있을 때 운영 지표 섹션에 LLM SLA / Planner / Healer / healing / flake / pytest 요약과 원본 metric 링크를 표시한다.
 - 리포트 "첨부 문서" 섹션은 `doc`/`convert`/`execute` 모드처럼 실제 파일이 업로드됐을 때만 노출. `chat` 모드는 자연어 SRS 가 입력이라 첨부 섹션이 뜨지 않는다.
 - chat 모드 SRS 작성 가이드 (Sprint 6): **각 SRS 항목은 정확히 하나의 액션** (atomic). "X 한 뒤 Y" 같은 compound 항목은 첫 액션만 emit 되어 후속 verify 가 false-fail 가능. 기본 SRS_TEXT 는 16 atomic 항목으로 작성됐다.
-- Sprint 5/6 변경 상세는 `PLAN_DSL_ACTION_EXPANSION.md` §10/§11 참조.
+- Sprint 5/6 변경 상세는 `docs/PLAN_DSL_ACTION_EXPANSION.md` §10/§11 참조.
 - 2026-04-28 재검증에서 `chat --convert-only` 오용 시 Dify retry 로 빠지던 결함을 수정했다. 이제 `--convert-only` 는 `--mode convert` 와 함께 사용할 때만 허용된다.
 
 로컬 회귀 확인:
@@ -1247,7 +1247,7 @@ Sprint 5 까지 chat 모드는 "best-effort 의미 시연" 으로 위치 (결정
 
 **Test Planning Brain** 은 별도 RAG 트랙으로, 사용자 자연어
 요청을 받아 **테스트 계획서 / 자연어 시나리오 / 14-DSL JSON** 을 자동 생성하는 신규
-챗봇이다. 자세한 설계는 [`PLAN_TEST_PLANNING_RAG.md`](PLAN_TEST_PLANNING_RAG.md) 참조.
+챗봇이다. 자세한 설계는 [`docs/PLAN_TEST_PLANNING_RAG.md`](docs/PLAN_TEST_PLANNING_RAG.md) 참조.
 
 #### 자동 생성되는 인프라
 
