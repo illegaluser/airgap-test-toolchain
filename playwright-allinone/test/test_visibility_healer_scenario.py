@@ -39,3 +39,32 @@ def test_full_scenario_click_hidden_submenu_link_passes(
     results, _, _ = run_scenario(executor, scenario)
     statuses = [r.status for r in results]
     assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"
+
+
+# T-H (D)(E)(F) — lazy menu (페이지 로드 직후 height:0, body mouseover 로 활성화)
+LAZY_MENU_URL = (FIXTURES_DIR / "lazy_menu.html").as_uri()
+
+
+def test_full_scenario_lazy_menu_click_passes(make_executor, run_scenario):
+    """페이지 로드 직후 GNB link 가 height:0 인 사이트 — page-level activator
+    probe 가 body 에 hover 를 트리거해 menu 가 펼쳐지면 click PASS."""
+    executor = make_executor()
+    scenario = [
+        {
+            "step": 1, "action": "navigate", "target": "", "value": LAZY_MENU_URL,
+            "description": "nav", "fallback_targets": [],
+        },
+        {
+            "step": 2, "action": "click", "target": "role=link, name=회사소개",
+            "value": "", "description": "GNB 클릭 (lazy menu)",
+            "fallback_targets": [],
+        },
+        {
+            "step": 3, "action": "verify", "target": "#last-clicked",
+            "value": "company", "description": "verdict",
+            "fallback_targets": [], "condition": "text",
+        },
+    ]
+    results, _, _ = run_scenario(executor, scenario)
+    statuses = [r.status for r in results]
+    assert statuses == ["PASS", "PASS", "PASS"], f"실제: {statuses}"

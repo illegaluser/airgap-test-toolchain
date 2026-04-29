@@ -105,3 +105,44 @@ def test_visibility_healer_swaps_via_filter_visible(dual_match_page, make_execut
     assert swap is not None
     assert swap.is_visible()
     assert swap.get_attribute("data-where") == "desktop"
+
+
+# ── T-H (D)(E)(F) — page-level activator + size poll ──────────────────────
+
+
+@pytest.fixture
+def lazy_menu_page(_ctx):
+    """페이지 로드 직후 GNB 가 height:0 인 lazy-rendered fixture.
+    body 에 한 번이라도 mouseover 가 들어오면 .activated 가 추가되어 menu 펼침."""
+    p = _ctx.new_page()
+    p.goto((FIXTURES_DIR / "lazy_menu.html").as_uri())
+    yield p
+    p.close()
+
+
+def test_lazy_menu_link_initially_hidden(lazy_menu_page):
+    """베이스라인 — 페이지 로드 직후 GNB link 는 height:0 으로 hidden."""
+    loc = lazy_menu_page.get_by_role("link", name="회사소개")
+    # role query 는 height:0 도 잡지만 is_visible 은 False 를 반환.
+    assert loc.count() == 1
+    # 박스 높이가 0 이라 is_visible False.
+    assert not loc.first.is_visible()
+
+
+def test_visibility_healer_activates_lazy_menu_via_page_hover(
+    lazy_menu_page, make_executor,
+):
+    """T-H (E) — page-level activator probe 가 body mouseover 를 trigger 해
+    .activated 클래스를 부여 → menu 펼치고 link 가 visible 됨."""
+    executor = make_executor()
+    loc = lazy_menu_page.get_by_role("link", name="회사소개").first
+    assert not loc.is_visible()
+
+    # healer 가 D / ancestor / E 단계 거쳐 visible 화 시도
+    swap = executor._heal_visibility(lazy_menu_page, loc, step_id=42)
+
+    # swap 은 None (단일 매치라 형제 swap 안 됨), 하지만 loc 자체가 visible 되어야 함.
+    assert swap is None
+    assert loc.is_visible(), "page-level hover 후에도 lazy menu 가 펼쳐지지 않음"
+
+
