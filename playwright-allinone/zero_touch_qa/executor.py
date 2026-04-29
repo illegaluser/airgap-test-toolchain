@@ -179,6 +179,34 @@ el => {
 """
 
 
+# T-H (G) — JS dispatchEvent('click') 폴백 안전 가드.
+# anchor/button/input/role=button/role=link/role=menuitem 만 허용. 일반 div 에
+# JS click 발사하면 실 사이트의 listener 가 없어 false-positive PASS 위험.
+def _is_safe_for_js_click(locator) -> bool:
+    """element 가 anchor/button/clickable role 이면 JS click 안전. 그 외는 raise."""
+    try:
+        info = locator.evaluate(
+            """el => ({
+                tag: (el.tagName || '').toLowerCase(),
+                role: el.getAttribute && el.getAttribute('role'),
+                onclick: typeof el.onclick === 'function',
+            })"""
+        )
+    except Exception:
+        return False
+    tag = info.get("tag")
+    role = (info.get("role") or "").lower()
+    if tag in ("a", "button"):
+        return True
+    if tag == "input" and role in ("button", "submit", ""):
+        return True
+    if role in ("button", "link", "menuitem", "tab", "option", "checkbox"):
+        return True
+    if info.get("onclick"):
+        return True
+    return False
+
+
 def _dump_storage_state(context, path: str) -> None:
     """현재 BrowserContext 의 storage_state 를 path 에 JSON 으로 덤프 (T-D / P0.1).
 
@@ -1816,7 +1844,29 @@ class QAExecutor:
             need_nav = QAExecutor._matches_first_result_intent(desc)
             before_url = page.url if need_nav else ""
             before_pages_count = len(page.context.pages) if need_nav else 0
-            locator.click(timeout=10000)
+            try:
+                locator.click(timeout=10000)
+            except Exception as click_err:
+                # T-H (G) — Playwright click actionability 거부 (height:0 / outside
+                # viewport / hidden) 케이스 마지막 수단. element 가 anchor/button
+                # 류일 때만 JS dispatchEvent('click') 시도. ktds.com 처럼 GNB link
+                # 의 computed style 이 height:0 / line-height:0 라 normal click 이
+                # 영원히 actionability 거부하는 사이트 대응.
+                if not _is_safe_for_js_click(locator):
+                    raise
+                msg = str(click_err)
+                if not any(
+                    s in msg for s in (
+                        "not visible", "outside of the viewport",
+                        "intercepts pointer events", "Element is not stable",
+                    )
+                ):
+                    raise
+                log.warning(
+                    "[Click] Playwright click 거부 (%s) → JS dispatch click 폴백 시도",
+                    msg.split("\n", 1)[0][:120],
+                )
+                locator.evaluate("el => el.click()")
             if need_nav and not QAExecutor._wait_for_navigation_effect(
                 page, before_url, before_pages_count
             ):
