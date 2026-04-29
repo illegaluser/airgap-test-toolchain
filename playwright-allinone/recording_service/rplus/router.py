@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from .. import comparator, enricher, replay_proxy, session, storage
 from ..enricher import EnrichError, EnrichResult
-from ..replay_proxy import ReplayProxyError
+from ..replay_proxy import ReplayAuthExpiredError, ReplayProxyError
 
 log = logging.getLogger("recording_service.rplus")
 
@@ -193,6 +193,21 @@ def play_codegen(sid: str) -> dict:
 
     try:
         result = _run_codegen_replay_impl(host_session_dir=host_dir)
+    except ReplayAuthExpiredError as e:
+        # post-review fix — auth-profile 만료/미존재는 502 가 아니라 409 +
+        # 구조화된 detail 로 반환. UI 가 만료 모달 + [재시드] 분기로 가도록.
+        log.warning("[/experimental/play-codegen] %s — auth expired: %s", sid, e)
+        # ``e.detail`` 에 ``reason`` 키가 있을 수 있어 spread 순서가 중요.
+        # router 의 ``reason="profile_expired"`` 가 inner detail 의 reason
+        # (예: ``verify_failed``) 에 덮이지 않도록 우리 키를 뒤에 둔다.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "profile_name": e.profile_name,
+                **e.detail,
+                "reason": "profile_expired",
+            },
+        )
     except ReplayProxyError as e:
         log.error("[/experimental/play-codegen] %s — %s", sid, e)
         raise HTTPException(status_code=502, detail=str(e))
@@ -229,6 +244,21 @@ def play_llm(sid: str) -> dict:
         result = _run_llm_play_impl(
             host_session_dir=host_dir,
             project_root=_project_root(),
+        )
+    except ReplayAuthExpiredError as e:
+        # post-review fix — auth-profile 만료/미존재 → 409 + 구조화 detail.
+        # UI 가 만료 모달 + [재시드] 분기로 갈 수 있게.
+        log.warning("[/experimental/play-llm] %s — auth expired: %s", sid, e)
+        # ``e.detail`` 에 ``reason`` 키가 있을 수 있어 spread 순서가 중요.
+        # router 의 ``reason="profile_expired"`` 가 inner detail 의 reason
+        # (예: ``verify_failed``) 에 덮이지 않도록 우리 키를 뒤에 둔다.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "profile_name": e.profile_name,
+                **e.detail,
+                "reason": "profile_expired",
+            },
         )
     except ReplayProxyError as e:
         log.error("[/experimental/play-llm] %s — %s", sid, e)

@@ -84,8 +84,9 @@ def patched_codegen(monkeypatch):
 
     captured: dict = {"started": [], "stopped": [], "converted": []}
 
-    def fake_start(target_url, output_path, *, timeout_sec):
-        captured["started"].append((target_url, str(output_path), timeout_sec))
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
+        # P3.1 (auth-profile) 후 _start_codegen_impl 시그니처에 extra_args 가 추가됨.
+        captured["started"].append((target_url, str(output_path), timeout_sec, extra_args))
         return _make_fake_handle(Path(output_path), write_actions=True)
 
     def fake_stop(handle):
@@ -363,7 +364,7 @@ def test_stop_with_empty_output(client, monkeypatch):
     from recording_service import server as srv
     from pathlib import Path
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         # 핵심: 파일을 생성하지 않거나 0 byte 만들기
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("", encoding="utf-8")
@@ -401,7 +402,7 @@ def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
     from recording_service import server as srv
     from recording_service.converter_proxy import ConvertResult
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         return _make_fake_handle(Path(output_path), write_actions=True)
 
     def fake_stop(handle):
@@ -437,7 +438,7 @@ def test_stop_with_converter_proxy_error(client, monkeypatch):
     from recording_service import server as srv
     from recording_service.converter_proxy import ConverterProxyError
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         return _make_fake_handle(Path(output_path), write_actions=True)
 
     def fake_stop(handle):
@@ -465,7 +466,7 @@ def test_stop_after_codegen_empty_skips_conversion(client, monkeypatch):
 
     convert_calls = []
 
-    def fake_start(target_url, output_path, *, timeout_sec):
+    def fake_start(target_url, output_path, *, timeout_sec, extra_args=None):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("", encoding="utf-8")
         return _make_fake_handle(Path(output_path), write_actions=False)

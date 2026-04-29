@@ -25,3 +25,10 @@ code-AI-quality-allinone/offline-assets/
 static-analysis-samples/BenchmarkJava/
 static-analysis-samples/NodeGoat/
 static-analysis-samples/sonar-training-examples/
+
+# Auth Profile (Naver-OAuth) — storageState dump 와 카탈로그.
+# storage 파일은 인증 토큰 포함 — 절대 커밋/백업/CI artifact 에 포함되면 안 됨.
+# 기본 위치는 ~/ttc-allinone-data/auth-profiles/ (repo 외부) 이지만 AUTH_PROFILES_DIR
+# 가 repo 안을 가리키는 사고를 차단. 확장자 와일드카드는 어디서든 안전망.
+auth-profiles/
+*.storage.json

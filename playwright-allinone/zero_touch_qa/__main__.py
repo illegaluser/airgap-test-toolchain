@@ -7,6 +7,11 @@ DSCORE Zero-Touch QA v4.0 — CLI 엔트리포인트.
   python3 -m zero_touch_qa --mode convert --file recorded.py
   python3 -m zero_touch_qa --mode convert --convert-only --file recorded.py
   python3 -m zero_touch_qa --mode execute --scenario scenario.json
+
+  python3 -m zero_touch_qa auth seed --name <name> --seed-url <url> ...
+  python3 -m zero_touch_qa auth list [--json]
+  python3 -m zero_touch_qa auth verify --name <name> [--json]
+  python3 -m zero_touch_qa auth delete --name <name>
 """
 
 import argparse
@@ -32,6 +37,13 @@ log = logging.getLogger("zero_touch_qa")
 
 
 def main():
+    # ── auth 서브커맨드 라우팅 ──────────────────────────────────────────
+    # 기존 ``--mode`` CLI 와 호환성 유지를 위해 첫 위치 인자가 'auth' 면
+    # 별도 진입점으로 분기. (replay_proxy 등 외부 caller 의 ``--mode execute``
+    # 호출은 그대로 동작.)
+    if len(sys.argv) >= 2 and sys.argv[1] == "auth":
+        sys.exit(_run_auth_cli(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(
         description=f"DSCORE Zero-Touch QA v{__version__}"
     )
@@ -566,6 +578,240 @@ def _generate_error_report(artifacts_dir: str, error_msg: str):
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     log.info("[Error Report] %s 생성", path)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# auth 서브커맨드 — auth-profile 카탈로그 CLI (P2)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.5
+#
+# 호출 형식:
+#   python3 -m zero_touch_qa auth seed --name <name> --seed-url <url> ...
+#   python3 -m zero_touch_qa auth list [--json]
+#   python3 -m zero_touch_qa auth verify --name <name> [--json] [--no-naver-probe]
+#   python3 -m zero_touch_qa auth delete --name <name>
+
+
+def _build_auth_parser() -> argparse.ArgumentParser:
+    """auth 서브커맨드 argparse 트리. seed/list/verify/delete sub-sub 분기."""
+    parser = argparse.ArgumentParser(
+        prog="python3 -m zero_touch_qa auth",
+        description="Auth Profile 카탈로그 (Naver-OAuth 연동 서비스 E2E 테스트용)",
+    )
+    sub = parser.add_subparsers(dest="action", required=True, metavar="ACTION")
+
+    # seed
+    p_seed = sub.add_parser(
+        "seed",
+        help="새 인증 세션 시드 (사람이 직접 로그인 + 2중 확인 통과)",
+    )
+    p_seed.add_argument("--name", required=True, help="프로파일 식별 이름")
+    p_seed.add_argument(
+        "--seed-url",
+        required=True,
+        help="⚠️ 테스트 대상 *서비스* 진입 URL (네이버 로그인 URL 이 아님!)",
+    )
+    p_seed.add_argument(
+        "--verify-service-url",
+        required=True,
+        help="로그인된 사용자만 볼 수 있는 서비스 페이지 URL",
+    )
+    p_seed.add_argument(
+        "--verify-service-text",
+        default="",
+        help="선택: 검증 URL 페이지에 로그인 상태에서만 보이는 문구 (비우면 URL 접근만 확인)",
+    )
+    p_seed.add_argument(
+        "--no-naver-probe",
+        action="store_true",
+        help="naver-side weak probe 비활성화 (기본: 활성)",
+    )
+    p_seed.add_argument(
+        "--service-domain",
+        default=None,
+        help="명시 안 하면 seed-url 에서 자동 추출",
+    )
+    p_seed.add_argument(
+        "--ttl-hint-hours", type=int, default=12,
+        help="UI 표시용 만료 추정값 (기본 12)",
+    )
+    p_seed.add_argument("--notes", default="", help="자유 메모")
+    p_seed.add_argument(
+        "--timeout-sec", type=int, default=600,
+        help="사용자 입력 대기 한도 초 (기본 600 = 10분)",
+    )
+
+    # list
+    p_list = sub.add_parser("list", help="등록된 프로파일 목록")
+    p_list.add_argument(
+        "--json", dest="as_json", action="store_true",
+        help="JSON 출력 (스크립트 통합용)",
+    )
+
+    # verify
+    p_verify = sub.add_parser(
+        "verify",
+        help="프로파일 검증 — service authoritative + naver weak probe (선택)",
+    )
+    p_verify.add_argument("--name", required=True)
+    p_verify.add_argument(
+        "--no-naver-probe", action="store_true",
+        help="naver probe 건너뜀 (service-only 검증)",
+    )
+    p_verify.add_argument("--timeout-sec", type=int, default=30)
+    p_verify.add_argument(
+        "--json", dest="as_json", action="store_true",
+        help="JSON 출력",
+    )
+
+    # delete
+    p_delete = sub.add_parser("delete", help="프로파일 + storage 파일 삭제")
+    p_delete.add_argument("--name", required=True)
+
+    return parser
+
+
+def _run_auth_cli(argv: list) -> int:
+    """auth 서브커맨드 진입점. 성공 0 / 실패 1."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    parser = _build_auth_parser()
+    args = parser.parse_args(argv)
+
+    # auth_profiles 는 본 함수 시점에서만 import — 모듈 import 시 fcntl 등 POSIX
+    # 의존성을 끌어오므로 legacy --mode 경로에 영향 없도록.
+    from . import auth_profiles as ap
+
+    handlers = {
+        "seed": _auth_handle_seed,
+        "list": _auth_handle_list,
+        "verify": _auth_handle_verify,
+        "delete": _auth_handle_delete,
+    }
+    handler = handlers.get(args.action)
+    if handler is None:
+        log.error("[auth] 알 수 없는 action: %s", args.action)
+        return 1
+    try:
+        return handler(args, ap)
+    except KeyboardInterrupt:
+        log.warning("[auth] 사용자 중단")
+        return 130
+
+
+def _auth_handle_seed(args, ap_module) -> int:
+    """auth seed 핸들러."""
+    from .auth_profiles import (
+        AuthProfileError,
+        NaverProbeSpec,
+        VerifySpec,
+    )
+    verify = VerifySpec(
+        service_url=args.verify_service_url,
+        service_text=args.verify_service_text,
+        naver_probe=None if args.no_naver_probe else NaverProbeSpec(),
+    )
+    print(f"# 시드 시작 — name={args.name}")
+    print(f"#   seed_url    = {args.seed_url}")
+    print(f"#   service     = {args.verify_service_url}")
+    print("#   ⚠ 별도 브라우저 창이 열립니다. 사람이 직접 로그인 + 2중 확인 통과 후")
+    print(f"#     서비스에서 본인 이름 확인 → 창을 닫으세요. (timeout {args.timeout_sec}s)")
+    try:
+        prof = ap_module.seed_profile(
+            name=args.name,
+            seed_url=args.seed_url,
+            verify=verify,
+            service_domain=args.service_domain,
+            ttl_hint_hours=args.ttl_hint_hours,
+            notes=args.notes,
+            timeout_sec=args.timeout_sec,
+        )
+    except AuthProfileError as e:
+        log.error("[auth seed] 실패 — %s", e)
+        return 1
+    except Exception as e:  # noqa: BLE001
+        log.exception("[auth seed] 예기치 못한 오류")
+        return 1
+    print(f"# ✅ 시드 완료 — name={prof.name}")
+    print(f"#   storage  = {prof.storage_path}")
+    print(f"#   verified = {prof.last_verified_at}")
+    print(f"#   chips    = {prof.chips_supported}")
+    return 0
+
+
+def _auth_handle_list(args, ap_module) -> int:
+    """auth list 핸들러. --json 시 JSON 한 줄 출력."""
+    profiles = ap_module.list_profiles()
+    if args.as_json:
+        out = [
+            {
+                "name": p.name,
+                "service_domain": p.service_domain,
+                "last_verified_at": p.last_verified_at,
+                "ttl_hint_hours": p.ttl_hint_hours,
+                "chips_supported": p.chips_supported,
+                "session_storage_warning": p.session_storage_warning,
+            }
+            for p in profiles
+        ]
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    if not profiles:
+        print("# (등록된 프로파일 없음)")
+        return 0
+    print(f"# {len(profiles)} profiles")
+    print(f"{'NAME':<30} {'SERVICE':<32} {'LAST VERIFIED':<28} {'TTL':>4}")
+    for p in profiles:
+        last = p.last_verified_at or "-"
+        print(f"{p.name:<30} {p.service_domain:<32} {last:<28} {p.ttl_hint_hours:>3}h")
+    return 0
+
+
+def _auth_handle_verify(args, ap_module) -> int:
+    """auth verify 핸들러. service-side authoritative + (선택) naver weak probe."""
+    from .auth_profiles import AuthProfileError
+    # ProfileNotFoundError + 기타 AuthProfileError 한 번에 처리 (모두 종료 코드 1).
+    try:
+        prof = ap_module.get_profile(args.name)
+        ok, detail = ap_module.verify_profile(
+            prof,
+            naver_probe=not args.no_naver_probe,
+            timeout_sec=args.timeout_sec,
+        )
+    except AuthProfileError as e:
+        log.error("[auth verify] %s", e)
+        return 1
+    except Exception:  # noqa: BLE001
+        log.exception("[auth verify] 예기치 못한 오류")
+        return 1
+    if args.as_json:
+        print(json.dumps({"ok": ok, **detail}, ensure_ascii=False, indent=2))
+        return 0 if ok else 1
+    status = "✓ OK" if ok else "✗ FAIL"
+    print(f"# {status} — name={args.name}")
+    print(f"#   service_ms     = {detail.get('service_ms')}")
+    print(f"#   naver_probe_ms = {detail.get('naver_probe_ms')}")
+    print(f"#   naver_ok       = {detail.get('naver_ok')}")
+    if detail.get("fail_reason"):
+        print(f"#   fail_reason    = {detail['fail_reason']}")
+    return 0 if ok else 1
+
+
+def _auth_handle_delete(args, ap_module) -> int:
+    """auth delete 핸들러. 카탈로그 + storage 파일 둘 다 정리."""
+    from .auth_profiles import AuthProfileError
+    # ProfileNotFoundError 가 AuthProfileError 의 서브클래스라 한 번에 처리.
+    try:
+        ap_module.delete_profile(args.name)
+    except AuthProfileError as e:
+        log.error("[auth delete] %s", e)
+        return 1
+    print(f"# 삭제 완료 — name={args.name}")
+    return 0
 
 
 if __name__ == "__main__":

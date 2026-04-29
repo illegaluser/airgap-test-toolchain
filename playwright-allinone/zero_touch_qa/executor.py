@@ -220,6 +220,41 @@ def _dump_storage_state(context, path: str) -> None:
         log.warning("[Auth] storage_state 덤프 실패 (%s): %s", path, e)
 
 
+def _apply_fingerprint_env(context_kwargs: dict) -> None:
+    """auth-profile fingerprint env override 를 ``context_kwargs`` 에 적용 (P4.1).
+
+    설계: docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md §5.8 (D10).
+
+    ``replay_proxy`` 가 시드 시점의 fingerprint (viewport / locale / timezone /
+    color_scheme) 를 env 로 주입하면 본 함수가 기본값을 덮어쓴다. UA 는 의도적으로
+    빠짐 — sec-ch-ua Client Hints 와의 어긋남을 방지하기 위해 임의 spoof 안 함.
+
+    영향:
+        - ``PLAYWRIGHT_VIEWPORT``      = ``"<W>x<H>"`` (예: ``1280x800``)
+        - ``PLAYWRIGHT_LOCALE``        = locale 문자열 (예: ``ko-KR``)
+        - ``PLAYWRIGHT_TIMEZONE``      = IANA timezone (예: ``Asia/Seoul``)
+        - ``PLAYWRIGHT_COLOR_SCHEME``  = ``"light"`` / ``"dark"`` / ``"no-preference"``
+    """
+    viewport_env = os.environ.get("PLAYWRIGHT_VIEWPORT", "")
+    if viewport_env and "x" in viewport_env:
+        try:
+            w_str, h_str = viewport_env.split("x", 1)
+            context_kwargs["viewport"] = {"width": int(w_str), "height": int(h_str)}
+        except (ValueError, IndexError):
+            log.warning(
+                "[Auth] PLAYWRIGHT_VIEWPORT 형식 오류 (무시) — %r", viewport_env,
+            )
+    locale_env = os.environ.get("PLAYWRIGHT_LOCALE")
+    if locale_env:
+        context_kwargs["locale"] = locale_env
+    timezone_env = os.environ.get("PLAYWRIGHT_TIMEZONE")
+    if timezone_env:
+        context_kwargs["timezone_id"] = timezone_env
+    color_env = os.environ.get("PLAYWRIGHT_COLOR_SCHEME")
+    if color_env:
+        context_kwargs["color_scheme"] = color_env
+
+
 class QAExecutor:
     """
     DSL 시나리오를 받아 실행하고, 3단계 하이브리드 자가 치유를 수행한다.
@@ -279,6 +314,10 @@ class QAExecutor:
                     "height": self.config.viewport[1],
                 },
             }
+            # P4.1 — auth-profile fingerprint env override (D10).
+            # replay_proxy 가 시드 시점의 fingerprint 를 env 로 주입하면 여기서
+            # context_kwargs 의 기본값을 덮어쓴다. UA 는 스푸핑하지 않는다 (D10).
+            _apply_fingerprint_env(context_kwargs)
             if storage_state_in and os.path.isfile(storage_state_in):
                 log.info("[Auth] storage_state 복원 — %s", storage_state_in)
                 context_kwargs["storage_state"] = storage_state_in
@@ -1265,7 +1304,7 @@ class QAExecutor:
                 log.info("[Step %s] reset_state cookie -> cleared", step_id)
 
             if scope == "all":
-                # PLAN_PRODUCTION_READINESS.md §"T-B Day 2" — all 은
+                # docs/PLAN_PRODUCTION_READINESS.md §"T-B Day 2" — all 은
                 # cookie + storage + indexeddb + permissions reset 까지 포함.
                 # geolocation/notifications/clipboard 등 grant 된 권한 초기화.
                 try:
