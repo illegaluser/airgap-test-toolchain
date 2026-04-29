@@ -265,37 +265,45 @@ Jenkins Markup Formatter 가 Plain Text 로 설정됨.
 1. <http://localhost:18080/manage/configure>
 2. **Markup Formatter** → "Safe HTML" 선택 → Save
 
-## 8. R-Plus (Replay / Generate Doc / Compare) 활성화
+## 8. R-Plus (Replay / Generate Doc / Compare)
 
-R-Plus 는 **백엔드만 분리**되어 있고 UI 는 메인 결과 화면에 함께 노출된다 — 평가 단계 (rubric / 5-sample / 90% replay DoD) 통과 전까지는 환경변수로 OFF.
+TR.4+.4 (2026-04-29) — **R-Plus 게이트 폐기, 항상 활성**. 메인 결과 화면에서 `state=done` 이면 R-Plus 섹션이 자동 노출되어 [Replay] / [Generate Doc] / [Compare with Doc-DSL] 버튼이 함께 표시된다.
 
-**진입**: `http://localhost:18092/` — 녹화 후 결과 패널이 열리면 `state=done` AND `rplus_enabled=true` 조건일 때 [Replay] / [Generate Doc] / [Compare with Doc-DSL] 버튼이 동일 페이지에 함께 표시된다.
-
-### 활성화 방법
-
-```bash
-# recording-service 데몬 환경에서 RPLUS_ENABLED=1 필요
-RPLUS_ENABLED=1 ./mac-agent-setup.sh
-# 또는
-RPLUS_ENABLED=1 uvicorn recording_service.server:app --host 0.0.0.0 --port 18092
-```
-
-미설정 상태에서는:
-
-- `/healthz` 응답 `rplus_enabled=false`
-- `/experimental/sessions/{sid}/replay|enrich|compare` 모든 요청 → 404 (`R-Plus 기능이 비활성 상태입니다`)
-- 메인 UI 결과 화면의 R-Plus 섹션이 hidden 으로 노출되지 않음
-
-활성화 후 페이지 새로고침하면 결과 패널 아래에 R-Plus 섹션이 자동으로 나타난다.
+백엔드는 `recording_service/rplus/router.py` 모듈로 분리되어 `/experimental/sessions/{sid}/replay|enrich|compare` URL prefix 를 사용 — 코드 조직상 분리이지 실행 차단은 없음.
 
 ### R-Plus 버튼이 안 보이는 경우
 
 | 증상 | 원인 | 해결 |
 |---|---|---|
-| 버튼 자체가 안 보임 | `rplus_enabled=false` | env 적용 후 데몬 재시작 |
-| 버튼 클릭 시 `RPLUS_ENABLED 미설정` 알림 | 프론트 캐시가 지난 healthz 응답 사용 | 페이지 새로고침 |
 | 결과 패널은 보이는데 R-Plus 만 hidden | `state` 가 `done` 이 아님 (recording / error 등) | 녹화 종료 후 변환 완료 (state=done) 까지 대기 |
-| `/healthz.rplus_enabled` 가 false | env 가 데몬 프로세스에 안 들어감 | `launchctl print` / `systemctl show` 로 환경변수 확인 |
+| 페이지 캐시 | 메인 페이지가 이전 코드 (게이트 시절) | 강력 새로고침 (Cmd+Shift+R) |
+| 결과 패널 자체가 안 보임 | 세션이 열려 있지 않음 | 세션 row 의 [열기] 또는 stop 직후 자동 표시 |
+
+### Replay / Enrich / Compare 가 502 에러
+
+| 기능 | 의존성 | 운영자 점검 |
+|---|---|---|
+| Replay | 컨테이너 측 executor (`docker exec`) | `docker ps` 로 `dscore.ttc.playwright` 가 Up 상태인지 |
+| Generate Doc | Ollama (`OLLAMA_BASE_URL`) | `ollama serve` 기동 + `gemma4:26b` pull 완료 |
+| Compare | recording-service 단독 (외부 의존성 0) | n/a |
+
+## 9. 결과 화면의 다운로드 / 열람 (TR.4+.1, TR.4+.2)
+
+`state=done` 또는 codegen 산출물이 있을 때 결과 화면 아래 두 카드가 노출된다:
+
+| 카드 | 내용 | 다운로드 |
+|---|---|---|
+| Scenario JSON | 변환된 14-DSL (`scenario.json`) | ⬇ → `<sid>-scenario.json` |
+| Original Script (.py) | codegen 원본 (`original.py`) | ⬇ → `<sid>-original.py` |
+
+엔드포인트 직접 호출도 가능:
+
+```bash
+curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/scenario             # 본문
+curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/scenario?download=1  # 첨부
+curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/original             # 본문
+curl -sS http://127.0.0.1:18092/recording/sessions/<sid>/original?download=1  # 첨부
+```
 
 ## 9. iframe / Shadow DOM 한계 (T-C / P0.2)
 

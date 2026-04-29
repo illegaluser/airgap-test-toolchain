@@ -29,13 +29,9 @@ async function api(path, opts = {}) {
   return data;
 }
 
-// 마지막 healthz 응답을 캐시 — experimental 링크 노출 여부 판단에 사용 (P0.1 #5).
-let _lastHealth = null;
-
 async function loadHealth() {
   try {
     const h = await api("/healthz");
-    _lastHealth = h;
     const badge = $("#health-badge");
     if (h.codegen_available) {
       badge.textContent = `✓ healthy · v${h.version}`;
@@ -45,14 +41,9 @@ async function loadHealth() {
       badge.className = "warn";
     }
   } catch (e) {
-    _lastHealth = null;
     $("#health-badge").textContent = "✗ unreachable";
     $("#health-badge").className = "err";
   }
-}
-
-function _isRplusEnabled() {
-  return _lastHealth != null && _lastHealth.rplus_enabled === true;
 }
 
 async function loadSessions() {
@@ -107,6 +98,13 @@ async function getSession(sid) {
 
 async function getSessionScenario(sid) {
   return api(`/recording/sessions/${sid}/scenario`);
+}
+
+async function getSessionOriginal(sid) {
+  // text 본문 — fetch 직접 사용 (api() 는 JSON 파싱 시도).
+  const r = await fetch(`/recording/sessions/${sid}/original`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.text();
 }
 
 async function addAssertion(sid, payload) {
@@ -192,37 +190,42 @@ async function openSession(sid) {
   $("#result-id").textContent = s.id;
   setStatePill("#result-state", s.state);
   $("#result-step-count").textContent = s.action_count || 0;
+  $("#result-path").textContent = `~/.dscore.ttc.playwright-agent/recordings/${s.id}/scenario.json`;
 
-  // scenario.json 본문을 백엔드에서 직접 가져와 표시 (TR.4 #4).
-  // state=done 인 경우에만 시도하고, 그 외/실패 시 metadata 표시로 폴백.
-  if (s.error) {
-    $("#result-json").textContent = `[error]\n${s.error}`;
-  } else if (s.state === "done") {
+  // Scenario JSON 카드 — state=done 일 때만 노출 + 다운로드 링크 갱신 (TR.4+.2).
+  const scenarioCard = $("#scenario-card");
+  if (s.state === "done") {
+    scenarioCard.hidden = false;
+    $("#dl-scenario").href = `/recording/sessions/${sid}/scenario?download=1`;
     try {
       const scenario = await getSessionScenario(sid);
       $("#result-json").textContent = JSON.stringify(scenario, null, 2);
     } catch (err) {
-      $("#result-json").textContent =
-        `(scenario.json 로드 실패: ${err.message})\n\n` +
-        `metadata: ${JSON.stringify(s, null, 2)}`;
+      $("#result-json").textContent = `(scenario.json 로드 실패: ${err.message})`;
     }
   } else {
-    $("#result-json").textContent =
-      `(state=${s.state} — scenario.json 미생성)\n\n` +
-      `metadata: ${JSON.stringify(s, null, 2)}`;
+    scenarioCard.hidden = true;
   }
 
-  // Assertion 추가 영역은 state=done 일 때만 노출
-  $("#assertion-section").hidden = s.state !== "done";
-  $("#result-path").textContent = `~/.dscore.ttc.playwright-agent/recordings/${s.id}/scenario.json`;
+  // Original .py 카드 — original.py 가 존재할 때 노출 (TR.4+.1).
+  // recording 도중 stop 직전 / done / error 모두에서 codegen 산출물이 있으면 표시.
+  const originalCard = $("#original-card");
+  $("#dl-original").href = `/recording/sessions/${sid}/original?download=1`;
+  try {
+    const original = await getSessionOriginal(sid);
+    originalCard.hidden = false;
+    $("#result-original").textContent = original || "(empty)";
+  } catch (err) {
+    originalCard.hidden = true;
+  }
 
-  // 후속 assertion add 시 사용
+  // Assertion 추가 영역은 state=done 일 때만 노출.
+  $("#assertion-section").hidden = s.state !== "done";
   $("#assertion-form").dataset.sid = sid;
 
-  // R-Plus 섹션 — state=done 이면서 RPLUS_ENABLED=1 일 때만 노출.
-  // 백엔드는 /experimental/* 로 분리되어 있고 UI 만 메인 결과 화면에 통합.
+  // R-Plus 섹션 — state=done 일 때 항상 노출 (게이트 폐기 — TR.4+.4).
   const rplus = $("#rplus-section");
-  const showRplus = s.state === "done" && _isRplusEnabled();
+  const showRplus = s.state === "done";
   rplus.hidden = !showRplus;
   if (showRplus) {
     rplus.dataset.sid = sid;
@@ -244,7 +247,10 @@ $("#start-form").addEventListener("submit", async (e) => {
     const data = await startRecording(target_url, planning || null);
     showActivePanel(data);
     $("#result-section").hidden = true;
+    $("#scenario-card").hidden = true;
+    $("#original-card").hidden = true;
     $("#assertion-section").hidden = true;
+    $("#rplus-section").hidden = true;
     await loadSessions();
   } catch (err) {
     alert("Start 실패: " + err.message);

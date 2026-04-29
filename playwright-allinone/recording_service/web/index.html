@@ -50,7 +50,7 @@
       </p>
     </section>
 
-    <!-- 섹션 3: 결과 -->
+    <!-- 섹션 3: 결과 메타 -->
     <section class="card" id="result-section" hidden>
       <h2>결과</h2>
       <dl class="kv">
@@ -59,7 +59,22 @@
         <dt>step 수</dt><dd id="result-step-count">—</dd>
         <dt>scenario.json</dt><dd><code id="result-path">—</code></dd>
       </dl>
+    </section>
+
+    <!-- 섹션 3-A: Scenario JSON (변환된 14-DSL) -->
+    <section class="card" id="scenario-card" hidden>
+      <h2>Scenario JSON
+        <a id="dl-scenario" class="dl-link" href="#" download>⬇ 다운로드</a>
+      </h2>
       <pre id="result-json" class="json-preview">— scenario.json 미로드 —</pre>
+    </section>
+
+    <!-- 섹션 3-B: Original .py (codegen 원본) -->
+    <section class="card" id="original-card" hidden>
+      <h2>Original Script (.py)
+        <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
+      </h2>
+      <pre id="result-original" class="json-preview">— original.py 미로드 —</pre>
     </section>
 
     <!-- 섹션 4: Assertion 추가 (TR.4 핵심) -->
@@ -97,8 +112,7 @@
       </form>
     </section>
 
-    <!-- 섹션 5: R-Plus (Replay / Generate Doc / Compare) -->
-    <!-- state=done 이면서 healthz.rplus_enabled=true 일 때만 노출 -->
+    <!-- 섹션 5: R-Plus (Replay / Generate Doc / Compare) — state=done 일 때 노출 -->
     <section class="card r-plus" id="rplus-section" hidden>
       <h2>결합 시나리오 <span class="badge ok">R-Plus</span></h2>
       <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.</p>
