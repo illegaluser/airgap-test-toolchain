@@ -1174,7 +1174,8 @@ with open('${OFFLINE_JENKINS_PIPELINE}', encoding='utf-8') as f:
     script = f.read()
 description_html = sax.escape(
     '<p style="color:#888;font-size:0.9em">DSCORE Zero-Touch QA Docker Pipeline'
-    ' · provision.sh auto-created · 좌측 사이드바의 Recording UI 링크로 녹화·세션 목록 진입.</p>'
+    ' · provision.sh auto-created · 좌측 사이드바의 Recording UI 링크로 녹화·세션 목록 진입.'
+    ' (Recording UI 좌측 상단 ← 뒤로 버튼으로 Jenkins 복귀)</p>'
 )
 print("""<?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">

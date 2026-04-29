@@ -2,15 +2,19 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <title>DSCORE Recording Service (R-MVP)</title>
+  <title>Recording UI</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <h1>📹 Recording Service</h1>
+    <div class="header-left">
+      <button id="back-btn" type="button" class="back-btn"
+              title="이전 페이지 (Jenkins 등) 로 돌아가기">← 뒤로</button>
+      <h1>📹 Recording UI</h1>
+    </div>
     <div class="meta">
       <span id="health-badge">checking…</span>
-      <span class="muted">Phase R-MVP · port 18092</span>
+      <span class="muted">port 18092</span>
     </div>
   </header>
 
@@ -73,6 +77,9 @@
     <!-- 섹션 3-A: Scenario JSON (변환된 14-DSL) -->
     <section class="card" id="scenario-card" hidden>
       <h2>Scenario JSON
+        <button type="button" class="copy-btn" data-copy-target="result-json"
+                title="클립보드에 복사">📋 복사</button>
+        <span class="copy-toast" data-toast-for="result-json" hidden>✓ 복사됨</span>
         <a id="dl-scenario" class="dl-link" href="#" download>⬇ 다운로드</a>
       </h2>
       <pre id="result-json" class="json-preview">— scenario.json 미로드 —</pre>
@@ -81,10 +88,67 @@
     <!-- 섹션 3-B: Original .py (codegen 원본) -->
     <section class="card" id="original-card" hidden>
       <h2>Original Script (.py)
+        <button type="button" class="copy-btn" data-copy-target="result-original"
+                title="클립보드에 복사">📋 복사</button>
+        <span class="copy-toast" data-toast-for="result-original" hidden>✓ 복사됨</span>
         <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
       </h2>
       <pre id="result-original" class="json-preview">— original.py 미로드 —</pre>
     </section>
+
+    <!-- 섹션 3-D: Regression Test Script (.py) — Play with LLM 실행 후 자동 생성 -->
+    <section class="card" id="regression-card" hidden>
+      <h2>Regression Test Script (.py)
+        <button type="button" class="copy-btn" data-copy-target="result-regression"
+                title="클립보드에 복사">📋 복사</button>
+        <span class="copy-toast" data-toast-for="result-regression" hidden>✓ 복사됨</span>
+        <a id="dl-regression" class="dl-link" href="#" download>⬇ 다운로드</a>
+      </h2>
+      <p class="muted">
+        ▶ <strong>Play with LLM</strong> 실행 후 healed selector 와 함께 자동
+        생성된 회귀 테스트. 검증 후 회귀 슈트로 채택.
+      </p>
+      <pre id="result-regression" class="json-preview">— regression_test.py 미로드 —</pre>
+    </section>
+
+    <!-- 섹션 3-E: codegen 원본 ↔ LLM healed regression 변경 분석 (항목 4) -->
+    <section class="card" id="diff-card" hidden>
+      <h2>원본 ↔ Regression 변경 분석
+        <button type="button" class="dl-link" id="btn-analyze-diff" title="LLM 으로 변경 의미 분석">🔎 LLM 분석</button>
+      </h2>
+      <p class="muted">
+        codegen 원본과 LLM healed regression 의 차이를 LLM (Ollama) 이
+        의미 단위로 정리 — selector 치환 / hover 추가 / 삭제된 단계 등.
+        분석 결과를 보고 회귀 테스트 채택 가능성을 판단.
+      </p>
+      <div id="diff-analysis-output" class="analysis-output">
+        — <strong>🔎 LLM 분석</strong> 버튼을 누르면 분석을 시작합니다 —
+      </div>
+      <details id="diff-raw-details">
+        <summary class="muted">원시 unified diff 보기</summary>
+        <pre id="diff-output" class="diff-pre">— Play with LLM 실행 후 표시됩니다 —</pre>
+      </details>
+    </section>
+
+    <!-- 섹션 3-C: Run Log (P1 — Play 실행 후 step 별 결과) -->
+    <section class="card" id="run-log-card" hidden>
+      <h2>실행 결과 (run_log)</h2>
+      <p class="muted">
+        가장 최근 ▶ Play 실행의 step 별 PASS / HEALED / FAIL 결과 + 스크린샷.
+        HEALED 의 <code>heal_stage</code> 가 <code>local</code>/<code>dify</code> 면
+        selector swap, <code>visibility</code> 면 cascade hover.
+      </p>
+      <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
+    </section>
+
+    <!-- 스크린샷 모달 (P1) -->
+    <dialog id="shot-dialog" class="shot-dialog">
+      <form method="dialog">
+        <button class="shot-close" value="cancel" title="닫기">✕</button>
+      </form>
+      <img id="shot-img" alt="step screenshot">
+      <p class="shot-caption" id="shot-caption">—</p>
+    </dialog>
 
     <!-- 섹션 4: Step 추가 (TR.4 — codegen 미생성 액션 보충) -->
     <section class="card" id="assertion-section" hidden>
@@ -131,12 +195,38 @@
       <h2>결합 시나리오 <span class="badge ok">R-Plus</span></h2>
       <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.</p>
       <div class="plus-buttons">
-        <button id="btn-play-codegen" title="codegen 생성 코드를 그대로 호스트에서 재생 (실행 직전 자동 annotate hover 주입)">▶ Codegen Output Replay</button>
-        <button id="btn-play-llm" title="14-DSL 변환본을 executor 로 실행 (healing/verify/mock 동작, 화면 표시)">▶ Play with LLM</button>
-        <button id="btn-enrich" title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)">📝 Generate Doc</button>
-        <button id="btn-compare-open" title="doc-DSL JSON 업로드 후 의미 비교 + 5분류 HTML 리포트 (TR.6)">⚖ Compare with Doc-DSL</button>
+        <div class="dropdown-group" data-group="play">
+          <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+            ▶ Play <span class="caret">▾</span>
+          </button>
+          <div class="dropdown-menu" role="menu">
+            <button id="btn-play-codegen" type="button" title="codegen 녹화 코드를 그대로 호스트에서 재생 (실행 직전 자동 annotate hover 주입)">
+              ▶ Codegen 녹화코드 실행
+            </button>
+            <button id="btn-play-llm" type="button" title="14-DSL 변환본을 executor 로 실행 (healing/verify/mock 동작, 화면 표시)">
+              ▶ LLM 적용 코드 실행
+            </button>
+          </div>
+        </div>
+        <div class="dropdown-group" data-group="doc">
+          <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+            📝 Generate Doc <span class="caret">▾</span>
+          </button>
+          <div class="dropdown-menu" role="menu">
+            <button id="btn-enrich" type="button" title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)">
+              📝 레코딩 코드 기반 시나리오 문서 생성
+            </button>
+            <button id="btn-compare-open" type="button" title="doc-DSL JSON 업로드 후 의미 비교 + 5분류 HTML 리포트 (TR.6)">
+              ⚖ 시나리오 문서 ↔ JSON 비교
+            </button>
+          </div>
+        </div>
       </div>
       <pre id="rplus-output" class="json-preview" hidden>—</pre>
+      <details id="play-progress-details" hidden>
+        <summary>실시간 진행 로그</summary>
+        <pre id="play-progress" class="play-progress"></pre>
+      </details>
     </section>
 
     <!-- Compare 모달 (간단 폼) -->
@@ -159,6 +249,16 @@
     <!-- 섹션 6: 세션 목록 -->
     <section class="card">
       <h2>최근 세션</h2>
+      <div class="session-filters">
+        <input id="session-filter" type="text" placeholder="target_url / id 검색…" autocomplete="off">
+        <select id="session-state-filter">
+          <option value="">모든 state</option>
+          <option value="recording">recording</option>
+          <option value="converting">converting</option>
+          <option value="done">done</option>
+          <option value="error">error</option>
+        </select>
+      </div>
       <table id="session-table">
         <thead>
           <tr>
@@ -175,7 +275,7 @@
   </main>
 
   <footer>
-    <span class="muted">DSCORE Recording Service · 호스트 데몬 · 폐쇄망 호환</span>
+    <span class="muted">Recording UI · 호스트 데몬 · 폐쇄망 호환</span>
   </footer>
 
   <script src="/static/app.js"></script>

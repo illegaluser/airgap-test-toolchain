@@ -9,13 +9,15 @@ TR.2 단계에서 /start /stop 이 실 codegen subprocess 와 연동된다.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import threading
 from typing import Optional
 
 from pathlib import Path as _Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -435,6 +437,159 @@ def get_session_original(sid: str, download: int = 0):
             filename=f"{sid}-original.py",
         )
     # 브라우저 표시용 — text/plain 이 안전 (브라우저가 .py 를 다운로드로 처리하는 것 회피).
+    return FileResponse(str(p), media_type="text/plain")
+
+
+# ── P1 (항목 5) — Step 결과 시각화: run_log + 스크린샷 ─────────────────────
+
+# 스크린샷 파일명 화이트리스트 — path traversal 방지 + executor 가 만드는 형식만.
+# 예: step_1_pass.png / step_2_healed.png / step_3_fail.png / final_state.png
+_SCREENSHOT_NAME_RE = re.compile(r"^(step_\d+_[a-z_]+|final_state)\.png$")
+
+
+@app.get("/recording/sessions/{sid}/run-log", include_in_schema=False)
+def get_session_run_log(sid: str) -> list:
+    """Play 실행 후 ``run_log.jsonl`` 을 파싱해 step 별 결과 list 반환.
+
+    각 step 에 ``screenshot`` 필드를 채움 — ``step_<n>_<status>.png`` 이
+    디스크에 있을 때만. 모달 확대용 endpoint 는 ``/screenshot/{name}``.
+
+    Run-log 가 없는 세션 (Play 미실행) 은 404.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    p = storage.run_log_path(sid)
+    if not p.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="run_log.jsonl 없음 — Play with LLM 미실행",
+        )
+    sess_dir = storage.session_dir(sid)
+    out: list = []
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                step_no = rec.get("step")
+                status = (rec.get("status") or "").lower()
+                # screenshot 매칭 — executor 의 _screenshot 명명 규칙
+                # (step_<n>_pass.png / step_<n>_fail.png / step_<n>_healed.png 등).
+                shot_name = None
+                if step_no is not None and status:
+                    candidate = f"step_{step_no}_{status}.png"
+                    if (sess_dir / candidate).is_file():
+                        shot_name = candidate
+                rec["screenshot"] = shot_name
+                out.append(rec)
+    except OSError as e:
+        raise HTTPException(
+            status_code=500, detail=f"run_log 읽기 실패: {e}"
+        ) from e
+    return out
+
+
+@app.get("/recording/sessions/{sid}/play-log/tail", include_in_schema=False)
+def get_play_log_tail(
+    sid: str,
+    kind: str = "llm",
+    from_: int = Query(0, alias="from"),
+):
+    """Play 실행 중 ``play-llm.log`` / ``play-codegen.log`` 의 ``from`` 바이트
+    이후 내용을 반환 (P2 — 진행 스트리밍).
+
+    Frontend 가 1s 간격으로 polling 하면서 진행 상황을 실시간 표시. 파일이
+    아직 없으면 (subprocess 가 막 시작) 200 + ``exists=false`` — 404 가 아닌
+    이유는 polling 클라이언트가 정상 흐름에서 파일 생성 전을 만나기 때문.
+
+    Args:
+        kind: ``llm`` (default) 또는 ``codegen``.
+        from: 이전 polling 에서 받은 ``offset``. 처음은 0.
+    """
+    if kind not in ("llm", "codegen"):
+        raise HTTPException(
+            status_code=400, detail=f"kind 는 llm/codegen — received {kind!r}",
+        )
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    fname = "play-llm.log" if kind == "llm" else "play-codegen.log"
+    p = storage.session_dir(sid) / fname
+    if not p.is_file():
+        return {"content": "", "offset": 0, "exists": False, "kind": kind}
+    try:
+        size = p.stat().st_size
+        if from_ < 0 or from_ > size:
+            from_ = 0
+        with p.open("rb") as f:
+            f.seek(from_)
+            chunk = f.read()
+        return {
+            "content": chunk.decode("utf-8", errors="replace"),
+            "offset": from_ + len(chunk),
+            "exists": True,
+            "kind": kind,
+        }
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"log tail 실패: {e}") from e
+
+
+@app.get("/recording/sessions/{sid}/screenshot/{name}", include_in_schema=False)
+def get_session_screenshot(sid: str, name: str):
+    """세션 디렉토리의 스크린샷 PNG 를 직접 반환.
+
+    Path traversal 방지 — ``name`` 은 ``step_<digit>_<word>.png`` 또는
+    ``final_state.png`` 정규식 화이트리스트로 강제. 그 외 400.
+    """
+    if not _SCREENSHOT_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"허용되지 않는 스크린샷 이름: {name!r}",
+        )
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    p = storage.session_dir(sid) / name
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail=f"스크린샷 없음: {name}")
+    return FileResponse(str(p), media_type="image/png")
+
+
+# ── 항목 4 — LLM healed regression .py 다운로드 ───────────────────────────
+
+@app.get("/recording/sessions/{sid}/regression", include_in_schema=False)
+def get_session_regression(sid: str, download: int = 0):
+    """executor 가 자동 생성한 ``regression_test.py`` 본문 또는 첨부 다운로드.
+
+    Play with LLM 실행 후에만 존재. 사용자가 codegen 원본과 diff 검토 후
+    회귀 테스트로 채택할 때 이 endpoint 로 다운로드.
+
+    Args:
+        download: 1 이면 ``Content-Disposition: attachment``, 0 이면 본문.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    p = storage.regression_py_path(sid)
+    if not p.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="regression_test.py 없음 — Play with LLM 미실행",
+        )
+    if download:
+        return FileResponse(
+            str(p),
+            media_type="text/x-python",
+            filename=f"{sid}-regression_test.py",
+        )
     return FileResponse(str(p), media_type="text/plain")
 
 

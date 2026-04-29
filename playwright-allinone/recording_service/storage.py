@@ -74,6 +74,16 @@ def original_py_path(session_id: str) -> Path:
     return session_dir(session_id) / "original.py"
 
 
+def regression_py_path(session_id: str) -> Path:
+    """executor 가 scenario.healed.json 으로부터 자동 생성한 회귀 테스트 .py."""
+    return session_dir(session_id) / "regression_test.py"
+
+
+def run_log_path(session_id: str) -> Path:
+    """Play 실행 후 step 별 PASS/HEALED/FAIL 기록 jsonl."""
+    return session_dir(session_id) / "run_log.jsonl"
+
+
 def load_scenario(session_id: str) -> Optional[list]:
     p = scenario_path(session_id)
     if not p.exists():
