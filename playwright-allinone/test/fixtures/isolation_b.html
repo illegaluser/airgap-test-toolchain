@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Isolation fixture B — read/verify side</title>
+</head>
+<body>
+  <h1 id="role">B</h1>
+  <p>이 페이지는 fixture A 가 남긴 흔적이 비어 있는지 verify 합니다.</p>
+  <p>cookie marker: <span id="cookie-status">?</span></p>
+  <p>localStorage marker: <span id="local-status">?</span></p>
+  <p>sessionStorage marker: <span id="session-status">?</span></p>
+  <p>indexeddb marker: <span id="idb-status">?</span></p>
+  <p>verdict: <span id="verdict">?</span></p>
+  <script>
+    async function readAll() {
+      const cookieMarker = document.cookie.split(";")
+        .map(s => s.trim()).find(s => s.startsWith("isolation_marker="));
+      const localMarker = (() => { try { return localStorage.getItem("isolation_local"); } catch (_) { return null; } })();
+      const sessionMarker = (() => { try { return sessionStorage.getItem("isolation_session"); } catch (_) { return null; } })();
+
+      let idbMarker = null;
+      try {
+        const req = indexedDB.open("isolation_db", 1);
+        idbMarker = await new Promise((resolve) => {
+          req.onupgradeneeded = () => {
+            // 새로 생성된 경우 — 기존 DB 가 없었다는 신호.
+            try { req.result.createObjectStore("kv", { keyPath: "k" }); } catch (_) {}
+          };
+          req.onsuccess = () => {
+            const db = req.result;
+            try {
+              const tx = db.transaction("kv", "readonly");
+              const get = tx.objectStore("kv").get("marker");
+              get.onsuccess = () => { db.close(); resolve(get.result ? get.result.v : null); };
+              get.onerror = () => { db.close(); resolve(null); };
+            } catch (_) { db.close(); resolve(null); }
+          };
+          req.onerror = () => resolve(null);
+        });
+      } catch (_) { /* no-op */ }
+
+      document.getElementById("cookie-status").textContent = cookieMarker ? "PRESENT" : "ABSENT";
+      document.getElementById("local-status").textContent = localMarker ? "PRESENT" : "ABSENT";
+      document.getElementById("session-status").textContent = sessionMarker ? "PRESENT" : "ABSENT";
+      document.getElementById("idb-status").textContent = idbMarker ? "PRESENT" : "ABSENT";
+
+      const allAbsent = !cookieMarker && !localMarker && !sessionMarker && !idbMarker;
+      document.getElementById("verdict").textContent = allAbsent ? "ISOLATED" : "LEAKED";
+    }
+    readAll();
+  </script>
+</body>
+</html>

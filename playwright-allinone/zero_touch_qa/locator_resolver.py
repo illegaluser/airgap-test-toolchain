@@ -9,6 +9,15 @@ log = logging.getLogger(__name__)
 _ROLE_PREFIX = "role="
 
 
+class ShadowAccessError(RuntimeError):
+    """closed shadow root 를 만나 자동화가 불가능한 상태.
+
+    T-C (P0.2). DSL 의 ``shadow=<host>`` segment 가 mode=closed 로 attach 된
+    Web Component 를 가리키면 raise. executor 가 이를 잡아 step 을 즉시
+    FAIL 처리하고 시나리오 종료한다 — 30초 timeout hang 방지.
+    """
+
+
 class LocatorResolver:
     """
     Dify가 생성한 target을 Playwright Locator로 변환하는 7단계 시맨틱 탐색 엔진.
@@ -327,6 +336,10 @@ class LocatorResolver:
 
         Returns:
             새로운 Locator / FrameLocator. 잘못된 입력은 None.
+
+        Raises:
+            ShadowAccessError: ``shadow=<host>`` segment 의 host element 가
+                mode=closed 인 shadow root 를 가져 piercing 불가능할 때.
         """
         if seg.startswith("frame="):
             sel = seg[len("frame="):].strip()
@@ -336,6 +349,43 @@ class LocatorResolver:
                 return cur.frame_locator(sel)
             except Exception:
                 return None
+
+        if seg.startswith("shadow="):
+            # T-C (P0.2) — explicit shadow host marker. Playwright 는 open
+            # shadow 를 자동 piercing 하지만 closed shadow 는 0 매치라 영원히
+            # timeout. 사용자가 shadow= 로 의도를 표시하면 host 의 shadowRoot
+            # 모드를 검사해 closed 인 경우 즉시 ShadowAccessError 로 escalate.
+            sel = seg[len("shadow="):].strip()
+            if not sel:
+                return None
+            try:
+                host = cur.locator(sel)
+                if host.count() == 0:
+                    return None
+                # host element 의 shadowRoot 가 null 이면 (1) shadow 없음 or
+                # (2) closed shadow. tagName 에 하이픈 (custom element 표기)
+                # 이 있으면 (2) 로 추정 — Web Components 명세상 host 가 자동
+                # 화 대상일 때 99% 케이스가 일치한다.
+                mode = host.first.evaluate(
+                    """el => {
+                        if (el.shadowRoot) return 'open';
+                        const isCustom = el.tagName && el.tagName.includes('-');
+                        return isCustom ? 'closed' : 'none';
+                    }"""
+                )
+            except ShadowAccessError:
+                raise
+            except Exception:
+                return None
+            if mode == "closed":
+                raise ShadowAccessError(
+                    f"closed shadow root — automation 불가 (host={sel!r}). "
+                    f"브라우저 정책상 closed mode 의 shadow DOM 에는 자동화 도구가 "
+                    f"piercing 할 수 없습니다. 컴포넌트가 open mode 로 attach 되도록 "
+                    f"앱을 수정하거나 후속 step 을 frame/popup 으로 우회하세요."
+                )
+            # open / none — 계속 진행. 후속 segment 가 host 를 scope 로 사용.
+            return host
 
         if seg.startswith(_ROLE_PREFIX):
             m = re.match(r"role=(.+?),\s*name=(.+)", seg)

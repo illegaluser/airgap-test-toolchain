@@ -189,9 +189,10 @@ class ScenarioValidationError(ValueError):
     """Dify 가 반환한 scenario 가 구조적으로 무효."""
 
 
-# [표준 액션] — 14 standard actions (Planner 가 emit) + 인증 보조 액션 auth_login.
-# auth_login 은 LLM 이 emit 하지 않고 사용자가 작성한 시나리오에 직접 들어오므로
-# dify-chatflow.yaml Planner prompt 와는 동기화하지 않는다 (executor 만 처리).
+# [표준 액션] — 14 standard actions (Planner 가 emit) + 보조 액션
+# (auth_login, reset_state). 보조 액션은 LLM 이 emit 하지 않고 사용자가 작성한
+# 시나리오에 직접 들어오므로 dify-chatflow.yaml Planner prompt 와 동기화하지
+# 않는다 (executor 만 처리).
 _VALID_ACTIONS = frozenset(
     {
         "navigate",
@@ -209,6 +210,7 @@ _VALID_ACTIONS = frozenset(
         "mock_status",
         "mock_data",
         "auth_login",
+        "reset_state",
     }
 )
 
@@ -230,13 +232,20 @@ _VALID_VERIFY_CONDITIONS = frozenset(
 )
 
 
-_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press")
+_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state")
 # auth_login: target=mode (form/totp/oauth) 필수, value=credential alias 필수.
+# reset_state: target 무시, value=scope (cookie/storage/indexeddb/all) 필수.
 _VALUE_REQUIRED_ACTIONS = frozenset(
-    {"fill", "press", "select", "upload", "drag", "auth_login"}
+    {"fill", "press", "select", "upload", "drag", "auth_login", "reset_state"}
 )
 _SCROLL_VALID_VALUES = frozenset({"into_view", "into-view", "into view"})
 _AUTH_LOGIN_MODES = frozenset({"form", "totp", "oauth"})
+# T-B (P0.3-A) — reset_state 의 value 화이트리스트.
+# cookie    → context.clear_cookies()
+# storage   → page.evaluate("localStorage.clear(); sessionStorage.clear();")
+# indexeddb → page.evaluate(deleteAllIDB)
+# all       → 위 3개 모두
+_RESET_STATE_VALID_VALUES = frozenset({"cookie", "storage", "indexeddb", "all"})
 
 
 def _check_mock_times(i: int, step: dict) -> None:
@@ -323,6 +332,15 @@ def _check_action_specific(i: int, step: dict) -> None:
             raise ScenarioValidationError(
                 f"step[{i}] action=auth_login 의 target 은 "
                 f"{sorted(_AUTH_LOGIN_MODES)} 중 하나여야 함 (={head!r})"
+            )
+        return
+    if action == "reset_state":
+        # value = "cookie" | "storage" | "indexeddb" | "all". target 은 무시.
+        scope = str(step.get("value", "")).strip().lower()
+        if scope not in _RESET_STATE_VALID_VALUES:
+            raise ScenarioValidationError(
+                f"step[{i}] action=reset_state 의 value 는 "
+                f"{sorted(_RESET_STATE_VALID_VALUES)} 중 하나여야 함 (={scope!r})"
             )
         return
     if action == "verify":

@@ -128,15 +128,41 @@ modifier 옵션** 추가:
 | `nth=N` | N 번째 매칭 (`.nth(N)`) | `role=link, name=Read more, nth=2` → 3 번째 "Read more" 링크 |
 | `has_text=T` | 자식에 T 텍스트가 있는 요소 (`.filter(has_text=T)`) | `role=listitem, has_text=Premium` |
 
-`>>` 로 selector chain (`#sidebar >> role=button, name=Settings`) — Playwright native
-syntax.
+`>>` 로 selector chain (`#sidebar >> role=button, name=Settings`) — P0.1 #2 단계
+에서 receiver-side resolver 의 합성 chain 해석이 활성됨 ([locator_resolver.py](zero_touch_qa/locator_resolver.py)
+`_resolve_chain` / `_apply_chain_segment`).
 
-`frame=#iframe>>...` prefix 는 codegen 의 `page.frame_locator(...)` 보존용 — 실 실행은
-T-C (P0.2) 의 frame_locator traversal 후 활성화.
+`frame=<sel> >> ...` prefix — T-C (P0.2) 에서 실 실행 활성. iframe 안 element 에
+chain 으로 접근. 중첩 가능 (`frame=#outer >> frame=#inner >> #deep-btn`).
+
+`shadow=<host> >> ...` prefix — T-C (P0.2). open shadow 의 piercing 은 Playwright
+가 자동으로 처리하지만 `shadow=` 를 명시하면 closed shadow 에 대해 즉시
+`ShadowAccessError` 로 escalate (30s timeout hang 방지).
 
 이 modifier 들은 codegen AST 변환기 (`zero_touch_qa/converter_ast.py`) 가
-`.nth(N)` / `.first` / `.filter(has_text=T)` 를 손실 없이 14-DSL `target` 으로
-보존하기 위해 도입됨. 사용자 작성 시나리오에서도 동일 문법 사용 가능.
+`.nth(N)` / `.first` / `.filter(has_text=T)` / `frame_locator(...)` 를 손실 없이
+14-DSL `target` 으로 보존하기 위해 도입됨. 사용자 작성 시나리오에서도 동일 문법 사용 가능.
+
+### 2.6 클라이언트 측 상태 격리 — `reset_state` *(T-B / P0.3-A, 2026-04-29)*
+
+**16 번째 표준 액션** — 시나리오 도중 client-side 흔적을 비우는 보조 액션.
+시나리오 단위 BrowserContext 분리는 이미 [executor.py:159-176](zero_touch_qa/executor.py#L159-L176)
+에서 보장되지만, 같은 시나리오 안에서 로그아웃 후 재로그인 / Multi-tenant 전환
+같은 흐름에는 step 단위 reset 이 필요.
+
+| value | 동작 |
+| --- | --- |
+| `cookie` | `context.clear_cookies()` |
+| `storage` | `page.evaluate("localStorage.clear(); sessionStorage.clear();")` |
+| `indexeddb` | `page.evaluate(deleteAllIDB)` (Safari 미지원 시 no-op) |
+| `all` | 위 3 개 모두 |
+
+DSL 형태:
+```json
+{"action": "reset_state", "target": "", "value": "all", "description": "..."}
+```
+
+target 은 무시 (빈 문자열 권장). value 화이트리스트 외 값은 `_validate_scenario` 가 reject.
 
 ---
 

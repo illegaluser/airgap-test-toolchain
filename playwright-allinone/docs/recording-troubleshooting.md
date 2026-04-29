@@ -297,7 +297,40 @@ RPLUS_ENABLED=1 uvicorn recording_service.server:app --host 0.0.0.0 --port 18092
 | 결과 패널은 보이는데 R-Plus 만 hidden | `state` 가 `done` 이 아님 (recording / error 등) | 녹화 종료 후 변환 완료 (state=done) 까지 대기 |
 | `/healthz.rplus_enabled` 가 false | env 가 데몬 프로세스에 안 들어감 | `launchctl print` / `systemctl show` 로 환경변수 확인 |
 
-## 9. 로그 위치 정리
+## 9. iframe / Shadow DOM 한계 (T-C / P0.2)
+
+### iframe 접근
+
+DSL `target` 의 `frame=<selector> >> ...` 체인으로 iframe 안의 element 에 접근. 중첩 iframe 도 같은 방식으로 누적.
+
+```json
+{"action": "click", "target": "frame=#payment-iframe >> role=button, name=Pay"}
+{"action": "click", "target": "frame=#outer >> frame=#inner >> #deep-btn"}
+```
+
+codegen 으로 녹화한 시나리오의 `page.frame_locator(...)` 체인은 [`converter_ast.py`](zero_touch_qa/converter_ast.py) 의 `_segments_to_target` 가 자동으로 `frame=...` prefix 로 보존한다.
+
+### Open shadow DOM
+
+Playwright 가 piercing 을 자동 처리. 일반 selector (`#submit-btn`) 만으로 매치된다. 명시적으로 표시하려면 `shadow=<host> >> ...` chain 사용.
+
+```json
+{"action": "fill", "target": "shadow=my-form >> #name-input", "value": "alice"}
+```
+
+### Closed shadow DOM — 자동화 불가
+
+`mode: "closed"` 로 attach 된 shadow root 는 브라우저 정책상 외부에서 접근 불가. `shadow=<host> >> ...` chain 으로 시도하면 resolver 가 `ShadowAccessError` 를 던지고 step 이 즉시 FAIL (timeout hang 없음).
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `closed shadow root — automation 불가` 에러 | `attachShadow({mode:'closed'})` 컴포넌트 | (1) 앱이 open mode 로 attach 하도록 수정 (가능하면 권장) (2) 해당 흐름을 frame/popup 으로 우회 (3) 시나리오 재설계로 우회 |
+| `frame=...` 에 매치 0건 | iframe id/selector 오타, 또는 iframe 이 아직 로드 안 됨 | `wait` 액션으로 idle 대기 + selector 재확인 |
+| nested iframe 에서 inner 매치 실패 | 외부 iframe 의 srcdoc 안의 inner iframe 은 cross-document — 복합 selector 필요 | `frame=#outer >> frame=#inner >> ...` chain 사용 |
+
+회귀 가드: [`test/test_iframe_shadow.py`](../test/test_iframe_shadow.py) 10/10. fixture 는 [`test/fixtures/iframe_payment.html`](../test/fixtures/iframe_payment.html), `iframe_nested.html`, `shadow_open.html`, `shadow_closed.html`.
+
+## 10. 로그 위치 정리
 
 | 파일 | 내용 |
 |---|---|

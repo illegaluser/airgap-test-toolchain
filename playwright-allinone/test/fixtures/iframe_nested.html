@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nested iframe fixture (2 levels)</title>
+</head>
+<body>
+  <h1>Outer page</h1>
+  <iframe id="outer-frame" width="600" height="250"></iframe>
+  <script>
+    // 외부 fixture 가 srcdoc 을 다중 escape 하지 않도록 JS 로 동적 생성.
+    const outerHtml = `
+      <!doctype html><html><body>
+        <h2>Middle frame</h2>
+        <iframe id="inner-frame" width="500" height="150"></iframe>
+        <script>
+          const innerHtml = \`
+            <!doctype html><html><body>
+              <h3>Inner frame</h3>
+              <button id="deep-btn" type="button">Deep click</button>
+              <span id="deep-result">idle</span>
+              <script>
+                document.getElementById("deep-btn").addEventListener("click", () => {
+                  document.getElementById("deep-result").textContent = "clicked";
+                });
+              <\\/script>
+            </body></html>
+          \`;
+          document.getElementById("inner-frame").srcdoc = innerHtml;
+        <\/script>
+      </body></html>
+    `;
+    document.getElementById("outer-frame").srcdoc = outerHtml;
+  </script>
+</body>
+</html>

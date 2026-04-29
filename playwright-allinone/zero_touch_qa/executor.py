@@ -25,7 +25,7 @@ from .auth import (
 )
 from .config import Config
 from .dify_client import DifyClient, DifyConnectionError
-from .locator_resolver import LocatorResolver
+from .locator_resolver import LocatorResolver, ShadowAccessError
 from .local_healer import LocalHealer
 
 log = logging.getLogger(__name__)
@@ -348,13 +348,27 @@ class QAExecutor:
         if action == "auth_login":
             return self._execute_auth_login(page, step, artifacts)
 
+        if action == "reset_state":
+            return self._execute_reset_state(page, step, artifacts)
+
         # ── 타겟 필요 액션: 실행 + 다단계 자가 치유 ──
         log.info("[Step %s] %s: %s", step_id, action, desc)
         original_target = step.get("target")
         verification_error: VerificationAssertionError | None = None
 
         # 1차 시도: 기본 타겟 (Resolver 가 healed_aliases 를 자동 적용)
-        locator = resolver.resolve(original_target)
+        # T-C (P0.2) — closed shadow 만나면 자동치유 무의미 + 30s timeout 위험.
+        # ShadowAccessError 는 fallback / healer 진입 전에 즉시 FAIL escalate.
+        try:
+            locator = resolver.resolve(original_target)
+        except ShadowAccessError as e:
+            log.error("[Step %s] %s", step_id, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, action, str(original_target or ""),
+                str(step.get("value", "")), f"{desc} [closed shadow]",
+                "FAIL", screenshot_path=ss,
+            )
         if locator:
             try:
                 self._perform_action(page, locator, step, resolver)
@@ -1100,6 +1114,74 @@ class QAExecutor:
         else:  # mock_data
             body = self._normalize_mock_body(step.get("value"))
             self._install_mock_route(page, pattern, body=body, times=times)
+
+    # ─────────────────────────────────────────────────────────────────
+    # reset_state (T-B / P0.3-A)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _execute_reset_state(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """reset_state 액션 — 시나리오 도중 client-side 상태를 비운다.
+
+        DSL 형태:
+          {"action": "reset_state", "target": "", "value": "cookie"}     # 쿠키만
+          {"action": "reset_state", "target": "", "value": "storage"}    # local + session
+          {"action": "reset_state", "target": "", "value": "indexeddb"}  # IDB
+          {"action": "reset_state", "target": "", "value": "all"}        # 위 셋 모두
+
+        value 화이트리스트는 `__main__._RESET_STATE_VALID_VALUES` 와 동기.
+        BrowserContext / Page level API 만 사용 — 백엔드 hook 없이 자체 완결.
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        scope = str(step.get("value", "")).strip().lower()
+
+        try:
+            if scope in ("cookie", "all"):
+                page.context.clear_cookies()
+                log.info("[Step %s] reset_state cookie -> cleared", step_id)
+
+            if scope in ("storage", "all"):
+                # localStorage / sessionStorage 는 SecurityError 가 about:blank
+                # 같은 origin 없는 페이지에서 발생할 수 있어 try 안에서 처리.
+                page.evaluate(
+                    """() => {
+                        try { localStorage.clear(); } catch (e) { /* no-op */ }
+                        try { sessionStorage.clear(); } catch (e) { /* no-op */ }
+                    }"""
+                )
+                log.info("[Step %s] reset_state storage -> cleared", step_id)
+
+            if scope in ("indexeddb", "all"):
+                page.evaluate(
+                    """async () => {
+                        if (!('indexedDB' in window) || !indexedDB.databases) return;
+                        try {
+                            const dbs = await indexedDB.databases();
+                            await Promise.all(dbs.map(d => new Promise((res) => {
+                                if (!d.name) return res();
+                                const req = indexedDB.deleteDatabase(d.name);
+                                req.onsuccess = req.onerror = req.onblocked = () => res();
+                            })));
+                        } catch (e) { /* no-op — Safari 등 미지원 시 */ }
+                    }"""
+                )
+                log.info("[Step %s] reset_state indexeddb -> cleared", step_id)
+
+        except Exception as e:  # noqa: BLE001
+            log.error("[Step %s] reset_state %s 실패: %s", step_id, scope, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "reset_state", "", scope, desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        return StepResult(
+            step_id, "reset_state", "", scope, desc,
+            "PASS", screenshot_path=ss,
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # auth_login (T-D / P0.1)
