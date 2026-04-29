@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lazy menu — page-level hover triggers GNB expand</title>
+  <style>
+    /* GNB 는 페이지 로드 직후 collapsed (height:0 + padding:0). body 에 'activated'
+       클래스가 추가되면 menu 가 펼쳐짐. ktds.com 같은 lazy-rendered GNB 모사. */
+    nav#gnb { overflow: hidden; transform: scale(0); transform-origin: 0 0; }
+    nav#gnb a { display: inline-block; padding: 0; height: 0; line-height: 0; }
+    body.activated nav#gnb { transform: scale(1); }
+    body.activated nav#gnb a { padding: 8px 12px; height: auto; line-height: normal; }
+    #last-clicked { margin-top: 16px; padding: 12px; background: #eaeaea; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Lazy menu fixture</h1>
+    <nav id="gnb">
+      <a href="#" data-tag="company">회사소개</a>
+      <a href="#" data-tag="products">제품</a>
+    </nav>
+  </header>
+  <main>
+    <p>본문 영역</p>
+  </main>
+  <p id="last-clicked">idle</p>
+  <script>
+    // header / body / nav 어디든 mouseover 들어오면 menu 펼침.
+    const activate = () => document.body.classList.add("activated");
+    document.body.addEventListener("mouseover", activate, { once: true });
+
+    document.addEventListener("click", (e) => {
+      if (e.target.tagName === "A" && e.target.dataset.tag) {
+        document.getElementById("last-clicked").textContent = e.target.dataset.tag;
+      }
+    });
+  </script>
+</body>
+</html>

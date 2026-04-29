@@ -1956,11 +1956,18 @@ class QAExecutor:
     def _heal_visibility(
         self, page: Page, locator: Locator, step_id,
     ) -> Optional[Locator]:
-        """element 가 hidden 이면 (1) hoverable ancestor hover 후 재검사 →
-        (2) 같은 selector 의 다른 visible 매치로 swap.
+        """element 가 hidden 이면 5단계로 visible 화 시도.
 
-        매칭은 됐지만 visible 하지 않은 element 한정. true positive (이미 보이는 element)
-        에는 evaluate 1회 외 부수 효과 없음.
+        순서 (각 단계는 visible 되면 즉시 단축):
+          (1) `scroll_into_view_if_needed` — Intersection Observer 트리거 사이트.
+          (2) ancestor hover — `_VISIBILITY_HEALER_JS` 가 추출한 hoverable 후보.
+          (3) page-level activator probe — `<header>`/`<nav>`/`<main>`/`<body>` hover.
+              사이트 전역 hover 이벤트로 menu 활성화하는 케이스.
+          (4) size-aware poll — bounding_box.height/width > 0 가 될 때까지
+              최대 2s 대기. 폰트/CSS 비동기 로딩으로 늦게 expand 되는 사이트.
+          (5) sibling swap — `filter(visible=True).first` 로 visible 매치 교체.
+
+        모든 단계 합산 한도 ~6s. 정상 visible element 에는 (0) 검사만 발생.
 
         Returns:
             visible 한 다른 형제 매치를 찾았으면 그 Locator. 그 외 None
@@ -1972,7 +1979,20 @@ class QAExecutor:
         except Exception:
             return None  # locator 가 invalid 한 케이스는 후속 healer 가 처리
 
-        # ── (1) ancestor hover 시도 ─────────────────────────────────────
+        # ── (1) D — scroll_into_view ─────────────────────────────────────
+        # Playwright 가 viewport 에 element 를 가져옴. Intersection Observer
+        # 기반 lazy menu 가 펼쳐지는 케이스에 효과적. 0-size 도 위치만 있으면
+        # 동작. 실패는 silent (다음 단계로).
+        try:
+            locator.scroll_into_view_if_needed(timeout=1500)
+            page.wait_for_timeout(150)
+            if locator.is_visible():
+                log.info("[Step %s] visibility-healer 복구 — scroll_into_view", step_id)
+                return None
+        except Exception:
+            pass
+
+        # ── (2) ancestor hover 시도 ─────────────────────────────────────
         try:
             candidates = locator.evaluate(_VISIBILITY_HEALER_JS)
         except Exception as e:  # noqa: BLE001
@@ -1997,16 +2017,47 @@ class QAExecutor:
             except Exception:  # noqa: BLE001
                 continue
 
-        # ── (2) T-H (C) 형제 매치 swap ─────────────────────────────────
-        # `.first` 가 hidden 인데 ancestor hover 도 통하지 않는 경우 (햄버거
-        # 메뉴 같이 click 으로 열리는 드로어). selector 가 가리키는 element 가
-        # 여러 개라면 그중 visible 한 것으로 swap. ktds.com 의 "회사소개" 가
-        # 모바일 드로어 + 데스크탑 GNB 두 곳에 있는 케이스.
+        # ── (3) E — page-level activator probe ──────────────────────────
+        # 사이트 전체에 mousemove/hover 이벤트를 주어 사용자 상호작용 시작을
+        # 시뮬레이션. ktds.com 같이 GNB 가 lazy expand 되는 케이스에서 header
+        # 영역 hover 만으로 menu 가 펼쳐질 수 있다.
+        for activator_sel in ("header", "nav", "main", "body"):
+            try:
+                target = page.locator(activator_sel).first
+                if target.count() == 0:
+                    continue
+                target.hover(timeout=1000)
+                page.wait_for_timeout(200)
+                if locator.is_visible():
+                    log.info(
+                        "[Step %s] visibility-healer 복구 — page-level hover (%s)",
+                        step_id, activator_sel,
+                    )
+                    return None
+            except Exception:  # noqa: BLE001
+                continue
+
+        # ── (4) F — size-aware poll ─────────────────────────────────────
+        # bounding_box.height/width 가 > 0 이 될 때까지 최대 2s. 페이지 로드
+        # 직후 menu 가 점진적으로 expand 되는 transition (CSS/JS animation) 케이스.
+        try:
+            for _ in range(10):  # 200ms x 10 = 2s
+                page.wait_for_timeout(200)
+                if locator.is_visible():
+                    log.info("[Step %s] visibility-healer 복구 — size poll", step_id)
+                    return None
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ── (5) C — 형제 매치 swap ───────────────────────────────────────
         sibling = self._find_visible_sibling(locator, step_id)
         if sibling is not None:
             return sibling
 
-        log.debug("[Step %s] visibility-healer — 적용된 ancestor 없음 + 형제 매치 없음", step_id)
+        log.debug(
+            "[Step %s] visibility-healer — 모든 전략 무력 (scroll/ancestor/page-hover/size-poll/sibling)",
+            step_id,
+        )
         return None
 
     @staticmethod

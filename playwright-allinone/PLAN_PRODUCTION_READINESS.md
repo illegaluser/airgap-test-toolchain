@@ -900,21 +900,46 @@ R-MVP TR.4 결과 화면 운영 사용 도중 5건의 사용자 피드백 + 1건
 
 회귀 +20 (TR.4+: 8, Play 분리: 6, 게이트 폐기 회귀: 6).
 
-### T-H 완료 기록 (2026-04-29) — hidden-click 자동 복구 3-layer
+### T-H 완료 기록 (2026-04-29) — hidden-click 자동 복구 (3-layer + visible-first + multi-strategy healer)
 
-**문제**: codegen 이 hover-then-click sequence 의 hover 를 빠뜨려 드롭다운/메뉴 항목이 hidden 상태에서 click → 30s timeout. 운영 도중 발견 (`a2333961d7e7` "회사소개" 링크).
+**문제**: codegen 이 hover-then-click sequence 의 hover 를 빠뜨려 드롭다운/메뉴 항목이 hidden 상태에서 click → 30s timeout. 운영 중 두 가지 변형 발견:
+- (변형 A) hover 누락만 — 호버 메뉴 fixture 재현 가능
+- (변형 B) ktds.com 처럼 GNB 가 페이지 로드 직후 height:0 / scale(0) 으로 collapsed 되어 있고, 사용자 어떤 상호작용 (mousemove 등) 으로 expand 되는 패턴
 
-3-layer 동시 적용 — 각 layer 가 다른 실행 경로를 보호:
+3 layer + visible-first + multi-strategy healer 동시 적용:
 
 | Layer | 위치 | 적용 경로 | 메커니즘 |
 |---|---|---|---|
-| (1) Visibility Healer | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) `_heal_visibility` | Play with LLM (14-DSL executor) | 1차 시도 직전 element `is_visible()` 검사 → false 면 `evaluate(JS)` 로 ancestor chain 분석 → aria-haspopup / aria-expanded=false / role=menu/menubar/listbox / tag=nav/details/summary / data-state=closed / `:hover` CSS rule trigger 후보 추출 → 가장 root 에 가까운 5개까지 hover 시도 |
+| (1) Visibility Healer | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) `_heal_visibility` | Play with LLM (14-DSL executor) | hidden 시 5단계 시도 (D scroll_into_view → ancestor hover → E page-level activator hover → F size poll → C sibling swap). 각 단계 visible 되면 단축 |
 | (4) Converter heuristic | [`zero_touch_qa/converter_ast.py`](zero_touch_qa/converter_ast.py) `_maybe_prepend_hover` + `_SEG_LOOKS_LIKE_HOVER_TRIGGER` | LLM 변환 시점 (codegen → 14-DSL) | click step 의 target chain 정적 분석. nav/menu/dropdown/gnb/aria-haspopup/aria-expanded/role=menu 패턴 매칭 시 click 앞 hover step 자동 prepend |
-| (2) Static Annotator | [`recording_service/annotator.py`](recording_service/annotator.py) | Codegen Output Replay (원본 .py 직접 실행) | `POST /experimental/sessions/{sid}/annotate` 엔드포인트. AST 분석으로 `<chain>.click()` 의 chain 안 hover-trigger ancestor 식별 → `ast.get_source_segment` 로 원본 구문 보존하며 `<segment>.hover()` 라인 click 직전 삽입 → `original_annotated.py` 생성. `play-codegen` 은 `prefer_annotated=True` 로 자동 우선 사용 |
+| (2) Static Annotator | [`recording_service/annotator.py`](recording_service/annotator.py) | Codegen Output Replay (원본 .py 직접 실행) | `play-codegen` 진입 시 자동 호출 (β 통합). AST 분석으로 `<chain>.click()` 의 chain 안 hover-trigger ancestor 식별 → `ast.get_source_segment` 로 원본 구문 보존하며 `<segment>.hover()` 라인 click 직전 삽입 → `original_annotated.py` 생성 |
+| (B) visible-first 우선 선택 | [`zero_touch_qa/locator_resolver.py`](zero_touch_qa/locator_resolver.py) `_prefer_visible` | 모든 경로 (resolver 본체) | `role=X, name=Y` 다중 매치 시 `filter(visible=True).first` 우선. 모두 hidden 이면 `.first` 폴백 → Healer 가 후속 처리 |
 
-**검증**: `test_visibility_healer.py` (3) + `test_visibility_healer_scenario.py` (1) + `test_converter_ast.py +3` + `test_annotator.py` (5) + `test_recording_service.py +2` (annotate 엔드포인트). 회귀 영역 351 passed (이전 331 → +20).
+#### Visibility Healer 5단계 (D/E/F 추가 — 2026-04-29 후속)
 
-**보류한 (3)**: codegen recorder fork — TS fork / addInitScript sidecar / tracing 활용 모두 가능하나 Playwright 업그레이드마다 merge 비용 발생. 위 3-layer 만으로 실 운영 케이스 대부분 커버 추정.
+| 단계 | 메커니즘 | 적용 케이스 |
+|---|---|---|
+| D | `scroll_into_view_if_needed` (1.5s 한도) | Intersection Observer 기반 lazy menu (스크롤 시 expand) |
+| ancestor hover | `_VISIBILITY_HEALER_JS` 가 추출한 hoverable 후보 (`aria-haspopup` / `aria-expanded` / `role=menu/...` / `nav`/`details`/`summary` / `data-state=closed` / `:hover` CSS trigger) 5개까지 hover | 호버 메뉴 / 드롭다운 (CSS-only or JS-listener) |
+| E | page-level activator probe (`<header>` / `<nav>` / `<main>` / `<body>` 순환 hover, 각 1s 한도) | ktds.com 처럼 페이지 어디든 mouseover 들어오면 GNB 활성화하는 사이트 |
+| F | size-aware poll (`is_visible()` 200ms × 10) | 폰트/CSS 비동기 로딩으로 늦게 expand 되는 사이트 (FOUC 방지) |
+| C | `filter(visible=True).first` swap | 같은 selector 가 multi-match 일 때 visible 한 형제 매치 |
+
+각 단계 visible 되면 즉시 단축. 모두 실패해도 healer 가 None 반환 후 기존 fallback_targets / LocalHealer / Dify 치유 단계 진입.
+
+**검증**: `test_visibility_healer.py` (6) + `test_visibility_healer_scenario.py` (2) + `test_converter_ast.py +3` + `test_annotator.py` (5) + `test_recording_service.py +2` (play-codegen auto annotate). 회귀 영역 356 passed (이전 331 → +25).
+
+**보류한 (3)**: codegen recorder fork — TS fork / addInitScript sidecar / tracing 활용 모두 가능하나 Playwright 업그레이드마다 merge 비용 발생. 위 layer 만으로 실 운영 케이스 대부분 커버 추정.
+
+#### 결정 기록 (2026-04-29)
+
+| 결정 | 사용자 의견 | 반영 |
+|---|---|---|
+| Replay → Play 두 모드 | "codegen output 재실행 + LLM 처리한 시나리오 재생, 화면 표시" | `/experimental/sessions/{sid}/play-codegen` + `/play-llm` 분리 |
+| Annotate 버튼 통합 | "play-codegen 안으로 자동 (β)" | `/annotate` 엔드포인트 + UI 버튼 폐기. play-codegen 응답에 annotate 결과 합쳐 노출 |
+| visible-first 적용 범위 | "B+C 결합" | resolver `_prefer_visible` (B) + healer `_find_visible_sibling` (C) |
+| ktds.com 같은 lazy GNB | "사전 대비 — 직접 편집 금지, 자동 검출만" | D scroll_into_view + E page-level activator + F size poll 3단계 추가 |
+| (3) codegen recorder fork | 보류 | 유지비 큼 — 다른 layer 로 95% 커버 가정 |
 
 ## 다음 액션
 
