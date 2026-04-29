@@ -807,6 +807,42 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+// ── 항목 (import-script) — 사용자 .py 업로드 + 결과 화면 자동 진입 ──────
+$("#btn-import-script").addEventListener("click", () => {
+  $("#import-file-input").click();
+});
+
+$("#import-file-input").addEventListener("change", async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  const btn = $("#btn-import-script");
+  btn.disabled = true;
+  btn.textContent = "⏳ 업로드 중...";
+  try {
+    const r = await fetch("/recording/import-script", {
+      method: "POST", body: fd,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const detail = (data && data.detail) || `HTTP ${r.status}`;
+      alert("업로드 실패: " + detail);
+      return;
+    }
+    await loadSessions();
+    await openSession(data.id);
+    // 결과 화면으로 스크롤
+    $("#result-section").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    alert("업로드 실패: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = "📁 Play Script from File";
+    e.target.value = "";  // 같은 파일 재업로드 가능하도록 reset
+  }
+});
+
 // ── 뒤로가기 버튼 — 항상 노출 (Jenkins 의 Safe HTML 정책이 <a target="_blank">
 // 의 target 을 스트립해 새 탭 진입이 불가능 — 동일 탭 진입 사용자의 복귀 경로). ──
 (function _initBackButton() {

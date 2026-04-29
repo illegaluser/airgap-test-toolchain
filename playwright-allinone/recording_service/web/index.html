@@ -43,8 +43,15 @@
           <span>planning_doc_ref <em>(선택)</em></span>
           <input type="text" name="planning_doc_ref" placeholder="feature_login.md">
         </label>
-        <button type="submit" id="btn-start">▶ Start Recording</button>
+        <div class="form-actions">
+          <button type="submit" id="btn-start">▶ Start Recording</button>
+          <button type="button" id="btn-import-script"
+                  title="이미 작성된 Playwright .py 스크립트를 업로드해 바로 재생 (Codegen 녹화 우회)">
+            📁 Play Script from File
+          </button>
+        </div>
       </form>
+      <input type="file" id="import-file-input" accept=".py" hidden>
     </section>
 
     <!-- 섹션 2: 활성 세션 -->
@@ -200,8 +207,8 @@
             ▶ Play <span class="caret">▾</span>
           </button>
           <div class="dropdown-menu" role="menu">
-            <button id="btn-play-codegen" type="button" title="codegen 녹화 코드를 그대로 호스트에서 재생 (실행 직전 자동 annotate hover 주입)">
-              ▶ Codegen 녹화코드 실행
+            <button id="btn-play-codegen" type="button" title="codegen 녹화 또는 업로드된 테스트 코드를 호스트에서 그대로 실행 (codegen 녹화 시 자동 annotate hover 주입, 업로드 스크립트는 우회)">
+              ▶ 테스트코드 원본 실행
             </button>
             <button id="btn-play-llm" type="button" title="14-DSL 변환본을 executor 로 실행 (healing/verify/mock 동작, 화면 표시)">
               ▶ LLM 적용 코드 실행
@@ -214,7 +221,7 @@
           </button>
           <div class="dropdown-menu" role="menu">
             <button id="btn-enrich" type="button" title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)">
-              📝 레코딩 코드 기반 시나리오 문서 생성
+              📝 코드 기반 시나리오 생성
             </button>
             <button id="btn-compare-open" type="button" title="doc-DSL JSON 업로드 후 의미 비교 + 5분류 HTML 리포트 (TR.6)">
               ⚖ 시나리오 문서 ↔ JSON 비교

@@ -113,6 +113,25 @@ button[data-act="open"] { background: #fff; color: var(--accent); }
 
 .plus-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* 항목 (import-script) — 시작 폼의 두 버튼 가로 배치 */
+.form-actions { display: flex; gap: 10px; flex-wrap: wrap; align-self: flex-start; }
+#btn-import-script {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+#btn-import-script:hover {
+  background: var(--accent);
+  color: #fff;
+  filter: none;
+}
+#btn-import-script:disabled {
+  background: #f0f0f2;
+  color: #888;
+  border-color: #d2d2d7;
+  cursor: not-allowed;
+}
+
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }

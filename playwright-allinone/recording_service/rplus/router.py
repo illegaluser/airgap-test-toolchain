@@ -130,11 +130,21 @@ def _play_response(sid: str, result) -> dict:
     }
 
 
+def _is_imported_session(sid: str) -> bool:
+    """metadata 의 ``imported_filename`` 필드로 사용자 업로드 세션 판별."""
+    meta = storage.load_metadata(sid) or {}
+    return bool(meta.get("imported_filename"))
+
+
 def _annotate_for_session(sid: str) -> dict:
     """play-codegen 진입 직전 자동 호출용 — annotate 결과 dict 반환.
 
     실패는 silent (annotation 없이도 codegen 원본 그대로 실행 가능). 호출자가
     응답에 합쳐 사용자에게 노출.
+
+    **Imported 세션 (사용자 .py 업로드) 은 annotate 스킵** — 사용자의 의도된
+    스크립트를 휴리스틱이 변형하는 부수 효과 차단. stale `original_annotated.py`
+    존재 시 제거.
     """
     from .. import annotator
     host_dir = storage.session_dir(sid)
@@ -142,6 +152,19 @@ def _annotate_for_session(sid: str) -> dict:
     if not src.is_file():
         return {"injected": 0, "examined_clicks": 0, "triggers": [], "skipped": "no original.py"}
     dst = host_dir / "original_annotated.py"
+    if _is_imported_session(sid):
+        # 업로드 스크립트는 그대로 실행 — stale annotated 제거
+        if dst.is_file():
+            try:
+                dst.unlink()
+            except OSError:  # noqa: BLE001
+                pass
+        return {
+            "injected": 0,
+            "examined_clicks": 0,
+            "triggers": [],
+            "skipped": "imported script — annotator 우회 (사용자 의도 보존)",
+        }
     try:
         r = annotator.annotate_script(str(src), str(dst))
         return {
