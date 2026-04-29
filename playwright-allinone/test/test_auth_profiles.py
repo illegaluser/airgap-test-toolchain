@@ -816,7 +816,7 @@ def _write_dump(path: Path, data: dict) -> None:
 
 
 class TestDomainMatch:
-    """``_domain_matches`` 의 endsWith 의미론."""
+    """``_domain_matches`` — 같은 도메인 트리(자기/하위/부모) 매칭."""
 
     @pytest.mark.parametrize("cookie_domain,expected,result", [
         # 기본 매칭
@@ -826,11 +826,14 @@ class TestDomainMatch:
         ("nid.naver.com", "naver.com", True),
         # 대소문자 무시
         ("NAVER.COM", "naver.com", True),
-        # 부분 매칭은 거부
+        # 부분 매칭은 거부 (다른 도메인 트리)
         ("evilnaver.com", "naver.com", False),
         ("naver.com.evil.com", "naver.com", False),
-        # 역방향 매칭 거부 (parent != child)
-        ("naver.com", "api.naver.com", False),
+        # 부모 도메인 쿠키 → 자식 호스트 매칭 (RFC 6265: 부모 cookie 는 자식으로 전송).
+        # SSO 게이트웨이가 부모 도메인에 세션 발급하는 패턴 지원.
+        ("naver.com", "api.naver.com", True),
+        ("koreaconnect.kr", "portal.koreaconnect.kr", True),
+        (".koreaconnect.kr", "portal.koreaconnect.kr", True),
         # 빈 입력 방어
         ("", "naver.com", False),
         ("naver.com", "", False),
@@ -909,6 +912,23 @@ class TestValidateDump:
             "origins": [],
         })
         validate_dump(p, ["naver.com"])
+
+    def test_parent_domain_cookie_counts_for_sso(self, tmp_path: Path):
+        """SSO 회귀 — 부모 도메인 쿠키(``.koreaconnect.kr``)가 자식 호스트
+        (``portal.koreaconnect.kr``) expected 에 매칭되어야 한다.
+
+        실패 사례 (2026-04-29): SSO 게이트웨이가 ``.koreaconnect.kr`` 에 세션
+        발급하는데 expected="portal.koreaconnect.kr" 로 미스매칭 → false-fail.
+        """
+        p = tmp_path / "parent-sso.json"
+        _write_dump(p, {
+            "cookies": [
+                {"name": "NID_AUT", "domain": ".naver.com", "value": "a"},
+                {"name": "SSO_SESSION", "domain": ".koreaconnect.kr", "value": "s"},
+            ],
+            "origins": [],
+        })
+        validate_dump(p, ["naver.com", "portal.koreaconnect.kr"])
 
     def test_empty_expected_skipped(self, tmp_path: Path):
         """expected_domains 에 빈 문자열이 끼어있으면 건너뛴다 (방어적)."""
