@@ -43,14 +43,13 @@ def _run_enrich_impl(
     )
 
 
-def _run_replay_impl(
-    *, container_session_dir: str, host_session_dir: str,
-):
-    """TR.7 monkeypatch hook — fake docker exec 결과."""
-    return replay_proxy.run_replay(
-        container_session_dir=container_session_dir,
-        host_session_dir=host_session_dir,
-    )
+def _run_replay_impl(*, host_session_dir: str):
+    """TR.7 monkeypatch hook — replay_proxy.run_replay 위임.
+
+    호스트에서 ``original.py`` 를 직접 실행 (headed). 컨테이너 docker exec
+    경로는 폐기 — 사용자 정의 replay 의미 (녹화 그대로 재현 + 브라우저 표시).
+    """
+    return replay_proxy.run_replay(host_session_dir=host_session_dir)
 
 
 def _registry_lookup(sid: str):
@@ -87,47 +86,41 @@ class CompareReq(BaseModel):
 
 @router.post("/sessions/{sid}/replay", status_code=201)
 def replay_session(sid: str) -> dict:
-    """녹화된 14-DSL 을 컨테이너 측 executor 로 재실행 (TR.7 R-Plus)."""
+    """녹화된 ``original.py`` 를 호스트에서 그대로 실행 (TR.7 R-Plus, headed).
+
+    14-DSL 변환본이 아니라 codegen 원본 스크립트를 재현 — 브라우저 창이 호스트
+    화면에 떠서 사용자가 동작을 시각적으로 확인. session state 가 done 이 아니어도
+    `original.py` 만 있으면 동작 (변환 실패 케이스도 재현 가능).
+    """
     sess = _registry_lookup(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    if sess.state != session.STATE_DONE:
+    if sess.state == session.STATE_RECORDING:
         raise HTTPException(
             status_code=409,
-            detail=f"Replay 는 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
+            detail=(
+                f"녹화 중에는 replay 불가 (state={sess.state}). "
+                f"먼저 stop 으로 codegen 을 종료한 뒤 시도하세요."
+            ),
         )
 
-    scenario = storage.load_scenario(sid)
-    if not scenario:
-        raise HTTPException(status_code=409, detail=f"세션 {sid} 의 scenario.json 이 누락됨.")
-
-    container_dir = storage.container_path_for(sid)
     host_dir = str(storage.session_dir(sid))
 
     try:
-        result = _run_replay_impl(
-            container_session_dir=container_dir,
-            host_session_dir=host_dir,
-        )
+        result = _run_replay_impl(host_session_dir=host_dir)
     except ReplayProxyError as e:
         log.error("[/experimental/replay] %s — %s", sid, e)
         raise HTTPException(status_code=502, detail=str(e))
 
     log.info(
-        "[/experimental/replay] %s — rc=%d pass=%d fail=%d healed=%d (%.0fms)",
-        sid, result.returncode, result.pass_count, result.fail_count,
-        result.healed_count, result.elapsed_ms,
+        "[/experimental/replay] %s — rc=%d (%.0fms)",
+        sid, result.returncode, result.elapsed_ms,
     )
     return {
         "id": sid,
         "returncode": result.returncode,
-        "pass_count": result.pass_count,
-        "fail_count": result.fail_count,
-        "healed_count": result.healed_count,
-        "step_count": len(scenario),
-        "run_log_exists": result.run_log_exists,
-        "run_log_path": result.run_log_path,
         "elapsed_ms": result.elapsed_ms,
+        "stdout_tail": result.stdout[-500:] if result.stdout else "",
         "stderr_tail": result.stderr[-500:] if result.stderr else "",
     }
 

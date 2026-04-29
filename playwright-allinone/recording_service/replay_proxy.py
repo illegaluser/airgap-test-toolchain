@@ -1,34 +1,36 @@
-"""TR.7 — Replay 검증 (R-Plus).
+"""TR.7 — Replay (R-Plus).
 
-설계: PLAN_GROUNDING_RECORDING_AGENT.md §"TR.7"
+설계: PLAN_GROUNDING_RECORDING_AGENT.md §"TR.7" + 사용자 결정 (2026-04-29)
 
-녹화된 14-DSL 시나리오를 컨테이너 측 executor 로 재실행. converter_proxy 와
-동일한 docker exec 위임 패턴 — 호스트는 명령만 보내고 결과(run_log.json)는
-공유 디렉토리에서 읽는다.
+**Replay 의 의미 (사용자 정의)**: codegen 으로 녹화한 원본 ``original.py`` 를
+호스트 브라우저(headed)에서 그대로 재실행한다. 변환된 14-DSL 시나리오를
+컨테이너 안에서 headless 로 실행하던 이전 구현은 폐기.
 
 호출:
-    docker exec -e ARTIFACTS_DIR=<container_session_dir> <container_name> \
-        python -m zero_touch_qa --mode execute --headless \
-        --scenario <container_session_dir>/scenario.json
+    <venv_py> <host_session_dir>/original.py
+
+``<venv_py>`` 는 ``RECORDING_VENV_PY`` 환경변수가 있으면 그 값, 없으면
+``sys.executable`` (= recording-service daemon 자신의 venv python). mac-agent-setup
+이 띄운 daemon 이라면 같은 venv 에 Playwright Chromium 이 이미 설치돼 있어
+``original.py`` 의 ``sync_playwright()`` 호출이 즉시 동작한다.
+
+codegen 산출물의 기본은 ``headless=False`` 라 별도 설정 없이도 호스트 브라우저
+창이 뜬다.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 
-DEFAULT_CONTAINER_NAME = os.environ.get(
-    "RECORDING_CONTAINER_NAME", "dscore.ttc.playwright",
-)
 DEFAULT_REPLAY_TIMEOUT_SEC = int(
     os.environ.get("RECORDING_REPLAY_TIMEOUT_SEC", "300")
 )
@@ -40,104 +42,65 @@ class ReplayProxyError(RuntimeError):
 
 @dataclass
 class ReplayResult:
+    """codegen 원본 .py 의 호스트 실행 결과.
+
+    이전 구현이 노출하던 pass/fail/healed/run_log 필드는 의미가 없어 제거.
+    원본 .py 는 14-DSL executor 가 아니라 평범한 Playwright 스크립트이므로
+    'PASS step 수' 같은 개념이 없다 — returncode 0 = 끝까지 정상 실행.
+    """
     returncode: int
     stdout: str
     stderr: str
-    run_log_path: str
-    run_log_exists: bool
-    pass_count: int
-    fail_count: int
-    healed_count: int
     elapsed_ms: float
-
-
-def is_docker_available() -> bool:
-    return shutil.which("docker") is not None
 
 
 def run_replay(
     *,
-    container_name: str = DEFAULT_CONTAINER_NAME,
-    container_session_dir: str,
+    host_session_dir: str,
     timeout_sec: int = DEFAULT_REPLAY_TIMEOUT_SEC,
-    host_session_dir: Optional[str] = None,
+    venv_py: str | None = None,
 ) -> ReplayResult:
-    """docker exec 로 컨테이너 측 executor 재실행.
+    """호스트에서 ``<host_session_dir>/original.py`` 를 그대로 실행 (headed).
 
     Args:
-        container_name: 컨테이너 이름 (build.sh CONTAINER_NAME)
-        container_session_dir: 컨테이너 측 세션 디렉토리 (`/recordings/<id>`).
-            ARTIFACTS_DIR 로 사용 + scenario 위치도 같음.
-        timeout_sec: docker exec 단일 호출 timeout (replay 는 변환보다 길게,
-            기본 300s)
-        host_session_dir: 호스트 측 세션 디렉토리 (`run_log.json` 등 결과 파일
-            확인용)
+        host_session_dir: 호스트 측 세션 디렉토리. ``original.py`` 가 이 안에 있어야 함.
+        timeout_sec: subprocess.run 단일 호출 timeout (기본 300s).
+        venv_py: Python 인터프리터 경로. None 이면 ``RECORDING_VENV_PY`` env →
+            ``sys.executable`` 순으로 결정. recording-service daemon 의 venv 에
+            playwright chromium 이 설치된 전제.
     """
-    if not is_docker_available():
-        raise ReplayProxyError(
-            "docker 실행 파일을 찾을 수 없습니다. 호스트 PATH 확인."
-        )
+    script = Path(host_session_dir) / "original.py"
+    if not script.is_file():
+        raise ReplayProxyError(f"original.py 없음: {script}")
 
-    # converter_proxy 와 동일 패턴 — `-w /opt` 로 PYTHONPATH 자동 해결,
-    # qa-venv python 명시. system python (`/usr/local/bin/python`) 은
-    # `/opt` 가 path 에 없어 zero_touch_qa import 실패.
-    cmd = [
-        "docker", "exec",
-        "-w", "/opt",
-        "-e", f"ARTIFACTS_DIR={container_session_dir}",
-        container_name,
-        "/opt/qa-venv/bin/python", "-m", "zero_touch_qa",
-        "--mode", "execute",
-        "--headless",
-        "--scenario", f"{container_session_dir}/scenario.json",
-    ]
+    py = venv_py or os.environ.get("RECORDING_VENV_PY") or sys.executable
+
+    cmd = [py, str(script)]
     log.info("[replay-proxy] %s", " ".join(cmd))
 
     started = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout_sec)
+        proc = subprocess.run(
+            cmd,
+            cwd=host_session_dir,  # 상대 경로 (artifacts) 가 세션 디렉토리 기준
+            capture_output=True,
+            timeout=timeout_sec,
+        )
     except subprocess.TimeoutExpired as e:
         elapsed = (time.time() - started) * 1000
         raise ReplayProxyError(
-            f"docker exec replay 가 {timeout_sec}s 안에 끝나지 않았습니다 (elapsed={elapsed:.0f}ms)."
+            f"replay 가 {timeout_sec}s 안에 끝나지 않았습니다 (elapsed={elapsed:.0f}ms)."
         ) from e
     except FileNotFoundError as e:
-        raise ReplayProxyError(f"docker 호출 실패: {e}") from e
+        raise ReplayProxyError(f"python 호출 실패: {e}") from e
 
     elapsed_ms = (time.time() - started) * 1000
     stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
     stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
 
-    # run_log.json 카운팅 — host_session_dir 기준
-    pass_count = fail_count = healed_count = 0
-    run_log_exists = False
-    run_log_path = ""
-    if host_session_dir:
-        rlp = os.path.join(host_session_dir, "run_log.json")
-        run_log_path = rlp
-        if os.path.isfile(rlp):
-            run_log_exists = True
-            try:
-                data = json.loads(open(rlp, encoding="utf-8").read())
-                if isinstance(data, list):
-                    for entry in data:
-                        status = (entry.get("status") or "").lower()
-                        if status == "pass":
-                            pass_count += 1
-                        elif status == "fail":
-                            fail_count += 1
-                        elif status in ("healed", "heal"):
-                            healed_count += 1
-            except (OSError, json.JSONDecodeError) as e:
-                log.warning("[replay-proxy] run_log.json 파싱 실패: %s", e)
-
     return ReplayResult(
         returncode=proc.returncode,
-        stdout=stdout, stderr=stderr,
-        run_log_path=run_log_path,
-        run_log_exists=run_log_exists,
-        pass_count=pass_count,
-        fail_count=fail_count,
-        healed_count=healed_count,
+        stdout=stdout,
+        stderr=stderr,
         elapsed_ms=elapsed_ms,
     )

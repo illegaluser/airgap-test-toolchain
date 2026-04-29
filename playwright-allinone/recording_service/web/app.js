@@ -313,16 +313,16 @@ $("#btn-replay").addEventListener("click", async () => {
   const sid = _currentRplusSid();
   if (!sid) return;
   $("#btn-replay").disabled = true;
-  _rplusOutputBox().textContent = "⏳ Replay 진행 중...";
+  _rplusOutputBox().textContent =
+    "⏳ Replay 진행 중... (호스트에 brower 창이 뜹니다 — 끝까지 닫지 마세요)";
   try {
     const data = await replaySession(sid);
+    const status = data.returncode === 0 ? "✓ Replay 완료" : "✗ Replay 실패";
     _rplusOutputBox().textContent =
-      `✓ Replay 완료\n\n` +
+      `${status}\n\n` +
       `returncode: ${data.returncode}\n` +
-      `pass: ${data.pass_count} / fail: ${data.fail_count} / healed: ${data.healed_count}\n` +
-      `step_count: ${data.step_count}\n` +
       `elapsed: ${data.elapsed_ms.toFixed(0)}ms\n` +
-      `run_log: ${data.run_log_path}\n` +
+      (data.stdout_tail ? `\n--- stdout (tail) ---\n${data.stdout_tail}` : "") +
       (data.stderr_tail ? `\n--- stderr (tail) ---\n${data.stderr_tail}` : "");
   } catch (err) {
     _rplusOutputBox().textContent = "✗ Replay 실패: " + err.message;
