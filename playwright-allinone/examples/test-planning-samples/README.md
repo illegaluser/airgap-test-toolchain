@@ -1,7 +1,7 @@
 # Test Planning RAG — 샘플 KB 문서 세트
 
 본 디렉토리의 샘플 문서를 Dify console GUI 로 두 KB 에 업로드하면 Test Planning Brain
-챗봇을 즉시 검증할 수 있다. 자세한 설계는 `playwright-allinone/PLAN_TEST_PLANNING_RAG.md`.
+챗봇을 즉시 검증할 수 있다. 자세한 설계는 `playwright-allinone/docs/PLAN_TEST_PLANNING_RAG.md`.
 
 ## 파일 목록
 

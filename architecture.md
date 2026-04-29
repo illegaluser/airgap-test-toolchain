@@ -73,7 +73,7 @@
 * **온프레미스 DevOps 인프라:** 개발/테스트/배포가 가능한 완전한 환경
 * **AI 기반 지식 관리:** 문서, 코드, 웹 지식의 자동 학습 및 검색
 * **자동화된 품질 분석:** 정적 분석 → LLM 진단 → Issue 등록의 전 과정 자동화
-* **Zero-Touch QA v4.1 (운영 출시 — 2026-04-27):** 14대 확장 Action DSL(Upload, Drag, Scroll, Network Mocking 지원) + Dify Brain + 3-Flow(Doc/Chat/Convert) 진입 + 모듈화된 Python 패키지(`zero_touch_qa/`) + 7단계 시맨틱 탐색 + 3단계 하이브리드 Self-Healing + HTML 리포트 + Regression Test 자동 생성. Sprint 1~5 모두 closure, 통합 회귀 107/107 PASS. 운영 SLA / 모니터링 / `llm_sla.json` 빌드별 자동 집계 / 30 일 retention / convert 14대 변환 매핑은 [`playwright-allinone/PLAN_DSL_ACTION_EXPANSION.md`](playwright-allinone/PLAN_DSL_ACTION_EXPANSION.md#L996) §8.6 / §9 와 [`playwright-allinone/README.md §3.9`](playwright-allinone/README.md) 참조.
+* **Zero-Touch QA v4.1 (운영 출시 — 2026-04-27):** 14대 확장 Action DSL(Upload, Drag, Scroll, Network Mocking 지원) + Dify Brain + 3-Flow(Doc/Chat/Convert) 진입 + 모듈화된 Python 패키지(`zero_touch_qa/`) + 7단계 시맨틱 탐색 + 3단계 하이브리드 Self-Healing + HTML 리포트 + Regression Test 자동 생성. Sprint 1~5 모두 closure, 통합 회귀 107/107 PASS. 운영 SLA / 모니터링 / `llm_sla.json` 빌드별 자동 집계 / 30 일 retention / convert 14대 변환 매핑은 [`playwright-allinone/docs/PLAN_DSL_ACTION_EXPANSION.md`](playwright-allinone/docs/PLAN_DSL_ACTION_EXPANSION.md#L996) §8.6 / §9 와 [`playwright-allinone/README.md §3.9`](playwright-allinone/README.md) 참조.
 * **AI 에이전트 평가:** 11대 지표(Policy/Task/Relevancy/Toxicity/Faithfulness 등) 자동 채점 + Langfuse 관측
 
 ---

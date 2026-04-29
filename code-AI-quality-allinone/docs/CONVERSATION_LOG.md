@@ -6089,7 +6089,7 @@ Step C 는 사용자 피드백 반영해 **LLM 조언 실효성 강화** 를 범
 - 잠재 버그 발견: `_turn_sort_key` 가 int/str 혼합 정렬에서 TypeError. 실사용 패턴(int+None) 에 한정해 테스트 — Phase 4 분할 시 함수 자체 보강 후보.
 
 **Step 0.3 — REPORT_SPEC.md** (커밋 `762899e`)
-- `eval_runner/docs/REPORT_SPEC.md` (389줄) — Phase 2 acceptance 기준 문서
+- `docs/REPORT_SPEC.md` (389줄) — Phase 2 acceptance 기준 문서
 - 페르소나 3종 (운영자 / 엔지니어 / 의사결정자) + 30초 룰
 - 3-Layer 정보 밀도: R1 임원 헤더 → R2 11지표 카드 → R3 conversation accordion
 - ASCII 목업으로 R1/R2/R3 레이아웃 명세
@@ -7823,7 +7823,7 @@ auto-merge 직후 README §8.5 (04 AI평가 섹션) 가 main 쪽에서 작성된
 - README §8.5 말미 "상세 가이드는 두 문서에..." 포인터 삭제.
 - README 내 `docs/PLAN_AI_EVAL_PIPELINE.md` 링크도 제거 (1개 → 0개, "미구현 후속 과제" 문구로 대체).
 - `grep -n "AI_EVAL_PIPELINE_README" code-AI-quality-allinone/README.md` = 0건 확인.
-- `eval_runner/SUCCESS_CRITERIA_GUIDE.md` 는 모듈 트리 표시용 한 줄만 남김 (링크 의존 아님).
+- `docs/SUCCESS_CRITERIA_GUIDE.md` 는 모듈 트리 표시용 한 줄만 남김 (링크 의존 아님).
 
 ### 산출물
 

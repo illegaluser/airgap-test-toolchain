@@ -2367,7 +2367,7 @@ eval_runner/
 ├── ollama_wrapper_api.py    ← 로컬 Ollama `/api/generate` 를 OpenAI-compatible HTTP 로 래핑.
 │                              Stage 1-2 에서 자동 fork, /health + cold-start probe (300s).
 ├── Jenkinsfile              ← 내부 서브 파이프라인 (Declarative)
-└── SUCCESS_CRITERIA_GUIDE.md   ← Golden Dataset DSL 상세 (README §7.7 Step 1 에 핵심 발췌)
+└── docs/SUCCESS_CRITERIA_GUIDE.md   ← Golden Dataset DSL 상세 (README §7.7 Step 1 에 핵심 발췌)
 ```
 
 #### 8.5.4 주요 파라미터 — 완전 레퍼런스

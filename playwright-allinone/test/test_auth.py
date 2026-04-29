@@ -1,6 +1,6 @@
 """T-D (P0.1) — auth.py 단위 테스트 + auth_login fixture 통합.
 
-설계: PLAN_PRODUCTION_READINESS.md §"T-D — 인증 (form + OAuth + TOTP)"
+설계: docs/PLAN_PRODUCTION_READINESS.md §"T-D — 인증 (form + OAuth + TOTP)"
 
 검증 영역:
 - credential alias env var lookup (성공/실패)

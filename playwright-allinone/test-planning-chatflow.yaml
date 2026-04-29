@@ -5,7 +5,7 @@
 # (kb_project_info / kb_test_theory) 에서 retrieve 한 후 gemma4:26b 로
 # 테스트 계획서 / 시나리오 / 14-DSL JSON 을 생성한다.
 #
-# 자세한 설계: PLAN_TEST_PLANNING_RAG.md 참조.
+# 자세한 설계: docs/PLAN_TEST_PLANNING_RAG.md 참조.
 #
 # 자동 import: provision.sh 의 dify_import_chatflow() 함수가 KB ID 두 개를
 # 빈 dataset_ids 리스트에 순서대로 substitute 한 뒤 import + publish.

@@ -1,6 +1,6 @@
 """Playwright codegen subprocess 래퍼 (Phase R-MVP TR.2).
 
-설계: PLAN_GROUNDING_RECORDING_AGENT.md §"TR.2"
+설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"TR.2"
 
 책임 범위:
 - subprocess.Popen 으로 codegen 시작 + 핸들 추적

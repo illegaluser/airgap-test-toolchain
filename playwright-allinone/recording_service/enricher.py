@@ -1,6 +1,6 @@
 """TR.5 — Recording → IEEE 829-lite 테스트 계획서 역추정 (R-Plus).
 
-설계: PLAN_GROUNDING_RECORDING_AGENT.md §"TR.5"
+설계: docs/PLAN_GROUNDING_RECORDING_AGENT.md §"TR.5"
 
 호스트의 Ollama 에 직접 HTTP 호출. Dify chatflow 우회 (chatflow 는 chat/doc
 모드 전용이라 별도 오버헤드 없이 본 트랙은 Ollama HTTP /api/generate 사용).

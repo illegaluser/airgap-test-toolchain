@@ -1,6 +1,6 @@
 """T-A (P0.4) — converter_ast 단위 테스트.
 
-설계: PLAN_PRODUCTION_READINESS.md §"T-A — converter AST 화"
+설계: docs/PLAN_PRODUCTION_READINESS.md §"T-A — converter AST 화"
 
 검증 영역:
 - 8 corpus fixture (popup chain / .nth / .first / .filter / nested locator /
