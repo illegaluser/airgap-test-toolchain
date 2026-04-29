@@ -93,6 +93,92 @@ class StepResult:
     screenshot_path: str | None = None
 
 
+# Visibility Healer (T-H) JS — element 의 ancestor chain 에서 hoverable 후보 추출.
+# 우선순위: aria-haspopup > aria-expanded=false > role=menu/menubar/listbox/tooltip/combobox >
+#          tag=nav/details/summary > [data-state=closed] / [hidden] toggleable > :hover CSS rule.
+# 각 후보에 대해 stable CSS path 를 함께 반환 (id 우선 → nth-of-type chain).
+_VISIBILITY_HEALER_JS = r"""
+el => {
+  function cssPath(node) {
+    if (!node || node === document.body) return 'body';
+    if (node.id) return '#' + CSS.escape(node.id);
+    let parts = [];
+    let cur = node;
+    while (cur && cur !== document.body && parts.length < 6) {
+      if (cur.id) { parts.unshift('#' + CSS.escape(cur.id)); break; }
+      const tag = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (!parent) { parts.unshift(tag); break; }
+      const same = [...parent.children].filter(c => c.tagName === cur.tagName);
+      const idx = same.indexOf(cur) + 1;
+      parts.unshift(same.length > 1 ? `${tag}:nth-of-type(${idx})` : tag);
+      cur = parent;
+    }
+    return parts.join(' > ');
+  }
+
+  // :hover CSS rule 의 trigger 인지 검사. selectorText 가 'A:hover B' 라면
+  // trigger 는 A — node 가 A 와 matches 하면 hoverable.
+  // 'ul#gnb > li:hover > .submenu' → trigger=`ul#gnb > li`.
+  function hoverTriggerSelectors(rule) {
+    const out = [];
+    if (!rule.selectorText || !rule.selectorText.includes(':hover')) return out;
+    for (const part of rule.selectorText.split(',').map(s => s.trim())) {
+      if (!part.includes(':hover')) continue;
+      const idx = part.indexOf(':hover');
+      let trigger = part.slice(0, idx);
+      trigger = trigger.replace(/[\s>+~]+$/, '').trim();
+      if (trigger) out.push(trigger);
+    }
+    return out;
+  }
+  function isHoverTrigger(node) {
+    try {
+      for (const sheet of document.styleSheets) {
+        let rules;
+        try { rules = sheet.cssRules; } catch (_) { continue; }
+        for (const r of rules || []) {
+          for (const sel of hoverTriggerSelectors(r)) {
+            try { if (node.matches(sel)) return true; } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  const out = [];
+  let cur = el;
+  let depth = 0;
+  while (cur && cur !== document.body && depth < 12) {
+    let reason = null;
+    if (cur.getAttribute && cur.getAttribute('aria-haspopup')) reason = 'aria-haspopup';
+    else if (cur.getAttribute && cur.getAttribute('aria-expanded') === 'false') reason = 'aria-expanded=false';
+    else {
+      const role = cur.getAttribute && cur.getAttribute('role');
+      if (role && ['menu','menubar','listbox','tooltip','combobox'].includes(role)) reason = 'role=' + role;
+    }
+    if (!reason) {
+      const tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+      if (['nav','details','summary'].includes(tag)) reason = 'tag=' + tag;
+    }
+    if (!reason && cur.getAttribute) {
+      const ds = cur.getAttribute('data-state');
+      if (ds === 'closed') reason = 'data-state=closed';
+    }
+    if (!reason && isHoverTrigger(cur)) reason = ':hover-css';
+
+    if (reason) {
+      out.push({ path: cssPath(cur), reason });
+    }
+    cur = cur.parentElement;
+    depth++;
+  }
+  return out;
+}
+"""
+
+
 def _dump_storage_state(context, path: str) -> None:
     """현재 BrowserContext 의 storage_state 를 path 에 JSON 으로 덤프 (T-D / P0.1).
 
@@ -370,6 +456,12 @@ class QAExecutor:
                 "FAIL", screenshot_path=ss,
             )
         if locator:
+            # T-H (Visibility Healer) — element 가 hidden 이면 ancestor hover
+            # 시도 후 재검사. 드롭다운 메뉴 / 호버 메뉴 / aria-haspopup 케이스에서
+            # codegen 원본이 hover step 을 빠뜨려 click 이 30s timeout 으로 가는
+            # 것을 막는다. 매칭만 되고 안 보이는 케이스만 트리거 (정상 click 흐름엔
+            # 영향 없음).
+            self._heal_visibility(page, locator, step_id)
             try:
                 self._perform_action(page, locator, step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "pass")
@@ -1852,6 +1944,53 @@ class QAExecutor:
                 "허용: navigate, click, fill, press, select, check, hover, wait, "
                 "verify, upload, drag, scroll, mock_status, mock_data"
             )
+
+    # ── Visibility Healer (T-H) ──
+    # codegen 이 hover-then-click sequence 의 hover 를 빠뜨려 element 가 hidden
+    # 인 상태로 click 시도되는 케이스. ancestor 중 hoverable 후보 (aria-haspopup
+    # / role=menu / nav / dropdown class / :hover CSS rule) 를 찾아 hover 후
+    # 재검사한다. 1차 시도 직전에만 호출 — 정상 케이스(이미 visible)엔 영향 0.
+
+    def _heal_visibility(self, page: Page, locator: Locator, step_id) -> None:
+        """element 가 hidden 이면 hoverable ancestor 를 hover 하여 노출 시도.
+
+        매칭은 됐지만 visible 하지 않은 element 한정. true positive (이미 보이는 element)
+        에는 evaluate 1회 외 부수 효과 없음.
+        """
+        try:
+            # is_visible 은 timeout 안 잡히면 즉시 검사 (Playwright > 1.30 기본).
+            if locator.is_visible():
+                return
+        except Exception:
+            return  # locator 가 invalid 한 케이스는 후속 healer 가 처리
+
+        try:
+            candidates = locator.evaluate(_VISIBILITY_HEALER_JS)
+        except Exception as e:  # noqa: BLE001
+            log.debug("[Step %s] visibility-healer evaluate 실패: %s", step_id, e)
+            return
+
+        if not candidates:
+            return
+
+        for cand in candidates[:5]:  # 최대 5개 ancestor 까지만 시도 (시간 한도)
+            sel = cand.get("path") or ""
+            reason = cand.get("reason") or "unknown"
+            if not sel:
+                continue
+            try:
+                ancestor = page.locator(sel).first
+                ancestor.hover(timeout=2000)
+                page.wait_for_timeout(200)  # 메뉴 transition
+                if locator.is_visible():
+                    log.info(
+                        "[Step %s] visibility-healer 복구 — hover %s (reason=%s)",
+                        step_id, sel, reason,
+                    )
+                    return
+            except Exception:  # noqa: BLE001
+                continue
+        log.debug("[Step %s] visibility-healer — 적용된 ancestor 없음", step_id)
 
     # ── 스크린샷 ──
     @staticmethod

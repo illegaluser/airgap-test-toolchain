@@ -1270,6 +1270,40 @@ def test_codegen_runner_output_size_zero_for_missing_file(tmp_path):
 
 # ── /recording/sessions/{id}/replay (R-Plus only) ────────────────────────────
 
+def test_annotate_404_unknown(client, rplus_on):
+    r = client.post("/experimental/sessions/nope/annotate")
+    assert r.status_code == 404
+
+
+def test_annotate_creates_annotated_py(client, monkeypatch, temp_host_root, rplus_on):
+    """annotate 가 original_annotated.py 를 생성하고 응답에 stats 반환."""
+    from pathlib import Path
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+    ])
+    # original.py 작성 — hover 가 주입되어야 하는 nav chain 케이스.
+    original = Path(temp_host_root) / sid / "original.py"
+    original.write_text(
+        "from playwright.sync_api import Playwright, sync_playwright\n"
+        "def run(playwright: Playwright) -> None:\n"
+        "    browser = playwright.chromium.launch()\n"
+        "    context = browser.new_context()\n"
+        "    page = context.new_page()\n"
+        "    page.locator('nav#gnb').get_by_role('link', name='About').click()\n"
+        "    context.close()\n    browser.close()\n"
+        "with sync_playwright() as p:\n    run(p)\n",
+        encoding="utf-8",
+    )
+    r = client.post(f"/experimental/sessions/{sid}/annotate")
+    assert r.status_code == 201
+    body = r.json()
+    assert body["examined_clicks"] == 1
+    assert body["injected"] == 1
+    annotated = Path(temp_host_root) / sid / "original_annotated.py"
+    assert annotated.is_file()
+    assert ".hover()" in annotated.read_text()
+
+
 def test_play_codegen_404_unknown(client, rplus_on):
     r = client.post("/experimental/sessions/nope/play-codegen")
     assert r.status_code == 404

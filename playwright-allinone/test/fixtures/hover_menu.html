@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hover-only dropdown menu fixture</title>
+  <style>
+    ul#gnb { display: flex; gap: 16px; padding: 12px; background: #f7f7f7; }
+    ul#gnb > li { list-style: none; position: relative; }
+    ul#gnb > li > a { padding: 8px 12px; cursor: pointer; }
+    /* CSS-only 호버 메뉴 — JS 이벤트 없이도 시각적으로 펼쳐진다. */
+    ul#gnb > li > .submenu {
+      position: absolute; top: 100%; left: 0;
+      display: none;
+      background: #fff; border: 1px solid #ddd;
+      min-width: 180px;
+      list-style: none; padding: 4px 0; margin: 0;
+    }
+    ul#gnb > li:hover > .submenu { display: block; }
+    ul#gnb > li > .submenu > li > a {
+      display: block; padding: 8px 16px; color: #1d1d1f; text-decoration: none;
+    }
+    ul#gnb > li > .submenu > li > a:hover { background: #f0f0f0; }
+    #last-clicked { margin-top: 16px; padding: 12px; background: #eaeaea; }
+  </style>
+</head>
+<body>
+  <ul id="gnb">
+    <li><a href="#" id="menu-company">회사소개</a>
+      <ul class="submenu">
+        <li><a href="#" id="link-about" data-tag="about">About</a></li>
+        <li><a href="#" id="link-history" data-tag="history">History</a></li>
+      </ul>
+    </li>
+    <li><a href="#" id="menu-products">제품</a>
+      <ul class="submenu">
+        <li><a href="#" id="link-prod-a" data-tag="prod-a">Product A</a></li>
+      </ul>
+    </li>
+  </ul>
+  <p id="last-clicked">idle</p>
+  <script>
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (t.tagName === "A" && t.dataset.tag) {
+        document.getElementById("last-clicked").textContent = t.dataset.tag;
+      }
+    });
+  </script>
+</body>
+</html>
