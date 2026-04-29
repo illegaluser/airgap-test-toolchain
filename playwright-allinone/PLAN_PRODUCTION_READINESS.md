@@ -824,14 +824,44 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 | T-D Phase 5 (OAuth mock 컨테이너) | ⏸ 연기 | follow-up commit |
 | T-D Jenkins Credentials seed | ⏸ 연기 | follow-up commit |
 | T-D 실 IdP 검증 (Google OAuth) | ⏸ 운영 검증 단계 | 별도 |
-| T-B (P0.3-A 클라이언트 격리) | ⏳ 대기 | T-D Phase 5 후 또는 병행 |
-| T-C (P0.2 iframe / open shadow) | ⏳ 대기 | T-D 완료 후 |
+| T-B (P0.3-A 클라이언트 격리) | ✅ **완료** | reset_state DSL + storage_state in/out + test_isolation.py 12/12 (100%) |
+| T-C (P0.2 iframe / open shadow / closed shadow detect) | ✅ **완료** | frame= chain + shadow= segment + ShadowAccessError + healer frame-scoped fallback + test_iframe_shadow.py 10/10 |
 | T-E (P0.5 빌드 CI) | ⏳ 대기 | self-hosted runner 인프라 의존 |
 | T-F (P1.5 orphan watchdog) | ⏳ 대기 | P0 완료 후 |
 | T-G (P1.3 retention GC) | ⏳ 대기 | T-F 후 |
 
-**현 시점 P0 완료율**: 100% (T-A + 후속 패치) + 85% (T-D, OAuth mock 만 미완료) + 0% (T-B / T-C / T-E)
-≈ 5 P0 태스크 중 1.85 완료. 영업일 환산 약 8.5/33 (26%).
+**현 시점 P0 완료율**: 100% (T-A + 후속 패치) + 85% (T-D, OAuth mock 만 미완료) + 100% (T-B) + 100% (T-C) + 0% (T-E)
+≈ 5 P0 태스크 중 3.85 완료. 영업일 환산 약 23.5/33 (71%).
+
+### T-B 완료 기록 (2026-04-29)
+
+P0.3-A 클라이언트 격리. `reset_state` DSL 액션을 추가해 같은 시나리오 안에서도 cookie / localStorage / sessionStorage / IndexedDB 흔적을 비울 수 있게 했다. `execute()` 호출당 fresh BrowserContext 는 이미 [executor.py:159-176](zero_touch_qa/executor.py#L159-L176) 에서 보장 — 별도 변경 없음. storage_state in/out 은 T-D Phase 7 에서 이미 완료.
+
+| 변경 | 파일 |
+|---|---|
+| `_VALID_ACTIONS` 에 reset_state + value 화이트리스트 (cookie/storage/indexeddb/all) | [`zero_touch_qa/__main__.py`](zero_touch_qa/__main__.py) |
+| `_execute_reset_state` 핸들러 (clear_cookies / evaluate(localStorage) / evaluate(IDB)) | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) |
+| 격리 fixture (writer / reader 페이지) | [`test/fixtures/isolation_a.html`](test/fixtures/isolation_a.html), [`test/fixtures/isolation_b.html`](test/fixtures/isolation_b.html) |
+| 회귀 테스트 12개 (CLI 6 + 격리 6) | [`test/test_isolation.py`](test/test_isolation.py) |
+
+**수락 기준 측정**: `T_B_REPEAT=20` 환경변수로 20회 연속 실행 시 통과율 100% (수락 기준 ≥95% 충족). 풀 측정은 `T_B_REPEAT=100`.
+
+### T-C 완료 기록 (2026-04-29)
+
+P0.2 iframe / open shadow / closed shadow 자동화. `frame=<sel> >> ...` chain 은 P0.1 #2 단계에서 이미 구현됨 ([`locator_resolver.py`](zero_touch_qa/locator_resolver.py) `_resolve_chain`). T-C 본체에서는 ① closed shadow 감지 (`shadow=` segment + `ShadowAccessError`) ② nested iframe / open shadow / closed shadow fixture 4종 ③ healer frame-scoped fallback 을 추가했다.
+
+| 변경 | 파일 |
+|---|---|
+| `ShadowAccessError` 예외 + `shadow=<host>` segment 처리 | [`zero_touch_qa/locator_resolver.py`](zero_touch_qa/locator_resolver.py) |
+| 1차 시도 단계에서 ShadowAccessError 즉시 escalate (fallback/healer 우회) | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) |
+| healer 가 target chain 의 frame= prefix 를 인지해 같은 FrameLocator 안에서만 fallback | [`zero_touch_qa/local_healer.py`](zero_touch_qa/local_healer.py) |
+| iframe / nested iframe / open shadow / closed shadow fixture 4종 | [`test/fixtures/iframe_payment.html`](test/fixtures/iframe_payment.html) 외 3종 |
+| 통합 테스트 10개 | [`test/test_iframe_shadow.py`](test/test_iframe_shadow.py) |
+
+**수락 기준 검증**:
+- 단일 iframe (3건) / nested 2단 (1건) / open shadow (2건) / closed shadow detect (1건) / 호스트 missing (1건) / healer scope (2건) = 10/10 PASS
+- closed shadow 만나면 `< 1s` 안에 ShadowAccessError 로 즉시 FAIL — 30s timeout hang 없음
+- pytest 회귀 영역 (test_isolation + test_iframe_shadow + test_locator_chain + test_auth + test_recording_service + test_converter_ast): 185 passed, 3 skipped (회귀 0)
 
 ### P0.1 리뷰 후속 패치 (2026-04-29) — 5건 일괄 처리
 

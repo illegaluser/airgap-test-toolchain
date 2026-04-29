@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Iframe payment fixture (Stripe-like)</title>
+</head>
+<body>
+  <h1>Checkout</h1>
+  <p id="parent-status">parent:idle</p>
+  <iframe id="payment-iframe" srcdoc='
+    <!doctype html><html><body>
+      <h2>Payment frame</h2>
+      <label>Card number<input id="card" type="text"></label><br>
+      <button id="pay-btn" type="button">Pay</button>
+      <span id="result">pending</span>
+      <script>
+        document.getElementById("pay-btn").addEventListener("click", () => {
+          var v = document.getElementById("card").value;
+          document.getElementById("result").textContent =
+            v === "4242424242424242" ? "approved" : "declined";
+          // 부모 페이지에도 신호 — postMessage 로 통보.
+          parent.postMessage({ type: "payment-result", value: v }, "*");
+        });
+      </script>
+    </body></html>'
+    width="600" height="200" style="border:1px solid #ccc;">
+  </iframe>
+  <script>
+    window.addEventListener("message", (e) => {
+      if (e.data && e.data.type === "payment-result") {
+        document.getElementById("parent-status").textContent = "parent:received";
+      }
+    });
+  </script>
+</body>
+</html>
