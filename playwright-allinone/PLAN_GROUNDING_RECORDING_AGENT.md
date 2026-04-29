@@ -617,10 +617,16 @@ Recording 결과 → "Compare with Doc-DSL" 버튼
 | POST | `/recording/start` | 녹화 시작 (input: target_url, planning_doc_ref?) |
 | POST | `/recording/stop/{id}` | 녹화 종료 + 변환 |
 | GET | `/recording/sessions` | 세션 목록 |
-| GET | `/recording/sessions/{id}` | 세션 상세 (DSL, 메타데이터) |
-| POST | `/recording/sessions/{id}/replay` | executor 재실행 — **R-Plus only** (TR.7) |
+| GET | `/recording/sessions/{id}` | 세션 상세 (메타데이터) |
+| GET | `/recording/sessions/{id}/scenario` | 변환된 14-DSL 본문 (state=done 시) — TR.4 프리뷰 |
+| POST | `/recording/sessions/{id}/assertion` | verify/mock_* step 수동 추가 (TR.4) |
 | DELETE | `/recording/sessions/{id}` | 삭제 |
-| GET | `/healthz` | 헬스체크 |
+| GET | `/healthz` | 헬스체크 (응답에 `rplus_enabled` 포함) |
+| POST | `/experimental/sessions/{id}/replay` | executor 재실행 — **R-Plus** (TR.7), `RPLUS_ENABLED=1` 필요 |
+| POST | `/experimental/sessions/{id}/enrich` | Recording → Doc 역추정 — **R-Plus** (TR.5) |
+| POST | `/experimental/sessions/{id}/compare` | Doc ↔ Recording 비교 — **R-Plus** (TR.6) |
+| GET | `/experimental/sessions/{id}/comparison.html` | compare HTML 리포트 — **R-Plus** |
+| GET | `/experimental/` | 실험 도구 SPA 진입점 — **R-Plus** |
 
 - CORS 설정 — Web UI 가 호스트 브라우저에서 호출
 - 호스트의 systemd·launchd 등록 (선택)
@@ -677,13 +683,13 @@ docker exec <container_name> python -m zero_touch_qa \
 
 - **입력 폼**: target_url, optional planning_doc_ref (텍스트)
 - **액션 버튼 (MVP)**: [Start Recording] [Stop]
-- **액션 버튼 (Plus)**: [Replay] [Generate Doc] [Compare with Doc-DSL]
 - **진행 상태**: 현재 세션 ID, 경과 시간, 캡처된 액션 수 (폴링)
-- **결과 영역**: DSL JSON preview (syntax-highlight), 메타데이터, 결합 시나리오 결과(Plus)
-- **세션 목록**: 사이드바 또는 하단 테이블
+- **결과 영역**: DSL JSON preview (`GET /recording/sessions/{sid}/scenario` 결과를 본문 그대로 표시), 메타데이터
+- **세션 목록**: 하단 테이블
 - **Assertion 추가 영역 (MVP)**: 녹화 종료 후 verify / mock_status / mock_data step 을 사용자가 수동 추가 (드롭다운 + selector hint + value). codegen 이 emit 하지 않는 14-DSL 액션을 보충
+- **R-Plus 섹션 (Plus, gated)**: [Replay] [Generate Doc] [Compare with Doc-DSL] — 결과 영역과 같은 페이지에 노출. `state=done` AND `healthz.rplus_enabled=true` 두 조건 모두 만족할 때만 표시. 백엔드는 `/experimental/sessions/{id}/...` 로 분리되어 환경변수 `RPLUS_ENABLED=1` 일 때만 응답.
 
-MVP 단계에서 Plus 버튼들은 비활성화 (회색) 로 표시 + 호버 시 "R-Plus 게이트 통과 후 활성화" 툴팁.
+R-Plus 는 **백엔드만 분리** (`/experimental/*` URL prefix + 별도 `recording_service/rplus/` 모듈) — UI 는 운영자가 한 화면에서 녹화 → 검토 → 재실행/역추정/비교까지 흐름을 끊지 않도록 메인 결과 화면에 함께 둔다. 평가 게이트 (rubric / 5-sample / 90% replay) 미통과 상태에서는 환경변수 미설정으로 백엔드가 404 를 반환하고 프론트는 섹션 자체를 숨겨 노출 0 을 유지한다. 분리 의사결정 상세는 `PLAN_PRODUCTION_READINESS.md` §"P0.1 리뷰 후속 패치 (#5)" 참조.
 
 위치: 호스트의 `http://localhost:18092/`. **장식 최소화** — 기능 우선.
 

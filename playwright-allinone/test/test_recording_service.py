@@ -33,6 +33,13 @@ def temp_host_root(monkeypatch):
         yield td
 
 
+@pytest.fixture
+def rplus_on(monkeypatch):
+    """R-Plus 게이트를 활성. P0.1 #5 — 기본은 비활성, 실험 엔드포인트 테스트만 켠다."""
+    monkeypatch.setenv("RPLUS_ENABLED", "1")
+    yield
+
+
 def _make_fake_handle(output_path: Path, *, write_actions: bool = True, returncode: int = 0):
     """monkeypatch 용 fake CodegenHandle. subprocess 미실행."""
     from recording_service.codegen_runner import CodegenHandle
@@ -127,6 +134,42 @@ def test_healthz_returns_ok(client):
     assert "version" in body
     assert "codegen_available" in body  # bool
     assert "host_root" in body
+    assert "rplus_enabled" in body  # P0.1 #5 — UI 가 실험 링크 노출 판단에 사용
+    assert body["rplus_enabled"] is False  # 기본 OFF
+
+
+def test_healthz_reflects_rplus_enabled(client, rplus_on):
+    """RPLUS_ENABLED=1 일 때 healthz 가 true 반환 (P0.1 #5)."""
+    body = client.get("/healthz").json()
+    assert body["rplus_enabled"] is True
+
+
+# ── R-Plus 게이트 (P0.1 #5) — RPLUS_ENABLED 미설정 시 /experimental/* 차단 ──
+
+def test_experimental_replay_404_when_rplus_disabled(client):
+    """기본 (RPLUS_ENABLED 미설정) 에서 /experimental/* 는 404."""
+    r = client.post("/experimental/sessions/anything/replay")
+    assert r.status_code == 404
+    assert "RPLUS_ENABLED" in r.json()["detail"]
+
+
+def test_experimental_enrich_404_when_rplus_disabled(client):
+    r = client.post("/experimental/sessions/anything/enrich", json={})
+    assert r.status_code == 404
+
+
+def test_experimental_compare_404_when_rplus_disabled(client):
+    r = client.post(
+        "/experimental/sessions/anything/compare",
+        json={"doc_dsl": [{"step": 1, "action": "click", "target": "x"}]},
+    )
+    assert r.status_code == 404
+
+
+# 메인 UI 가 R-Plus 섹션을 갖고 있고 별도 experimental SPA 는 없으므로
+# `/experimental/` 자체에 대한 GET 라우트는 정의하지 않는다 — FastAPI 가
+# 자동 404. 동작 엔드포인트 `/experimental/sessions/{sid}/...` 에 대한 게이트
+# 회귀는 위쪽 test_experimental_*_when_rplus_disabled 가 커버.
 
 
 # ── /recording/start ─────────────────────────────────────────────────────────
@@ -271,6 +314,35 @@ def test_stop_after_normal_recording(client, patched_codegen):
     assert "scenario_path" in body
     assert len(patched_codegen["stopped"]) == 1
     assert len(patched_codegen["converted"]) == 1
+
+
+def test_get_session_scenario_returns_dsl(client, patched_codegen):
+    """state=done 세션의 scenario.json 본문을 그대로 반환 (TR.4 #4)."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    client.post(f"/recording/stop/{sid}")
+
+    r2 = client.get(f"/recording/sessions/{sid}/scenario")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert isinstance(body, list)
+    # patched_codegen 의 fake_convert 가 만들어 둔 2-스텝 시나리오 형태 확인.
+    assert all(isinstance(step, dict) and "action" in step for step in body)
+
+
+def test_get_session_scenario_404_unknown_session(client):
+    r = client.get("/recording/sessions/nonexistent/scenario")
+    assert r.status_code == 404
+
+
+def test_get_session_scenario_404_when_state_recording(client, patched_codegen):
+    """녹화 중 (state=recording) 에는 scenario.json 미존재 → 404."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    # stop 호출 안 함 → recording 상태 유지
+
+    r2 = client.get(f"/recording/sessions/{sid}/scenario")
+    assert r2.status_code == 404
 
 
 def test_stop_with_empty_output(client, monkeypatch):
@@ -707,19 +779,19 @@ def test_absorb_disk_sessions_marks_orphan_recording(temp_host_root):
 
 # ── TR.5 R-Plus — enricher (Recording → IEEE 829-lite 역추정) ───────────────
 
-def test_enrich_404_for_unknown_session(client):
-    r = client.post("/recording/sessions/nope/enrich", json={})
+def test_enrich_404_for_unknown_session(client, rplus_on):
+    r = client.post("/experimental/sessions/nope/enrich", json={})
     assert r.status_code == 404
 
 
-def test_enrich_409_when_session_not_done(client, patched_codegen):
+def test_enrich_409_when_session_not_done(client, patched_codegen, rplus_on):
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
-    r2 = client.post(f"/recording/sessions/{sid}/enrich", json={})
+    r2 = client.post(f"/experimental/sessions/{sid}/enrich", json={})
     assert r2.status_code == 409
 
 
-def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_root):
+def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_root, rplus_on):
     """fake Ollama 응답을 monkeypatch 로 주입해 흐름 검증."""
     import time
     from pathlib import Path
@@ -751,9 +823,10 @@ def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_ro
             prompt_tokens_estimate=420,
         )
 
-    monkeypatch.setattr(srv, "_run_enrich_impl", fake_enrich)
+    from recording_service.rplus import router as rplus_router  # P0.1 #5
+    monkeypatch.setattr(rplus_router, "_run_enrich_impl", fake_enrich)
 
-    r = client.post(f"/recording/sessions/{sess.id}/enrich", json={})
+    r = client.post(f"/experimental/sessions/{sess.id}/enrich", json={})
     assert r.status_code == 201
     body = r.json()
     assert body["model"] == "gemma4:26b"
@@ -765,7 +838,7 @@ def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_ro
     assert enriched.read_text(encoding="utf-8") == fake_md
 
 
-def test_enrich_502_when_ollama_fails(client, monkeypatch, temp_host_root):
+def test_enrich_502_when_ollama_fails(client, monkeypatch, temp_host_root, rplus_on):
     from pathlib import Path
     from recording_service import server as srv
     from recording_service.enricher import EnrichError
@@ -779,8 +852,9 @@ def test_enrich_502_when_ollama_fails(client, monkeypatch, temp_host_root):
     def fake_enrich(*a, **kw):
         raise EnrichError("Ollama 호출이 180s 안에 끝나지 않았습니다.")
 
-    monkeypatch.setattr(srv, "_run_enrich_impl", fake_enrich)
-    r = client.post(f"/recording/sessions/{sess.id}/enrich", json={})
+    from recording_service.rplus import router as rplus_router  # P0.1 #5
+    monkeypatch.setattr(rplus_router, "_run_enrich_impl", fake_enrich)
+    r = client.post(f"/experimental/sessions/{sess.id}/enrich", json={})
     assert r.status_code == 502
     assert "Ollama" in r.json()["detail"]
 
@@ -924,23 +998,23 @@ def test_comparator_html_renders_5_categories():
 
 # ── /recording/sessions/{id}/compare endpoint ───────────────────────────────
 
-def test_compare_404_unknown(client):
+def test_compare_404_unknown(client, rplus_on):
     r = client.post(
-        "/recording/sessions/nope/compare",
+        "/experimental/sessions/nope/compare",
         json={"doc_dsl": [{"action": "navigate", "target": "", "value": "x"}]},
     )
     assert r.status_code == 404
 
 
-def test_compare_400_empty_doc_dsl(client, temp_host_root):
+def test_compare_400_empty_doc_dsl(client, temp_host_root, rplus_on):
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
     ])
-    r = client.post(f"/recording/sessions/{sid}/compare", json={"doc_dsl": []})
+    r = client.post(f"/experimental/sessions/{sid}/compare", json={"doc_dsl": []})
     assert r.status_code == 400
 
 
-def test_compare_writes_html_and_returns_counts(client, temp_host_root):
+def test_compare_writes_html_and_returns_counts(client, temp_host_root, rplus_on):
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
         {"step": 2, "action": "click", "target": "#btn", "value": ""},
@@ -950,7 +1024,7 @@ def test_compare_writes_html_and_returns_counts(client, temp_host_root):
         {"step": 2, "action": "click", "target": "#btn", "value": ""},
         {"step": 3, "action": "verify", "target": "#status", "value": "OK"},
     ]
-    r = client.post(f"/recording/sessions/{sid}/compare", json={"doc_dsl": doc})
+    r = client.post(f"/experimental/sessions/{sid}/compare", json={"doc_dsl": doc})
     assert r.status_code == 201
     body = r.json()
     assert body["counts"]["exact"] == 2
@@ -962,27 +1036,27 @@ def test_compare_writes_html_and_returns_counts(client, temp_host_root):
     assert "<table>" in html_path.read_text(encoding="utf-8")
 
 
-def test_compare_html_endpoint_serves_file(client, temp_host_root):
+def test_compare_html_endpoint_serves_file(client, temp_host_root, rplus_on):
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
     ])
     doc = [{"action": "navigate", "target": "", "value": "https://x.test"}]
-    r = client.post(f"/recording/sessions/{sid}/compare", json={"doc_dsl": doc})
+    r = client.post(f"/experimental/sessions/{sid}/compare", json={"doc_dsl": doc})
     assert r.status_code == 201
-    r2 = client.get(f"/recording/sessions/{sid}/comparison.html")
+    r2 = client.get(f"/experimental/sessions/{sid}/comparison.html")
     assert r2.status_code == 200
     assert "<html" in r2.text.lower()
 
 
-def test_compare_html_endpoint_404_when_no_report(client, temp_host_root):
+def test_compare_html_endpoint_404_when_no_report(client, temp_host_root, rplus_on):
     sid = _setup_done_session(temp_host_root, scenario=[{"action": "navigate", "target": "", "value": "x"}])
-    r = client.get(f"/recording/sessions/{sid}/comparison.html")
+    r = client.get(f"/experimental/sessions/{sid}/comparison.html")
     assert r.status_code == 404
 
 
 # ── TR.7 R-Plus — replay (docker exec --mode execute) ──────────────────────
 
-def test_replay_success_returns_counts(client, monkeypatch, temp_host_root):
+def test_replay_success_returns_counts(client, monkeypatch, temp_host_root, rplus_on):
     """fake docker exec → executor 실행 결과 시뮬레이션."""
     from pathlib import Path
     import json as _j
@@ -1008,8 +1082,9 @@ def test_replay_success_returns_counts(client, monkeypatch, temp_host_root):
             elapsed_ms=2345.0,
         )
 
-    monkeypatch.setattr(srv, "_run_replay_impl", fake_replay)
-    r = client.post(f"/recording/sessions/{sid}/replay")
+    from recording_service.rplus import router as rplus_router  # P0.1 #5
+    monkeypatch.setattr(rplus_router, "_run_replay_impl", fake_replay)
+    r = client.post(f"/experimental/sessions/{sid}/replay")
     assert r.status_code == 201
     body = r.json()
     assert body["returncode"] == 0
@@ -1019,7 +1094,7 @@ def test_replay_success_returns_counts(client, monkeypatch, temp_host_root):
     assert body["run_log_exists"] is True
 
 
-def test_replay_502_when_proxy_error(client, monkeypatch, temp_host_root):
+def test_replay_502_when_proxy_error(client, monkeypatch, temp_host_root, rplus_on):
     from recording_service import server as srv
     from recording_service.replay_proxy import ReplayProxyError
 
@@ -1030,8 +1105,9 @@ def test_replay_502_when_proxy_error(client, monkeypatch, temp_host_root):
     def fake_replay(*a, **kw):
         raise ReplayProxyError("docker 실행 파일을 찾을 수 없습니다.")
 
-    monkeypatch.setattr(srv, "_run_replay_impl", fake_replay)
-    r = client.post(f"/recording/sessions/{sid}/replay")
+    from recording_service.rplus import router as rplus_router  # P0.1 #5
+    monkeypatch.setattr(rplus_router, "_run_replay_impl", fake_replay)
+    r = client.post(f"/experimental/sessions/{sid}/replay")
     assert r.status_code == 502
 
 
@@ -1123,15 +1199,15 @@ def test_codegen_runner_output_size_zero_for_missing_file(tmp_path):
 
 # ── /recording/sessions/{id}/replay (R-Plus only) ────────────────────────────
 
-def test_replay_404_unknown(client):
-    r = client.post("/recording/sessions/nope/replay")
+def test_replay_404_unknown(client, rplus_on):
+    r = client.post("/experimental/sessions/nope/replay")
     assert r.status_code == 404
 
 
-def test_replay_409_when_session_not_done(client, patched_codegen):
+def test_replay_409_when_session_not_done(client, patched_codegen, rplus_on):
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
-    r2 = client.post(f"/recording/sessions/{sid}/replay")
+    r2 = client.post(f"/experimental/sessions/{sid}/replay")
     assert r2.status_code == 409
 
 

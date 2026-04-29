@@ -10,6 +10,7 @@ TR.2 단계에서 /start /stop 이 실 codegen subprocess 와 연동된다.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Optional
 
@@ -23,13 +24,10 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from . import (
-    codegen_runner, comparator, converter_proxy, enricher,
-    replay_proxy, session, storage,
+    codegen_runner, converter_proxy, session, storage,
 )
 from .codegen_runner import CodegenError, CodegenHandle
 from .converter_proxy import ConverterProxyError
-from .enricher import EnrichError, EnrichResult
-from .replay_proxy import ReplayProxyError
 
 log = logging.getLogger("recording_service")
 logging.basicConfig(
@@ -101,26 +99,12 @@ def _run_convert_impl(
     )
 
 
-def _run_enrich_impl(
-    *, scenario: list[dict], target_url: str, page_title=None, inventory_block=None,
-):
-    """TR.5 monkeypatch hook — 단위 테스트가 Ollama 호출 없이 fake 결과 반환."""
-    return enricher.enrich_recording(
-        scenario=scenario,
-        target_url=target_url,
-        page_title=page_title,
-        inventory_block=inventory_block,
-    )
-
-
-def _run_replay_impl(
-    *, container_session_dir: str, host_session_dir: str,
-):
-    """TR.7 monkeypatch hook — fake docker exec 결과."""
-    return replay_proxy.run_replay(
-        container_session_dir=container_session_dir,
-        host_session_dir=host_session_dir,
-    )
+# ── R-Plus 게이팅 (P0.1 #5) ──────────────────────────────────────────────────
+# `RPLUS_ENABLED=1` 일 때만 `/experimental/*` 가 활성. router 자체는 항상
+# include 하고, request-time 의존성 (`rplus.router._require_rplus_enabled`) 이
+# 미활성 시 404 를 던진다. 평가 증거 수집이 끝나면 운영자가 환경변수로 켠다.
+def _is_rplus_enabled() -> bool:
+    return os.getenv("RPLUS_ENABLED") == "1"
 
 
 # ── 요청/응답 모델 ────────────────────────────────────────────────────────────
@@ -145,6 +129,7 @@ class HealthResp(BaseModel):
     version: str
     codegen_available: bool
     host_root: str
+    rplus_enabled: bool = False
 
 
 class SessionResp(BaseModel):
@@ -163,12 +148,13 @@ class SessionResp(BaseModel):
 
 @app.get("/healthz", response_model=HealthResp)
 def healthz() -> HealthResp:
-    """서비스 헬스체크. codegen 가용 여부도 함께 반환."""
+    """서비스 헬스체크. codegen 가용 여부 + R-Plus 게이트 상태 반환."""
     return HealthResp(
         ok=True,
         version=__version__,
         codegen_available=codegen_runner.is_codegen_available(),
         host_root=str(storage.host_root()),
+        rplus_enabled=_is_rplus_enabled(),
     )
 
 
@@ -402,6 +388,26 @@ def get_session(sid: str) -> SessionResp:
     return SessionResp(**sess.to_dict())
 
 
+@app.get("/recording/sessions/{sid}/scenario", include_in_schema=False)
+def get_session_scenario(sid: str):
+    """세션의 변환된 14-DSL scenario.json 본문을 그대로 반환 (TR.4).
+
+    프론트 UI 가 결과 패널에 DSL 을 표시해 사용자가 assertion 추가 전에
+    구조를 검토할 수 있게 한다. state=done 이고 파일이 존재할 때만 200,
+    그 외 404.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    data = storage.load_scenario(sid)
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"scenario.json 없음 (state={sess.state})",
+        )
+    return data
+
+
 @app.delete("/recording/sessions/{sid}", status_code=204)
 def delete_session(sid: str):
     """세션 메모리 + 영속화 디렉토리 삭제. 활성 codegen 이 있으면 먼저 종료."""
@@ -418,60 +424,6 @@ def delete_session(sid: str):
     storage.delete_session(sid)
     log.info("[/recording/sessions] 세션 %s 삭제", sid)
     return None
-
-
-@app.post("/recording/sessions/{sid}/replay", status_code=201)
-def replay_session(sid: str) -> dict:
-    """녹화된 14-DSL 을 컨테이너 측 executor 로 재실행 (TR.7 R-Plus).
-
-    검증된 변환 결과(scenario.json) 가 실 브라우저 환경에서도 동작하는지
-    round-trip 으로 확인. 결과는 `<host_root>/<sid>/run_log.json` 에 저장.
-    """
-    sess = _registry.get(sid)
-    if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    if sess.state != session.STATE_DONE:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Replay 는 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
-        )
-
-    scenario = storage.load_scenario(sid)
-    if not scenario:
-        raise HTTPException(
-            status_code=409,
-            detail=f"세션 {sid} 의 scenario.json 이 누락됨.",
-        )
-
-    container_dir = storage.container_path_for(sid)
-    host_dir = str(storage.session_dir(sid))
-
-    try:
-        result = _run_replay_impl(
-            container_session_dir=container_dir,
-            host_session_dir=host_dir,
-        )
-    except ReplayProxyError as e:
-        log.error("[/replay] %s — %s", sid, e)
-        raise HTTPException(status_code=502, detail=str(e))
-
-    log.info(
-        "[/replay] %s — rc=%d pass=%d fail=%d healed=%d (%.0fms)",
-        sid, result.returncode, result.pass_count, result.fail_count,
-        result.healed_count, result.elapsed_ms,
-    )
-    return {
-        "id": sid,
-        "returncode": result.returncode,
-        "pass_count": result.pass_count,
-        "fail_count": result.fail_count,
-        "healed_count": result.healed_count,
-        "step_count": len(scenario),
-        "run_log_exists": result.run_log_exists,
-        "run_log_path": result.run_log_path,
-        "elapsed_ms": result.elapsed_ms,
-        "stderr_tail": result.stderr[-500:] if result.stderr else "",
-    }
 
 
 # ── /recording/sessions/{id}/assertion (TR.4 — codegen 미생성 액션 보충) ───
@@ -574,144 +526,6 @@ def _default_description(action: str, target: str, value: str) -> str:
     return ""
 
 
-# ── /recording/sessions/{id}/enrich (TR.5 R-Plus — Recording → Doc 역추정) ──
-
-class EnrichReq(BaseModel):
-    page_title: Optional[str] = Field(
-        None, description="페이지 타이틀 (있으면 컨텍스트 강화)",
-    )
-    inventory_block: Optional[str] = Field(
-        None,
-        description="Phase 1 grounding 인벤토리 마커 블록 (선택). srs_text prepend 패턴과 동일.",
-    )
-
-
-@app.post("/recording/sessions/{sid}/enrich", status_code=201)
-def enrich_session(sid: str, req: EnrichReq) -> dict:
-    """녹화된 시나리오를 IEEE 829-lite Markdown 으로 역추정 (TR.5 R-Plus).
-
-    출력은 `<host_root>/<sid>/doc_enriched.md` 에 영속화. UI 가 응답의
-    markdown 을 즉시 미리보기로 표시.
-    """
-    sess = _registry.get(sid)
-    if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    if sess.state != session.STATE_DONE:
-        raise HTTPException(
-            status_code=409,
-            detail=f"역추정은 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
-        )
-
-    scenario = storage.load_scenario(sid)
-    if not scenario:
-        raise HTTPException(
-            status_code=409,
-            detail=f"세션 {sid} 의 scenario.json 이 비어있거나 누락됨.",
-        )
-
-    try:
-        result: EnrichResult = _run_enrich_impl(
-            scenario=scenario,
-            target_url=sess.target_url,
-            page_title=req.page_title,
-            inventory_block=req.inventory_block,
-        )
-    except EnrichError as e:
-        log.error("[/enrich] %s — %s", sid, e)
-        raise HTTPException(status_code=502, detail=str(e))
-
-    enriched_path = storage.session_dir(sid) / "doc_enriched.md"
-    enriched_path.write_text(result.markdown, encoding="utf-8")
-
-    log.info(
-        "[/enrich] %s — %d chars (%s, %.0fms)",
-        sid, len(result.markdown), result.model, result.elapsed_ms,
-    )
-    return {
-        "id": sid,
-        "model": result.model,
-        "markdown": result.markdown,
-        "char_count": len(result.markdown),
-        "prompt_tokens_estimate": result.prompt_tokens_estimate,
-        "elapsed_ms": result.elapsed_ms,
-        "saved_to": str(enriched_path),
-    }
-
-
-# ── /recording/sessions/{id}/compare (TR.6 R-Plus — Doc ↔ Recording 비교) ───
-
-class CompareReq(BaseModel):
-    doc_dsl: list[dict] = Field(
-        ...,
-        description="비교 대상 doc-DSL (chat 모드 출력 또는 손작성). 14-DSL 리스트.",
-    )
-    threshold: float = Field(
-        comparator.DEFAULT_FUZZY_THRESHOLD,
-        description="fuzzy 매칭 임계값 (0~1). 기본 0.7.",
-    )
-    doc_label: str = Field("doc-DSL", description="HTML 리포트 컬럼 라벨")
-    rec_label: str = Field("recording-DSL", description="HTML 리포트 컬럼 라벨")
-
-
-@app.post("/recording/sessions/{sid}/compare", status_code=201)
-def compare_session(sid: str, req: CompareReq) -> dict:
-    """녹화된 14-DSL 과 사용자가 제공한 doc-DSL 을 5분류로 비교 (TR.6 R-Plus).
-
-    - 정렬 대상 액션은 LCS 정렬
-    - doc 의 verify/mock_* 는 codegen 비대칭으로 인한 'intent_only' 분류
-    - HTML 리포트는 `<host_root>/<sid>/doc_comparison.html` 에 영속화
-    """
-    sess = _registry.get(sid)
-    if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    if sess.state != session.STATE_DONE:
-        raise HTTPException(
-            status_code=409,
-            detail=f"비교는 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
-        )
-    if not req.doc_dsl:
-        raise HTTPException(status_code=400, detail="doc_dsl 이 비어있습니다.")
-
-    rec_dsl = storage.load_scenario(sid)
-    if not rec_dsl:
-        raise HTTPException(
-            status_code=409,
-            detail=f"세션 {sid} 의 scenario.json 이 누락됨.",
-        )
-
-    if not (0.0 <= req.threshold <= 1.0):
-        raise HTTPException(status_code=400, detail="threshold 는 0.0~1.0 범위.")
-
-    result = comparator.compare(req.doc_dsl, rec_dsl, threshold=req.threshold)
-    html = comparator.render_html(result, doc_label=req.doc_label, rec_label=req.rec_label)
-
-    out_path = storage.session_dir(sid) / "doc_comparison.html"
-    out_path.write_text(html, encoding="utf-8")
-
-    log.info(
-        "[/compare] %s — counts=%s, doc=%d steps, rec=%d steps",
-        sid, result.counts, len(req.doc_dsl), len(rec_dsl),
-    )
-    return {
-        "id": sid,
-        "counts": result.counts,
-        "threshold_used": result.threshold_used,
-        "doc_step_count": len(req.doc_dsl),
-        "rec_step_count": len(rec_dsl),
-        "saved_to": str(out_path),
-        "report_html_url": f"/recording/sessions/{sid}/comparison.html",
-    }
-
-
-@app.get("/recording/sessions/{sid}/comparison.html", response_class=FileResponse, include_in_schema=False)
-def get_comparison_html(sid: str) -> FileResponse:
-    """compare 결과 HTML 리포트를 직접 서빙 (UI 의 새 탭 진입 용)."""
-    p = storage.session_dir(sid) / "doc_comparison.html"
-    if not p.is_file():
-        raise HTTPException(status_code=404, detail="비교 리포트 미생성")
-    return FileResponse(str(p), media_type="text/html")
-
-
 # ── 진단/내부용 (테스트 친화) ────────────────────────────────────────────────
 
 def _reset_for_tests() -> None:
@@ -792,3 +606,16 @@ def root_index() -> FileResponse:
 # /static/* 로 app.js / style.css 등 서빙. /healthz 와 /recording/* API 와 분리.
 if _WEB_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_WEB_DIR)), name="static")
+
+
+# ── R-Plus router include (P0.1 #5) ──────────────────────────────────────────
+# router 는 항상 include 하지만 의존성 _require_rplus_enabled 가 RPLUS_ENABLED
+# 미설정 상태에서는 모든 `/experimental/*` 요청을 404 로 차단한다. import 는
+# side-effect 가 작아 항상 안전 (네트워크 호출 없음, 설정 조회만).
+from .rplus.router import router as _rplus_router  # noqa: E402
+
+app.include_router(_rplus_router)
+if _is_rplus_enabled():
+    log.info("[startup] R-Plus router 활성화 (/experimental/*)")
+else:
+    log.info("[startup] R-Plus 비활성 (RPLUS_ENABLED 미설정 — /experimental/* 는 404)")
