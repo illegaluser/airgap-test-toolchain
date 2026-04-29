@@ -257,3 +257,119 @@ def _rough_token_count(text: str) -> int:
         return len(enc.encode(text))
     except Exception:  # noqa: BLE001
         return max(1, len(text) // 4)
+
+
+# ── 항목 4 (UI 개선) — codegen 원본 ↔ LLM healed regression 변경 분석 ───────
+
+_DIFF_ANALYSIS_SYSTEM = """\
+당신은 Playwright 자동화 회귀 테스트 검토 전문가다. 두 Python 스크립트
+(codegen 원본 + LLM healed regression) 의 차이를 의미 단위로 분석해
+사용자가 "이 regression 을 회귀 슈트로 채택할지" 판단할 수 있게 정리하라.
+
+## 출력 포맷 (Markdown — 정확히 4 섹션)
+
+### 1. 핵심 변경 요약
+- 가장 중요한 변경 1~3 줄 (selector swap / hover 추가 / 등).
+
+### 2. 변경 라인 분석
+변경된 라인을 항목별로:
+- **L<번호>**: `<원본 코드>` → `<변경된 코드>`
+  유형: <selector swap | hover 추가 | step 삭제 | step 추가 | 기타>
+  의미: <왜 변경됐는지 — healing 의도 추정>
+
+### 3. 위험 평가
+- **결정성**: 변경된 selector 가 사이트 변경에 강건한가?
+- **의도 일치**: 사용자가 녹화한 행동과 일치하는가?
+- **잠재 리스크**: 회귀 시 깨질 가능성 있는 부분.
+
+### 4. 회귀 채택 권고
+하나만 선택:
+- ✅ **권장** — 차이가 명확한 healing 이고 의도와 일치
+- ⚠ **검토 필요** — 일부 변경의 의도가 모호함
+- ❌ **비권장** — 의도와 다른 동작 가능성
+
+이유: 1~2 문장.
+
+## 규칙
+- 코드 블록 안의 selector 는 그대로 인용 (백틱).
+- 변경 없는 라인은 언급하지 마라.
+- 추측이면 "추정" 명시.
+- 한국어로 작성. 군더더기 금지.
+"""
+
+
+@dataclass
+class DiffAnalysisResult:
+    markdown: str
+    elapsed_ms: float
+    model: str
+    error: Optional[str] = None
+
+
+def analyze_codegen_vs_regression(
+    *,
+    original_py: str,
+    regression_py: str,
+    unified_diff: str,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
+    model: str = DEFAULT_OLLAMA_MODEL,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+) -> DiffAnalysisResult:
+    """codegen 원본 .py 와 LLM healed regression_test.py 를 LLM 으로 의미
+    분석하여 변경 요약 + 위험 평가 + 채택 권고 markdown 반환.
+
+    Raises:
+        EnrichError: Ollama HTTP/timeout/응답 파싱 실패.
+    """
+    if not regression_py.strip():
+        raise EnrichError("regression_test.py 가 비어있어 분석 대상 없음.")
+
+    user_prompt = (
+        "## 입력 1 — codegen 원본 (original.py)\n"
+        "```python\n" + (original_py or "(empty)") + "\n```\n\n"
+        "## 입력 2 — LLM healed regression (regression_test.py)\n"
+        "```python\n" + regression_py + "\n```\n\n"
+        "## 입력 3 — unified diff (참고)\n"
+        "```diff\n" + (unified_diff or "(no diff)") + "\n```\n\n"
+        "위 두 스크립트의 변경을 4 섹션 Markdown 으로 분석하라."
+    )
+    full_prompt = _DIFF_ANALYSIS_SYSTEM + "\n\n" + user_prompt
+
+    started = time.time()
+    try:
+        res = requests.post(
+            f"{ollama_url}/api/generate",
+            json={
+                "model": model,
+                "prompt": full_prompt,
+                "stream": False,
+                "options": {"temperature": 0.2},
+            },
+            timeout=timeout_sec,
+        )
+    except requests.Timeout as e:
+        raise EnrichError(
+            f"Ollama 호출이 {timeout_sec}s 안에 끝나지 않았습니다."
+        ) from e
+    except requests.RequestException as e:
+        raise EnrichError(f"Ollama HTTP 통신 실패: {e}") from e
+
+    elapsed_ms = (time.time() - started) * 1000
+    if res.status_code != 200:
+        raise EnrichError(
+            f"Ollama 응답 코드 {res.status_code}: {res.text[:300]}"
+        )
+    try:
+        body = res.json()
+    except json.JSONDecodeError as e:
+        raise EnrichError(f"Ollama 응답 JSON 파싱 실패: {e}") from e
+
+    markdown = (body.get("response") or "").strip()
+    if not markdown:
+        raise EnrichError("Ollama 응답이 비어있습니다.")
+
+    return DiffAnalysisResult(
+        markdown=markdown,
+        elapsed_ms=elapsed_ms,
+        model=model,
+    )

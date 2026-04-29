@@ -559,7 +559,7 @@ def test_root_returns_html(client):
     """/ → index.html 반환."""
     r = client.get("/")
     assert r.status_code == 200
-    assert "DSCORE Recording Service" in r.text or "Recording Service" in r.text
+    assert "Recording UI" in r.text
     assert "<html" in r.text.lower()
 
 
@@ -1504,3 +1504,254 @@ def test_delete_removes_session(client, temp_host_root, patched_codegen):
 def test_delete_404_for_unknown(client):
     r = client.delete("/recording/sessions/nope")
     assert r.status_code == 404
+
+
+# ── P1 (항목 5) — Run-log + 스크린샷 endpoint ──────────────────────────────
+
+def test_get_run_log_404_when_no_log_file(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.get(f"/recording/sessions/{sid}/run-log")
+    assert r.status_code == 404
+    assert "run_log" in r.json()["detail"]
+
+
+def test_get_run_log_returns_parsed_steps_with_screenshot_field(
+    client, patched_codegen, temp_host_root,
+):
+    """run_log.jsonl + step_*.png 가 있으면 screenshot 필드 자동 채움."""
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    # run_log.jsonl + step_1_pass.png 만 만들고 step_2 는 안 만듦.
+    (sess_dir / "run_log.jsonl").write_text(
+        '{"step": 1, "action": "click", "target": "#a", "status": "PASS", "heal_stage": "none"}\n'
+        '{"step": 2, "action": "click", "target": "#b", "status": "HEALED", "heal_stage": "local"}\n',
+        encoding="utf-8",
+    )
+    (sess_dir / "step_1_pass.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # 헤더만 — 충분
+    r = client.get(f"/recording/sessions/{sid}/run-log")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+    assert data[0]["status"] == "PASS"
+    assert data[0]["screenshot"] == "step_1_pass.png"
+    assert data[1]["heal_stage"] == "local"
+    assert data[1]["screenshot"] is None  # step_2_healed.png 없음
+
+
+def test_screenshot_endpoint_serves_png(client, patched_codegen, temp_host_root):
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    (Path(temp_host_root) / sid / "step_1_pass.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    r = client.get(f"/recording/sessions/{sid}/screenshot/step_1_pass.png")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+
+
+def test_screenshot_endpoint_rejects_path_traversal(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.get(f"/recording/sessions/{sid}/screenshot/..%2Fmetadata.json")
+    # path traversal 또는 화이트리스트 외 — 400 또는 404. 둘 다 안전.
+    assert r.status_code in (400, 404)
+
+
+def test_screenshot_endpoint_rejects_arbitrary_filename(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.get(f"/recording/sessions/{sid}/screenshot/foo.png")
+    assert r.status_code == 400
+    assert "허용되지 않는" in r.json()["detail"]
+
+
+# ── P2 (항목 6) — Play log tail endpoint ──────────────────────────────────
+
+def test_play_log_tail_returns_new_bytes_only(
+    client, patched_codegen, temp_host_root,
+):
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    log_path = Path(temp_host_root) / sid / "play-llm.log"
+    log_path.write_text("first\nsecond\n", encoding="utf-8")
+    r = client.get(f"/recording/sessions/{sid}/play-log/tail?kind=llm&from=0")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["exists"] is True
+    assert body["content"] == "first\nsecond\n"
+    assert body["offset"] == len("first\nsecond\n")
+
+    # offset 으로 incremental 폴링
+    log_path.write_text("first\nsecond\nthird\n", encoding="utf-8")
+    r2 = client.get(
+        f"/recording/sessions/{sid}/play-log/tail?kind=llm&from={body['offset']}"
+    )
+    assert r2.json()["content"] == "third\n"
+
+
+def test_play_log_tail_when_file_absent_returns_exists_false(
+    client, patched_codegen,
+):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.get(f"/recording/sessions/{sid}/play-log/tail?kind=llm")
+    assert r.status_code == 200
+    assert r.json()["exists"] is False
+    assert r.json()["content"] == ""
+
+
+def test_play_log_tail_400_for_invalid_kind(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.get(f"/recording/sessions/{sid}/play-log/tail?kind=bogus")
+    assert r.status_code == 400
+
+
+# ── 항목 4 — regression .py + diff endpoint ───────────────────────────────
+
+def test_get_regression_returns_python_text(
+    client, patched_codegen, temp_host_root,
+):
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    (Path(temp_host_root) / sid / "regression_test.py").write_text(
+        "# regression\nprint('ok')\n", encoding="utf-8",
+    )
+    r = client.get(f"/recording/sessions/{sid}/regression")
+    assert r.status_code == 200
+    assert "regression" in r.text
+
+
+def test_get_regression_with_download_query_sets_attachment(
+    client, patched_codegen, temp_host_root,
+):
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    (Path(temp_host_root) / sid / "regression_test.py").write_text(
+        "x", encoding="utf-8",
+    )
+    r = client.get(f"/recording/sessions/{sid}/regression?download=1")
+    assert r.status_code == 200
+    cd = r.headers.get("content-disposition", "")
+    assert "attachment" in cd.lower()
+    assert "regression_test.py" in cd
+
+
+def test_get_regression_404_when_missing(client, patched_codegen):
+    sid = _create_done_session(client, patched_codegen)
+    r = client.get(f"/recording/sessions/{sid}/regression")
+    assert r.status_code == 404
+
+
+def test_diff_endpoint_returns_unified_diff(
+    client, patched_codegen, temp_host_root, rplus_on,
+):
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    (sess_dir / "regression_test.py").write_text(
+        "page.click('#different')\n", encoding="utf-8",
+    )
+    # original.py 는 patched_codegen fixture 가 만들어 줌 (시작 시점에)
+    r = client.get(f"/experimental/sessions/{sid}/diff-codegen-vs-llm")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["left_exists"] is True
+    assert body["right_exists"] is True
+    # unified diff 헤더 + +/- 라인 포함
+    assert "original.py" in body["unified_diff"]
+    assert "regression_test.py" in body["unified_diff"]
+
+
+def test_diff_endpoint_404_when_neither_file_exists(client, rplus_on):
+    # 존재하지 않는 세션 — 두 파일 다 없음
+    r = client.get("/experimental/sessions/nope/diff-codegen-vs-llm")
+    assert r.status_code == 404
+
+
+def test_diff_endpoint_partial_when_only_one_file_exists(
+    client, patched_codegen, temp_host_root, rplus_on,
+):
+    """regression_test.py 만 있고 original.py 없을 때 — left_exists=False, 200."""
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    # original.py 삭제 + regression_test.py 만 만듦
+    (sess_dir / "original.py").unlink(missing_ok=True)
+    (sess_dir / "regression_test.py").write_text("x = 1\n", encoding="utf-8")
+    r = client.get(f"/experimental/sessions/{sid}/diff-codegen-vs-llm")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["left_exists"] is False
+    assert body["right_exists"] is True
+
+
+# ── 항목 4 (UI 개선) — LLM diff 분석 endpoint ─────────────────────────────
+
+def test_diff_analysis_404_when_no_regression(client, patched_codegen, rplus_on):
+    """regression_test.py 가 없으면 404 — Play with LLM 미실행 케이스."""
+    sid = _create_done_session(client, patched_codegen)
+    r = client.post(f"/experimental/sessions/{sid}/diff-analysis")
+    assert r.status_code == 404
+
+
+def test_diff_analysis_returns_markdown(
+    client, patched_codegen, temp_host_root, monkeypatch, rplus_on,
+):
+    """fake _run_diff_analysis_impl 로 Ollama 우회 — markdown 반환 확인."""
+    from pathlib import Path
+
+    from recording_service.enricher import DiffAnalysisResult
+    from recording_service.rplus import router as rplus_router
+
+    captured = {}
+
+    def fake_analyze(*, original_py, regression_py, unified_diff):
+        captured["orig"] = original_py
+        captured["reg"] = regression_py
+        captured["diff"] = unified_diff
+        return DiffAnalysisResult(
+            markdown="### 1. 핵심 변경 요약\n- selector swap 1건\n",
+            elapsed_ms=2500.0,
+            model="gemma4:26b",
+        )
+
+    monkeypatch.setattr(rplus_router, "_run_diff_analysis_impl", fake_analyze)
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    (sess_dir / "regression_test.py").write_text(
+        "page.click('#healed')\n", encoding="utf-8",
+    )
+    r = client.post(f"/experimental/sessions/{sid}/diff-analysis")
+    assert r.status_code == 200
+    body = r.json()
+    assert "selector swap" in body["markdown"]
+    assert body["model"] == "gemma4:26b"
+    assert body["elapsed_ms"] >= 0
+    # fake 가 입력 받은 파일 본문 확인
+    assert "page.click('#healed')" in captured["reg"]
+
+
+def test_diff_analysis_502_when_ollama_fails(
+    client, patched_codegen, temp_host_root, monkeypatch, rplus_on,
+):
+    """Ollama 호출 실패 시 502 — UI 가 사용자에게 명확한 에러 노출."""
+    from pathlib import Path
+
+    from recording_service.enricher import EnrichError
+    from recording_service.rplus import router as rplus_router
+
+    def fake_fail(**kw):
+        raise EnrichError("Ollama 미가동")
+
+    monkeypatch.setattr(rplus_router, "_run_diff_analysis_impl", fake_fail)
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    (sess_dir / "regression_test.py").write_text("x", encoding="utf-8")
+    r = client.post(f"/experimental/sessions/{sid}/diff-analysis")
+    assert r.status_code == 502
+    assert "Ollama" in r.json()["detail"]

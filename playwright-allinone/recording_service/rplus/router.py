@@ -43,6 +43,17 @@ def _run_enrich_impl(
     )
 
 
+def _run_diff_analysis_impl(
+    *, original_py: str, regression_py: str, unified_diff: str,
+):
+    """항목 4 (UI 개선) monkeypatch hook — 단위 테스트용 분기점."""
+    return enricher.analyze_codegen_vs_regression(
+        original_py=original_py,
+        regression_py=regression_py,
+        unified_diff=unified_diff,
+    )
+
+
 def _run_codegen_replay_impl(*, host_session_dir: str):
     """codegen 원본 ``original.py`` 호스트 실행 hook (monkeypatch 대상)."""
     return replay_proxy.run_codegen_replay(host_session_dir=host_session_dir)
@@ -303,3 +314,100 @@ def get_comparison_html(sid: str) -> FileResponse:
     if not p.is_file():
         raise HTTPException(status_code=404, detail="비교 리포트 미생성")
     return FileResponse(str(p), media_type="text/html")
+
+
+# ── 항목 4 — codegen 원본 ↔ LLM healed regression 비교 ────────────────────
+
+@router.get("/sessions/{sid}/diff-codegen-vs-llm", include_in_schema=False)
+def get_diff_codegen_vs_llm(sid: str) -> dict:
+    """codegen ``original.py`` 와 LLM healed ``regression_test.py`` 를 비교.
+
+    사용자 흐름: Play with LLM 후 자동 생성된 regression_test.py 를 원본과
+    diff 로 비교 → 의도 일치 확인 → 다운로드 → 회귀 슈트로 채택.
+
+    Response:
+        - left_path / right_path / left_content / right_content
+        - unified_diff: difflib.unified_diff 결과 텍스트
+        - left_exists / right_exists
+        - 양쪽 파일 모두 없으면 404.
+    """
+    import difflib
+
+    left_p = storage.original_py_path(sid)
+    right_p = storage.regression_py_path(sid)
+    left_exists = left_p.is_file()
+    right_exists = right_p.is_file()
+    if not left_exists and not right_exists:
+        raise HTTPException(
+            status_code=404,
+            detail="original.py / regression_test.py 둘 다 없음",
+        )
+    left_content = left_p.read_text(encoding="utf-8") if left_exists else ""
+    right_content = right_p.read_text(encoding="utf-8") if right_exists else ""
+    unified = "".join(difflib.unified_diff(
+        left_content.splitlines(keepends=True),
+        right_content.splitlines(keepends=True),
+        fromfile="original.py (codegen)",
+        tofile="regression_test.py (LLM healed)",
+        n=3,
+    ))
+    return {
+        "left_path": "original.py",
+        "right_path": "regression_test.py",
+        "left_content": left_content,
+        "right_content": right_content,
+        "unified_diff": unified,
+        "left_exists": left_exists,
+        "right_exists": right_exists,
+    }
+
+
+@router.post("/sessions/{sid}/diff-analysis", include_in_schema=False)
+def post_diff_analysis(sid: str) -> dict:
+    """codegen 원본 ↔ regression_test.py 차이를 LLM (Ollama) 으로 의미 분석.
+
+    1차원 unified diff 보다 사용자에게 유용한 정보 (selector swap 의도 추정 /
+    위험 평가 / 회귀 채택 권고) 를 제공. 분석 결과는 markdown 으로 반환.
+
+    POST 인 이유: Ollama 호출이 부수효과 (수십 초 시간/비용) 를 가짐 — GET
+    캐싱 의미론과 충돌.
+    """
+    import difflib
+
+    left_p = storage.original_py_path(sid)
+    right_p = storage.regression_py_path(sid)
+    if not right_p.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="regression_test.py 없음 — Play with LLM 미실행",
+        )
+    left_content = left_p.read_text(encoding="utf-8") if left_p.is_file() else ""
+    right_content = right_p.read_text(encoding="utf-8")
+    unified = "".join(difflib.unified_diff(
+        left_content.splitlines(keepends=True),
+        right_content.splitlines(keepends=True),
+        fromfile="original.py (codegen)",
+        tofile="regression_test.py (LLM healed)",
+        n=3,
+    ))
+    try:
+        result = _run_diff_analysis_impl(
+            original_py=left_content,
+            regression_py=right_content,
+            unified_diff=unified,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM 분석 호출 실패: {e}",
+        ) from e
+    log.info(
+        "[/experimental/diff-analysis] %s — model=%s elapsed=%.0fms",
+        sid, result.model, result.elapsed_ms,
+    )
+    return {
+        "id": sid,
+        "markdown": result.markdown,
+        "model": result.model,
+        "elapsed_ms": result.elapsed_ms,
+    }
