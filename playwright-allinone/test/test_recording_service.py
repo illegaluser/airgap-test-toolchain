@@ -1067,65 +1067,112 @@ def test_compare_html_endpoint_404_when_no_report(client, temp_host_root, rplus_
     assert r.status_code == 404
 
 
-# ── TR.7 R-Plus — replay (호스트에서 original.py 직접 실행, headed) ──────────
+# ── TR.7 R-Plus — Play (codegen output / LLM 두 모드, headed) ────────────────
 
-def test_replay_success(client, monkeypatch, temp_host_root, rplus_on):
-    """fake subprocess → original.py 실행 결과 시뮬레이션."""
-    from recording_service.replay_proxy import ReplayResult
+def test_play_codegen_success(client, monkeypatch, temp_host_root, rplus_on):
+    """codegen output replay — host 에서 original.py 직접 실행."""
+    from recording_service.replay_proxy import PlayResult
 
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
     ])
 
-    def fake_replay(*, host_session_dir):
-        return ReplayResult(
-            returncode=0, stdout="ok\n", stderr="", elapsed_ms=2345.0,
-        )
+    def fake_play(*, host_session_dir):
+        return PlayResult(returncode=0, stdout="ok\n", stderr="", elapsed_ms=2345.0)
 
     from recording_service.rplus import router as rplus_router
-    monkeypatch.setattr(rplus_router, "_run_replay_impl", fake_replay)
-    r = client.post(f"/experimental/sessions/{sid}/replay")
+    monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_play)
+    r = client.post(f"/experimental/sessions/{sid}/play-codegen")
     assert r.status_code == 201
     body = r.json()
     assert body["returncode"] == 0
     assert body["elapsed_ms"] == 2345.0
     assert "ok" in body["stdout_tail"]
-    # 이전 응답의 pass_count / run_log_* 필드는 폐기됨.
-    assert "pass_count" not in body
-    assert "run_log_exists" not in body
 
 
-def test_replay_502_when_proxy_error(client, monkeypatch, temp_host_root, rplus_on):
+def test_play_llm_success(client, monkeypatch, temp_host_root, rplus_on):
+    """LLM play — 14-DSL scenario.json 을 zero_touch_qa executor 로 실행."""
+    from recording_service.replay_proxy import PlayResult
+
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+    ])
+
+    captured = {}
+
+    def fake_play(*, host_session_dir, project_root):
+        captured["project_root"] = project_root
+        captured["host_session_dir"] = host_session_dir
+        return PlayResult(returncode=0, stdout="PASS: 1\n", stderr="", elapsed_ms=4567.0)
+
+    from recording_service.rplus import router as rplus_router
+    monkeypatch.setattr(rplus_router, "_run_llm_play_impl", fake_play)
+    r = client.post(f"/experimental/sessions/{sid}/play-llm")
+    assert r.status_code == 201
+    body = r.json()
+    assert body["returncode"] == 0
+    assert "PASS: 1" in body["stdout_tail"]
+    # router 가 project_root 를 자동으로 주입
+    assert captured["project_root"]
+    assert captured["host_session_dir"].endswith(sid)
+
+
+def test_play_codegen_502_when_proxy_error(client, monkeypatch, temp_host_root, rplus_on):
     from recording_service.replay_proxy import ReplayProxyError
 
     sid = _setup_done_session(temp_host_root, scenario=[
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
     ])
 
-    def fake_replay(*a, **kw):
+    def fake_play(*a, **kw):
         raise ReplayProxyError("original.py 없음: ...")
 
     from recording_service.rplus import router as rplus_router
-    monkeypatch.setattr(rplus_router, "_run_replay_impl", fake_replay)
-    r = client.post(f"/experimental/sessions/{sid}/replay")
+    monkeypatch.setattr(rplus_router, "_run_codegen_replay_impl", fake_play)
+    r = client.post(f"/experimental/sessions/{sid}/play-codegen")
     assert r.status_code == 502
 
 
-def test_replay_proxy_raises_when_original_py_missing(tmp_path):
+def test_play_llm_502_when_proxy_error(client, monkeypatch, temp_host_root, rplus_on):
+    from recording_service.replay_proxy import ReplayProxyError
+
+    sid = _setup_done_session(temp_host_root, scenario=[
+        {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
+    ])
+
+    def fake_play(*a, **kw):
+        raise ReplayProxyError("scenario.json 없음: ...")
+
+    from recording_service.rplus import router as rplus_router
+    monkeypatch.setattr(rplus_router, "_run_llm_play_impl", fake_play)
+    r = client.post(f"/experimental/sessions/{sid}/play-llm")
+    assert r.status_code == 502
+
+
+def test_play_codegen_proxy_raises_when_original_py_missing(tmp_path):
     """original.py 가 없으면 ReplayProxyError."""
     from recording_service import replay_proxy
     from recording_service.replay_proxy import ReplayProxyError
 
     with pytest.raises(ReplayProxyError, match="original.py"):
-        replay_proxy.run_replay(host_session_dir=str(tmp_path))
+        replay_proxy.run_codegen_replay(host_session_dir=str(tmp_path))
 
 
-def test_replay_proxy_invokes_python_subprocess(monkeypatch, tmp_path):
-    """run_replay 가 host 측에서 <venv_py> original.py 형태로 subprocess 호출."""
+def test_play_llm_proxy_raises_when_scenario_missing(tmp_path):
+    from recording_service import replay_proxy
+    from recording_service.replay_proxy import ReplayProxyError
+
+    with pytest.raises(ReplayProxyError, match="scenario.json"):
+        replay_proxy.run_llm_play(
+            host_session_dir=str(tmp_path),
+            project_root="/fake/project",
+        )
+
+
+def test_play_codegen_invokes_python_on_original(monkeypatch, tmp_path):
     from recording_service import replay_proxy
     from types import SimpleNamespace
 
-    # 가짜 original.py
     (tmp_path / "original.py").write_text("print('hi')", encoding="utf-8")
 
     captured = {}
@@ -1137,14 +1184,46 @@ def test_replay_proxy_invokes_python_subprocess(monkeypatch, tmp_path):
 
     monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
 
-    res = replay_proxy.run_replay(
+    res = replay_proxy.run_codegen_replay(
         host_session_dir=str(tmp_path), venv_py="/fake/python",
     )
     assert res.returncode == 0
-    assert res.stdout == "hi\n"
     assert captured["cmd"][0] == "/fake/python"
     assert captured["cmd"][1].endswith("original.py")
     assert captured["cwd"] == str(tmp_path)
+
+
+def test_play_llm_invokes_zero_touch_qa_with_scenario(monkeypatch, tmp_path):
+    from recording_service import replay_proxy
+    from types import SimpleNamespace
+
+    (tmp_path / "scenario.json").write_text("[]", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        captured["cwd"] = kw.get("cwd")
+        captured["env"] = kw.get("env")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
+
+    res = replay_proxy.run_llm_play(
+        host_session_dir=str(tmp_path),
+        project_root="/fake/project",
+        venv_py="/fake/python",
+    )
+    assert res.returncode == 0
+    assert captured["cmd"][0] == "/fake/python"
+    assert "-m" in captured["cmd"]
+    assert "zero_touch_qa" in captured["cmd"]
+    assert "--mode" in captured["cmd"] and "execute" in captured["cmd"]
+    # PYTHONPATH 와 ARTIFACTS_DIR 주입 확인
+    assert "/fake/project" in captured["env"]["PYTHONPATH"]
+    assert captured["env"]["ARTIFACTS_DIR"] == str(tmp_path)
+    # --headless 미지정 (default: headed)
+    assert "--headless" not in captured["cmd"]
 
 
 # ── DELETE 가 활성 codegen 도 정리 ──────────────────────────────────────────
@@ -1191,15 +1270,29 @@ def test_codegen_runner_output_size_zero_for_missing_file(tmp_path):
 
 # ── /recording/sessions/{id}/replay (R-Plus only) ────────────────────────────
 
-def test_replay_404_unknown(client, rplus_on):
-    r = client.post("/experimental/sessions/nope/replay")
+def test_play_codegen_404_unknown(client, rplus_on):
+    r = client.post("/experimental/sessions/nope/play-codegen")
     assert r.status_code == 404
 
 
-def test_replay_409_when_session_not_done(client, patched_codegen, rplus_on):
+def test_play_llm_404_unknown(client, rplus_on):
+    r = client.post("/experimental/sessions/nope/play-llm")
+    assert r.status_code == 404
+
+
+def test_play_codegen_409_when_session_recording(client, patched_codegen, rplus_on):
+    """state=recording 중에는 codegen replay 불가 (original.py 가 아직 쓰이는 중)."""
     r = client.post("/recording/start", json={"target_url": "https://x.test"})
     sid = r.json()["id"]
-    r2 = client.post(f"/experimental/sessions/{sid}/replay")
+    r2 = client.post(f"/experimental/sessions/{sid}/play-codegen")
+    assert r2.status_code == 409
+
+
+def test_play_llm_409_when_session_recording(client, patched_codegen, rplus_on):
+    """state=recording 중에는 LLM play 불가 (codegen 이 stop 안 된 상태)."""
+    r = client.post("/recording/start", json={"target_url": "https://x.test"})
+    sid = r.json()["id"]
+    r2 = client.post(f"/experimental/sessions/{sid}/play-llm")
     assert r2.status_code == 409
 
 

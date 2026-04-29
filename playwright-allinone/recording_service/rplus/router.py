@@ -43,13 +43,23 @@ def _run_enrich_impl(
     )
 
 
-def _run_replay_impl(*, host_session_dir: str):
-    """TR.7 monkeypatch hook — replay_proxy.run_replay 위임.
+def _run_codegen_replay_impl(*, host_session_dir: str):
+    """codegen 원본 ``original.py`` 호스트 실행 hook (monkeypatch 대상)."""
+    return replay_proxy.run_codegen_replay(host_session_dir=host_session_dir)
 
-    호스트에서 ``original.py`` 를 직접 실행 (headed). 컨테이너 docker exec
-    경로는 폐기 — 사용자 정의 replay 의미 (녹화 그대로 재현 + 브라우저 표시).
-    """
-    return replay_proxy.run_replay(host_session_dir=host_session_dir)
+
+def _run_llm_play_impl(*, host_session_dir: str, project_root: str):
+    """14-DSL ``scenario.json`` 의 zero_touch_qa executor 실행 hook."""
+    return replay_proxy.run_llm_play(
+        host_session_dir=host_session_dir,
+        project_root=project_root,
+    )
+
+
+def _project_root() -> str:
+    """zero_touch_qa 패키지가 있는 프로젝트 루트 — recording_service 의 부모 디렉토리."""
+    from pathlib import Path
+    return str(Path(__file__).resolve().parent.parent.parent)
 
 
 def _registry_lookup(sid: str):
@@ -84,14 +94,8 @@ class CompareReq(BaseModel):
 
 # ── 엔드포인트 ─────────────────────────────────────────────────────────────
 
-@router.post("/sessions/{sid}/replay", status_code=201)
-def replay_session(sid: str) -> dict:
-    """녹화된 ``original.py`` 를 호스트에서 그대로 실행 (TR.7 R-Plus, headed).
-
-    14-DSL 변환본이 아니라 codegen 원본 스크립트를 재현 — 브라우저 창이 호스트
-    화면에 떠서 사용자가 동작을 시각적으로 확인. session state 가 done 이 아니어도
-    `original.py` 만 있으면 동작 (변환 실패 케이스도 재현 가능).
-    """
+def _ensure_session_not_recording(sid: str, kind: str):
+    """공용 가드 — 세션이 존재하고 녹화 중이 아닐 것."""
     sess = _registry_lookup(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
@@ -99,23 +103,13 @@ def replay_session(sid: str) -> dict:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"녹화 중에는 replay 불가 (state={sess.state}). "
+                f"녹화 중에는 {kind} 불가 (state={sess.state}). "
                 f"먼저 stop 으로 codegen 을 종료한 뒤 시도하세요."
             ),
         )
 
-    host_dir = str(storage.session_dir(sid))
 
-    try:
-        result = _run_replay_impl(host_session_dir=host_dir)
-    except ReplayProxyError as e:
-        log.error("[/experimental/replay] %s — %s", sid, e)
-        raise HTTPException(status_code=502, detail=str(e))
-
-    log.info(
-        "[/experimental/replay] %s — rc=%d (%.0fms)",
-        sid, result.returncode, result.elapsed_ms,
-    )
+def _play_response(sid: str, result) -> dict:
     return {
         "id": sid,
         "returncode": result.returncode,
@@ -123,6 +117,63 @@ def replay_session(sid: str) -> dict:
         "stdout_tail": result.stdout[-500:] if result.stdout else "",
         "stderr_tail": result.stderr[-500:] if result.stderr else "",
     }
+
+
+@router.post("/sessions/{sid}/play-codegen", status_code=201)
+def play_codegen(sid: str) -> dict:
+    """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (TR.7, headed).
+
+    녹화한 동작이 화면에 그대로 재현. 14-DSL 변환과 무관한 평범한 Playwright
+    스크립트 실행이라 healing/verify 같은 14-DSL 풀 기능은 동작하지 않는다.
+    원본 selector 가 화면 변경으로 깨지면 그대로 실패.
+    """
+    _ensure_session_not_recording(sid, "play-codegen")
+    host_dir = str(storage.session_dir(sid))
+    try:
+        result = _run_codegen_replay_impl(host_session_dir=host_dir)
+    except ReplayProxyError as e:
+        log.error("[/experimental/play-codegen] %s — %s", sid, e)
+        raise HTTPException(status_code=502, detail=str(e))
+    log.info(
+        "[/experimental/play-codegen] %s — rc=%d (%.0fms)",
+        sid, result.returncode, result.elapsed_ms,
+    )
+    return _play_response(sid, result)
+
+
+@router.post("/sessions/{sid}/play-llm", status_code=201)
+def play_llm(sid: str) -> dict:
+    """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행 (headed).
+
+    healing 3-stage / fallback_targets / verify / mock_status / mock_data 등
+    14-DSL 의 풀 기능 동작 + 화면에 재생. codegen 원본보다 selector 변동에
+    강함 (LocalHealer + Dify LLM 치유) — 단, scenario.json 이 변환된 상태여야
+    하므로 state=done 필수.
+    """
+    _ensure_session_not_recording(sid, "play-llm")
+    sess = _registry_lookup(sid)
+    if sess.state != session.STATE_DONE:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"play-llm 은 변환 완료(state=done) 세션만 가능합니다. "
+                f"현재 state={sess.state}"
+            ),
+        )
+    host_dir = str(storage.session_dir(sid))
+    try:
+        result = _run_llm_play_impl(
+            host_session_dir=host_dir,
+            project_root=_project_root(),
+        )
+    except ReplayProxyError as e:
+        log.error("[/experimental/play-llm] %s — %s", sid, e)
+        raise HTTPException(status_code=502, detail=str(e))
+    log.info(
+        "[/experimental/play-llm] %s — rc=%d (%.0fms)",
+        sid, result.returncode, result.elapsed_ms,
+    )
+    return _play_response(sid, result)
 
 
 @router.post("/sessions/{sid}/enrich", status_code=201)
