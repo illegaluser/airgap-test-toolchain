@@ -1,0 +1,14 @@
+{
+  "catalog_id": "P0-FX-04",
+  "target_url": "file:///app/test/fixtures/verify_conditions.html",
+  "description": "다양한 verify 조건 — visible / hidden / disabled / value / text",
+  "steps": [
+    {"step": 1, "action": "navigate", "target": "", "value": "file:///app/test/fixtures/verify_conditions.html", "description": "verify_conditions fixture 로드"},
+    {"step": 2, "action": "verify",   "target": "#visible-box", "value": "true",  "condition": "visible",  "description": "visible-box 노출 확인"},
+    {"step": 3, "action": "verify",   "target": "#hidden-box",  "value": "true",  "condition": "hidden",   "description": "hidden-box 숨김 확인"},
+    {"step": 4, "action": "verify",   "target": "#btn-disabled","value": "true",  "condition": "disabled", "description": "btn-disabled 비활성 확인"},
+    {"step": 5, "action": "verify",   "target": "#cb-checked",  "value": "true",  "condition": "checked",  "description": "cb-checked 체크 상태 확인"},
+    {"step": 6, "action": "verify",   "target": "#text-input",  "value": "exact-value-42", "condition": "value", "description": "text-input 값 검증"},
+    {"step": 7, "action": "verify",   "target": "#contain-paragraph", "value": "12,345", "condition": "text", "description": "paragraph 부분 텍스트 포함"}
+  ]
+}

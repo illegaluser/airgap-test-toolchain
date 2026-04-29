@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dual-match menu (mobile drawer + desktop GNB)</title>
+  <style>
+    /* 모바일 드로어 — DOM 순서상 먼저, transform: scale(0) 으로 시각적 숨김.
+       display:block 유지 + transform 만 제거 → Playwright role query 가 잡지만
+       click actionability 체크에서 "not visible" 로 거부.
+       실 사이트 (ktds.com 등) 의 햄버거 메뉴 드로어 패턴 모사. */
+    .mobile-drawer {
+      transform: scale(0);
+      transform-origin: 0 0;
+      position: absolute;
+      width: 240px;
+      height: 200px;
+    }
+    /* 데스크탑 GNB — 항상 visible */
+    .desktop-gnb { display: flex; gap: 12px; padding: 12px; background: #f7f7f7; }
+    .desktop-gnb a { padding: 8px 12px; }
+    #last-clicked { margin-top: 16px; padding: 12px; background: #eaeaea; }
+  </style>
+</head>
+<body>
+  <!-- 모바일 드로어 — DOM 순서상 먼저, 같은 라벨 사용. off-screen 으로 visually 숨김. -->
+  <nav class="mobile-drawer" aria-label="Mobile drawer">
+    <ul>
+      <li><a href="#" data-where="mobile">회사소개</a></li>
+      <li><a href="#" data-where="mobile">제품</a></li>
+    </ul>
+  </nav>
+
+  <!-- 데스크탑 GNB — 같은 라벨, visible. -->
+  <nav class="desktop-gnb" aria-label="Desktop GNB">
+    <a href="#" data-where="desktop">회사소개</a>
+    <a href="#" data-where="desktop">제품</a>
+  </nav>
+
+  <p id="last-clicked">idle</p>
+  <script>
+    document.addEventListener("click", (e) => {
+      if (e.target.tagName === "A" && e.target.dataset.where) {
+        document.getElementById("last-clicked").textContent = e.target.dataset.where;
+      }
+    });
+  </script>
+</body>
+</html>

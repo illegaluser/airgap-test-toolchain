@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/login", "description": "https://example.com/login로 이동", "fallback_targets": []},
+  {"step": 2, "action": "fill", "target": "role=textbox, name=Email", "value": "user@example.com", "description": "'user@example.com' 입력", "fallback_targets": []},
+  {"step": 3, "action": "fill", "target": "role=textbox, name=Password", "value": "secret", "description": "'secret' 입력", "fallback_targets": []},
+  {"step": 4, "action": "click", "target": "role=button, name=Sign in", "value": "", "description": "클릭", "fallback_targets": []},
+  {"step": 5, "action": "verify", "target": "role=heading, name=Welcome", "value": "", "description": "요소 표시 확인", "fallback_targets": []}
+]

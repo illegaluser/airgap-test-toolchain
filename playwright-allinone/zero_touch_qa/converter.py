@@ -24,10 +24,46 @@ def convert_playwright_to_dsl(file_path: str, output_dir: str) -> list[dict]:
     사용법:
       playwright codegen https://target-app.com --output recorded.py
       python3 -m zero_touch_qa --mode convert --file recorded.py
+
+    구현 (T-A / P0.4): AST 우선 + line fallback 2단계 전략.
+      1) zero_touch_qa.converter_ast.convert_via_ast — popup/.nth/.first/.filter/
+         frame_locator chain 까지 손실 없이 변환
+      2) AST 가 던지면 (비표준 lambda / dynamic 패턴 / SyntaxError) 기존 line-based
+         로 fallback — 안전망
     """
     if not file_path or not os.path.exists(file_path):
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {file_path}")
 
+    # 1) AST 우선
+    try:
+        from .converter_ast import convert_via_ast, CodegenAstError
+        scenario = convert_via_ast(file_path, output_dir)
+        if scenario:
+            return scenario
+        log.warning(
+            "[Convert] AST 변환 결과가 비어 있음 — line fallback 시도. file=%s",
+            file_path,
+        )
+    except CodegenAstError as e:
+        log.warning("[Convert] AST 변환 실패 — line fallback. 사유: %s", e)
+    except FileNotFoundError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "[Convert] AST 변환 예외 — line fallback. type=%s msg=%s",
+            type(e).__name__, e,
+        )
+
+    # 2) line fallback (legacy)
+    return _convert_via_lines(file_path, output_dir)
+
+
+def _convert_via_lines(file_path: str, output_dir: str) -> list[dict]:
+    """라인 기반 regex 변환 (legacy). AST 변환 실패 시 안전망.
+
+    AST 가 정상 동작하는 한 본 함수는 사용 안 됨. 호출 측은 AST 결과가 비거나
+    예외일 때만 본 함수로 fallback.
+    """
     with open(file_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
@@ -46,6 +82,12 @@ def convert_playwright_to_dsl(file_path: str, output_dir: str) -> list[dict]:
             continue
         if any(line.startswith(k) for k in skip_keywords):
             continue
+        # codegen 은 `with page.expect_popup() as page1_info` → `page1.click(...)` 식으로
+        # popup/새 탭 액션을 page1, page2, … 변수에 바인딩한다. executor 는 매 스텝 후
+        # context.pages 변화로 활성 page 를 자동 전환하므로(executor.py:166-201) 시나리오는
+        # 단일 page 시퀀스로 평탄화해도 동작이 일치한다.
+        # AST 본체 (T-A) 가 정상 동작하면 이 line 은 실행 안 되지만, fallback 안전망용.
+        line = re.sub(r"\bpage\d+\.", "page.", line)
         if not (line.startswith("page.") or line.startswith("expect(")):
             continue
 
@@ -61,7 +103,10 @@ def convert_playwright_to_dsl(file_path: str, output_dir: str) -> list[dict]:
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(scenario, f, indent=2, ensure_ascii=False)
 
-    log.info("[Convert] %s -> %s (%d스텝 변환)", file_path, output_path, step_num)
+    log.info(
+        "[Convert/line-fallback] %s -> %s (%d스텝 변환)",
+        file_path, output_path, step_num,
+    )
     return scenario
 
 

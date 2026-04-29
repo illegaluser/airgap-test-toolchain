@@ -1,0 +1,12 @@
+{
+  "catalog_id": "P0-FX-01",
+  "target_url": "file:///app/test/fixtures/click.html",
+  "description": "Plain Button 클릭 + 로그인 클릭 — 의미 셀렉터 우선",
+  "steps": [
+    {"step": 1, "action": "navigate", "target": "", "value": "file:///app/test/fixtures/click.html", "description": "click fixture 로드"},
+    {"step": 2, "action": "click",    "target": "getByRole('button', { name: 'Plain Button' })", "value": "", "description": "Plain Button 클릭"},
+    {"step": 3, "action": "verify",   "target": "#status-plain", "value": "clicked", "condition": "text", "description": "status-plain 텍스트 = clicked"},
+    {"step": 4, "action": "click",    "target": "getByRole('button', { name: '로그인' })", "value": "", "description": "로그인 버튼 클릭"},
+    {"step": 5, "action": "verify",   "target": "#status-login", "value": "clicked", "condition": "text", "description": "status-login 텍스트 = clicked"}
+  ]
+}

@@ -5,13 +5,27 @@ import re
 import time
 import logging
 from dataclasses import dataclass, field
+from typing import Optional
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, Page, Locator, expect
 
+from .auth import (
+    AuthOptions,
+    Credential,
+    CredentialError,
+    EMAIL_FIELD_CANDIDATES,
+    PASSWORD_FIELD_CANDIDATES,
+    SUBMIT_BUTTON_CANDIDATES,
+    TOTP_FIELD_CANDIDATES,
+    generate_totp_code,
+    mask_secret,
+    parse_auth_target,
+    resolve_credential,
+)
 from .config import Config
 from .dify_client import DifyClient, DifyConnectionError
-from .locator_resolver import LocatorResolver
+from .locator_resolver import LocatorResolver, ShadowAccessError
 from .local_healer import LocalHealer
 
 log = logging.getLogger(__name__)
@@ -79,6 +93,133 @@ class StepResult:
     screenshot_path: str | None = None
 
 
+# Visibility Healer (T-H) JS — element 의 ancestor chain 에서 hoverable 후보 추출.
+# 우선순위: aria-haspopup > aria-expanded=false > role=menu/menubar/listbox/tooltip/combobox >
+#          tag=nav/details/summary > [data-state=closed] / [hidden] toggleable > :hover CSS rule.
+# 각 후보에 대해 stable CSS path 를 함께 반환 (id 우선 → nth-of-type chain).
+_VISIBILITY_HEALER_JS = r"""
+el => {
+  function cssPath(node) {
+    if (!node || node === document.body) return 'body';
+    if (node.id) return '#' + CSS.escape(node.id);
+    let parts = [];
+    let cur = node;
+    while (cur && cur !== document.body && parts.length < 6) {
+      if (cur.id) { parts.unshift('#' + CSS.escape(cur.id)); break; }
+      const tag = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (!parent) { parts.unshift(tag); break; }
+      const same = [...parent.children].filter(c => c.tagName === cur.tagName);
+      const idx = same.indexOf(cur) + 1;
+      parts.unshift(same.length > 1 ? `${tag}:nth-of-type(${idx})` : tag);
+      cur = parent;
+    }
+    return parts.join(' > ');
+  }
+
+  // :hover CSS rule 의 trigger 인지 검사. selectorText 가 'A:hover B' 라면
+  // trigger 는 A — node 가 A 와 matches 하면 hoverable.
+  // 'ul#gnb > li:hover > .submenu' → trigger=`ul#gnb > li`.
+  function hoverTriggerSelectors(rule) {
+    const out = [];
+    if (!rule.selectorText || !rule.selectorText.includes(':hover')) return out;
+    for (const part of rule.selectorText.split(',').map(s => s.trim())) {
+      if (!part.includes(':hover')) continue;
+      const idx = part.indexOf(':hover');
+      let trigger = part.slice(0, idx);
+      trigger = trigger.replace(/[\s>+~]+$/, '').trim();
+      if (trigger) out.push(trigger);
+    }
+    return out;
+  }
+  function isHoverTrigger(node) {
+    try {
+      for (const sheet of document.styleSheets) {
+        let rules;
+        try { rules = sheet.cssRules; } catch (_) { continue; }
+        for (const r of rules || []) {
+          for (const sel of hoverTriggerSelectors(r)) {
+            try { if (node.matches(sel)) return true; } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  const out = [];
+  let cur = el;
+  let depth = 0;
+  while (cur && cur !== document.body && depth < 12) {
+    let reason = null;
+    if (cur.getAttribute && cur.getAttribute('aria-haspopup')) reason = 'aria-haspopup';
+    else if (cur.getAttribute && cur.getAttribute('aria-expanded') === 'false') reason = 'aria-expanded=false';
+    else {
+      const role = cur.getAttribute && cur.getAttribute('role');
+      if (role && ['menu','menubar','listbox','tooltip','combobox'].includes(role)) reason = 'role=' + role;
+    }
+    if (!reason) {
+      const tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+      if (['nav','details','summary'].includes(tag)) reason = 'tag=' + tag;
+    }
+    if (!reason && cur.getAttribute) {
+      const ds = cur.getAttribute('data-state');
+      if (ds === 'closed') reason = 'data-state=closed';
+    }
+    if (!reason && isHoverTrigger(cur)) reason = ':hover-css';
+
+    if (reason) {
+      out.push({ path: cssPath(cur), reason });
+    }
+    cur = cur.parentElement;
+    depth++;
+  }
+  return out;
+}
+"""
+
+
+# T-H (G) — JS dispatchEvent('click') 폴백 안전 가드.
+# anchor/button/input/role=button/role=link/role=menuitem 만 허용. 일반 div 에
+# JS click 발사하면 실 사이트의 listener 가 없어 false-positive PASS 위험.
+def _is_safe_for_js_click(locator) -> bool:
+    """element 가 anchor/button/clickable role 이면 JS click 안전. 그 외는 raise."""
+    try:
+        info = locator.evaluate(
+            """el => ({
+                tag: (el.tagName || '').toLowerCase(),
+                role: el.getAttribute && el.getAttribute('role'),
+                onclick: typeof el.onclick === 'function',
+            })"""
+        )
+    except Exception:
+        return False
+    tag = info.get("tag")
+    role = (info.get("role") or "").lower()
+    if tag in ("a", "button"):
+        return True
+    if tag == "input" and role in ("button", "submit", ""):
+        return True
+    if role in ("button", "link", "menuitem", "tab", "option", "checkbox"):
+        return True
+    if info.get("onclick"):
+        return True
+    return False
+
+
+def _dump_storage_state(context, path: str) -> None:
+    """현재 BrowserContext 의 storage_state 를 path 에 JSON 으로 덤프 (T-D / P0.1).
+
+    실패 시 경고만 — 시나리오 실행 결과 자체에 영향 주지 않는다.
+    """
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        context.storage_state(path=path)
+        log.info("[Auth] storage_state 덤프 완료 — %s", path)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[Auth] storage_state 덤프 실패 (%s): %s", path, e)
+
+
 class QAExecutor:
     """
     DSL 시나리오를 받아 실행하고, 3단계 하이브리드 자가 치유를 수행한다.
@@ -98,13 +239,23 @@ class QAExecutor:
         self._latest_strategy_trace: list[_StrategyAttempt] = []
 
     def execute(
-        self, scenario: list[dict], headed: bool = True
+        self,
+        scenario: list[dict],
+        headed: bool = True,
+        storage_state_in: Optional[str] = None,
+        storage_state_out: Optional[str] = None,
     ) -> list[StepResult]:
         """Playwright 브라우저를 실행하고 DSL 시나리오를 순차 실행한다.
 
         Args:
             scenario: DSL 스텝 dict 의 리스트.
             headed: True 면 브라우저 창을 표시, False 면 headless.
+            storage_state_in: 미리 dump 된 storage_state JSON 경로 — 인증 후 세션
+                을 새 컨텍스트에 복원한다 (T-D / P0.1). None 이면 env
+                ``AUTH_STORAGE_STATE_IN``, 그것도 없으면 새 컨텍스트.
+            storage_state_out: 시나리오 종료 후 현재 컨텍스트의 storage_state 를
+                덤프할 경로. None 이면 env ``AUTH_STORAGE_STATE_OUT``, 그것도
+                없으면 덤프 안 함.
 
         Returns:
             각 스텝의 실행 결과 ``StepResult`` 리스트. FAIL 발생 시 이후 스텝은 포함되지 않는다.
@@ -113,15 +264,30 @@ class QAExecutor:
         artifacts = self.config.artifacts_dir
         os.makedirs(artifacts, exist_ok=True)
 
+        # T-D / P0.1 — storage_state 경로 결정 (인자 우선, env fallback)
+        if storage_state_in is None:
+            storage_state_in = os.environ.get("AUTH_STORAGE_STATE_IN") or None
+        if storage_state_out is None:
+            storage_state_out = os.environ.get("AUTH_STORAGE_STATE_OUT") or None
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=not headed, slow_mo=self.config.slow_mo)
-            context = browser.new_context(
-                locale="ko-KR",
-                viewport={
+            context_kwargs: dict = {
+                "locale": "ko-KR",
+                "viewport": {
                     "width": self.config.viewport[0],
                     "height": self.config.viewport[1],
                 },
-            )
+            }
+            if storage_state_in and os.path.isfile(storage_state_in):
+                log.info("[Auth] storage_state 복원 — %s", storage_state_in)
+                context_kwargs["storage_state"] = storage_state_in
+            elif storage_state_in:
+                log.warning(
+                    "[Auth] storage_state_in 파일 없음 — 새 컨텍스트로 진행 (%s)",
+                    storage_state_in,
+                )
+            context = browser.new_context(**context_kwargs)
             page = context.new_page()
             resolver = LocatorResolver(page)
             healer = LocalHealer(page, self.config.heal_threshold)
@@ -229,6 +395,9 @@ class QAExecutor:
                 if headed:
                     time.sleep(3)
             finally:
+                # T-D / P0.1 — storage_state 덤프 (브라우저 종료 전, 인증 후 세션 보존)
+                if storage_state_out:
+                    _dump_storage_state(context, storage_state_out)
                 browser.close()
 
         return results
@@ -290,14 +459,39 @@ class QAExecutor:
         if action in ("mock_status", "mock_data"):
             return self._execute_mock_step(page, step, artifacts)
 
+        if action == "auth_login":
+            return self._execute_auth_login(page, step, artifacts)
+
+        if action == "reset_state":
+            return self._execute_reset_state(page, step, artifacts)
+
         # ── 타겟 필요 액션: 실행 + 다단계 자가 치유 ──
         log.info("[Step %s] %s: %s", step_id, action, desc)
         original_target = step.get("target")
         verification_error: VerificationAssertionError | None = None
 
         # 1차 시도: 기본 타겟 (Resolver 가 healed_aliases 를 자동 적용)
-        locator = resolver.resolve(original_target)
+        # T-C (P0.2) — closed shadow 만나면 자동치유 무의미 + 30s timeout 위험.
+        # ShadowAccessError 는 fallback / healer 진입 전에 즉시 FAIL escalate.
+        try:
+            locator = resolver.resolve(original_target)
+        except ShadowAccessError as e:
+            log.error("[Step %s] %s", step_id, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, action, str(original_target or ""),
+                str(step.get("value", "")), f"{desc} [closed shadow]",
+                "FAIL", screenshot_path=ss,
+            )
         if locator:
+            # T-H (Visibility Healer) — element 가 hidden 이면 ancestor hover
+            # 시도, 그래도 안 되면 visible 한 형제 매치로 swap. 드롭다운 메뉴 /
+            # 호버 메뉴 / 모바일 드로어 케이스에서 codegen 원본이 hover step 을
+            # 빠뜨리거나 selector 가 모바일/데스크탑 두 곳에 매치되어 hidden 쪽이
+            # 잡히는 것을 막는다. 매칭만 되고 안 보이는 케이스만 트리거.
+            swap = self._heal_visibility(page, locator, step_id)
+            if swap is not None:
+                locator = swap
             try:
                 self._perform_action(page, locator, step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "pass")
@@ -1043,6 +1237,308 @@ class QAExecutor:
             body = self._normalize_mock_body(step.get("value"))
             self._install_mock_route(page, pattern, body=body, times=times)
 
+    # ─────────────────────────────────────────────────────────────────
+    # reset_state (T-B / P0.3-A)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _execute_reset_state(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """reset_state 액션 — 시나리오 도중 client-side 상태를 비운다.
+
+        DSL 형태:
+          {"action": "reset_state", "target": "", "value": "cookie"}     # 쿠키만
+          {"action": "reset_state", "target": "", "value": "storage"}    # local + session
+          {"action": "reset_state", "target": "", "value": "indexeddb"}  # IDB
+          {"action": "reset_state", "target": "", "value": "all"}        # 위 셋 모두
+
+        value 화이트리스트는 `__main__._RESET_STATE_VALID_VALUES` 와 동기.
+        BrowserContext / Page level API 만 사용 — 백엔드 hook 없이 자체 완결.
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        scope = str(step.get("value", "")).strip().lower()
+
+        try:
+            if scope in ("cookie", "all"):
+                page.context.clear_cookies()
+                log.info("[Step %s] reset_state cookie -> cleared", step_id)
+
+            if scope == "all":
+                # PLAN_PRODUCTION_READINESS.md §"T-B Day 2" — all 은
+                # cookie + storage + indexeddb + permissions reset 까지 포함.
+                # geolocation/notifications/clipboard 등 grant 된 권한 초기화.
+                try:
+                    page.context.clear_permissions()
+                    log.info("[Step %s] reset_state permissions -> cleared", step_id)
+                except Exception as e:  # noqa: BLE001
+                    # 일부 Playwright 버전 / 컨텍스트는 미지원 — soft fail.
+                    log.warning(
+                        "[Step %s] reset_state permissions 미지원 (skip): %s",
+                        step_id, e,
+                    )
+
+            if scope in ("storage", "all"):
+                # localStorage / sessionStorage 는 SecurityError 가 about:blank
+                # 같은 origin 없는 페이지에서 발생할 수 있어 try 안에서 처리.
+                page.evaluate(
+                    """() => {
+                        try { localStorage.clear(); } catch (e) { /* no-op */ }
+                        try { sessionStorage.clear(); } catch (e) { /* no-op */ }
+                    }"""
+                )
+                log.info("[Step %s] reset_state storage -> cleared", step_id)
+
+            if scope in ("indexeddb", "all"):
+                page.evaluate(
+                    """async () => {
+                        if (!('indexedDB' in window) || !indexedDB.databases) return;
+                        try {
+                            const dbs = await indexedDB.databases();
+                            await Promise.all(dbs.map(d => new Promise((res) => {
+                                if (!d.name) return res();
+                                const req = indexedDB.deleteDatabase(d.name);
+                                req.onsuccess = req.onerror = req.onblocked = () => res();
+                            })));
+                        } catch (e) { /* no-op — Safari 등 미지원 시 */ }
+                    }"""
+                )
+                log.info("[Step %s] reset_state indexeddb -> cleared", step_id)
+
+        except Exception as e:  # noqa: BLE001
+            log.error("[Step %s] reset_state %s 실패: %s", step_id, scope, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "reset_state", "", scope, desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        return StepResult(
+            step_id, "reset_state", "", scope, desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # auth_login (T-D / P0.1)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _execute_auth_login(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """auth_login 액션 — form / totp / oauth 모드 분기.
+
+        DSL 형태:
+          {"action": "auth_login", "target": "form", "value": "<credential_alias>"}
+          {"action": "auth_login", "target": "totp", "value": "<credential_alias>"}
+          {"action": "auth_login", "target": "form, email_field=#email, password_field=#pw, submit=#login",
+           "value": "<credential_alias>"}
+
+        credential 은 환경변수 `AUTH_CRED_<ALIAS>_USER` / `_PASS` / `_TOTP_SECRET`
+        에서 lookup. 자세한 spec 은 zero_touch_qa.auth 모듈 docstring 참조.
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target_str = str(step.get("target", ""))
+        alias = str(step.get("value", ""))
+
+        opts = parse_auth_target(target_str)
+        try:
+            cred = resolve_credential(alias)
+        except CredentialError as e:
+            log.error("[Step %s] auth_login credential 실패: %s", step_id, e)
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        log.info(
+            "[Step %s] auth_login mode=%s alias=%s user=%s pass=%s totp=%s",
+            step_id, opts.mode, alias,
+            mask_secret(cred.user, keep=2),
+            mask_secret(cred.password, keep=0),
+            "<set>" if cred.has_totp() else "<empty>",
+        )
+
+        if opts.mode == "form":
+            return self._auth_login_form(page, step, opts, cred, artifacts)
+        if opts.mode == "totp":
+            return self._auth_login_totp(page, step, opts, cred, artifacts)
+        if opts.mode == "oauth":
+            # T-D Phase 5 — OAuth mock server 통합 후 활성화
+            log.error(
+                "[Step %s] auth_login oauth 모드는 T-D Phase 5 (mock OAuth) 미완료",
+                step_id,
+            )
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        log.error("[Step %s] auth_login 알 수 없는 mode=%r", step_id, opts.mode)
+        ss = self._screenshot(page, artifacts, step_id, "fail")
+        return StepResult(
+            step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+            "FAIL", screenshot_path=ss,
+        )
+
+    def _auth_login_form(
+        self, page: Page, step: dict, opts: AuthOptions, cred: Credential,
+        artifacts: str,
+    ) -> StepResult:
+        """form 로그인 — email + password 필드 채우고 submit 클릭."""
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target_str = str(step.get("target", ""))
+        alias = str(step.get("value", ""))
+
+        # 민감 input locator 를 미리 잡아 mask 리스트로 사용. fill 전이라도
+        # _find_auth_field 가 RuntimeError 일 수 있어 None 으로 초기화하고 try 안에서 갱신.
+        email_loc = pwd_loc = None
+        try:
+            email_loc = self._find_auth_field(
+                page, opts.email_field, EMAIL_FIELD_CANDIDATES, "email/username",
+            )
+            pwd_loc = self._find_auth_field(
+                page, opts.password_field, PASSWORD_FIELD_CANDIDATES, "password",
+            )
+            submit_loc = self._find_auth_field(
+                page, opts.submit, SUBMIT_BUTTON_CANDIDATES, "submit",
+            )
+
+            email_loc.fill(cred.user, timeout=5000)
+            pwd_loc.fill(cred.password, timeout=5000)
+            submit_loc.click(timeout=5000)
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception as e:
+            log.error("[Step %s] auth_login form 실패: %s", step_id, e)
+            ss = self._screenshot_masked(
+                page, artifacts, step_id, "fail",
+                mask=[loc for loc in (email_loc, pwd_loc) if loc is not None],
+            )
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        # P0.1 #3 — credential 평문이 PASS 스크린샷에 남지 않도록 입력 필드를 mask.
+        # submit 후 navigation 으로 detached 된 locator 는 Playwright 내부에서 no-op.
+        ss = self._screenshot_masked(
+            page, artifacts, step_id, "pass", mask=[email_loc, pwd_loc],
+        )
+        log.info("[Step %s] auth_login form -> PASS", step_id)
+        return StepResult(
+            step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    def _auth_login_totp(
+        self, page: Page, step: dict, opts: AuthOptions, cred: Credential,
+        artifacts: str,
+    ) -> StepResult:
+        """TOTP 로그인 — pyotp 로 6자리 코드 생성 후 입력."""
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target_str = str(step.get("target", ""))
+        alias = str(step.get("value", ""))
+
+        if not cred.has_totp():
+            log.error(
+                "[Step %s] auth_login totp 실패 — alias '%s' 에 TOTP 시크릿 없음",
+                step_id, alias,
+            )
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        otp_loc = None
+        try:
+            code = generate_totp_code(cred.totp_secret)
+            otp_loc = self._find_auth_field(
+                page, opts.totp_field, TOTP_FIELD_CANDIDATES, "totp",
+            )
+            otp_loc.fill(code, timeout=5000)
+            # submit — 별도 버튼 있으면 클릭, 없으면 그대로 (auto-submit form 가정)
+            submit_loc = self._try_find_auth_field(
+                page, opts.submit, SUBMIT_BUTTON_CANDIDATES,
+            )
+            if submit_loc is not None:
+                submit_loc.click(timeout=5000)
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception as e:
+            log.error("[Step %s] auth_login totp 실패: %s", step_id, e)
+            ss = self._screenshot_masked(
+                page, artifacts, step_id, "fail",
+                mask=[loc for loc in (otp_loc,) if loc is not None],
+            )
+            return StepResult(
+                step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        # P0.1 #3 — TOTP 코드가 PASS 스크린샷에 남지 않도록 마스킹.
+        ss = self._screenshot_masked(
+            page, artifacts, step_id, "pass", mask=[otp_loc],
+        )
+        log.info("[Step %s] auth_login totp -> PASS (code=******)", step_id)
+        return StepResult(
+            step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    @staticmethod
+    def _find_auth_field(
+        page: Page, explicit: Optional[str], candidates: tuple, field_name: str,
+    ) -> Locator:
+        """explicit selector 가 있으면 그것, 없으면 후보 selector 순서대로 시도.
+
+        매치 0건이면 RuntimeError. 첫 일치하는 element 의 ``.first`` 반환.
+        """
+        if explicit:
+            loc = page.locator(explicit)
+            try:
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(f"auth_login {field_name} field 매치 0 (explicit={explicit!r})")
+        for sel in candidates:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                continue
+        raise RuntimeError(
+            f"auth_login {field_name} field 자동 탐지 실패 — 후보: {list(candidates)}"
+        )
+
+    @staticmethod
+    def _try_find_auth_field(
+        page: Page, explicit: Optional[str], candidates: tuple,
+    ) -> Optional[Locator]:
+        """``_find_auth_field`` 의 optional 버전 — 미발견 시 RuntimeError 대신 None."""
+        if explicit:
+            try:
+                loc = page.locator(explicit)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                return None
+            return None
+        for sel in candidates:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
     @staticmethod
     def _assert_locator_contains_value(locator: Locator, expected: str) -> None:
         """기존 verify 호환을 위해 text_content 와 input_value 를 모두 고려한다."""
@@ -1348,7 +1844,29 @@ class QAExecutor:
             need_nav = QAExecutor._matches_first_result_intent(desc)
             before_url = page.url if need_nav else ""
             before_pages_count = len(page.context.pages) if need_nav else 0
-            locator.click(timeout=10000)
+            try:
+                locator.click(timeout=10000)
+            except Exception as click_err:
+                # T-H (G) — Playwright click actionability 거부 (height:0 / outside
+                # viewport / hidden) 케이스 마지막 수단. element 가 anchor/button
+                # 류일 때만 JS dispatchEvent('click') 시도. ktds.com 처럼 GNB link
+                # 의 computed style 이 height:0 / line-height:0 라 normal click 이
+                # 영원히 actionability 거부하는 사이트 대응.
+                if not _is_safe_for_js_click(locator):
+                    raise
+                msg = str(click_err)
+                if not any(
+                    s in msg for s in (
+                        "not visible", "outside of the viewport",
+                        "intercepts pointer events", "Element is not stable",
+                    )
+                ):
+                    raise
+                log.warning(
+                    "[Click] Playwright click 거부 (%s) → JS dispatch click 폴백 시도",
+                    msg.split("\n", 1)[0][:120],
+                )
+                locator.evaluate("el => el.click()")
             if need_nav and not QAExecutor._wait_for_navigation_effect(
                 page, before_url, before_pages_count
             ):
@@ -1479,12 +1997,185 @@ class QAExecutor:
                 "verify, upload, drag, scroll, mock_status, mock_data"
             )
 
+    # ── Visibility Healer (T-H) ──
+    # codegen 이 hover-then-click sequence 의 hover 를 빠뜨려 element 가 hidden
+    # 인 상태로 click 시도되는 케이스. ancestor 중 hoverable 후보 (aria-haspopup
+    # / role=menu / nav / dropdown class / :hover CSS rule) 를 찾아 hover 후
+    # 재검사한다. 1차 시도 직전에만 호출 — 정상 케이스(이미 visible)엔 영향 0.
+
+    def _heal_visibility(
+        self, page: Page, locator: Locator, step_id,
+    ) -> Optional[Locator]:
+        """element 가 hidden 이면 5단계로 visible 화 시도.
+
+        순서 (각 단계는 visible 되면 즉시 단축):
+          (1) `scroll_into_view_if_needed` — Intersection Observer 트리거 사이트.
+          (2) cascade ancestor hover — `_VISIBILITY_HEALER_JS` 가 추출한
+              hoverable 후보를 outermost → innermost 순서로 누적 hover. 다단
+              메뉴 (회사소개 > 회사연혁 > ~2013) 는 outer 부터 hover 해야 다음
+              level 이 visible 됨.
+          (3) page-level activator probe — `<header>`/`<nav>`/`<main>`/`<body>` hover.
+              사이트 전역 hover 이벤트로 menu 활성화하는 케이스.
+          (4) size-aware poll — bounding_box.height/width > 0 가 될 때까지
+              최대 2s 대기. 폰트/CSS 비동기 로딩으로 늦게 expand 되는 사이트.
+          (5) sibling swap — `filter(visible=True).first` 로 visible 매치 교체.
+
+        모든 단계 합산 한도 ~6s. 정상 visible element 에는 (0) 검사만 발생.
+
+        Returns:
+            visible 한 다른 형제 매치를 찾았으면 그 Locator. 그 외 None
+            (locator 자체를 그대로 사용해도 OK 임을 의미).
+        """
+        try:
+            if locator.is_visible():
+                return None
+        except Exception:
+            return None  # locator 가 invalid 한 케이스는 후속 healer 가 처리
+
+        # ── (1) D — scroll_into_view ─────────────────────────────────────
+        # Playwright 가 viewport 에 element 를 가져옴. Intersection Observer
+        # 기반 lazy menu 가 펼쳐지는 케이스에 효과적. 0-size 도 위치만 있으면
+        # 동작. 실패는 silent (다음 단계로).
+        try:
+            locator.scroll_into_view_if_needed(timeout=1500)
+            page.wait_for_timeout(150)
+            if locator.is_visible():
+                log.info("[Step %s] visibility-healer 복구 — scroll_into_view", step_id)
+                return None
+        except Exception:
+            pass
+
+        # ── (2) cascade ancestor hover (outermost → innermost) ──────────
+        # `_VISIBILITY_HEALER_JS` 는 leaf 에서 위로 walk → candidates[0] 가
+        # leaf 에 가장 가깝고 [-1] 이 outermost. 다단 hover 메뉴 (예: ktds.com
+        # 의 회사소개 > 회사연혁 > ~2013) 는 outermost 부터 차례로 hover 해야
+        # 각 단계의 :hover 가 cascade 되어 다음 trigger 가 visible 해진다.
+        # 단일 ancestor hover 는 1-level 만 풀고 2-level+ 에서 실패.
+        # Playwright hover() 는 mouse 를 element 중심으로 이동 — 다음 hover 가
+        # descendant 라면 ancestor 의 :hover 는 자동 유지 (browser 동작).
+        try:
+            candidates = locator.evaluate(_VISIBILITY_HEALER_JS)
+        except Exception as e:  # noqa: BLE001
+            log.debug("[Step %s] visibility-healer evaluate 실패: %s", step_id, e)
+            candidates = []
+
+        chain = list(reversed(candidates))[:5]  # 최대 5단계 cascade
+        hovered_path: list[str] = []
+        for cand in chain:
+            sel = cand.get("path") or ""
+            reason = cand.get("reason") or "unknown"
+            if not sel:
+                continue
+            try:
+                ancestor = page.locator(sel).first
+                ancestor.hover(timeout=1500)
+                page.wait_for_timeout(150)  # 메뉴 transition
+                hovered_path.append(f"{sel}({reason})")
+                if locator.is_visible():
+                    log.info(
+                        "[Step %s] visibility-healer 복구 — cascade hover %s",
+                        step_id, " > ".join(hovered_path),
+                    )
+                    return None
+            except Exception:  # noqa: BLE001
+                continue
+
+        # ── (3) E — page-level activator probe ──────────────────────────
+        # 사이트 전체에 mousemove/hover 이벤트를 주어 사용자 상호작용 시작을
+        # 시뮬레이션. ktds.com 같이 GNB 가 lazy expand 되는 케이스에서 header
+        # 영역 hover 만으로 menu 가 펼쳐질 수 있다.
+        for activator_sel in ("header", "nav", "main", "body"):
+            try:
+                target = page.locator(activator_sel).first
+                if target.count() == 0:
+                    continue
+                target.hover(timeout=1000)
+                page.wait_for_timeout(200)
+                if locator.is_visible():
+                    log.info(
+                        "[Step %s] visibility-healer 복구 — page-level hover (%s)",
+                        step_id, activator_sel,
+                    )
+                    return None
+            except Exception:  # noqa: BLE001
+                continue
+
+        # ── (4) F — size-aware poll ─────────────────────────────────────
+        # bounding_box.height/width 가 > 0 이 될 때까지 최대 2s. 페이지 로드
+        # 직후 menu 가 점진적으로 expand 되는 transition (CSS/JS animation) 케이스.
+        try:
+            for _ in range(10):  # 200ms x 10 = 2s
+                page.wait_for_timeout(200)
+                if locator.is_visible():
+                    log.info("[Step %s] visibility-healer 복구 — size poll", step_id)
+                    return None
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ── (5) C — 형제 매치 swap ───────────────────────────────────────
+        sibling = self._find_visible_sibling(locator, step_id)
+        if sibling is not None:
+            return sibling
+
+        log.debug(
+            "[Step %s] visibility-healer — 모든 전략 무력 (scroll/ancestor/page-hover/size-poll/sibling)",
+            step_id,
+        )
+        return None
+
+    @staticmethod
+    def _find_visible_sibling(locator: Locator, step_id) -> Optional[Locator]:
+        """Locator 가 다중 매치이고 ``.first`` 가 hidden 일 때 visible 한 형제 swap.
+
+        Playwright 1.36+ 의 ``filter(visible=True)`` 사용. ``.first`` 의 부모
+        scope (= 원래 매치 집합) 에서 visible 만 추려 그 첫 element 를 반환.
+        """
+        try:
+            visible = locator.filter(visible=True)
+            if visible.count() > 0:
+                first = visible.first
+                if first.is_visible():
+                    log.info(
+                        "[Step %s] visibility-healer — 형제 매치 swap (filter(visible=True).first)",
+                        step_id,
+                    )
+                    return first
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
     # ── 스크린샷 ──
     @staticmethod
     def _screenshot(page: Page, artifacts: str, step_id, suffix: str) -> str:
         """스텝 실행 후 스크린샷을 저장하고 파일 경로를 반환한다."""
         path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
         page.screenshot(path=path)
+        return path
+
+    @staticmethod
+    def _screenshot_masked(
+        page: Page, artifacts: str, step_id, suffix: str,
+        mask: Optional[list] = None,
+    ) -> str:
+        """``_screenshot`` 의 마스킹 버전 — 지정된 locator 위치를 검정 박스 처리.
+
+        T-D (P0.1 #3) — auth_login 의 email/password/TOTP input 처럼 평문이
+        화면에 남는 element 가 PNG 캡처에 그대로 노출되는 것을 방지한다.
+        ``mask`` 는 Locator 의 list 또는 None. detached/0건 locator 는 Playwright
+        내부에서 no-op 처리되므로 제출 후 navigation 된 페이지에 그대로 넘겨도
+        안전하다.
+        """
+        path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
+        try:
+            page.screenshot(path=path, mask=mask or [])
+        except TypeError:
+            # 일부 구버전 Playwright 가 mask 인자 미지원 — 안전을 위해 mask 적용
+            # 못한 채라도 스크린샷은 남기지 말고 실패 처리 (자격증명 노출 방지).
+            log.warning(
+                "[Step %s] mask 미지원 Playwright — auth_login 스크린샷 생략 (security)",
+                step_id,
+            )
+            return ""
         return path
 
     @staticmethod

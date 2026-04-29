@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# pre-commit hook — Recording UI E2E 자동 실행
+#
+# 변경된 파일이 recording_service / E2E test 와 무관하면 skip.
+# venv python 미존재 / 포트 충돌 시도 자동 감지 후 skip (개발자 차단 회피).
+#
+# 설치: `playwright-allinone/scripts/install-git-hooks.sh` 한 번 실행.
+# 일시 우회: `git commit --no-verify` (긴급 핫픽스용).
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/playwright-allinone"
+
+# 1. 변경 영역 필터 — UI / E2E / 의존 backend 가 안 바뀌었으면 skip.
+RELEVANT_PATTERN='^playwright-allinone/(recording_service/|test/test_recording_(ui_e2e|service)\.py|test/test_visibility_healer.*\.py)'
+CHANGED=$(git diff --cached --name-only --diff-filter=ACMR)
+if ! echo "$CHANGED" | grep -qE "$RELEVANT_PATTERN"; then
+  echo "[pre-commit] Recording UI / 의존 영역 변경 없음 — E2E 스킵"
+  exit 0
+fi
+
+# 2. venv python 확인 — 미설치 시 차단하지 않고 경고 후 skip.
+VENV_PY="${E2E_PYTHON:-$HOME/.dscore.ttc.playwright-agent/venv/bin/python3}"
+if [ ! -x "$VENV_PY" ]; then
+  echo "[pre-commit] ⚠ venv python 미존재 — E2E 스킵 ($VENV_PY)"
+  echo "  설정: mac-agent-setup.sh / wsl-agent-setup.sh 로 venv 생성"
+  exit 0
+fi
+
+# 3. 포트 18093 충돌 감지 — 다른 프로세스가 점유 중이면 skip.
+if command -v lsof >/dev/null 2>&1 && lsof -i :18093 -sTCP:LISTEN -t >/dev/null 2>&1; then
+  echo "[pre-commit] ⚠ port 18093 점유 중 — E2E 스킵"
+  echo "  점유 프로세스: $(lsof -i :18093 -sTCP:LISTEN -t | head -1)"
+  exit 0
+fi
+
+# 4. E2E 실행. 회귀 시 commit 차단.
+echo "[pre-commit] Recording UI E2E 실행 (port 18093, headless chromium)..."
+START=$(date +%s)
+PYTHONPATH=. "$VENV_PY" -m pytest test/test_recording_ui_e2e.py -q --tb=short -p no:cacheprovider
+RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+
+if [ $RC -ne 0 ]; then
+  echo ""
+  echo "[pre-commit] ✗ E2E 실패 (${ELAPSED}s) — commit 차단"
+  echo "  우회: git commit --no-verify (긴급시만)"
+  exit $RC
+fi
+
+echo "[pre-commit] ✓ E2E 통과 (${ELAPSED}s)"
+exit 0

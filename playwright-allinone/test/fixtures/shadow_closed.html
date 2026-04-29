@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Closed shadow DOM fixture</title>
+</head>
+<body>
+  <h1>Closed shadow Web Component</h1>
+  <p>이 컴포넌트의 shadow root 는 mode="closed" 이므로 자동화 도구가 내부에 접근할 수 없습니다.</p>
+  <my-private-form id="private-form"></my-private-form>
+  <p id="hint">closed shadow 안의 input/button 은 page.locator() 로 매치 0건이어야 합니다.</p>
+  <script>
+    class MyPrivateForm extends HTMLElement {
+      constructor() {
+        super();
+        // closed: this.shadowRoot 는 외부에서 null. Playwright 도 piercing 불가.
+        const shadow = this.attachShadow({ mode: "closed" });
+        shadow.innerHTML = `
+          <label>Secret<input type="text" id="secret-input"></label>
+          <button id="secret-btn" type="button">Submit secret</button>
+        `;
+      }
+    }
+    customElements.define("my-private-form", MyPrivateForm);
+  </script>
+</body>
+</html>

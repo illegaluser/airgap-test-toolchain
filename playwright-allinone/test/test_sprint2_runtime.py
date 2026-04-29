@@ -1,4 +1,8 @@
 from pathlib import Path
+import os
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -46,6 +50,46 @@ def test_validate_scenario_accepts_new_actions():
     ]
 
     _validate_scenario(scenario)
+
+
+def test_convert_only_rejects_non_convert_mode_before_dify_call(tmp_path: Path):
+    """`--convert-only` 오용은 Dify retry 로 들어가기 전에 즉시 실패해야 한다."""
+    project_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env.update(
+        {
+            "ARTIFACTS_DIR": str(tmp_path / "artifacts"),
+            "DIFY_BASE_URL": "http://127.0.0.1:9/v1",
+        }
+    )
+
+    started = time.monotonic()
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "zero_touch_qa",
+            "--mode",
+            "chat",
+            "--convert-only",
+            "--srs-text",
+            "smoke",
+            "--target-url",
+            "file:///tmp/noop.html",
+        ],
+        cwd=project_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+    elapsed = time.monotonic() - started
+
+    assert proc.returncode == 1
+    assert elapsed < 2
+    combined = proc.stdout + proc.stderr
+    assert "--convert-only 는 --mode convert 와 함께만 사용한다" in combined
+    assert "Retry" not in combined
 
 
 def test_validate_scenario_rejects_invalid_scroll_value():

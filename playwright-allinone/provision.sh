@@ -1164,22 +1164,46 @@ fi
 # 3-3. Pipeline Job 생성
 if [ -f "$OFFLINE_JENKINS_PIPELINE" ]; then
   log "3-3. Pipeline Job 생성: ZeroTouch-QA"
+  # Phase R-MVP TR.10 — Recording UI 링크는 sidebar-link 플러그인으로 잡 좌측 사이드바에 노출.
+  # description 에는 짧은 안내문만. (이전: description HTML 안에 a 태그로 두 링크 노출 — 사이드바
+  # 도입으로 중복 제거.)
+  # XStream 인코딩 규칙: 플러그인 패키지 'sidebar-link' 의 dash 는 XML 에서 '__' 로 치환된다.
   JOB_XML=$($PY - << PYEOF 2>/dev/null
 import xml.sax.saxutils as sax
 with open('${OFFLINE_JENKINS_PIPELINE}', encoding='utf-8') as f:
     script = f.read()
+description_html = sax.escape(
+    '<p style="color:#888;font-size:0.9em">DSCORE Zero-Touch QA Docker Pipeline'
+    ' · provision.sh auto-created · 좌측 사이드바의 Recording UI 링크로 녹화·세션 목록 진입.'
+    ' (Recording UI 좌측 상단 ← 뒤로 버튼으로 Jenkins 복귀)</p>'
+)
 print("""<?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
-  <description>DSCORE Zero-Touch QA Docker Pipeline (provision-apps.sh auto-created)</description>
+  <description>{}</description>
   <keepDependencies>false</keepDependencies>
-  <properties/>
+  <properties>
+    <hudson.plugins.sidebar__link.ProjectLinks>
+      <links>
+        <hudson.plugins.sidebar__link.LinkAction>
+          <url>http://localhost:18092/</url>
+          <text>Recording UI</text>
+          <icon>notepad.png</icon>
+        </hudson.plugins.sidebar__link.LinkAction>
+        <hudson.plugins.sidebar__link.LinkAction>
+          <url>http://localhost:18092/recording/sessions</url>
+          <text>최근 세션 목록</text>
+          <icon>clipboard.png</icon>
+        </hudson.plugins.sidebar__link.LinkAction>
+      </links>
+    </hudson.plugins.sidebar__link.ProjectLinks>
+  </properties>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
     <script>{}</script>
     <sandbox>true</sandbox>
   </definition>
   <triggers/>
   <disabled>false</disabled>
-</flow-definition>""".format(sax.escape(script)))
+</flow-definition>""".format(description_html, sax.escape(script)))
 PYEOF
 )
   if [ -z "$JOB_XML" ]; then

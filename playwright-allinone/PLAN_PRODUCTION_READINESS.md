@@ -1,0 +1,970 @@
+# Production Readiness — 실 운영 자동화 진입 로드맵
+
+작성일: 2026-04-29
+작성 근거: feat/grounding-recording-agent 브랜치의 직접 검증 (208 pytest passed,
+recording 라운드트립 6/6 스텝, Jenkins 파이프라인 stage 1~2.4 그린)
+
+---
+
+## Context
+
+`playwright-allinone/` 의 **현재 상태는 fixture 기반 PoC/데모 수준에서는 충분히
+동작**한다. 14-DSL 액션 전부 executor 구현, 녹화→변환→재실행 라운드트립, 자가
+치유 3단계, Jenkins 5-stage 파이프라인, 에어갭 호환 단일 tar.gz 배포까지 골격은
+모두 살아 있다.
+
+그러나 **실제 SaaS/엔터프라이즈 도메인의 운영 자동화 진입에는 6개의 구조적
+블로커**가 남아 있다. 핵심 엔진은 단단하지만 실 도메인이 으레 요구하는 것
+(로그인/iframe/세션 격리/관찰성)이 의도적으로 OUT 또는 backlog 로 미뤄져 있어
+그 결손이 도구의 적용 범위를 좁힌다.
+
+본 로드맵은 그 블로커들을 P0/P1/P2 우선순위로 정렬하고, 각 항목의 비용·완료
+조건·차단 의존성을 명시한다. 기존 [PLAN_GROUNDING_RECORDING_AGENT.md](PLAN_GROUNDING_RECORDING_AGENT.md)
+와는 보완 관계 — 그 로드맵이 *능력 확장* (DSL/RAG/Agent) 을 다룬다면, 본 문서는
+*운영 진입* (인증/iframe/격리/관찰성) 을 다룬다.
+
+---
+
+## 현재 상태 스냅샷
+
+### ✅ 견고한 부분
+
+| 영역 | 상태 | 근거 |
+| --- | --- | --- |
+| 14-DSL 액션 커버리지 | navigate / click / fill / press / select / check / hover / verify / wait / upload / drag / scroll / mock_status / mock_data 전부 executor 구현 | [zero_touch_qa/executor.py](zero_touch_qa/executor.py) — 1496 라인, 14 핸들러 모두 존재 |
+| 녹화→변환→재실행 사이클 | playwright codegen → 14-DSL JSON → executor 재실행 라운드트립 | 2026-04-29 검증: naver popup 6/6 스텝 (commit 316a132) |
+| 자가 치유 3단계 | fallback target → LocalHealer → DifyClient (Ollama/gemma4:26b) | [zero_touch_qa/local_healer.py](zero_touch_qa/local_healer.py) + dify_client |
+| CI 통합 | Jenkins 5-stage + 30일 artifact + JUnit + 208 passing 회귀 | [ZeroTouch-QA.jenkinsPipeline](ZeroTouch-QA.jenkinsPipeline), `pytest test --ignore=test/native` → 208 passed |
+| 에어갭 호환 | 호스트 Ollama + 컨테이너 Jenkins/Dify/RAG 하이브리드, 단일 tar.gz 배포 | [build.sh](build.sh), [README.md](README.md) §"이미지 로드" |
+
+### 🚨 6대 블로커 (실 운영 진입 차단)
+
+| # | 항목 | 현 상태 | 영향 |
+| --- | --- | --- | --- |
+| B1 | 인증/로그인 | Phase 2 OUT 명시 ([PLAN_GROUNDING_RECORDING_AGENT.md](PLAN_GROUNDING_RECORDING_AGENT.md) §"명시적 OUT 항목") | 대부분 SaaS 의 첫 페이지가 로그인 폼 → 진입 자체 불가 |
+| B2 | iframe / Shadow DOM | Phase 3 backlog | 결제 위젯, 임베디드 폼, 디자인 시스템 (Lit/Stencil) 거의 다 해당 |
+| B3 | Phase 1.5 모델 신뢰성 게이트 | gemma4:26b tool-calling 90% 신뢰도 검증 진행 중 | 통과 못하면 Phase 2 진입 불가 → 복잡 시나리오 LLM 자율 생성 불가 |
+| B4 | 세션/데이터 격리 | 메커니즘 부재 (확인 못 함) | 시나리오 간 쿠키/storage/DB 오염 → 멱등성 무너지면 회귀 자동화 불가 |
+| B5 | 실 도메인 검증 데이터 | fixtures 18개 HTML, 실 SaaS 안정성 측정 데이터 없음 | selector 변동 / 모달 race / SPA 라우팅 등에 대한 안정성 미지수 |
+| B6 | 운영 관찰성 / RCA | 스크린샷 + 로그만, healer 통계 미수집, 시나리오 Git 미통합, 대시보드 미구현 | 실패 원인 추적 불가 → 회귀 도입해도 디버깅 비용 폭증 |
+
+### ⚠️ 부분 구현 / 취약점 (블로커는 아니나 운영 시 문제 야기)
+
+| # | 항목 | 현 상태 | 후속 조치 |
+| --- | --- | --- | --- |
+| W1 | converter 의 단순성 (line-based regex) | popup 누락 / `.nth(N)` 손실 — popup 만 commit 316a132 에서 fix | AST 화 (P0.4) |
+| W2 | recording_service 세션 GC 부재 | `~/.dscore.ttc.playwright-agent/recordings/` 무한 증가 | retention 정책 (P1.3) |
+| W3 | Stop & Convert orphan handle | codegen 외부 종료 시 `state=recording` 박제 — 서버 재시작 시점에만 마킹 | heartbeat 스윕 (P1.5) |
+| W4 | LLM 출력 강건성 | `_validate_scenario` 수준, hallucinated target/value 보정 미확인 | dry-run 검증 (P1.4) |
+| W5 | 이번 fix 의 영구 반영 | converter.py / converter_proxy.py 호스트 + 핫카피만, 컨테이너 baked-in 안 됨 | 다음 `./build.sh --redeploy --fresh` 시 반영 (P0.5) |
+
+---
+
+## 우선순위 로드맵
+
+### P0 — 운영 진입 필수 (예상 6~8주)
+
+#### P0.1 — 로그인/인증 시나리오 처리 *(B1 해소)*
+
+**범위 (보정 — 현실 가능 범위로 한정)**
+
+대상에 포함:
+
+- credential 주입 액션 신설 (DSL: `auth_login`, value=계정 alias)
+- credential 저장소 (Jenkins Credentials + 컨테이너 안전 노출)
+- **Form 로그인** (id/pw)
+- **OAuth (Google/GitHub form 부분까지)** — redirect/callback 자체 추적
+- **TOTP** — 시크릿 보관 + `pyotp` 6자리 자동 생성
+- 인증 후 세션 쿠키를 `storage_state` 로 dump → 후속 시나리오 재사용
+
+대상에서 제외 (도메인별 별도 PoC 또는 영구 OUT):
+
+- ❌ **SMS OTP** — 전용 SMS gateway / mock 서비스 인프라 필요. 별도 트랙
+- ⚠️ **WebAuthn / Passkey** — Playwright `virtualAuthenticator` API 가능하나
+  prod IdP 가 virtual authenticator 거부할 수 있음. 도메인별 사전 협의 필요
+- ❌ **reCAPTCHA / hCaptcha** — 봇 차단 의도라 우회 비추천. 테스트 환경에서
+  disable 또는 test key 발급 (도메인 협조)
+- ⚠️ **SAML / OIDC 사내 IdP** — 가능하나 IdP 화면이 회사별 → 도메인별 selector
+  작성 필요. 첫 PoC 범위에서 제외
+- ❌ **Magic Link (이메일)** — 메일박스 polling 인프라 필요. 별도 트랙
+
+**완료 조건 (보정)**
+
+- Form 로그인 + OAuth (Google) + TOTP, 3 가지 시나리오 자동 통과
+- credential 이 로그/스크린샷에 노출 안 됨 (마스킹 검증)
+- SMS / WebAuthn / SAML / Magic Link 는 본 P0.1 외 별도 PoC 트랙으로 명시
+
+**비용**: 중-대 (2~3 주, 보정 범위 기준)
+
+**의존성**: P0.4 (converter AST 화) 권장 — auth flow 는 popup/redirect 가 잦아
+정확한 변환 필요
+
+---
+
+#### P0.2 — iframe / Shadow DOM 지원 *(B2 해소)*
+
+**범위 (보정 — 현실 가능 범위로 한정)**
+
+대상에 포함:
+
+- 14-DSL 의 `target` 문법에 frame/shadow path 옵션 추가 (예: `frame=#iframe1>>role=button, name=확인`)
+- `locator_resolver` 에 `frame_locator` 자동 traversal
+- **단일 iframe** (Stripe / Toss 결제 위젯 등)
+- **Open mode Shadow DOM** — Playwright 가 자동 piercing 하므로 기본 selector
+  로 통과
+- recording 측 codegen 도 frame 진입 라인 (`page.frame_locator(...).get_by_role(...)`) 보존
+
+대상에서 제외 (영구 OUT 또는 별도 트랙):
+
+- ❌ **Closed mode Shadow DOM** (Salesforce LWC 일부) — **브라우저 정책상 영구
+  접근 불가**. 본 P0.2 의 OUT 으로 명시. 대상 시스템이 closed shadow 면 다른
+  자동화 전략 (백엔드 API 호출 등) 으로 우회
+- ⚠️ **깊게 중첩된 nested frame chain** — 가능하나 codegen 변환 복잡도 + healer
+  신뢰도 저하. 별도 운영 데이터 기반 의사결정 (P2.3 벤치 통과 후 재평가)
+
+**완료 조건 (보정)**
+
+- 단일 iframe 결제 위젯 1종 + open shadow DOM 디자인 시스템 1종에서 fill/click/verify
+  동작 확인
+- frame_locator 진입 시 healer 도 같은 frame 안에서 fallback 수행
+- closed shadow 만나면 명확한 에러 메시지 (`closed shadow root — automation 불가`)
+  + 시나리오 즉시 FAIL 로 마감
+
+**비용**: 중 (2 주, 보정 범위 기준)
+
+**의존성**: 없음 (executor + converter 양쪽 동시 작업)
+
+---
+
+#### P0.3 — 세션 / 데이터 격리 *(B4 해소)*
+
+**범위 (보정 — 클라이언트/백엔드 분리)**
+
+P0.3-A — 클라이언트 측 격리 (확실히 가능, 도메인 무관):
+
+- 시나리오 단위 `BrowserContext` 분리 (현재는 단일 page 재사용 가능성 점검)
+- localStorage / IndexedDB / cookie 명시적 reset 액션 (DSL: `reset_state`)
+- `BrowserContext.clear_cookies()` / `storage_state` dump+restore 활용
+
+P0.3-B — 백엔드 fixture seed/reset hook (도메인 의존):
+
+- 시나리오 메타데이터에 `setup_url` / `teardown_url` 필드 추가, executor 가
+  step 0 / step ∞ 에서 호출
+- 사내 앱: 가능 — admin API 노출 시키거나 DB seed 스크립트 작성
+- ⚠️ 외부 SaaS: **거의 불가능** (Salesforce 등은 회귀용 reset API 미제공) →
+  "스테이징 계정 분리 + 사람 주기 reset" 운영 절차로 보완 (P2.3 벤치 시 합의)
+
+**완료 조건 (보정)**
+
+- P0.3-A: 동일 시나리오 100회 연속 실행 (fixture HTML + 사내 앱) 통과율 95% 이상
+- P0.3-A: 시나리오 A 가 시나리오 B 결과를 오염시키지 않음을 회귀 케이스로 증명
+- P0.3-B: 사내 앱 1종에서 setup/teardown hook 동작 + 외부 SaaS 는 운영 절차
+  문서화 (자동화 OUT 명시)
+
+**비용**: 중 (P0.3-A 1주 + P0.3-B 사내 앱 1종 0.5주, 외부 SaaS 운영 절차 별도)
+
+**의존성**: 없음 (P0.3-A 는 즉시 착수 가능 — 아래 §"당장 착수 가능한 상세 태스크" 참조)
+
+---
+
+#### P0.4 — converter AST 화 *(W1 해소, P0.1 의 전제)*
+
+**범위**
+
+- 현재 line-based regex 를 `ast.parse` 기반 정확 파싱으로 교체
+- `.nth(N)` / `.first` / `.filter(has_text=...)` / `.locator(...).locator(...)` 보존
+- popup/page 변수 추적 (이번 commit 316a132 의 정규화는 임시 처리)
+- frame_locator chain 보존
+
+**완료 조건**
+
+- 기존 codegen 18 fixture + naver/google/SaaS 3종에서 손실 없는 변환
+- 단위 테스트 30 케이스 (각 codegen 패턴별)
+
+**비용**: 소-중 (1 주)
+
+**의존성**: 없음 — 이번 commit 316a132 의 정규화 hotfix 와 호환 (정규화 라인을
+AST 변환 후로 이동만 하면 됨)
+
+---
+
+#### P0.5 — 이미지 빌드 / 배포 자동화 *(W5 해소)*
+
+**범위**
+
+- 이번 세션 fix (converter / converter_proxy / codegen_runner / sidebar-link)
+  baked-in 검증
+- CI 파이프라인에 sanity 빌드 추가 — feat/* 브랜치 push 시 build.sh 자동 실행
+- 빌드 산출물 무결성 (sha256) + 빌드 매트릭스 (mac arm64 / wsl amd64) 자동화
+
+**완료 조건**
+
+- main 브랜치 push 시 양 아키 tar.gz 자동 산출
+- 산출물의 sha256 + 빌드 시각이 release 노트에 자동 기재
+
+**비용**: 소 (3~5 일)
+
+**의존성**: 없음
+
+---
+
+### P1 — 안정성 / 관찰성 (예상 4~6주)
+
+#### P1.1 — 시나리오 Git 통합 *(B6 부분 해소)*
+
+- Dify chatflow 변환 결과 / recording_service 변환 결과를 별도 repo 브랜치에
+  자동 commit
+- diff/ 가시화 (이전 시나리오 대비 selector 변화 감지)
+- **완료**: 변환 1회당 commit 1개 + 30일 retention
+
+**비용**: 소 (3~5 일)
+
+#### P1.2 — healer 신뢰도 메트릭 *(B6 부분 해소)*
+
+- `heal_stage` (fallback / local / dify) 별 성공/실패율 시계열 수집
+- 운영 대시보드 (P3 의 일부) 의 핵심 위젯
+- **완료**: 4주 이상 데이터 축적 후 stage 별 신뢰 구간 산출
+
+**비용**: 중 (1~1.5 주)
+
+#### P1.3 — 세션 retention 정책 *(W2 해소)*
+
+- recording_service 의 7/30일 GC + 디스크 한도 가드
+- `RECORDING_RETENTION_DAYS` env 로 조정
+- **완료**: 디스크 사용량 상한 가시화 + GC 로그
+
+**비용**: 소 (2~3 일)
+
+#### P1.4 — LLM 출력 검증 강화 *(W4 해소)*
+
+- LLM 이 만든 selector 의 사전 dry-run (target_url 에 실제 접속해 locator
+  resolve 시도) → invalid step 거르고 reroll
+- hallucinated value (예: 존재하지 않는 옵션 텍스트) 자동 거부
+- **완료**: invalid step 비율 5% 이하
+
+**비용**: 중 (1.5 주)
+
+#### P1.5 — orphan codegen 자동 정리 *(W3 해소)*
+
+- recording_service 가 5초 간격으로 alive handle 의 process 상태 polling
+- dead handle 발견 시 즉시 `state=error, error="codegen 외부 종료"` 마킹
+- **완료**: 외부 codegen kill 후 10초 안에 상태 반영
+
+**비용**: 소 (2~3 일)
+
+---
+
+## 당장 착수 가능한 상세 태스크
+
+본 절의 7 개 태스크는 **외부 인프라/도메인 의존성 없음 (fixture 기반 개발 + mock
+컨테이너로 자체 완결)** + **현 코드베이스 안에서 완결** 으로, 이번 브랜치에서
+즉시 착수 가능하다. 각 태스크는 **단계 / 변경 파일 / 단위 테스트 / 수락 기준 /
+예상 시간** 을 명시한다.
+
+태스크 분류:
+
+- **P0 본체 (5 태스크, T-A~T-E)** — 운영 진입 필수 블로커 해소. 본 절 우선 처리.
+- **P0 후속 small task (2 태스크, T-F~T-G)** — P0 완료 후 운영 신뢰성 보강.
+
+권고 순서 (P0 우선):
+
+1. T-A (P0.4 converter AST, 5d) — 다른 P0 의 전제, 외부 의존성 0
+2. T-A 완료 후 (T-B 5d + T-E 3d 병행)
+3. T-C (P0.2 iframe/shadow, 10d) — T-A 의 frame_locator chain 보존이 전제
+4. T-D (P0.1 인증, 15d) — T-A (popup/redirect) + T-C (OAuth callback iframe) 전제
+5. P0 5 태스크 완료 후 → T-F + T-G (각 2d, 백그라운드)
+
+**총 P0 영업일**: ~33일 (병행 활용 시 6~7주). 단일 개발자 직렬 처리 시 ~38일 (8주).
+
+---
+
+### T-A — converter AST 화 (P0.4 본체)
+
+**목표**: line-based regex 를 `ast.parse` 기반 정확 파싱으로 교체. popup/`.nth`/
+`.first`/`.filter`/frame_locator chain 등 codegen 의 모든 변형을 손실 없이 14-DSL
+로 전환.
+
+**예상 시간**: 5 영업일 (1 주)
+
+**의존성**: 없음
+
+**단계**
+
+1. **Day 1 — 측정 baseline**
+   - 현 line-based converter 의 손실 패턴 8 개 (popup/.nth/.first/.filter/nested
+     locator/frame_locator/expect_navigation/page2 chain) 을 fixture 로 codegen
+     출력 샘플 8 개 수집
+   - 각 샘플에 대해 현 converter 결과 + 기대 결과를 표로 정리 → `test/fixtures/codegen_corpus/`
+2. **Day 2~3 — AST visitor 구현**
+   - 신규 파일 `zero_touch_qa/converter_ast.py`:
+     - `ast.NodeVisitor` 서브클래스 — top-level `def run(playwright)` body 를 순회
+     - page 변수 스코프 추적 (dict[str, PageContext]) — `page = context.new_page()`
+       / `page1 = page1_info.value` / `with page.expect_popup() as page1_info:`
+       전부 처리
+     - call chain 평탄화: `page.locator("a").nth(1).click()` → `(target, action)` 튜플
+     - frame_locator chain 누적 (`page.frame_locator("#f").get_by_role("button")`)
+   - `_extract_target_from_node` — `Call` 노드를 받아 14-DSL `target` 문자열 생성
+3. **Day 3~4 — converter 라우팅**
+   - 기존 `convert_playwright_to_dsl` 의 라인 루프를 AST 우선 + 실패 시 line fallback
+     으로 교체:
+
+     ```python
+     try:
+         scenario = _convert_via_ast(file_path, output_dir)
+     except Exception as e:
+         log.warning("[Convert] AST 변환 실패 — line fallback. 사유: %s", e)
+         scenario = _convert_via_lines(file_path, output_dir)  # 현 함수
+     ```
+
+   - line fallback 은 그대로 유지 — 비표준 codegen 출력에 대한 안전망
+4. **Day 4 — `.nth(N)` / `.filter(...)` 보존 → DSL 확장**
+   - 14-DSL `target` 에 `, nth=1` / `, has_text=...` 옵션 추가
+   - executor 의 `locator_resolver` 에서 nth/filter 옵션 처리
+5. **Day 5 — 테스트 + 문서**
+   - `test/test_converter_ast.py` 30 케이스 — 8 fixture × 평균 4 단계
+   - 기존 [zero_touch_qa/converter.py:51-57](zero_touch_qa/converter.py#L51-L57) 의 정규화 hotfix 는 AST
+     visitor 도입 시 **자동 무력화** (제거하지 않고 line fallback 에 그대로 둠)
+   - `docs/recording-troubleshooting.md` §4-2 의 ".nth backlog" 항목 closed 처리
+
+**변경 파일**
+
+- 신규: `zero_touch_qa/converter_ast.py` (~400 라인 예상)
+- 신규: `test/test_converter_ast.py`
+- 신규: `test/fixtures/codegen_corpus/` (8 샘플 + 각 expected.json)
+- 수정: `zero_touch_qa/converter.py` — entry point 가 AST 우선 + line fallback
+- 수정: `zero_touch_qa/locator_resolver.py` — nth/filter 옵션 추가
+- 수정: `docs/recording-troubleshooting.md` §4-2
+
+**단위 테스트 (필수 통과)**
+
+- 기존 18 fixture 의 codegen 출력 손실 0
+- `.nth(1)` / `.first` / `.filter(has_text="...")` 보존 확인 (3 케이스)
+- popup chain (`with page.expect_popup() as p1_info` → `page1.click(...)`) 정확히
+  click 액션으로 변환 + page 컨텍스트 정보 메타에 보존 (1 케이스)
+- frame_locator chain (`page.frame_locator("#f").get_by_role("button").click()`)
+  → DSL `target=frame=#f>>role=button` (2 케이스)
+- 비표준 패턴 (lambda, 변수 별칭) → line fallback 으로 자연스러운 degrade (3 케이스)
+
+**수락 기준**
+
+- naver popup 시나리오 (이번 세션 6 스텝) 정확 변환 + nth 정보 메타에 보존
+- 8 fixture 에서 변환 손실 0
+- pytest 전체 스위트 208 → 238 passed (30 신규 케이스 추가)
+
+---
+
+### T-B — 클라이언트 측 세션 격리 (P0.3-A)
+
+**목표**: 시나리오 단위 BrowserContext 분리 + `reset_state` DSL 액션 추가.
+백엔드 hook 없는 자체 완결.
+
+**예상 시간**: 5 영업일
+
+**의존성**: 없음
+
+**단계**
+
+1. **Day 1 — BrowserContext per scenario 검증**
+   - 현 [zero_touch_qa/executor.py:120-130](zero_touch_qa/executor.py#L120-L130) 의
+     context 생성 흐름 추적 — 시나리오 1개당 1 context 인지, 여러 시나리오 batch
+     실행 시 context 재사용 가능성 있는지 확인
+   - regression: 동일 시나리오 100회 연속 → 통과율 측정 (baseline)
+2. **Day 2 — `reset_state` DSL 액션 신설**
+   - `zero_touch_qa/converter.py` 의 14-DSL 액션 매핑에 `reset_state` 추가:
+     - `value=cookie` — `context.clear_cookies()`
+     - `value=storage` — `page.evaluate("() => localStorage.clear(); sessionStorage.clear();")`
+     - `value=indexeddb` — `page.evaluate(deleteAllIDB)`
+     - `value=all` — 위 3 개 + permissions reset
+   - `zero_touch_qa/executor.py` 에 `_handle_reset_state` 추가
+3. **Day 3 — `storage_state` dump/restore**
+   - 시나리오 메타데이터에 `storage_state_in` / `storage_state_out` (선택) 필드
+   - executor 가 시작 시 restore, 끝나면 dump
+4. **Day 4 — 멱등성 회귀 케이스**
+   - `test/test_isolation.py` 신설:
+     - fixture HTML 에서 시나리오 A (localStorage 에 값 쓰기) 실행 후 시나리오 B
+       (해당 값이 없음을 verify) 가 100회 연속 통과해야 함
+     - cookie / IndexedDB 도 동일
+5. **Day 5 — 측정**
+   - 동일 시나리오 100회 연속 → 통과율 측정 (post-fix). 95% 이상이면 수락
+
+**변경 파일**
+
+- 수정: `zero_touch_qa/executor.py` — `_handle_reset_state` + storage_state 처리
+- 수정: `zero_touch_qa/converter.py` — `reset_state` DSL 매핑 + 18 fixture 의
+  `metadata` 스펙 갱신
+- 수정: `zero_touch_qa/__main__.py` — `storage_state_in/out` CLI 옵션 (선택)
+- 신규: `test/test_isolation.py`
+- 신규: `test/fixtures/isolation_a.html`, `isolation_b.html`
+
+**단위 테스트**
+
+- `reset_state value=cookie` 후 cookie 비어 있음 (1)
+- `reset_state value=storage` 후 localStorage 비어 있음 (1)
+- 동일 시나리오 100회 연속 통과율 ≥95%
+- A → B 격리 회귀 (10 케이스)
+
+**수락 기준**
+
+- 100회 연속 통과율 ≥95% 측정 데이터 첨부
+- A→B 오염 0 건
+
+---
+
+### T-C — iframe / open Shadow DOM 지원 (P0.2 본체)
+
+**목표**: `frame_locator` 자동 traversal + DSL `target` 문법 확장 (`frame=#f>>...`),
+open shadow piercing 활용. closed shadow 만나면 명확한 FAIL 메시지.
+
+**예상 시간**: 10 영업일 (2 주)
+
+**의존성**: T-A 강력 권장 선행 — converter AST 의 frame_locator chain 보존이
+정확한 시나리오 변환의 전제
+
+**단계**
+
+1. **Day 1~2 — fixture HTML 작성**
+   - `test/fixtures/iframe_payment.html` — 부모 페이지 + cross-document `<iframe>`
+     안에 모의 결제 폼 (Stripe-like) — 카드번호 input + 결제 버튼 + 결과 span
+   - `test/fixtures/iframe_nested.html` — 부모 → iframe1 → iframe2 chain (선택)
+   - `test/fixtures/shadow_open.html` — Web Components (커스텀 요소 + open shadow)
+     안에 input + button + verify target
+   - `test/fixtures/shadow_closed.html` — closed shadow root (브라우저 정책상
+     접근 불가 시연용)
+2. **Day 3~4 — DSL target 문법 확장**
+   - `frame=<selector>>>...` 구문 파서 — `zero_touch_qa/locator_resolver.py`
+     의 `_parse_target_to_locator` 에 frame chain 추출 로직 추가
+   - 14-DSL 표준 문서 ([PLAN_DSL_ACTION_EXPANSION.md](PLAN_DSL_ACTION_EXPANSION.md))
+     에 frame 옵션 추가 명시
+3. **Day 5~6 — locator_resolver 의 frame_locator traversal**
+   - parent.frame_locator(selector).get_by_role(...) chain 자동 생성
+   - Playwright 의 `:light()` / piercing pseudo-class 는 open shadow 에 한함 —
+     기본 selector 가 통과되는지 확인 (Playwright 1.58+ 자동)
+   - closed shadow 감지 → `ShadowAccessError("closed shadow root — automation 불가")`
+4. **Day 7~8 — converter AST (T-A) 측 frame_locator chain 보존**
+   - T-A 의 `converter_ast.py` 에 `FrameContext` 추가 — `frame_locator(...)`
+     호출 후 chain 의 selector 누적, 최종 액션의 target 에 `frame=...>>` prefix
+5. **Day 9 — executor + healer 통합**
+   - executor 가 ShadowAccessError 받으면 시나리오 즉시 FAIL + 명확한 에러 메시지
+   - healer 가 frame 안의 selector 실패 시 같은 frame_locator 컨텍스트 안에서
+     fallback 시도 (page 전체 fallback 으로 escape 안 함)
+6. **Day 10 — 통합 테스트 + 문서**
+   - 신규 `test/test_iframe_shadow.py` — 5 시나리오 (단일 iframe / nested / open
+     shadow / closed shadow detect / iframe + shadow 혼합)
+   - `docs/recording-troubleshooting.md` 에 새 섹션 §"iframe/Shadow DOM 한계"
+
+**변경 파일**
+
+- 신규: `test/fixtures/iframe_payment.html`, `iframe_nested.html`,
+  `shadow_open.html`, `shadow_closed.html`
+- 신규: `test/test_iframe_shadow.py`
+- 수정: `zero_touch_qa/locator_resolver.py` — frame 문법 파서 + traversal
+- 수정: `zero_touch_qa/executor.py` — ShadowAccessError 처리
+- 수정: `zero_touch_qa/local_healer.py` — frame-scoped fallback
+- 수정: `zero_touch_qa/converter_ast.py` (T-A 산출물) — FrameContext 추가
+- 수정: `PLAN_DSL_ACTION_EXPANSION.md` — frame 옵션 명시
+- 수정: `docs/recording-troubleshooting.md`
+
+**단위 테스트**
+
+- 단일 iframe 결제 fixture: fill + click + verify 통과 (3)
+- nested iframe 2단: click 통과 (1)
+- open shadow Web Component: fill + click 통과 (2)
+- closed shadow: ShadowAccessError 즉시 FAIL + 메시지 (1)
+- frame 안 selector 실패 시 healer 가 같은 frame 안에서만 fallback (1)
+- codegen frame_locator chain 변환 손실 0 (T-A corpus 에 frame 패턴 추가, 2)
+
+**수락 기준**
+
+- 위 단위 테스트 10/10 통과
+- closed shadow 만나면 시나리오가 hang 없이 즉시 FAIL
+- pytest 전체 스위트 (T-A 후 238) → 248 passed
+
+---
+
+### T-D — 인증 (form + OAuth + TOTP) on fixtures + mock OAuth (P0.1 본체)
+
+**목표**: `auth_login` DSL 액션 + credential alias + storage_state dump/restore.
+실 IdP 없이 fixture HTML + mock OAuth 컨테이너로 자체 완결. 실 도메인 검증은 별도.
+
+**예상 시간**: 15 영업일 (3 주)
+
+**의존성**: T-A 강력 권장 선행 (popup/redirect 정확 변환), T-C 권장 선행
+(OAuth callback 이 iframe 인 경우 대비)
+
+**단계**
+
+1. **Day 1~2 — `auth_login` DSL 액션 + credential alias**
+   - 14-DSL 액션 매핑에 `auth_login` 추가:
+     - `target=form` — form 로그인 (selector 옵션: id/pw 필드 패턴 자동 감지 또는
+       명시 `target=form, id_field=#email, pw_field=#password`)
+     - `target=oauth, provider=google` — OAuth 흐름
+     - `value=<credential_alias>` — 환경변수 / Jenkins Credentials 에서 lookup
+   - credential resolver: `RECORDING_CRED_<alias>_USER` / `_PASS` / `_TOTP_SECRET`
+2. **Day 3~4 — Jenkins Credentials 통합 + 마스킹**
+   - jenkins-init 에 credential store seed 추가 — `provision.sh` 가 환경변수
+     에서 읽어 등록
+   - executor 가 credential 값을 다룰 때 모든 로깅에 마스킹 (`***`)
+   - 스크린샷 캡처 시 input 의 type=password 자동 비식별화 (이미 브라우저 default,
+     아닌 경우 evaluate 로 임시 type 전환)
+3. **Day 5~6 — pyotp 통합**
+   - `requirements.txt` 에 `pyotp` 추가
+   - executor `_handle_auth_login` 의 TOTP 분기 — 시크릿 lookup → 6자리 코드 생성
+     → TOTP 입력 필드에 fill
+   - 시간 동기화 검증 (NTP 차이 30초 이상 시 경고)
+4. **Day 7~9 — `storage_state` dump/restore**
+   - 시나리오 메타데이터에 `storage_state_in` / `storage_state_out` 필드 (T-B 와
+     겹침 — T-B 후 통합)
+   - executor 가 시작 시 `BrowserContext(storage_state=...)`, 끝나면 `context.storage_state(path=...)`
+   - 인증 성공 후 storage_state 를 별도 파일로 저장 → 후속 시나리오가 로그인
+     스킵하고 재사용
+5. **Day 10~11 — form 로그인 fixture**
+   - `test/fixtures/auth_form.html` — id/pw input + 로그인 버튼 + 성공 시 인증
+     상태 표시 + 실패 시 에러 표시
+   - `test/test_auth_form.py` — 정상 로그인 / 잘못된 자격 / 빈 입력 (3 케이스)
+6. **Day 12~13 — OAuth mock 서버**
+   - `oauth2-mock-server` (npm package) 또는 직접 작성한 Flask app 을 컨테이너에
+     추가 (Dockerfile 의 별도 stage)
+   - localhost:18093 에 OAuth provider 모의 — `/authorize` → callback 리다이렉트
+     → `/token` → access_token 반환
+   - `test/fixtures/auth_oauth_client.html` — mock provider 로 redirect, callback
+     수신 후 인증 상태 표시
+7. **Day 14 — TOTP fixture**
+   - `test/fixtures/auth_totp.html` — id/pw + TOTP 6자리 input + 통과 화면
+   - 시크릿은 fixture 메타데이터에 명시, `auth_login` 이 `pyotp.TOTP(secret).now()`
+     로 코드 생성
+8. **Day 15 — 통합 회귀 + 마스킹 검증**
+   - 통합: form → OAuth → TOTP 3 시나리오를 storage_state 재사용으로 1번만 인증
+   - credential 마스킹 회귀: 모든 로그/스크린샷에서 평문 패스워드/TOTP 시크릿
+     검색 → 0 hit
+   - **실 도메인 검증 (별도 수일)**: Google OAuth + TOTP 활성 테스트 계정으로
+     수동 검증. 결과는 별도 문서
+
+**변경 파일**
+
+- 신규: `test/fixtures/auth_form.html`, `auth_oauth_client.html`, `auth_totp.html`
+- 신규: `test/test_auth_form.py`, `test_auth_oauth.py`, `test_auth_totp.py`
+- 신규: `oauth-mock/` (Dockerfile stage 또는 별도 supervisord program)
+- 수정: `zero_touch_qa/executor.py` — `_handle_auth_login` 추가
+- 수정: `zero_touch_qa/converter.py` — `auth_login` DSL 매핑
+- 수정: `requirements.txt` — `pyotp` 추가
+- 수정: `Dockerfile` — oauth-mock stage 추가, supervisord program 추가
+- 수정: `provision.sh` — credential store seed
+- 수정: `mac-agent-setup.sh`, `wsl-agent-setup.sh` — `pyotp` 를 REQ_PKGS 에 추가
+- 수정: `PLAN_DSL_ACTION_EXPANSION.md` — `auth_login` 명시
+
+**단위 테스트**
+
+- form 로그인 정상/실패/빈입력 (3)
+- OAuth mock 흐름 callback 까지 (1)
+- TOTP 코드 생성 + 자동 입력 (1)
+- storage_state 재사용 (1)
+- credential 평문이 로그/스크린샷에 0 hit (1)
+- 실 IdP 검증은 별도 수동 — 문서로 마감
+
+**수락 기준**
+
+- 위 단위 테스트 7/7 통과
+- credential 마스킹 회귀 0 hit
+- pytest 전체 스위트 (T-C 후 248) → 255+ passed
+- 실 도메인 검증 수동 결과 문서 첨부 (Google OAuth 1종)
+
+---
+
+### T-E — 이미지 빌드 / 배포 CI (P0.5 본체)
+
+**목표**: build.sh 의 자동화. main 브랜치 push 시 양 아키 (mac arm64 / wsl
+amd64) tar.gz 자동 산출 + sha256 + release 노트.
+
+**예상 시간**: 3 영업일 (코드 작업) + 별도 인프라 준비 (self-hosted runner 등록,
+사람 작업 1~2일)
+
+**의존성**: 없음 (즉시 병행 착수 가능, T-A 와 무관)
+
+**단계**
+
+1. **Day 1 — CI workflow 작성**
+   - `.github/workflows/build-image.yml` — main / feat/* push 시 build.sh 자동
+   - matrix: `[macos-arm64, ubuntu-amd64]` — 각각 self-hosted runner
+   - 산출물: `dscore.ttc.playwright-<arch>-<sha>-<timestamp>.tar.gz`
+2. **Day 2 — sha256 + release 노트**
+   - 빌드 후 `sha256sum` + 빌드 시각 + git commit hash 를 metadata.json 에 기록
+   - GitHub Release 자동 생성 (main 브랜치 한정) — 양 아키 tar.gz 첨부
+3. **Day 3 — 사니티 자동 실행**
+   - 빌드 후 `docker run` + `curl healthz` 로 컨테이너 정상 기동 자동 검증
+   - 회귀 0 보장 — 사니티 실패 시 워크플로 빨강
+4. **별도 (인프라)**: mac mini M-series + WSL2 머신 한 대씩에 self-hosted runner
+   등록. 본 항목은 코드 변경 아님 — 운영 작업 (1~2 일).
+
+**변경 파일**
+
+- 신규: `.github/workflows/build-image.yml` (또는 Jenkinsfile-build)
+- 신규: `scripts/sanity-check.sh` — 빌드 직후 실행할 healthz 사니티
+- 수정: `build.sh` — 산출물 metadata 에 sha256 + git hash 기록 (이미 비슷한 게
+  있으면 통합)
+- 신규: `docs/build-pipeline.md` — runner 등록 절차 운영 문서
+
+**단위 테스트**
+
+- 로컬에서 `./build.sh && ./scripts/sanity-check.sh` 가 통과 (1)
+- workflow 의 matrix 모두 그린 (CI 자체)
+
+**수락 기준**
+
+- main push 시 양 아키 tar.gz 자동 산출
+- 산출물 sha256 + 빌드 시각 metadata 자동 기재
+- 사니티 자동 통과
+
+---
+
+### T-F — orphan codegen 자동 정리 (P1.5 본체) *(P0 후속 small task)*
+
+**목표**: codegen 이 외부 요인(브라우저 직접 닫기/크래시)으로 죽었을 때 즉시
+세션을 `state=error` 로 마킹. 서버 재시작에 의존하지 않음.
+
+**예상 시간**: 2 영업일
+
+**의존성**: 없음 (P0 완료 후 백그라운드 처리 권고 — 운영 신뢰성 보강)
+
+**단계**
+
+1. **Day 1 오전 — heartbeat 스레드**
+   - `recording_service/server.py` 에 `_handle_watchdog` 모듈 신설:
+     - `threading.Thread(daemon=True)` 가 5 초 간격으로 `_handles` 순회
+     - 각 handle 의 `proc.poll()` 호출, `not None` (즉 종료됨) 이면 즉시 cleanup:
+       - `_pop_handle(sid)` 로 dict 에서 제거
+       - 출력 파일 크기 검사 → 0 이면 `state=error, error="codegen 외부 종료 + 액션 0"`,
+         >0 이면 `state=error, error="codegen 외부 종료 (자동 변환 미수행)"`
+       - storage.save_metadata(sid, ...) 로 디스크 동기화
+2. **Day 1 오후 — startup hook 통합**
+   - 기존 `_absorb_disk_sessions` 직후 watchdog 시작
+   - `@app.on_event("shutdown")` 에서 watchdog stop
+3. **Day 2 — 단위 테스트 + 문서 갱신**
+   - `test/test_recording_service.py` 에 케이스 추가:
+     - codegen subprocess fake (sleep 1초 후 자살) → 5초 polling 후 state=error 확인
+     - 정상 codegen + Stop & Convert 호출 → watchdog 와 race 안 발생
+   - `docs/recording-troubleshooting.md` §4-1 임시 우회 절 → "watchdog 가 자동 마킹"
+
+**변경 파일**
+
+- 신규: `recording_service/watchdog.py` (~80 라인)
+- 수정: `recording_service/server.py` — startup/shutdown hook 통합
+- 수정: `test/test_recording_service.py` — 2 케이스 추가
+- 수정: `docs/recording-troubleshooting.md` §4-1
+
+**단위 테스트**
+
+- 외부 SIGKILL 후 10초 이내 state=error 마킹 (1)
+- 정상 stop 흐름과 watchdog race 없음 (1)
+
+**수락 기준**
+
+- 외부 codegen kill 시 10초 안에 세션 `state=error`
+- 기존 stop endpoint 동작 변동 없음 (회귀 0)
+
+---
+
+### T-G — recording 세션 retention GC (P1.3 본체) *(P0 후속 small task)*
+
+**목표**: `~/.dscore.ttc.playwright-agent/recordings/` 의 오래된 세션 자동 정리.
+디스크 무한 증가 방지.
+
+**예상 시간**: 2 영업일
+
+**의존성**: T-F 권장 선행 (orphan watchdog 가 GC 대상 후보 식별을 정확히 함)
+
+**단계**
+
+1. **Day 1 — GC 로직**
+   - `recording_service/storage.py` 에 `gc_old_sessions(retention_days: int)` 추가:
+     - 각 세션 디렉토리의 metadata.json 의 `created_at` 기준 retention 초과 제거
+     - state=recording (활성) 은 제외 — watchdog 가 cleanup 후 GC 가 처리
+     - 디스크 한도 (`RECORDING_DISK_LIMIT_MB` 기본 5000) 초과 시 가장 오래된 세션
+       부터 추가 삭제
+   - `RECORDING_RETENTION_DAYS` 기본 30, env 로 조정
+2. **Day 1 후 — startup hook + 일별 스케줄**
+   - startup 에서 1회 GC, 이후 24시간마다 backgound thread 로 반복
+3. **Day 2 — 테스트**
+   - 임시 디렉토리에 가짜 세션 5 개 (각각 1/15/31/45/60 일 전 created_at) 생성
+   - retention=30 으로 GC → 31/45/60 일 전 세션만 삭제 확인
+   - 디스크 한도 초과 시뮬레이션 → 가장 오래된 세션부터 삭제 확인
+
+**변경 파일**
+
+- 수정: `recording_service/storage.py` — `gc_old_sessions` 추가
+- 수정: `recording_service/server.py` — startup + 24h 주기
+- 수정: `test/test_recording_service.py` — 3 케이스 추가
+- 수정: `docs/recording-troubleshooting.md` §9 (로그 위치) 다음에 GC 정책 추가
+
+**단위 테스트**
+
+- retention=30 일 경계 케이스 (3)
+- 디스크 한도 초과 시 LRU 삭제 (1)
+- 활성 세션 (state=recording) 보존 (1)
+
+**수락 기준**
+
+- 30일 초과 세션 자동 삭제 + GC 로그 출력
+- 디스크 사용량 한도 가시화
+
+---
+
+### 즉시 착수 권고 — P0 우선
+
+P0 5 태스크 (T-A~T-E) 완전 종료 후 P1 후속 (T-F/T-G) 으로 진행. 권장 흐름:
+
+```text
+주 1     T-A (P0.4 converter AST, 5d)
+                ↓
+주 2     T-B (P0.3-A 격리, 5d) ┃ T-E (P0.5 빌드 CI, 3d, 병행)
+                ↓
+주 3~4   T-C (P0.2 iframe/shadow, 10d)
+                ↓
+주 5~7   T-D (P0.1 인증, 15d)
+                ↓
+주 8     T-F (P1.5 orphan, 2d) → T-G (P1.3 retention, 2d)
+                ↓
+주 9~    실 도메인 검증 (G0 게이트), Phase 2 (P2 트랙) 진입 결정
+```
+
+T-A 부터 시작 권고 이유:
+
+1. **다른 P0 모두의 전제** — T-C frame_locator chain 보존, T-D popup/redirect
+   정확 변환이 모두 T-A 결과물 (converter AST visitor) 에 의존
+2. **외부 의존성 0** — 코드베이스 + pytest 만으로 완결
+3. **회귀 안전망 확보됨** — 208 passing 스위트 + 8 corpus fixture 로 손실 측정 가능
+4. **블로커 해소 효과 가장 큼** — popup 누락 fix 의 정식 후속
+
+T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
+
+---
+
+### P2 — LLM 자율도 향상 (Phase 2 진입, 예상 8~12주)
+
+본 항목들은 [PLAN_GROUNDING_RECORDING_AGENT.md](PLAN_GROUNDING_RECORDING_AGENT.md)
+의 Phase 1.5 / Phase 2 와 직접 대응한다. 본 문서에서는 운영 관점의 게이트 조건만
+정리한다.
+
+#### P2.1 — 모델 신뢰성 게이트 통과 *(B3 해소)*
+
+- gemma4:26b 또는 대체 모델 (qwen2.5:32b / llama-3.3-70b 후보) 의 다중턴
+  도구 호출 90% 신뢰도 검증
+- **완료**: PLAN_GROUNDING_RECORDING_AGENT.md §"R-Plus 진입 게이트" 의 4 항목 통과
+
+**비용**: 중 (2 주, 벤치마크 기간)
+
+#### P2.2 — External Agent skeleton
+
+- SRS → 다중턴 자율 탐색으로 시나리오 설계
+- target_url 에 실제 접속하며 DOM 인벤토리 + RAG 자료를 결합한 의사결정 루프
+- **완료**: 사내 시스템 1종에서 SRS only → 통과 시나리오 자동 생성 PoC
+
+**비용**: 대 (4~6 주)
+
+#### P2.3 — 실 도메인 안정성 벤치 *(B5 해소)*
+
+- 5~10 개 SaaS / 사내 앱에서 회귀 1주 무중단 검증
+- 매일 야간 회귀 + 다음 날 통과율 리포트
+- **완료**: 통과율 90% 이상 4주 연속 유지
+
+**비용**: 중 (2~3 주, 운영 기간)
+
+---
+
+### P3 — 영구 OUT 재확인
+
+본 항목들은 PLAN_GROUNDING_RECORDING_AGENT.md §"명시적 OUT 항목" 에서 이미
+영구 OUT 으로 결정됨. 본 로드맵에서도 동일하게 OUT 유지를 권고한다.
+
+| 항목 | OUT 사유 |
+| --- | --- |
+| 시각 회귀 / 성능 / a11y | 별도 도구 위임이 정답 (Percy / Lighthouse / axe) |
+| iframe 복합 시나리오 (Phase 3 이상) | 복잡도 대비 ROI 낮음. P0.2 의 단일-iframe 까지 |
+| Dify SSE 스트리밍 UI | 2026-04-28 결정, 별도 운영 대시보드로 대체 |
+
+---
+
+## 결정 게이트
+
+| 게이트 | 판단 시점 | 통과 기준 |
+| --- | --- | --- |
+| G0 → 운영 PoC 진입 | P0 5개 항목 완료 | 사내 시스템 1종에서 로그인 + iframe + 격리된 시나리오 5개 통과 |
+| G1 → 운영 베타 | P0 + P1 완료 | 4주 회귀 무중단, healer 통계 + Git diff 가시화 |
+| G2 → 운영 GA | P0 + P1 + P2.3 완료 | 5+ 도메인 4주 90%+ 통과, RCA 인프라 정상 |
+
+---
+
+## 리스크 / 미지수
+
+1. **Playwright 의 frame piercing 한계** — Shadow DOM 의 closed mode 는 개발자
+   도구로도 접근 불가. 일부 디자인 시스템 (Salesforce LWC 등) 은 closed shadow.
+   범위 명시 필요.
+
+2. **gemma4:26b 의 한국어 / 다중턴 신뢰도** — 검증 진행 중. 통과 못 시 Phase 2
+   가 24주~ 단위로 지연.
+
+3. **인증 방식의 다양성** — SAML / OIDC / WebAuthn / passkey / MFA 까지 가면
+   P0.1 만으로 부족. 첫 PoC 는 OAuth + form 로그인 한정 권고.
+
+4. **세션 격리의 백엔드 의존성** — 백엔드 fixture seed/reset 은 대상 시스템의
+   admin API 또는 DB 접근권을 요구. 사내 앱은 가능, 외부 SaaS 는 한계.
+
+---
+
+## 현재 진행 상태 (2026-04-29 기준)
+
+| 태스크 | 상태 | 참조 |
+|---|---|---|
+| T-A (P0.4 converter AST 화) | ✅ **완료** | commit 0cc419f, 250 → 회귀 0 |
+| T-A 후속 — resolver 합성 체인 (`>>` 분리, frame_locator chain 실행) | ✅ **완료** | P0.1 #2, test_locator_chain.py 10/10 |
+| T-D (P0.1 인증) Phase 1~4,7 + form/TOTP fixture | ✅ **부분 완료** | commit 52477d1, 281 passed |
+| T-D 후속 — CLI `_VALID_ACTIONS` 에 auth_login 등록 + target/value 검증 | ✅ **완료** | P0.1 #1, test_auth.py CLI 검증 4/4 |
+| T-D 후속 — auth_login 스크린샷 마스킹 (Playwright `mask=`) | ✅ **완료** | P0.1 #3, test_auth.py 마스킹 회귀 3/3 |
+| TR.4 후속 — `/recording/sessions/{sid}/scenario` 프리뷰 | ✅ **완료** | P0.1 #4, test_recording_service.py 5/5 |
+| R-Plus 분리 (`/experimental/*` + RPLUS_ENABLED 게이팅) | ✅ **완료** | P0.1 #5, test_recording_service.py 게이트 6/6 |
+| T-D Phase 5 (OAuth mock 컨테이너) | ⏸ 연기 | follow-up commit |
+| T-D Jenkins Credentials seed | ⏸ 연기 | follow-up commit |
+| T-D 실 IdP 검증 (Google OAuth) | ⏸ 운영 검증 단계 | 별도 |
+| T-B (P0.3-A 클라이언트 격리) | ✅ **완료** | reset_state DSL + storage_state in/out + test_isolation.py 12/12 (100%) |
+| T-C (P0.2 iframe / open shadow / closed shadow detect) | ✅ **완료** | frame= chain + shadow= segment + ShadowAccessError + healer frame-scoped fallback + test_iframe_shadow.py 10/10 |
+| T-H (hidden-click healing — 드롭다운/메뉴 자동 복구) | ✅ **완료** | 3-layer (Visibility Healer + Converter heuristic + Static Annotator). 13건 회귀 추가. test_visibility_healer / test_annotator |
+| TR.4+ (Recording Service UI 운영 보강) | ✅ **완료** | scenario.json/original.py 열람·다운로드, Play 2-mode (Codegen / LLM), Annotate hover, R-Plus 게이트 폐기, replay_proxy 호스트 직접 실행. 회귀 테스트 +20 |
+| T-E (P0.5 빌드 CI) | ⏳ 대기 | self-hosted runner 인프라 의존 |
+| T-F (P1.5 orphan watchdog) | ⏳ 대기 | P0 완료 후 |
+| T-G (P1.3 retention GC) | ⏳ 대기 | T-F 후 |
+
+**현 시점 P0 완료율**: 100% (T-A + 후속 패치) + 85% (T-D, OAuth mock 만 미완료) + 100% (T-B) + 100% (T-C) + 0% (T-E)
+≈ 5 P0 태스크 중 3.85 완료. 영업일 환산 약 23.5/33 (71%).
+
+P0 외 추가 완료: T-H (드롭다운/메뉴 hidden-click 자동 복구 3-layer), TR.4+ (Recording Service UI 운영 보강). 운영 사용 도중 발견된 이슈에 대응한 follow-up. 본 표는 P0 본체 트랙 진척도만 표시.
+
+### T-B 완료 기록 (2026-04-29)
+
+P0.3-A 클라이언트 격리. `reset_state` DSL 액션을 추가해 같은 시나리오 안에서도 cookie / localStorage / sessionStorage / IndexedDB 흔적을 비울 수 있게 했다. `execute()` 호출당 fresh BrowserContext 는 이미 [executor.py:159-176](zero_touch_qa/executor.py#L159-L176) 에서 보장 — 별도 변경 없음. storage_state in/out 은 T-D Phase 7 에서 이미 완료.
+
+| 변경 | 파일 |
+|---|---|
+| `_VALID_ACTIONS` 에 reset_state + value 화이트리스트 (cookie/storage/indexeddb/all) | [`zero_touch_qa/__main__.py`](zero_touch_qa/__main__.py) |
+| `_execute_reset_state` 핸들러 (clear_cookies / evaluate(localStorage) / evaluate(IDB)) | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) |
+| 격리 fixture (writer / reader 페이지) | [`test/fixtures/isolation_a.html`](test/fixtures/isolation_a.html), [`test/fixtures/isolation_b.html`](test/fixtures/isolation_b.html) |
+| 회귀 테스트 12개 (CLI 6 + 격리 6) | [`test/test_isolation.py`](test/test_isolation.py) |
+
+**수락 기준 측정**: `T_B_REPEAT=20` 환경변수로 20회 연속 실행 시 통과율 100% (수락 기준 ≥95% 충족). 풀 측정은 `T_B_REPEAT=100`.
+
+### T-C 완료 기록 (2026-04-29)
+
+P0.2 iframe / open shadow / closed shadow 자동화. `frame=<sel> >> ...` chain 은 P0.1 #2 단계에서 이미 구현됨 ([`locator_resolver.py`](zero_touch_qa/locator_resolver.py) `_resolve_chain`). T-C 본체에서는 ① closed shadow 감지 (`shadow=` segment + `ShadowAccessError`) ② nested iframe / open shadow / closed shadow fixture 4종 ③ healer frame-scoped fallback 을 추가했다.
+
+| 변경 | 파일 |
+|---|---|
+| `ShadowAccessError` 예외 + `shadow=<host>` segment 처리 | [`zero_touch_qa/locator_resolver.py`](zero_touch_qa/locator_resolver.py) |
+| 1차 시도 단계에서 ShadowAccessError 즉시 escalate (fallback/healer 우회) | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) |
+| healer 가 target chain 의 frame= prefix 를 인지해 같은 FrameLocator 안에서만 fallback | [`zero_touch_qa/local_healer.py`](zero_touch_qa/local_healer.py) |
+| iframe / nested iframe / open shadow / closed shadow fixture 4종 | [`test/fixtures/iframe_payment.html`](test/fixtures/iframe_payment.html) 외 3종 |
+| 통합 테스트 10개 | [`test/test_iframe_shadow.py`](test/test_iframe_shadow.py) |
+
+**수락 기준 검증**:
+- 단일 iframe (3건) / nested 2단 (1건) / open shadow (2건) / closed shadow detect (1건) / 호스트 missing (1건) / healer scope (2건) = 10/10 PASS
+- closed shadow 만나면 `< 1s` 안에 ShadowAccessError 로 즉시 FAIL — 30s timeout hang 없음
+- pytest 회귀 영역 (test_isolation + test_iframe_shadow + test_locator_chain + test_auth + test_recording_service + test_converter_ast): 185 passed, 3 skipped (회귀 0)
+
+### P0.1 리뷰 후속 패치 (2026-04-29) — 5건 일괄 처리
+
+리뷰에서 식별된 5개 이슈를 모두 해소했다. 변경 영역 277 passed (이전 261).
+
+| # | 영역 | 변경 | 회귀 가드 |
+|---|---|---|---|
+| 1 | CLI 검증 | [`zero_touch_qa/__main__.py`](zero_touch_qa/__main__.py) — `_VALID_ACTIONS` / `_VALUE_REQUIRED_ACTIONS` 에 `auth_login` 추가, `_check_action_specific` 에 mode (form/totp/oauth) 분기 검증 | `test_cli_validates_auth_login_*` (4) |
+| 2 | resolver 합성 체인 | [`zero_touch_qa/locator_resolver.py`](zero_touch_qa/locator_resolver.py) — `_resolve_chain` / `_apply_chain_segment` 신규. `>>` 로 연결된 segment 를 `frame_locator` / `get_by_role` / `get_by_text` / ... / CSS 누적 chain 으로 풀이. ambiguous role 거부는 page-level 에서만 적용 | [`test/test_locator_chain.py`](test/test_locator_chain.py) (10), [`test/fixtures/nested_locator.html`](test/fixtures/nested_locator.html) |
+| 3 | 스크린샷 마스킹 | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) — `_screenshot_masked` 헬퍼. `_auth_login_form` / `_auth_login_totp` 의 PASS/FAIL 스크린샷에 `mask=[email_loc, pwd_loc]` / `[otp_loc]` 전달. 구버전 Playwright (mask 미지원) 는 fail-secure 로 캡처 생략 | `test_screenshot_masked_*` (3) |
+| 4 | scenario.json 프리뷰 | [`recording_service/server.py`](recording_service/server.py) `GET /recording/sessions/{sid}/scenario` 신규. [`recording_service/web/app.js`](recording_service/web/app.js) `openSession` 에서 fetch 후 `#result-json` 에 본문 표시 | `test_get_session_scenario_*` (3) |
+| 5 | R-Plus 분리 (백엔드만, UI 통합) | [`recording_service/rplus/`](recording_service/rplus/) 신규 모듈 — replay/enrich/compare 핸들러 + `prefix="/experimental"` APIRouter + `_require_rplus_enabled` Depends. healthz 응답에 `rplus_enabled` 추가. UI 는 메인 결과 화면([`web/index.html`](recording_service/web/index.html))에 R-Plus 섹션을 둔 채 `state=done` AND `rplus_enabled=true` 조건일 때만 노출 — 운영자가 자주 쓰는 기능이라 별도 SPA 분리는 비효율. 환경변수 `RPLUS_ENABLED=1` 미설정 시 `/experimental/*` 전부 404 | `test_experimental_*_when_rplus_disabled` (3) + `test_healthz_reflects_rplus_enabled` |
+
+**의사결정 기록 (2026-04-29):**
+- #5 분리 정책: **백엔드 코드/URL 은 분리** (`/experimental/*` + `recording_service/rplus/` 모듈), **UI 는 메인 결과 화면에 통합**. 사용자 결정 — R-Plus 가 평가 단계지만 일상 사용 빈도가 높아 메인 화면에서 한 번에 접근하는 것이 실효적. UI 노출 조건은 `state=done && rplus_enabled` 두 가지 모두. 별도 SPA (`/experimental/`) 는 폐기.
+- router 게이팅은 import-time 이 아닌 request-time (Depends) 으로 구현해 테스트가 env 토글로 ON/OFF 검증 가능하게 함. 클라이언트 관점에서 미활성 시 404 동일.
+- #2 chain segment 의 ambiguous role 거부 (`button`/`link` name 없는 광범위 매치) 는 chain 컨테이너로 좁혀진 경우 false-positive 위험이 충분히 낮아 적용 안 함 — `#sidebar >> role=button` 같은 합법 케이스가 통과되어야 하기 때문.
+- R-Plus URL prefix 는 `/experimental/`. 기존 `/recording/sessions/{sid}/replay|enrich|compare` 경로는 R-Plus 트랙의 평가 게이트 의도를 명확히 하기 위해 `/experimental/sessions/{sid}/...` 으로 이동 (테스트 16개 마이그레이션, 메인 UI 의 R-Plus 섹션이 새 경로로 호출).
+
+### TR.4+ 운영 보강 (2026-04-29)
+
+R-MVP TR.4 결과 화면 운영 사용 도중 5건의 사용자 피드백 + 1건의 무관 버그 (replay 가 docker exec 로 system python 호출해서 모듈 미발견) 일괄 처리.
+
+| 항목 | 변경 |
+|---|---|
+| Scenario JSON 다운로드 | `GET /recording/sessions/{sid}/scenario?download=1` 신규. ⬇ 링크 |
+| Original .py 열람·다운로드 | `GET /recording/sessions/{sid}/original[?download=1]` 신규. 결과 화면에 별도 카드 |
+| R-Plus 게이트 폐기 | `RPLUS_ENABLED` 환경변수 / `_require_rplus_enabled` Depends / `is_rplus_enabled` / healthz `rplus_enabled` 필드 모두 제거. URL prefix `/experimental/` 는 코드 조직 의미로 유지 |
+| Replay → Play 두 모드 분리 | `POST /experimental/sessions/{sid}/play-codegen` (codegen 원본 .py 호스트 직접 실행, headed) + `POST /experimental/sessions/{sid}/play-llm` (변환된 14-DSL 을 zero_touch_qa executor 로 실행, healing 동작) |
+| replay 실행 환경 | docker exec (headless) 폐기 → 호스트 venv python subprocess. Playwright Chromium 호스트 화면에 노출 |
+| ReplayResult → PlayResult | pass/fail/healed/run_log_* 필드 폐기 — codegen 원본은 14-DSL executor 가 아니라 의미 없음 |
+
+회귀 +20 (TR.4+: 8, Play 분리: 6, 게이트 폐기 회귀: 6).
+
+### T-H 완료 기록 (2026-04-29) — hidden-click 자동 복구 (3-layer + visible-first + multi-strategy healer)
+
+**문제**: codegen 이 hover-then-click sequence 의 hover 를 빠뜨려 드롭다운/메뉴 항목이 hidden 상태에서 click → 30s timeout. 운영 중 두 가지 변형 발견:
+- (변형 A) hover 누락만 — 호버 메뉴 fixture 재현 가능
+- (변형 B) ktds.com 처럼 GNB 가 페이지 로드 직후 height:0 / scale(0) 으로 collapsed 되어 있고, 사용자 어떤 상호작용 (mousemove 등) 으로 expand 되는 패턴
+
+3 layer + visible-first + multi-strategy healer 동시 적용:
+
+| Layer | 위치 | 적용 경로 | 메커니즘 |
+|---|---|---|---|
+| (1) Visibility Healer | [`zero_touch_qa/executor.py`](zero_touch_qa/executor.py) `_heal_visibility` | Play with LLM (14-DSL executor) | hidden 시 5단계 시도 (D scroll_into_view → ancestor hover → E page-level activator hover → F size poll → C sibling swap). 각 단계 visible 되면 단축 |
+| (4) Converter heuristic | [`zero_touch_qa/converter_ast.py`](zero_touch_qa/converter_ast.py) `_maybe_prepend_hover` + `_SEG_LOOKS_LIKE_HOVER_TRIGGER` | LLM 변환 시점 (codegen → 14-DSL) | click step 의 target chain 정적 분석. nav/menu/dropdown/gnb/aria-haspopup/aria-expanded/role=menu 패턴 매칭 시 click 앞 hover step 자동 prepend |
+| (2) Static Annotator | [`recording_service/annotator.py`](recording_service/annotator.py) | Codegen Output Replay (원본 .py 직접 실행) | `play-codegen` 진입 시 자동 호출 (β 통합). AST 분석으로 `<chain>.click()` 의 chain 안 hover-trigger ancestor 식별 → `ast.get_source_segment` 로 원본 구문 보존하며 `<segment>.hover()` 라인 click 직전 삽입 → `original_annotated.py` 생성 |
+| (B) visible-first 우선 선택 | [`zero_touch_qa/locator_resolver.py`](zero_touch_qa/locator_resolver.py) `_prefer_visible` | 모든 경로 (resolver 본체) | `role=X, name=Y` 다중 매치 시 `filter(visible=True).first` 우선. 모두 hidden 이면 `.first` 폴백 → Healer 가 후속 처리 |
+
+#### Visibility Healer 5단계 + Click 폴백 (D/E/F/G 추가 — 2026-04-29 후속)
+
+| 단계 | 메커니즘 | 적용 케이스 |
+|---|---|---|
+| D | `scroll_into_view_if_needed` (1.5s 한도) | Intersection Observer 기반 lazy menu (스크롤 시 expand) |
+| ancestor hover | `_VISIBILITY_HEALER_JS` 가 추출한 hoverable 후보 (`aria-haspopup` / `aria-expanded` / `role=menu/...` / `nav`/`details`/`summary` / `data-state=closed` / `:hover` CSS trigger) 5개까지 hover | 호버 메뉴 / 드롭다운 (CSS-only or JS-listener) |
+| E | page-level activator probe (`<header>` / `<nav>` / `<main>` / `<body>` 순환 hover, 각 1s 한도) | ktds.com 처럼 페이지 어디든 mouseover 들어오면 GNB 활성화하는 사이트 |
+| F | size-aware poll (`is_visible()` 200ms × 10) | 폰트/CSS 비동기 로딩으로 늦게 expand 되는 사이트 (FOUC 방지) |
+| C | `filter(visible=True).first` swap | 같은 selector 가 multi-match 일 때 visible 한 형제 매치 |
+| **G** (click 시점) | `locator.evaluate("el => el.click()")` JS dispatch click 폴백 | element computed style 이 height:0 / line-height:0 라 Playwright actionability 가 영구 거부하는 anchor/button. ktds.com GNB 가 정확히 이 케이스. tag a/button/input + role=button/link/menuitem/tab/option/checkbox 류만 적용 (false-positive 방지) |
+
+D~F 는 healer 안에서 visible 화 시도. C 는 sibling swap. **G 는 _perform_action 의 click 처리 단계에 위치** — Playwright click 이 actionability 거부 메시지 (`not visible` / `outside of the viewport` / `intercepts pointer events`) 를 던졌을 때 마지막 수단.
+
+각 단계 visible/click 성공 시 즉시 단축. 모두 실패해도 healer 가 None 반환 후 기존 fallback_targets / LocalHealer / Dify 치유 단계 진입.
+
+**검증**: `test_visibility_healer.py` (6) + `test_visibility_healer_scenario.py` (2) + `test_converter_ast.py +3` + `test_annotator.py` (5) + `test_recording_service.py +2` (play-codegen auto annotate). 회귀 영역 356 passed (이전 331 → +25).
+
+**보류한 (3)**: codegen recorder fork — TS fork / addInitScript sidecar / tracing 활용 모두 가능하나 Playwright 업그레이드마다 merge 비용 발생. 위 layer 만으로 실 운영 케이스 대부분 커버 추정.
+
+#### 결정 기록 (2026-04-29)
+
+| 결정 | 사용자 의견 | 반영 |
+|---|---|---|
+| Replay → Play 두 모드 | "codegen output 재실행 + LLM 처리한 시나리오 재생, 화면 표시" | `/experimental/sessions/{sid}/play-codegen` + `/play-llm` 분리 |
+| Annotate 버튼 통합 | "play-codegen 안으로 자동 (β)" | `/annotate` 엔드포인트 + UI 버튼 폐기. play-codegen 응답에 annotate 결과 합쳐 노출 |
+| visible-first 적용 범위 | "B+C 결합" | resolver `_prefer_visible` (B) + healer `_find_visible_sibling` (C) |
+| ktds.com 같은 lazy GNB | "사전 대비 — 직접 편집 금지, 자동 검출만" | D scroll_into_view + E page-level activator + F size poll 3단계 추가 |
+| ktds.com GNB 의 진짜 원인 (height:0 / line-height:0 anchor) | 진단 후 추가 대응 필요 | (G) JS dispatch click 폴백 추가 — Playwright actionability 거부 시 anchor/button 한정 JS click |
+| (3) codegen recorder fork | 보류 | 유지비 큼 — 다른 layer 로 95% 커버 가정 |
+
+## 다음 액션
+
+1. **T-D Phase 5 마무리** — OAuth mock 컨테이너 (oauth2-mock-server Docker
+   stage + supervisord program + auth_oauth_client.html fixture) 도입.
+   원안 Day 12~13 분량 (2 영업일).
+2. T-D 마무리 후 **T-E (P0.5 빌드 CI, 3d)** — self-hosted runner 또는 GitHub Actions
+   기반 lint+pytest 자동화 + PR gate.
+3. T-E 완료 후 P0 5 태스크 모두 종료. **T-F (P1.5 orphan watchdog) + T-G (P1.3 retention GC)** 백그라운드 진행.
+4. 운영 사용 중 발견되는 추가 이슈는 본 PLAN 의 follow-up 절에 추가하며 즉시 처리.
+
+또는 P0 우선순위 변경 시 사용자 지시에 따라 재조정.
+
+---
+
+## 변경 이력
+
+| 일자 | 작성자 | 내용 |
+| --- | --- | --- |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | 초안 작성 — 직접 검증 결과 + 6 블로커 / 5 취약점 / P0~P3 로드맵 |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | P0.1/P0.2/P0.3 범위·완료조건을 현실 가능 범위로 보정 (form+OAuth+TOTP / 단일 iframe + open shadow / 클라이언트 vs 백엔드 분리) + §"당장 착수 가능한 상세 태스크" 신설 (T-A/B/C/D 4 개 태스크의 단계·변경파일·테스트·수락기준·예상시간) |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | **T-A 완료** — converter_ast.py 신설 (AST visitor + page 변수 스코프 + popup chain 추적 + .nth/.first/.filter/frame_locator chain 보존), converter.py 를 AST 우선 + line fallback 으로 라우팅, locator_resolver.py 에 `_split_modifiers` / `_resolve_raw` / `_apply_modifiers` 추가해 receiver-side 도 nth/has_text 처리. 8 corpus fixture + 42 단위 테스트, 회귀 0 (208 → 250 passed). docs/recording-troubleshooting.md §4-2 의 .nth backlog 항목 closed. |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | **T-D 부분 완료 (Phase 1~4, 7 + form/TOTP fixture)** — zero_touch_qa/auth.py 신설 (Credential / AuthOptions / mask_secret / resolve_credential / parse_auth_target / generate_totp_code + 4 분야 후보 selector). executor.py 에 `_execute_auth_login` / `_auth_login_form` / `_auth_login_totp` / `_find_auth_field` 추가. execute() 에 `storage_state_in/out` 매개변수 + AUTH_STORAGE_STATE_IN/OUT env. __main__.py CLI 플래그 `--storage-state-in/out`. fixture: auth_form.html + auth_totp.html. test_auth.py 31 테스트 (mask_secret / resolve_credential / parse_auth_target / generate_totp_code / executor 통합 5 + caplog 마스킹 회귀 3). pyotp 를 requirements.txt + mac/wsl-agent-setup.sh REQ_PKGS 에 추가. 회귀 0 (250 → 281 passed). **OAuth mock 서버 (원안 Phase 5) 와 Jenkins Credentials seed 는 follow-up commit 으로 연기.** |
+| 2026-04-29 | Claude (feat/grounding-recording-agent) | 문서 갱신 — §"현재 진행 상태" 표 신설 (10 태스크 status + 영업일 환산), §"다음 액션" 을 T-D Phase 5 마무리 우선으로 재정렬. PLAN_DSL_ACTION_EXPANSION.md §2.4 (auth_login 신규 액션) + §2.5 (locator target 후미 modifier 문법 nth/has_text) 추가, 변경 이력에 T-A / T-D 두 줄 추가. docs/auth-login-usage.md 신설 — 사용자 가이드 (env vars / 모드별 사용법 / storage_state 재사용 / 마스킹 계약 / 디버깅 / 보안 체크리스트 / 9 절). |
