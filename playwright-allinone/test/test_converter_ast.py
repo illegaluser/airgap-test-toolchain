@@ -335,3 +335,65 @@ def test_scenario_json_written_to_output_dir(tmp_path: Path) -> None:
 def test_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         convert_via_ast(str(tmp_path / "nope.py"), str(tmp_path))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# T-H 연계 — converter 가 hover-trigger ancestor 를 정적으로 식별해 click
+# 앞에 hover step 을 자동 삽입 (보수적 휴리스틱)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _make_codegen_script(tmp_path: Path, body: str) -> Path:
+    """codegen 표준 출력 구조로 .py 작성 — `def run(playwright)` 안에 body 삽입."""
+    p = tmp_path / "rec.py"
+    src = (
+        "from playwright.sync_api import Playwright, sync_playwright\n"
+        "\n"
+        "def run(playwright: Playwright) -> None:\n"
+        "    browser = playwright.chromium.launch()\n"
+        "    context = browser.new_context()\n"
+        "    page = context.new_page()\n"
+        + "".join(f"    {line}\n" for line in body.splitlines())
+        + "    context.close()\n    browser.close()\n"
+        + "\nwith sync_playwright() as p:\n    run(p)\n"
+    )
+    p.write_text(src, encoding="utf-8")
+    return p
+
+
+def test_hover_prepended_for_nav_chain(tmp_path: Path) -> None:
+    """chain 안에 nav ancestor 가 있으면 click 앞에 hover step 자동 삽입."""
+    src = _make_codegen_script(
+        tmp_path,
+        "page.locator('nav#gnb').locator('li').filter(has_text='회사소개').get_by_role('link', name='About').click()",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert "hover" in actions
+    hover_idx = actions.index("hover")
+    click_idx = actions.index("click")
+    assert hover_idx < click_idx
+    assert "nav#gnb" in steps[hover_idx]["target"]
+
+
+def test_no_hover_prepended_for_simple_click(tmp_path: Path) -> None:
+    """nav/menu/dropdown 신호 없는 chain 은 hover 삽입 안 함 (false-positive 방지)."""
+    src = _make_codegen_script(
+        tmp_path,
+        "page.get_by_role('button', name='Submit').click()\n"
+        "page.locator('div.card').get_by_role('button', name='Confirm').click()",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert "hover" not in actions
+
+
+def test_hover_prepended_for_dropdown_class(tmp_path: Path) -> None:
+    src = _make_codegen_script(
+        tmp_path,
+        "page.locator('.dropdown').get_by_role('link', name='Logout').click()",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert actions[0] == "hover"
+    assert ".dropdown" in steps[0]["target"]

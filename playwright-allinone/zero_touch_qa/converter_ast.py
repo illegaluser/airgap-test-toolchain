@@ -153,9 +153,51 @@ class _AstConverter(ast.NodeVisitor):
             return
         step = self._convert_call_to_step(expr)
         if step is not None:
+            # T-H 연계 — click 직전 hover 가 필요해 보이는 ancestor 가 target
+            # chain 안에 정적으로 식별되면 hover step 을 prepend. DOM 접근 없이
+            # selector 패턴만으로 추정 (보수적). false-positive 시 hover 가
+            # no-op 으로 끝나 후속 click 에 부담 0.
+            self._maybe_prepend_hover(step)
             step["step"] = len(self.steps) + 1
             step.setdefault("fallback_targets", [])
             self.steps.append(step)
+
+    def _maybe_prepend_hover(self, step: dict) -> None:
+        """click step 의 target chain 에서 hover trigger ancestor 추정 → hover step 삽입.
+
+        조건:
+          - action == 'click' 만 (다른 액션은 hover 가 의미 없음)
+          - target 안에 ``>>`` chain 이 존재 (단일 segment 면 ancestor 정보 없음)
+          - chain 의 leaf 가 아닌 segment 중 nav/menu/dropdown/gnb 등 신호 매칭
+
+        hover trigger 가 발견되면 ``hover`` 액션 step 을 ``self.steps`` 에 직접 append
+        (caller 가 click step 을 뒤이어 append).
+        """
+        if step.get("action") != "click":
+            return
+        target = str(step.get("target", ""))
+        if " >> " not in target:
+            return
+        segments = [s.strip() for s in target.split(" >> ") if s.strip()]
+        if len(segments) < 2:
+            return
+        # leaf 는 click 본체 — ancestor 후보는 그 외 segment.
+        for i in range(len(segments) - 1):
+            seg = segments[i]
+            if not _SEG_LOOKS_LIKE_HOVER_TRIGGER(seg):
+                continue
+            # 해당 segment 까지의 chain 을 hover target 으로.
+            hover_target = " >> ".join(segments[: i + 1])
+            hover_step: dict = {
+                "step": len(self.steps) + 1,
+                "action": "hover",
+                "target": hover_target,
+                "value": "",
+                "description": f"메뉴 펼치기 (heuristic, {seg})",
+                "fallback_targets": [],
+            }
+            self.steps.append(hover_step)
+            return  # 여러 후보 중 가장 바깥 ancestor 1개만
 
     # ─────────────────────────────────────────────────────────────────────
     # Call → step 변환
@@ -630,6 +672,32 @@ class _LocatorSegment:
         self.method = method
         self.args = list(args) if args else []
         self.kwargs = list(kwargs) if kwargs else []
+
+
+# T-H 연계 — chain segment 가 hover-trigger 처럼 보이는지 정적 식별 (DOM 무관).
+# 보수적: 명시적 신호만 매칭 → false-positive 최소화.
+import re as _re
+
+_HOVER_TRIGGER_PATTERNS = [
+    _re.compile(r"\bnav\b"),                       # tag=nav
+    _re.compile(r"\b(?:gnb|lnb|navbar|nav-)\b", _re.I),
+    _re.compile(r"\b(?:dropdown|drop-down)\b", _re.I),
+    _re.compile(r"\b(?:menu|submenu|menubar)\b", _re.I),
+    _re.compile(r"aria-haspopup"),
+    _re.compile(r"aria-expanded"),
+    _re.compile(r"role=(?:menu|menubar|listbox|combobox)\b"),
+]
+
+
+def _SEG_LOOKS_LIKE_HOVER_TRIGGER(seg: str) -> bool:
+    """segment 가 hover trigger 가능성이 있는 ancestor 인지 보수적 추정."""
+    s = seg.strip()
+    if not s:
+        return False
+    for pat in _HOVER_TRIGGER_PATTERNS:
+        if pat.search(s):
+            return True
+    return False
 
 
 def _collect_args(node: ast.expr) -> list[ast.expr]:

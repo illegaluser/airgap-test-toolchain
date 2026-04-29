@@ -119,6 +119,38 @@ def _play_response(sid: str, result) -> dict:
     }
 
 
+@router.post("/sessions/{sid}/annotate", status_code=201)
+def annotate_session(sid: str) -> dict:
+    """codegen 원본 ``original.py`` 를 정적 휴리스틱으로 분석해 hidden-click 우려가
+    있는 click 앞에 ``<ancestor>.hover()`` 를 자동 주입한 ``original_annotated.py`` 를 생성.
+
+    이후 play-codegen 은 (prefer_annotated=True) 자동으로 annotated 본을 우선 실행.
+    """
+    from .. import annotator
+    _ensure_session_not_recording(sid, "annotate")
+    host_dir = storage.session_dir(sid)
+    src = host_dir / "original.py"
+    dst = host_dir / "original_annotated.py"
+    if not src.is_file():
+        raise HTTPException(status_code=404, detail=f"original.py 없음: {src}")
+    try:
+        result = annotator.annotate_script(str(src), str(dst))
+    except Exception as e:  # noqa: BLE001
+        log.error("[/experimental/annotate] %s — %s", sid, e)
+        raise HTTPException(status_code=500, detail=str(e))
+    log.info(
+        "[/experimental/annotate] %s — examined=%d injected=%d",
+        sid, result.examined_clicks, result.injected,
+    )
+    return {
+        "id": sid,
+        "examined_clicks": result.examined_clicks,
+        "injected": result.injected,
+        "triggers": result.triggers,
+        "annotated_path": str(dst),
+    }
+
+
 @router.post("/sessions/{sid}/play-codegen", status_code=201)
 def play_codegen(sid: str) -> dict:
     """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (TR.7, headed).

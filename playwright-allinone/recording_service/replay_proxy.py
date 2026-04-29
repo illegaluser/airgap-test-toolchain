@@ -89,6 +89,7 @@ def run_codegen_replay(
     host_session_dir: str,
     timeout_sec: int = DEFAULT_REPLAY_TIMEOUT_SEC,
     venv_py: str | None = None,
+    prefer_annotated: bool = True,
 ) -> PlayResult:
     """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (headed).
 
@@ -96,14 +97,20 @@ def run_codegen_replay(
         host_session_dir: 호스트 측 세션 디렉토리 — ``original.py`` 위치.
         timeout_sec: subprocess timeout (기본 300s).
         venv_py: 인터프리터 경로 override.
+        prefer_annotated: True 이고 ``original_annotated.py`` 가 있으면 그걸 우선
+            실행 (T-H 정적 hover 주입본). 기본 True.
     """
-    script = Path(host_session_dir) / "original.py"
+    annotated = Path(host_session_dir) / "original_annotated.py"
+    if prefer_annotated and annotated.is_file():
+        script = annotated
+    else:
+        script = Path(host_session_dir) / "original.py"
     if not script.is_file():
-        raise ReplayProxyError(f"original.py 없음: {script}")
+        raise ReplayProxyError(f"실행 대상 .py 없음: {script}")
 
     py = _resolve_venv_py(venv_py)
     cmd = [py, str(script)]
-    log.info("[play-codegen] %s", " ".join(cmd))
+    log.info("[play-codegen] %s (script=%s)", " ".join(cmd), script.name)
     return _run_subprocess(
         cmd, cwd=host_session_dir, env=None,
         timeout_sec=timeout_sec, started=time.time(),
