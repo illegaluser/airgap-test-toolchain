@@ -29,6 +29,8 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
+pytestmark = pytest.mark.e2e
+
 E2E_PORT = 18093
 E2E_BASE = f"http://127.0.0.1:{E2E_PORT}"
 
@@ -176,6 +178,8 @@ def e2e_daemon(e2e_root):
         str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     )
     env["RECORDING_HOST_ROOT"] = str(e2e_root)
+    # Discover URLs 결과 디렉토리도 격리 — 사용자 홈 오염 방지.
+    env["DISCOVERY_HOST_ROOT"] = str(e2e_root.parent / "e2e-discoveries")
     env["RECORDING_DIFF_ANALYSIS_STUB"] = "1"
 
     cmd = [
@@ -549,3 +553,72 @@ def test_import_script_uploads_and_opens_result_panel(
     # 세션 목록에도 imported 표시 진입
     rows_text = e2e_page.locator("#session-tbody").text_content() or ""
     assert "imported" in rows_text.lower()
+
+
+# ── 14. Discover URLs — 폼 + 결과 표 회귀 ─────────────────────────────────
+
+
+def test_discover_section_is_visible(e2e_page: Page):
+    """Discover URLs 섹션이 새 녹화 카드 다음에 노출되고 핵심 입력이 보인다."""
+    expect(e2e_page.locator("#discover-section")).to_be_visible()
+    expect(e2e_page.locator("#discover-form input[name='seed_url']")).to_be_visible()
+    expect(e2e_page.locator("#discover-auth-profile")).to_be_visible()
+    expect(e2e_page.locator("#btn-discover-start")).to_be_visible()
+
+
+def test_discover_submits_and_renders_result_table(e2e_page: Page, e2e_daemon, tmp_path):
+    """폼 제출 → 폴링 → 결과 표 + 체크박스 + CSV 링크 노출.
+
+    임시 HTTP 서버에 3페이지 fixture 를 띄우고 그 seed URL 을 입력한다.
+    """
+    import http.server
+    import socketserver
+    import threading
+
+    site_root = tmp_path / "discover-fixture"
+    site_root.mkdir()
+    (site_root / "index.html").write_text(
+        '<a href="a.html">A</a><a href="b.html">B</a>',
+        encoding="utf-8",
+    )
+    (site_root / "a.html").write_text("<title>A page</title>", encoding="utf-8")
+    (site_root / "b.html").write_text("<title>B page</title>", encoding="utf-8")
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=str(site_root), **kw)
+
+        def log_message(self, *a, **k):  # noqa: D401
+            return
+
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        seed = f"http://127.0.0.1:{port}/index.html"
+        e2e_page.fill("#discover-form input[name='seed_url']", seed)
+        e2e_page.fill("#discover-form input[name='max_pages']", "10")
+        e2e_page.fill("#discover-form input[name='max_depth']", "2")
+        e2e_page.click("#btn-discover-start")
+
+        # 결과 표가 렌더되어 체크박스가 보일 때까지 대기 (최대 30초)
+        e2e_page.wait_for_selector(
+            "#discover-result .discover-url-check", timeout=30_000
+        )
+        # 액션 바 노출
+        expect(e2e_page.locator("#discover-actions")).to_be_visible()
+        # CSV 링크에 href 가 박힘
+        href = e2e_page.locator("#discover-csv-link").get_attribute("href")
+        assert href and "/discover/" in href and href.endswith("/csv")
+        # 체크박스 ≥3 (index + a + b)
+        checks = e2e_page.locator(".discover-url-check").count()
+        assert checks >= 3, f"체크박스 수가 부족: {checks}"
+        # 전체 선택 → 선택 카운트 갱신
+        e2e_page.click("#btn-discover-select-all")
+        cnt_text = e2e_page.locator("#discover-selected-count").text_content() or ""
+        assert "0개 선택" not in cnt_text
+        # Tour Script 버튼 활성화
+        expect(e2e_page.locator("#btn-discover-tour-script")).to_be_enabled()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
