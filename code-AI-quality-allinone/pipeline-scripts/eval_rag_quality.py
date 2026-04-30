@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
-# P2 M-6 — Sonar 이슈 LLM 분석 품질 자동 평가.
+# P2 M-6 — Automatic quality evaluation of Sonar issue LLM analysis.
 #
-# 사람이 라벨링한 golden CSV 를 정답지로 두고, dify_sonar_issue_analyzer.py 가
-# 만든 llm_analysis.jsonl 의 결과와 비교한 metric 을 계산한다. RAG Diagnostic
-# Report (M-1~M-4) 가 "현재 어떤 상태인가" 를 보여준다면, 이 스크립트는
-# "변경 전후가 얼마나 좋아졌나" 를 숫자로 비교 가능하게 만든다.
+# A human-labelled golden CSV serves as the ground truth, and we compute
+# metrics against the llm_analysis.jsonl produced by
+# dify_sonar_issue_analyzer.py. While the RAG Diagnostic Report (M-1~M-4)
+# shows "what is the current state", this script makes "how much did it
+# improve before vs after" comparable as numbers.
 #
-# 입력:
-#   --golden CSV — 컬럼: sonar_issue_key, expected_classification,
-#       expected_confidence_min, expected_keywords (";" 구분), expected_cited_paths (";" 구분)
+# Inputs:
+#   --golden CSV — columns: sonar_issue_key, expected_classification,
+#       expected_confidence_min, expected_keywords (";"-separated),
+#       expected_cited_paths (";"-separated)
 #   --analysis llm_analysis.jsonl
 #
-# 출력 (--output 미지정 시 stdout JSON):
+# Output (JSON to stdout when --output is omitted):
 #   {
 #     "total_golden": N,
-#     "matched": M,                  # golden 의 sonar_issue_key 중 analysis 에 있는 수
+#     "matched": M,                  # count of golden sonar_issue_key found in analysis
 #     "classification_accuracy": x.x,
 #     "confidence_pass_rate": x.x,
-#     "keyword_coverage": x.x,       # golden keywords 중 답변 등장 비율 평균
-#     "citation_precision": x.x,     # golden cited_paths 중 실제 인용 비율 평균
-#     "issues": [{...}, ...]         # 이슈별 상세
+#     "keyword_coverage": x.x,       # average ratio of golden keywords appearing in answer
+#     "citation_precision": x.x,     # average ratio of golden cited_paths actually cited
+#     "issues": [{...}, ...]         # per-issue detail
 #   }
 #
-# 운영자가 golden 행을 늘리면서 같은 명령으로 metric 추적 — 변경 전 baseline
-# 측정 → 변경 적용 후 비교 → 개선/회귀 가시화.
+# The operator grows the golden rows over time and tracks the metrics with
+# the same command — measure baseline before a change → compare after the
+# change → make improvements/regressions visible.
 
 import argparse
 import csv
@@ -77,22 +80,22 @@ def _evaluate_one(g: dict, a: dict) -> dict:
     confidence = (out.get("confidence") or "").lower()
     impact = out.get("impact_analysis_markdown") or ""
 
-    # 1) classification 일치
+    # 1) classification match
     cls_ok = (g["expected_classification"] == classification) if g["expected_classification"] else None
 
-    # 2) confidence 최소 임계치 통과
+    # 2) confidence meets minimum threshold
     conf_ok = None
     if g["expected_confidence_min"]:
         need = CONF_RANK.get(g["expected_confidence_min"], -1)
         got = CONF_RANK.get(confidence, -1)
         conf_ok = got >= need
 
-    # 3) keyword coverage — golden keywords 중 impact 에 등장한 비율
+    # 3) keyword coverage — ratio of golden keywords appearing in impact
     kw_total = len(g["expected_keywords"])
     kw_hits = [k for k in g["expected_keywords"] if k.lower() in impact.lower()]
     kw_cov = (len(kw_hits) / kw_total) if kw_total else None
 
-    # 4) citation precision — golden cited_paths 중 실제 cited_items 에 등장한 비율
+    # 4) citation precision — ratio of golden cited_paths actually present in cited_items
     diag = (a or {}).get("rag_diagnostic") or {}
     cited_items = (diag.get("citation") or {}).get("cited_items") or []
     cited_paths_actual = {(c.get("path") or "") for c in cited_items}
@@ -152,19 +155,19 @@ def aggregate(golden: list, analysis: dict) -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Sonar 이슈 분석 품질 자동 평가 (golden CSV vs llm_analysis.jsonl)")
-    ap.add_argument("--golden", required=True, help="golden CSV 경로")
-    ap.add_argument("--analysis", required=True, help="llm_analysis.jsonl 경로")
-    ap.add_argument("--output", default="", help="결과 JSON 저장 경로 (빈 값 = stdout)")
+    ap = argparse.ArgumentParser(description="Automatic quality eval for Sonar issue analysis (golden CSV vs llm_analysis.jsonl)")
+    ap.add_argument("--golden", required=True, help="Path to golden CSV")
+    ap.add_argument("--analysis", required=True, help="Path to llm_analysis.jsonl")
+    ap.add_argument("--output", default="", help="Result JSON output path (empty = stdout)")
     args = ap.parse_args()
 
     golden_path = Path(args.golden)
     analysis_path = Path(args.analysis)
     if not golden_path.exists():
-        print(f"[eval] golden 파일 없음: {golden_path}", file=sys.stderr)
+        print(f"[eval] golden file not found: {golden_path}", file=sys.stderr)
         return 1
     if not analysis_path.exists():
-        print(f"[eval] analysis 파일 없음: {analysis_path}", file=sys.stderr)
+        print(f"[eval] analysis file not found: {analysis_path}", file=sys.stderr)
         return 1
 
     golden = _load_golden(golden_path)
@@ -179,7 +182,7 @@ def main() -> int:
     else:
         print(text)
 
-    # 요약을 stderr 로도 한 줄
+    # One-line summary on stderr too
     summary_parts = [
         f"matched={result['matched']}/{result['total_golden']}",
     ]

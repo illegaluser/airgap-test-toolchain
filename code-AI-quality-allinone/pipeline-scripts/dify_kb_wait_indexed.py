@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Dify Knowledge Base 의 모든 문서가 indexing 완료 상태가 될 때까지 polling.
+"""Poll the Dify Knowledge Base until every document reaches indexed state.
 
-파이프라인 2 (02 코드 사전학습) 의 Stage 4 에서 호출. doc_processor.py 가
-청크를 업로드한 직후 문서 상태는 `indexing | waiting | parsing | cleaning`
-이고, bge-m3 임베딩이 async 로 진행되며 최종 `completed` 로 전이한다. 본
-스크립트는 /datasets/{id}/documents 를 주기적으로 조회해 전체 문서가
-completed / error / disabled 등 **terminal 상태**가 될 때까지 대기한다.
+Called from Stage 4 of pipeline 2 (02 code pre-training). Right after
+doc_processor.py uploads chunks the document state is one of
+`indexing | waiting | parsing | cleaning`, while bge-m3 embedding runs
+asynchronously and finally transitions to `completed`. This script
+periodically queries /datasets/{id}/documents and waits until every
+document reaches a **terminal state** (completed / error / disabled / ...).
 
-파이프라인 3 (04 정적분석-결과분석-이슈등록) 의 Dify workflow 는 동일 KB
-에 대해 knowledge-retrieval 노드로 top_k 검색을 수행하므로, indexing 이
-끝나지 않은 상태로 P3 를 시작하면 RAG 결과가 텅 빈 채 LLM 에 전달되어
-분석 질이 급격히 저하된다.
+Pipeline 3 (04 static-analysis-result-and-issue-registration) runs Dify
+workflows against the same KB through the knowledge-retrieval node for
+top_k search. If P3 starts before indexing is done, RAG returns empty
+results and analysis quality drops sharply.
 """
 
 from __future__ import annotations
@@ -47,22 +48,22 @@ def summarize(docs: list[dict]) -> dict:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--dify-api-base", required=True, help="예: http://127.0.0.1:5001/v1")
+    p.add_argument("--dify-api-base", required=True, help="e.g. http://127.0.0.1:5001/v1")
     p.add_argument("--dataset-id", required=True)
     p.add_argument("--api-key", required=True)
     p.add_argument("--timeout", type=int, default=1800,
-                   help="최대 대기 초. 기본 30분. **0 또는 음수 = 무한 대기** "
-                        "(KB indexing 이 큰 레포에서 30분 초과하는 경우 사용 — caller "
-                        "가 명시적으로 0 지정해야 함. 기본은 안전 차원에서 30분 한도).")
-    p.add_argument("--interval", type=int, default=10, help="polling 간격 초 (기본 10s)")
+                   help="Maximum wait in seconds. Default 30 minutes. **0 or negative = wait forever** "
+                        "(use this when KB indexing exceeds 30 minutes on a large repo — the caller "
+                        "must explicitly pass 0). Default is a 30-minute safety cap.")
+    p.add_argument("--interval", type=int, default=10, help="Polling interval in seconds (default 10s)")
     args = p.parse_args()
 
     base = args.dify_api_base
     if not base.endswith("/v1") and not base.endswith("/v1/"):
         base = base.rstrip("/") + "/v1"
 
-    # timeout <= 0 → 무한 대기 (deadline 검사 항상 False).
-    # 큰 레포 (수백 청크) indexing 이 timeout 으로 잘리는 사고 방지용.
+    # timeout <= 0 → wait forever (deadline check always False).
+    # Prevents large repos (hundreds of chunks) from being cut by the timeout.
     deadline = time.time() + args.timeout if args.timeout > 0 else float("inf")
     last_summary = ""
     last_total = -1
@@ -71,10 +72,10 @@ def main() -> int:
         try:
             docs = fetch_documents(base, args.dataset_id, args.api_key)
         except (HTTPError, URLError) as e:
-            print(f"[KB-Wait] WARN: document list 조회 실패 ({e}). {args.interval}s 후 재시도.", file=sys.stderr)
+            print(f"[KB-Wait] WARN: document list query failed ({e}). retrying in {args.interval}s.", file=sys.stderr)
             time.sleep(args.interval)
             if time.time() > deadline:
-                print(f"[KB-Wait] FAIL: timeout {args.timeout}s — 문서 상태 조회 연속 실패.", file=sys.stderr)
+                print(f"[KB-Wait] FAIL: timeout {args.timeout}s — repeated document state query failures.", file=sys.stderr)
                 return 2
             continue
 
@@ -87,7 +88,7 @@ def main() -> int:
             last_total = total
 
         if total == 0:
-            print("[KB-Wait] WARN: dataset 에 문서 0 건. 업로드가 누락됐을 가능성.", file=sys.stderr)
+            print("[KB-Wait] WARN: dataset has 0 documents. Upload may have been skipped.", file=sys.stderr)
             return 3
 
         pending = total - sum(summary.get(k, 0) for k in TERMINAL_OK | TERMINAL_FAIL | TERMINAL_OTHER)
@@ -96,10 +97,11 @@ def main() -> int:
             fail = summary.get("error", 0)
             other = sum(summary.get(k, 0) for k in TERMINAL_OTHER)
             print(f"[KB-Wait] DONE completed={ok} error={fail} other={other} total={total}")
-            # error 가 있어도 파이프라인은 계속 — RAG top_k 가 부분적이라도
-            # 영향 분석이 가능하므로. 관측성을 위해 비정상 건수만 경고.
+            # Keep the pipeline going even with errors — partial RAG top_k is
+            # still usable for impact analysis. Just warn on abnormal counts
+            # for observability.
             if fail > 0 or other > 0:
-                print(f"[KB-Wait] WARN: 비정상 문서 {fail + other}/{total} 건 — RAG 결과가 축소됩니다.", file=sys.stderr)
+                print(f"[KB-Wait] WARN: {fail + other}/{total} abnormal documents — RAG results will be reduced.", file=sys.stderr)
             return 0
 
         if time.time() > deadline:

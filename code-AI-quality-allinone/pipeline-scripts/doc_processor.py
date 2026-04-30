@@ -1,32 +1,36 @@
 # ==================================================================================
-# 파일명: doc_processor.py
-# 버전: 2.1 (Full Commented Version)
+# File: doc_processor.py
+# Version: 2.1 (Full Commented Version)
 #
-# [시스템 개요]
-# 이 스크립트는 다양한 포맷의 문서(PDF, PPTX, DOCX, XLSX, TXT)를 
-# RAG(검색 증강 생성) 시스템인 Dify에 적재하기 위해 Markdown 포맷으로 변환하는
-# 전처리(Preprocessing) 및 업로드 자동화 도구입니다.
+# [Overview]
+# This script preprocesses and uploads documents in various formats
+# (PDF, PPTX, DOCX, XLSX, TXT) by converting them to Markdown for ingestion
+# into Dify, the RAG (Retrieval Augmented Generation) system.
 #
-# [핵심 아키텍처: 2-Pass Hybrid Pipeline]
-# 복잡한 문서(PDF, PPTX)의 데이터 유실을 막기 위해 아래 과정을 거칩니다.
+# [Core architecture: 2-Pass Hybrid Pipeline]
+# Goes through the steps below to avoid data loss for complex documents
+# (PDF, PPTX).
 #
 # 1. Pass 1 (Structure Detection & Extraction):
-#    - PyMuPDF를 사용하여 문서의 뼈대(텍스트, 표 영역, 이미지 영역)를 감지합니다.
-#    - 특히 '표(Table)'가 텍스트 추출 과정에서 깨지는 것을 막기 위해, 
-#      표 영역 좌표를 우선 확보하고 해당 영역의 텍스트 추출을 건너뜁니다.
+#    - PyMuPDF detects the document skeleton (text, table regions, image regions).
+#    - In particular, it secures the table region coordinates first and skips
+#      text extraction in those regions to keep tables from being broken
+#      during text extraction.
 #
 # 2. Pass 2 (Vision Refinement):
-#    - 텍스트로 표현하기 힘든 '표'와 '차트/이미지'는 원본 그대로 캡처(Crop)합니다.
-#    - 로컬 LLM(Ollama Llama 3.2 Vision)에게 이미지를 보내 상세한 설명이나
-#      Markdown 표 포맷으로 변환을 요청합니다.
+#    - Tables and charts/images that are hard to express as text are cropped
+#      from the original.
+#    - A local LLM (Ollama Llama 3.2 Vision) is asked to convert them into
+#      a detailed description or Markdown table.
 #
 # 3. Merge (Reconstruction):
-#    - 일반 텍스트(OCR)와 Vision 분석 결과를 Y축 좌표(Reading Order) 순서대로
-#      재배치하여, 사람이 읽는 순서와 동일한 하나의 Markdown 문서를 완성합니다.
+#    - The plain text (OCR) and the vision analysis output are reassembled
+#      in Y-axis (reading-order) sequence to produce a single Markdown
+#      document that follows the human reading order.
 #
-# [실행 모드]
-# 1. convert: 원본 문서를 읽어 Markdown으로 변환하여 로컬에 저장합니다.
-# 2. upload: 변환된 Markdown 파일을 Dify Knowledge Base API로 전송합니다.
+# [Run modes]
+# 1. convert: read source documents and convert them to Markdown locally.
+# 2. upload:  send the converted Markdown files to the Dify Knowledge Base API.
 # ==================================================================================
 
 import os
@@ -41,230 +45,236 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 from operator import itemgetter
 
-# 외부 라이브러리 의존성
-import requests  # API 호출용
-import fitz      # PDF 처리를 위한 PyMuPDF 라이브러리
+# External library dependencies
+import requests  # HTTP API calls
+import fitz      # PyMuPDF for PDF processing
 
 # ============================================================================
-# [설정] 환경 변수 및 고정 경로 설정
+# [Config] Environment variables and fixed paths
 # ============================================================================
 
-# 원본 문서가 위치한 디렉터리 (Jenkins 볼륨 마운트 경로)
+# Directory of source documents (Jenkins volume mount path)
 SOURCE_DIR = "/var/knowledges/docs/org"
 
-# 변환된 Markdown 파일이 저장될 디렉터리
+# Directory where converted Markdown files are saved
 RESULT_DIR = "/var/knowledges/docs/result"
 
-# Dify API 접속 주소
-# Jenkins 컨테이너 내부에서 Dify API 컨테이너("api")로 접속합니다.
+# Dify API endpoint
+# The Jenkins container talks to the Dify API container ("api") internally.
 DIFY_API_BASE = os.getenv("DIFY_API_BASE", "http://api:5001/v1")
 
-# Ollama Vision API 설정
-# Jenkins는 컨테이너 내부에서 돌고, Ollama는 호스트 머신(Mac 등)에서 실행 중.
-# Mac Docker Desktop: host.docker.internal 자동 해석.
-# Linux: docker-compose 의 extra_hosts 로 매핑 필요. 환경 상이 시 OLLAMA_API_URL env 로 override.
+# Ollama Vision API config
+# Jenkins runs inside a container; Ollama runs on the host machine (Mac, etc.).
+# Mac Docker Desktop: host.docker.internal resolves automatically.
+# Linux: docker-compose extra_hosts mapping required. Override with the
+# OLLAMA_API_URL env var if the environment differs.
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://host.docker.internal:11434/api/generate")
 
-# 사용할 Vision 모델명 (override 가능)
-# 사전에 호스트 머신에서 'ollama pull llama3.2-vision' 명령어로 모델을 받아둬야 함.
+# Vision model name to use (overridable)
+# The model must be pulled on the host beforehand: `ollama pull llama3.2-vision`.
 VISION_MODEL = os.getenv("VISION_MODEL", "llama3.2-vision:latest")
 
-# Dify text document upload 안정성 튜닝
-# NodeGoat 같이 청크 수가 많은 레포는 연속 업로드 도중 reverse proxy/API 가
-# 간헐적으로 연결을 끊는 경우가 있어 짧은 throttle + retry 를 적용한다.
+# Stability tuning for Dify text-document upload
+# Repos with many chunks (e.g. NodeGoat) sometimes have the reverse
+# proxy / API drop the connection mid-upload, so we apply a short throttle
+# and retry.
 DOC_UPLOAD_RETRIES = int(os.getenv("DOC_UPLOAD_RETRIES", "3"))
 DOC_UPLOAD_RETRY_BACKOFF_SEC = float(os.getenv("DOC_UPLOAD_RETRY_BACKOFF_SEC", "2"))
 DOC_UPLOAD_THROTTLE_MS = int(os.getenv("DOC_UPLOAD_THROTTLE_MS", "150"))
 
 # ============================================================================
-# [유틸리티] 공통 헬퍼 함수
+# [Utility] Common helpers
 # ============================================================================
 
 def log(msg: str) -> None:
     """
-    Jenkins Console Output에서 로그를 명확하게 보기 위한 함수입니다.
-    flush=True를 사용하여 버퍼링 없이 즉시 출력합니다.
+    Helper to make logs stand out in Jenkins Console Output.
+    Uses flush=True for unbuffered immediate output.
     """
     print(f"[DocProcessor] {msg}", flush=True)
 
 def safe_read_text(path: Path, max_bytes: int = 5_000_000) -> str:
     """
-    파일을 읽을 때 발생할 수 있는 인코딩 오류와 메모리 문제를 방지합니다.
-    
+    Avoid encoding errors and memory issues when reading a file.
+
     Args:
-        path: 읽을 파일의 경로
-        max_bytes: 최대 읽기 허용 바이트 (기본 5MB). 
-                   너무 큰 텍스트 파일은 RAG 청킹 과정에서 비효율적이므로 제한합니다.
-    
+        path: file path to read
+        max_bytes: maximum read bytes (default 5MB).
+                   Very large text files are inefficient during RAG chunking,
+                   so we cap them.
+
     Returns:
-        UTF-8로 디코딩된 문자열 (오류 발생 시 빈 문자열 반환)
+        UTF-8 decoded string (empty string on error)
     """
     try:
         data = path.read_bytes()
-        # 파일 크기 제한 적용
+        # Apply file size limit
         data = data[:max_bytes]
-        # errors='ignore'로 설정하여 이모지나 특수문자 깨짐으로 인한 중단을 방지합니다.
+        # errors='ignore' avoids aborting on emoji or special-character corruption.
         return data.decode("utf-8", errors="ignore")
     except Exception as e:
-        log(f"[Warn] 파일 읽기 실패: {path.name} / {e}")
+        log(f"[Warn] file read failed: {path.name} / {e}")
         return ""
 
 def write_text(path: Path, content: str) -> None:
     """
-    문자열을 파일로 저장합니다. 
-    저장 경로의 부모 디렉터리가 없으면 자동으로 생성합니다.
+    Write a string to file.
+    Creates the parent directory automatically if it does not exist.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
 # ============================================================================
-# [Core 1] Vision Analysis Logic (Ollama 연동)
+# [Core 1] Vision Analysis Logic (Ollama integration)
 # ============================================================================
 
 def analyze_image_region(image_bytes: bytes, prompt: str) -> str:
     """
-    이미지 데이터를 Ollama Vision 모델(Llama 3.2 Vision)에게 보내 분석 결과를 받습니다.
-    표(Table)나 차트처럼 텍스트 추출이 어려운 영역을 처리하는 데 사용됩니다.
-    
+    Send image data to the Ollama Vision model (Llama 3.2 Vision) for analysis.
+    Used for regions where text extraction is hard, such as tables and charts.
+
     Args:
-        prompt: Vision 모델에게 지시할 명령어 (예: "이 표를 마크다운으로 바꿔줘")
-        
+        prompt: instruction for the Vision model (e.g. "convert this table to markdown")
+
     Returns:
-        모델이 생성한 텍스트 설명 (Markdown 형식)
+        Text description generated by the model (Markdown format)
     """
     try:
-        # 1. API 전송을 위해 이미지 바이트를 Base64 문자열로 인코딩합니다.
+        # 1. Base64-encode the image bytes for API transport.
         img_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        
-        # 2. Ollama API 요청 페이로드를 구성합니다.
+
+        # 2. Build the Ollama API request payload.
         payload = {
             "model": VISION_MODEL,
             "prompt": prompt,
-            "stream": False,    # 스트리밍을 끄고 전체 응답을 한 번에 받습니다.
+            "stream": False,    # disable streaming, receive the full response at once
             "images": [img_b64],
             "options": {
-                # temperature를 낮게 설정(0.1)하여 모델의 창의성을 억제합니다.
-                # 문서 변환은 사실적인 데이터 추출이 중요하기 때문입니다.
+                # Low temperature (0.1) suppresses model creativity.
+                # Document conversion is about extracting factual data.
                 "temperature": 0.1,
-                # 이미지 분석은 텍스트가 길어질 수 있으므로 컨텍스트 윈도우를 확보합니다.
+                # Image analysis can produce long text — secure the context window.
                 "num_ctx": 2048
             }
         }
-        
-        # 3. API 호출 (타임아웃 3분)
-        # Vision 모델은 추론 연산량이 많아 응답 시간이 오래 걸릴 수 있습니다.
+
+        # 3. API call (3 minute timeout).
+        # Vision models are inference-heavy, so responses can take a while.
         r = requests.post(OLLAMA_API_URL, json=payload, timeout=180)
-        r.raise_for_status()  # HTTP 4xx/5xx 에러 발생 시 예외 처리
-        
-        # 4. 결과 추출
+        r.raise_for_status()  # raise on HTTP 4xx/5xx
+
+        # 4. Extract the result.
         data = r.json()
         return data.get("response", "").strip()
-        
+
     except Exception as e:
-        log(f"!! [Vision Error] 분석 실패: {e}")
-        # 실패하더라도 전체 프로세스가 죽지 않도록 에러 메시지를 반환합니다.
+        log(f"!! [Vision Error] analysis failed: {e}")
+        # Even on failure, return an error message so the whole process keeps going.
         return "(Vision analysis failed for this region)"
 
 # ============================================================================
-# [Core 2] Hybrid PDF Converter (핵심 변환 엔진)
+# [Core 2] Hybrid PDF Converter (the main conversion engine)
 # ============================================================================
 
 def pdf_to_markdown_hybrid(pdf_path: Path) -> str:
     """
-    텍스트 추출과 비전 분석을 결합한 하이브리드 변환 엔진입니다.
-    1. 일반 텍스트는 PyMuPDF로 빠르게 추출합니다.
-    2. 표와 이미지는 캡처하여 Ollama Vision으로 정밀 분석합니다.
-    3. 모든 요소를 원래 문서의 좌표(Y축) 순서대로 재배치하여 읽기 순서를 복원합니다.
+    Hybrid conversion engine combining text extraction and vision analysis.
+    1. Plain text is extracted quickly via PyMuPDF.
+    2. Tables and images are captured and analyzed precisely via Ollama Vision.
+    3. All elements are reordered by their original Y-axis position to restore
+       the reading order.
     """
     start_time = time.time()
-    # PyMuPDF로 문서를 엽니다.
+    # Open the document with PyMuPDF.
     doc = fitz.open(str(pdf_path))
-    full_doc = []  # 전체 페이지의 변환 결과를 담을 리스트
-    
+    full_doc = []  # collected results across all pages
+
     total_pages = len(doc)
     log(f"[Hybrid] Processing Start: {pdf_path.name} (Total Pages: {total_pages})")
 
-    # 각 페이지 순회 (1페이지부터 시작)
+    # Iterate through each page (1-indexed).
     for page_num, page in enumerate(doc, start=1):
         log(f"  Processing Page {page_num}/{total_pages}...")
-        
-        # 페이지 내 추출된 요소들을 저장할 리스트
-        # 구조: {'y': Y축좌표, 'type': 'text'|'table'|'image', 'content': 'Markdown내용'}
+
+        # List of elements extracted from this page.
+        # Shape: {'y': y_coord, 'type': 'text'|'table'|'image', 'content': 'markdown content'}
         page_content = []
-        
+
         # --------------------------------------------------------------------
-        # Pass 1-1: 표(Table) 영역 감지 (Priority 1)
+        # Pass 1-1: Detect tables (Priority 1)
         # --------------------------------------------------------------------
-        # 이유: 표는 텍스트 추출 시 행/열 구조가 깨지기 가장 쉽습니다.
-        # 따라서 PyMuPDF의 'find_tables' 기능을 이용해 표 영역 좌표(bbox)를 먼저 찾습니다.
+        # Reason: tables are the most likely to lose their row/column structure
+        # during text extraction. We use PyMuPDF's `find_tables` to grab the
+        # table region coordinates (bbox) first.
         tables = page.find_tables()
         table_rects = [tab.bbox for tab in tables]
         log(f"    [Step 1] Detected {len(table_rects)} tables.")
-        
+
         for rect in table_rects:
-            # 감지된 표 영역을 이미지로 잘라냅니다 (Crop).
+            # Crop the detected table region as an image.
             pix = page.get_pixmap(clip=rect)
             img_bytes = pix.tobytes("png")
-            
+
             v_start = time.time()
             log(f"    -> [Vision:Table] Analyzing region at Y={rect[1]:.1f}...")
-            
-            # Vision 모델에게 "이미지만 보고 마크다운 표를 만들어달라"고 요청합니다.
+
+            # Ask the Vision model "look at the image and produce a markdown table".
             md_table = analyze_image_region(
-                img_bytes, 
+                img_bytes,
                 "Convert this table image into a Markdown table format. Only output the table, no description."
             )
             log(f"    <- [Vision:Table] Done ({time.time() - v_start:.2f}s)")
-            
-            # 결과 저장 (좌표 포함)
+
+            # Store the result (with coordinates).
             page_content.append({
-                "y": rect[1],    # 정렬 기준이 될 상단 Y 좌표
+                "y": rect[1],    # top Y coordinate used for sorting
                 "type": "table",
                 "content": f"\n{md_table}\n"
             })
 
         # --------------------------------------------------------------------
-        # Pass 1-2: 텍스트 및 이미지 블록 추출 (Priority 2)
+        # Pass 1-2: Extract text and image blocks (Priority 2)
         # --------------------------------------------------------------------
-        # get_text("dict") 모드는 페이지 내용을 블록 단위 구조체로 반환합니다.
-        # blocks 리스트에는 텍스트 블록과 이미지 블록이 섞여 있습니다.
+        # get_text("dict") mode returns the page contents as block-level structures.
+        # The blocks list mixes text blocks and image blocks.
         blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)["blocks"]
-        
+
         text_count = 0
         image_count = 0
-        
+
         for block in blocks:
-            # 블록의 좌표(bbox)를 가져옵니다.
+            # Read the block's coordinates (bbox).
             bbox = fitz.Rect(block["bbox"])
-            
-            # [중요: 중복 방지 필터링]
-            # 현재 처리 중인 블록이 앞서 감지한 '표 영역' 안에 포함되는지 확인합니다.
-            # 표 영역 안에 있는 텍스트는 이미 Vision 모델이 표로 변환했습니다.
-            # 따라서 여기서 또 추출하면 내용이 중복되므로 건너뛰어야(Skip) 합니다.
+
+            # [Important: dedup filter]
+            # Check whether the current block sits inside one of the previously
+            # detected table regions. Any text inside a table has already been
+            # turned into a table by the Vision model, so extracting it again
+            # would duplicate content — skip it.
             is_inside_table = False
             for t_rect in table_rects:
-                # 두 영역의 교차 영역을 계산합니다.
+                # Compute the intersection of the two regions.
                 intersect = bbox.intersect(fitz.Rect(t_rect))
-                # 블록 면적의 80% 이상이 표 영역과 겹치면 표의 일부로 간주합니다.
+                # Treat the block as part of the table when ≥80% of its area overlaps.
                 if intersect.get_area() > 0.8 * bbox.get_area():
                     is_inside_table = True
                     break
-            
+
             if is_inside_table:
                 continue
 
             # ----------------------------------------------------------------
-            # Case A: 텍스트 블록 처리 (type=0)
+            # Case A: Text block (type=0)
             # ----------------------------------------------------------------
-            if block["type"] == 0: 
+            if block["type"] == 0:
                 text = ""
-                # 텍스트 블록은 여러 라인(lines)과 스팬(spans)으로 구성됩니다.
+                # A text block is composed of multiple lines and spans.
                 for line in block["lines"]:
                     for span in line["spans"]:
                         text += span["text"] + " "
                     text += "\n"
-                
-                # 내용이 있는 경우에만 추가합니다.
+
+                # Append only when we have content.
                 if text.strip():
                     page_content.append({
                         "y": bbox.y0,
@@ -274,30 +284,31 @@ def pdf_to_markdown_hybrid(pdf_path: Path) -> str:
                     text_count += 1
 
             # ----------------------------------------------------------------
-            # Case B: 이미지 블록 처리 (type=1)
+            # Case B: Image block (type=1)
             # ----------------------------------------------------------------
             elif block["type"] == 1:
-                # [노이즈 필터링]
-                # 문서에는 아이콘, 장식선, 배경 등 의미 없는 작은 이미지가 많습니다.
-                # 가로/세로가 50px 미만인 이미지는 분석 가치가 없다고 판단하여 무시합니다.
+                # [Noise filter]
+                # Documents contain many small meaningless images: icons,
+                # decorative lines, backgrounds. Ignore images smaller than
+                # 50px in either dimension — not worth analyzing.
                 width = bbox[2] - bbox[0]
                 height = bbox[3] - bbox[1]
                 if width < 50 or height < 50:
                     continue
-                
+
                 img_bytes = block["image"]
-                
+
                 v_start = time.time()
                 log(f"    -> [Vision:Image] Analyzing region at Y={bbox.y0:.1f}...")
-                
-                # Vision 모델에게 이미지 설명을 요청합니다.
+
+                # Ask the Vision model for an image description.
                 desc = analyze_image_region(
                     img_bytes,
                     "Describe this image in detail. If it's a chart, summarize the data trends."
                 )
                 log(f"    <- [Vision:Image] Done ({time.time() - v_start:.2f}s)")
-                
-                # 이미지는 인용구(>) 형식으로 마크다운에 삽입하여 구분합니다.
+
+                # Insert the image as a blockquote (>) so it stands out in markdown.
                 page_content.append({
                     "y": bbox.y0,
                     "type": "image",
@@ -308,13 +319,14 @@ def pdf_to_markdown_hybrid(pdf_path: Path) -> str:
         log(f"    [Step 2] Extracted {text_count} text blocks and {image_count} images (filtered).")
 
         # --------------------------------------------------------------------
-        # Pass 2: 병합 (Merge & Sort)
+        # Pass 2: Merge & Sort
         # --------------------------------------------------------------------
-        # 수집된 모든 요소(텍스트, 표, 이미지 설명)를 Y축 좌표(문서 위->아래) 순서로 정렬합니다.
-        # 이를 통해 문서의 원래 읽는 순서(Reading Order)를 복원합니다.
+        # Sort all collected elements (text, tables, image descriptions) by
+        # Y-axis (top → bottom) order. This restores the document's original
+        # reading order.
         page_content.sort(key=itemgetter("y"))
-        
-        # 정렬된 요소들의 내용을 하나로 합칩니다.
+
+        # Concatenate the contents of the sorted elements.
         page_md = f"## Page {page_num}\n\n"
         page_md += "\n".join([item["content"] for item in page_content])
         full_doc.append(page_md)
@@ -322,63 +334,63 @@ def pdf_to_markdown_hybrid(pdf_path: Path) -> str:
 
     doc.close()
     log(f"[Hybrid] Finished: {pdf_path.name} (Elapsed: {time.time() - start_time:.2f}s)")
-    
-    # 전체 페이지 내용을 구분선으로 연결하여 반환합니다.
+
+    # Join page contents with horizontal rules.
     title = pdf_path.name
     body = "\n\n---\n\n".join(full_doc)
     return f"# {title}\n\n{body}\n"
 
 # ============================================================================
-# [유틸리티] 일반 문서 포맷 변환기 (Legacy Support)
+# [Utility] Generic document format converters (legacy support)
 # ============================================================================
 
 def docx_to_markdown(docx_path: Path) -> str:
-    """DOCX 파일을 텍스트만 추출하여 Markdown으로 변환합니다."""
+    """Convert a DOCX file to Markdown by extracting text only."""
     try:
         from docx import Document
         d = Document(str(docx_path))
-        # 빈 줄을 제외하고 모든 문단을 추출합니다.
+        # Pull every non-empty paragraph.
         lines = [p.text.strip() for p in d.paragraphs if p.text.strip()]
         if not lines: return ""
         return f"# {docx_path.name}\n\n" + "\n\n".join(lines) + "\n"
     except Exception as e:
-        log(f"[Warn] DOCX 변환 실패: {e}")
+        log(f"[Warn] DOCX conversion failed: {e}")
         return ""
 
 def excel_to_markdown(xls_path: Path) -> str:
-    """Excel 파일의 각 시트를 Markdown 표 형태로 변환합니다."""
+    """Convert each Excel sheet to a Markdown table."""
     try:
         import pandas as pd
-        # 모든 시트를 읽어옵니다.
+        # Read every sheet.
         sheets = pd.read_excel(str(xls_path), sheet_name=None)
         if not sheets: return ""
-        
+
         out = [f"# {xls_path.name}\n"]
         for sheet_name, df in sheets.items():
             out.append(f"## Sheet: {sheet_name}\n")
-            # pandas의 to_markdown 기능을 활용합니다.
+            # Use pandas to_markdown.
             out.append(df.to_markdown(index=False))
             out.append("\n")
         return "\n".join(out).strip() + "\n"
     except Exception as e:
-        log(f"[Warn] Excel 변환 실패: {e}")
+        log(f"[Warn] Excel conversion failed: {e}")
         return ""
 
 def pptx_to_pdf(pptx_path: Path, out_dir: Path) -> Optional[Path]:
     """
-    PPTX 파일을 PDF로 변환합니다.
-    
-    이유: 
-    PPTX 라이브러리로 텍스트를 직접 추출하면 레이아웃 순서가 뒤죽박죽이 되고,
-    도표나 차트 데이터를 놓치기 쉽습니다.
-    대신 LibreOffice를 사용해 PDF로 '인쇄'하듯 변환하면 레이아웃이 고정되므로,
-    이후 Hybrid Pipeline으로 처리하기 최적의 상태가 됩니다.
+    Convert a PPTX file to PDF.
+
+    Why:
+    Pulling text directly from a PPTX library produces a jumbled layout order
+    and tends to miss diagram/chart data. Using LibreOffice to "print" to PDF
+    locks the layout in place, putting the file in the best state for the
+    Hybrid Pipeline downstream.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    # 변환될 PDF 파일의 예상 경로
+    # Expected path of the converted PDF.
     expected_pdf = out_dir / (pptx_path.stem + ".pdf")
-    
-    # LibreOffice Headless 모드 실행 명령어
+
+    # LibreOffice headless conversion command.
     cmd = [
         "soffice", "--headless", "--nologo", "--nolockcheck", "--norestore",
         "--convert-to", "pdf", "--outdir", str(out_dir), str(pptx_path),
@@ -386,23 +398,23 @@ def pptx_to_pdf(pptx_path: Path, out_dir: Path) -> Optional[Path]:
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as e:
-        log(f"[Warn] PPTX -> PDF 변환 실패 (LibreOffice 확인 필요): {e}")
+        log(f"[Warn] PPTX -> PDF conversion failed (check LibreOffice): {e}")
         return None
-    
+
     if expected_pdf.exists():
         return expected_pdf
     return None
 
 # ============================================================================
-# [실행 모드 1] 변환 로직 (Convert)
+# [Run mode 1] Convert
 # ============================================================================
 
 def convert_one(src_path: Path) -> None:
-    """단일 파일에 대해 파일 확장자를 확인하고 적절한 변환기를 호출합니다."""
+    """Inspect a single file's extension and dispatch to the right converter."""
     start_time = time.time()
     ext = src_path.suffix.lower()
-    
-    # 1. PDF 처리 (Hybrid Vision 적용)
+
+    # 1. PDF (Hybrid Vision applied)
     if ext == ".pdf":
         log(f"[Target] PDF Detected: {src_path.name}")
         md = pdf_to_markdown_hybrid(src_path)
@@ -411,14 +423,15 @@ def convert_one(src_path: Path) -> None:
             write_text(out, md)
             log(f"[Success] {src_path.name} -> {out.name} ({time.time() - start_time:.2f}s)")
         return
-    
-    # 2. PPTX 처리 (PDF 변환 -> Hybrid Vision 적용)
-    # PPTX는 시각적 요소가 중요하므로 PDF로 1차 변환 후 Hybrid 엔진을 태웁니다.
+
+    # 2. PPTX (PDF conversion → Hybrid Vision)
+    # Visual elements matter for PPTX, so convert to PDF first and then run
+    # the Hybrid engine.
     if ext == ".pptx":
         log(f"[Target] PPTX Detected: {src_path.name} -> Converting to PDF first...")
         pdf = pptx_to_pdf(src_path, Path(RESULT_DIR))
         if pdf:
-            # 변환된 PDF를 대상으로 Hybrid 로직 실행
+            # Run Hybrid logic on the converted PDF.
             md = pdf_to_markdown_hybrid(pdf)
             if md:
                 out = Path(RESULT_DIR) / f"{src_path.name}.md"
@@ -426,7 +439,7 @@ def convert_one(src_path: Path) -> None:
                 log(f"[Success] {src_path.name} -> {out.name} ({time.time() - start_time:.2f}s)")
         return
 
-    # 3. 기타 텍스트 포맷 처리 (단순 추출)
+    # 3. Other text formats (simple extraction)
     if ext == ".docx":
         md = docx_to_markdown(src_path)
         if md:
@@ -434,7 +447,7 @@ def convert_one(src_path: Path) -> None:
             write_text(out, md)
             log(f"[Success] {src_path.name} -> {out.name} ({time.time() - start_time:.2f}s)")
         return
-    
+
     if ext in [".xlsx", ".xls"]:
         md = excel_to_markdown(src_path)
         if md:
@@ -442,7 +455,7 @@ def convert_one(src_path: Path) -> None:
             write_text(out, md)
             log(f"[Success] {src_path.name} -> {out.name} ({time.time() - start_time:.2f}s)")
         return
-    
+
     if ext == ".txt":
         text = safe_read_text(src_path)
         if text.strip():
@@ -452,7 +465,7 @@ def convert_one(src_path: Path) -> None:
             log(f"[Success] {src_path.name} -> {out.name} ({time.time() - start_time:.2f}s)")
         return
 
-    # 4. 이미 마크다운인 경우 (단순 복사 및 검증)
+    # 4. Already markdown (just copy/verify)
     if ext == ".md":
         text = safe_read_text(src_path)
         if text.strip():
@@ -462,58 +475,59 @@ def convert_one(src_path: Path) -> None:
         return
 
 def convert_all() -> None:
-    """SOURCE_DIR의 모든 파일을 검색하여 변환을 수행하는 메인 루프입니다."""
+    """Main loop that walks every file under SOURCE_DIR and converts it."""
     log("=== [Hybrid Doc Processor] Convert Start ===")
-    
-    # 결과 디렉터리가 없으면 생성
+
+    # Create the result directory if missing.
     os.makedirs(RESULT_DIR, exist_ok=True)
     src_root = Path(SOURCE_DIR)
-    
-    # 재귀적으로 파일 탐색
+
+    # Recursive file walk.
     for root, _, files in os.walk(src_root):
         for name in files:
             p = Path(root) / name
-            # 지원하는 확장자 필터링 (.md 포함)
+            # Filter on supported extensions (.md included).
             if p.suffix.lower() in [".pdf", ".docx", ".xlsx", ".xls", ".txt", ".pptx", ".md"]:
                 convert_one(p)
-                
+
     log("=== [Hybrid Doc Processor] Convert Done ===")
 
 # ============================================================================
-# [실행 모드 2] 업로드 로직 (Upload)
+# [Run mode 2] Upload
 # ============================================================================
 
 def dify_headers(api_key: str) -> dict:
-    """Dify API 호출을 위한 인증 헤더를 생성합니다."""
+    """Build the auth headers for Dify API calls."""
     return {"Authorization": f"Bearer {api_key}"}
 
 def get_dataset_doc_form(api_key: str, dataset_id: str) -> str:
     """
-    Dify Dataset의 설정(문서 형식)을 조회합니다.
-    사용자가 '문서형' Dataset에 'Q&A' 데이터를 넣으려는 실수를 방지하기 위함입니다.
+    Fetch the Dify dataset configuration (document form).
+    Prevents the user from putting Q&A-style data into a 'document' dataset
+    by accident.
     """
     url = f"{DIFY_API_BASE}/datasets/{dataset_id}"
     r = requests.get(url, headers=dify_headers(api_key), timeout=60)
     if r.status_code == 200:
         return str(r.json().get("doc_form", ""))
     else:
-        log(f"[Warn] 데이터셋 정보를 가져올 수 없습니다. (Status: {r.status_code})")
+        log(f"[Warn] could not fetch dataset info. (Status: {r.status_code})")
         return ""
 
 def ensure_doc_form_matches(api_key: str, dataset_id: str, expected_doc_form: str) -> None:
     """
-    Dataset의 실제 설정과 업로드하려는 데이터 형식이 일치하는지 검증합니다.
-    정보를 가져올 수 없는 경우 검증을 건너뛰고 진행합니다.
+    Verify the dataset's actual configuration matches the format we are uploading.
+    If we cannot read the configuration we skip validation and continue.
     """
     try:
         actual = get_dataset_doc_form(api_key, dataset_id)
         if actual and actual != expected_doc_form:
-            log(f"[Warn] Dataset 설정 불일치 감지 (DB={actual} / 요청={expected_doc_form}). 업로드를 강행합니다.")
+            log(f"[Warn] dataset config mismatch (DB={actual} / requested={expected_doc_form}). proceeding anyway.")
     except Exception as e:
-        log(f"[Warn] 사전 검증 중 오류 발생: {e}. 검증 없이 진행합니다.")
+        log(f"[Warn] error during pre-check: {e}. proceeding without validation.")
 
 def _get_dataset_indexing_technique(api_key: str, dataset_id: str) -> str:
-    """Dataset 에서 indexing_technique 을 조회. high_quality/economy 중 하나. 실패 시 economy."""
+    """Read indexing_technique from the dataset. Either high_quality or economy. Falls back to economy."""
     url = f"{DIFY_API_BASE}/datasets/{dataset_id}"
     try:
         r = requests.get(url, headers=dify_headers(api_key), timeout=30)
@@ -535,9 +549,10 @@ def upload_text_document(
     doc_language: str,
     indexing_technique: str = None,
 ) -> Tuple[bool, str]:
-    """Dify 의 '텍스트로 문서 만들기' API 호출.
+    """Call Dify's 'create document by text' API.
 
-    indexing_technique 미지정 시 Dataset 설정에서 조회 (high_quality / economy 지원).
+    When indexing_technique is unspecified, read it from the dataset config
+    (supports high_quality / economy).
     """
     url = f"{DIFY_API_BASE}/datasets/{dataset_id}/document/create-by-text"
 
@@ -600,12 +615,14 @@ def upload_text_document(
     return False, f"upload failed after retries: {last_err}"
 
 
-# Fix B — Dify 기본 automatic_mode segmentation (~1024 tokens, ≈ 3~4KB) 보다
-# 긴 청크는 여러 segment 로 쪼개지며, footer 가 한 segment 에만 몰리고 다른
-# segment 는 code-only 로 저장돼 context_filter 의 parse_footer 가 path/symbol
-# 을 못 뽑아 `?::?` 로 표기되는 문제 관측. code 본문을 상한으로 자른다.
-# head 70% + tail 30% 전략 — signature / 초반 흐름과 return / 후반 흐름을
-# 동시에 보존해 대부분의 분석 맥락을 유지. 가운데 잘림 표시를 남긴다.
+# Fix B — Dify's default automatic_mode segmentation (~1024 tokens, ≈ 3-4KB)
+# splits long chunks across multiple segments, with the footer landing on a
+# single segment while the others end up code-only. context_filter's
+# parse_footer then cannot extract path/symbol and renders them as `?::?`.
+# We cap the code body to keep it on one segment.
+# head 70% + tail 30% strategy — preserves the signature/early flow plus the
+# return/late flow so most analysis context is retained. A truncation marker
+# is inserted in the middle.
 MAX_CODE_CHARS_PER_CHUNK = int(os.environ.get("DOC_PROCESSOR_MAX_CODE_CHARS", "2200"))
 
 
@@ -613,7 +630,7 @@ def _truncate_code_for_single_segment(code: str, cap: int = MAX_CODE_CHARS_PER_C
     if not code or len(code) <= cap:
         return code
     head_budget = int(cap * 0.7)
-    tail_budget = cap - head_budget - 40  # 잘림 표시 라인 여백
+    tail_budget = cap - head_budget - 40  # leave room for the truncation marker line
     if tail_budget < 0:
         tail_budget = 0
     trimmed_middle = len(code) - head_budget - tail_budget
@@ -622,10 +639,11 @@ def _truncate_code_for_single_segment(code: str, cap: int = MAX_CODE_CHARS_PER_C
 
 
 def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
-    """JSONL 청크 → (document_name, document_text).
+    """JSONL chunk → (document_name, document_text).
 
-    document_name: "<path>::<symbol>" (Dify UI 에서 파일별 그룹핑 보기 좋음)
-    document_text: 청크의 code 본문 + metadata footer (retrieval 시 BM25/임베딩 매칭 대상 확장)
+    document_name: "<path>::<symbol>" (groups well by file in the Dify UI)
+    document_text: chunk's code body + metadata footer (broadens the
+    BM25/embedding match surface during retrieval)
     """
     path = chunk.get("path", "unknown")
     symbol = chunk.get("symbol", "?")
@@ -641,13 +659,14 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     doc = (chunk.get("doc") or "").strip()
 
     name = f"{path}::{symbol}"
-    # Dify document name 길이 제한 대비 (100자 내외)
+    # Handle Dify document name length limit (~100 chars).
     if len(name) > 120:
         name = name[:117] + "..."
 
-    # 본문 footer 에 metadata 추가 — retrieval 쿼리 매칭 면적 확대.
-    # is_test / callers / test_paths 는 Dify BM25 검색이 metadata 도 토큰화하므로
-    # build_kb_query 가 생성하는 구조화 쿼리 ("callers: loginUser" 등) 와 매칭된다.
+    # Append metadata to the body footer — broadens the retrieval match surface.
+    # Dify BM25 search tokenizes metadata, so is_test / callers / test_paths
+    # match the structured queries produced by build_kb_query (e.g.
+    # "callers: loginUser").
     meta_lines = [
         "",
         "---",
@@ -660,17 +679,18 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
     if commit_sha:
         meta_lines.append(f"commit_sha: {commit_sha[:12]}")
     if doc:
-        # P2 K-4 — leading docstring/comment. 자연어 의도가 BM25/dense 양쪽
-        # 임베딩에 노출되어 코드 식별자만으로는 약한 의미 매칭 보완.
+        # P2 K-4 — leading docstring/comment. Exposes natural-language intent
+        # to both BM25 and dense embeddings, complementing the weak semantic
+        # match of code identifiers alone.
         meta_lines.append(f"doc: {doc}")
     if is_test:
         meta_lines.append("is_test: true")
-        # D3 — test 청크 footer 에 자연어 동의어 강제 주입.
-        # cypress e2e (`cy.get`) vs DAO (`parseInt`) 처럼 vocabulary 가 멀어
-        # tests bucket 0% 가 되는 문제 (관측). 자연어 토큰 한 줄로 BM25 / dense
-        # 양쪽에서 caller 코드 측의 "테스트", "검증", "spec" 같은 의도 자연어와
-        # 매칭 가능하게.
-        meta_lines.append("tags: 테스트 검증 시나리오 spec assertion test e2e cypress unit integration")
+        # D3 — inject natural-language synonyms into the test-chunk footer.
+        # The vocabulary distance between cypress e2e (`cy.get`) and DAO
+        # (`parseInt`) makes the tests bucket fall to 0% (observed). One
+        # natural-language token line lets BM25 and dense both match the
+        # caller-side intent words ("test", "verification", "spec", ...).
+        meta_lines.append("tags: test verification scenario spec assertion test e2e cypress unit integration")
     if test_for:
         meta_lines.append(f"test_for: {test_for}")
     if callees:
@@ -679,19 +699,20 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
         meta_lines.append(f"callers: {', '.join(callers[:20])}")
     if test_paths:
         meta_lines.append(f"test_paths: {', '.join(test_paths[:10])}")
-    # D — decorator 정보. 보안/auth/route 의도가 청크 매칭 면적에 노출.
+    # D — decorator info. Exposes security/auth/route intent on the chunk match surface.
     decorators = chunk.get("decorators") or []
     if decorators:
         meta_lines.append(f"decorators: {' '.join(decorators[:5])}")
-    # C — endpoint (HTTP route). decorator 또는 명령형 등록에서 추출됨.
+    # C — endpoint (HTTP route). Extracted from decorator or imperative registration.
     endpoint = (chunk.get("endpoint") or "").strip()
     if endpoint:
         meta_lines.append(f"endpoint: {endpoint}")
-    # H — docstring 구조화. params/returns/throws 토큰화로 dense + BM25 양쪽
-    # 매칭 가능. caller 코드 측의 "이 함수는 어떤 매개변수를 받는가" 검색 신호.
+    # H — structured docstring. Tokenizing params/returns/throws lets both
+    # dense and BM25 match. Caller-side queries like "what parameters does
+    # this function take" gain a search signal.
     doc_params = chunk.get("doc_params") or []
     if doc_params:
-        # [(type, name, desc), ...] 의 name 만 토큰으로
+        # tokenize only the name from [(type, name, desc), ...]
         param_names = [p[1] for p in doc_params if isinstance(p, (list, tuple)) and len(p) >= 2 and p[1]]
         if param_names:
             meta_lines.append(f"params: {' '.join(param_names[:10])}")
@@ -711,21 +732,23 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
         thr_names = [t for t in thr_names if t]
         if thr_names:
             meta_lines.append(f"throws: {' '.join(thr_names[:5])}")
-    # D1 — _context_summary (enricher 가 LLM 으로 생성한 청크 자연어 요약) 를
-    # footer 에 노출. 코드 식별자 매칭에 약한 케이스 (cypress / e2e 등) 에서
-    # 자연어 임베딩 의미 매칭의 면적을 확대 — caller 코드 측의 "이 함수의
-    # 동작 의도" 와 dense 매칭 가능.
+    # D1 — expose _context_summary (the LLM-generated chunk summary produced
+    # by enricher) in the footer. For cases where identifier matching is weak
+    # (cypress / e2e, etc.), this expands the dense embedding's semantic
+    # match surface — caller-side dense queries like "what is this function's
+    # behavior" can match it.
     summary = (chunk.get("_context_summary") or "").strip()
     if summary:
-        # 너무 길면 footer 비대 — 240자 제한
+        # cap at 240 chars to avoid bloating the footer
         meta_lines.append(f"summary: {summary[:240]}")
-    # A1 (간소판) — e2e/cypress 청크 본문에서 describe(...) / it(...) 의 자연어
-    # 설명을 추출해 footer 에 노출. tree-sitter 파싱 대신 정규식.
+    # A1 (lite) — for e2e/cypress chunks, extract describe(...) / it(...)
+    # natural-language descriptions from the body and surface them in the
+    # footer. Uses a regex instead of tree-sitter parsing.
     if is_test and lang in ("javascript", "typescript", "tsx"):
         import re as _re
         descs = []
         body = chunk.get("code") or ""
-        # describe("...", ...) / it("...", ...) / context("...", ...) 패턴
+        # describe("...", ...) / it("...", ...) / context("...", ...) patterns
         for m in _re.finditer(
                 r"\b(?:describe|it|context|test)\s*\(\s*['\"]([^'\"]{4,140})['\"]",
                 body):
@@ -735,25 +758,26 @@ def _chunk_to_document(chunk: dict) -> Tuple[str, str]:
         if descs:
             meta_lines.append(f"test_descriptions: {' / '.join(descs)}")
 
-    # Fix B — code 본문 상한 적용 후 footer 추가
+    # Fix B — apply the code body cap, then add the footer
     code_body = _truncate_code_for_single_segment(chunk.get("code", ""))
     text = code_body + "\n" + "\n".join(meta_lines)
     return name, text
 
 
-# ─ Fix A — Dataset purge 헬퍼 ─────────────────────────────────────────────
-# 02 사전학습을 --mode full 로 돌릴 때 이전 프로젝트/이전 실행의 잔재 청크가
-# 같은 Dataset 에 누적되면 retrieve 결과에 무관한 프로젝트 청크가 섞여 RAG
-# 품질이 급락한다 (관측: nodegoat + ttc-sample-app 혼재로 citation 2.1%).
-# 업로드 전에 기존 문서를 모두 삭제해 프로젝트 간 격리를 보장.
+# ─ Fix A — Dataset purge helper ──────────────────────────────────────────
+# When 02 pre-training runs in --mode full, leftover chunks from previous
+# projects/runs accumulate in the same dataset; retrieval then mixes
+# unrelated project chunks and RAG quality plummets (observed: nodegoat +
+# ttc-sample-app mixed → citation 2.1%). Delete every existing document
+# before upload to guarantee project-level isolation.
 def purge_dataset_documents(api_key: str, dataset_id: str) -> int:
-    """Dataset 의 모든 document 를 삭제. 삭제 건수 반환."""
-    log("[Purge] 기존 Dataset 문서 전수 삭제 시작")
+    """Delete every document in the dataset. Returns the number deleted."""
+    log("[Purge] start deleting all existing dataset documents")
     import urllib.request
     import urllib.error
     headers = dify_headers(api_key)
     deleted = 0
-    # pagination — 한 번에 최대 100 건씩 조회해 삭제
+    # pagination — list and delete up to 100 at a time
     while True:
         list_url = f"{DIFY_API_BASE}/datasets/{dataset_id}/documents?page=1&limit=100"
         req = urllib.request.Request(list_url, headers=headers, method="GET")
@@ -764,7 +788,7 @@ def purge_dataset_documents(api_key: str, dataset_id: str) -> int:
             log(f"[Purge:WARN] document list HTTP {e.code}")
             break
         except Exception as e:
-            log(f"[Purge:WARN] document list 실패: {e}")
+            log(f"[Purge:WARN] document list failed: {e}")
             break
         items = data.get("data") or []
         if not items:
@@ -779,15 +803,15 @@ def purge_dataset_documents(api_key: str, dataset_id: str) -> int:
                 urllib.request.urlopen(del_req, timeout=30).read()
                 deleted += 1
                 if deleted % 20 == 0:
-                    log(f"[Purge] {deleted} 건 삭제됨...")
+                    log(f"[Purge] {deleted} deleted...")
             except urllib.error.HTTPError as e:
-                log(f"[Purge:WARN] {doc.get('name','?')} 삭제 실패 HTTP {e.code}")
+                log(f"[Purge:WARN] {doc.get('name','?')} delete failed HTTP {e.code}")
             except Exception as e:
-                log(f"[Purge:WARN] {doc.get('name','?')} 삭제 실패: {e}")
-        # 한 페이지 삭제 후 다음 루프에서 다시 list (page=1) — 삭제됐으면 다음 100 건이 올라옴
+                log(f"[Purge:WARN] {doc.get('name','?')} delete failed: {e}")
+        # After deleting a page, list again from page=1 — once deletes go through, the next 100 surface
         if len(items) < 100:
             break
-    log(f"[Purge] 완료 — 총 {deleted} 건 삭제")
+    log(f"[Purge] done — deleted {deleted} total")
     return deleted
 
 
@@ -798,9 +822,9 @@ def upload_jsonl_chunks(
     doc_language: str,
     indexing_technique: str,
 ) -> Tuple[int, int]:
-    """RESULT_DIR 내 *.jsonl 각 line → 하나의 Dify document 로 업로드.
+    """For each line of every *.jsonl file under RESULT_DIR, upload one Dify document.
 
-    반환: (success_count, fail_count)
+    Returns: (success_count, fail_count)
     """
     result_root = Path(RESULT_DIR)
     jsonl_files = sorted(result_root.glob("*.jsonl"))
@@ -833,7 +857,7 @@ def upload_jsonl_chunks(
             )
             if ok:
                 success += 1
-                # 긴 로그 방지 — 10 의 배수만 출력
+                # Avoid log flood — only print every 10th
                 if success % 10 == 1 or success <= 5:
                     log(f"[Upload:SUCCESS] {name} | {detail}")
             else:
@@ -843,10 +867,11 @@ def upload_jsonl_chunks(
 
 
 def _write_kb_manifest(dataset_id: str, doc_count: int, path: str = "/data/kb_manifest.json") -> None:
-    """Phase 1.5 — KB freshness 판정용 manifest.
+    """Phase 1.5 — manifest used to assess KB freshness.
 
-    P2/P3 의 Stage 0 가 이 파일의 commit_sha 를 읽어 현재 요청된 SHA 와 비교한다.
-    필드는 모두 env 에서 읽는다 (Jenkinsfile 가 export):
+    Stage 0 of P2/P3 reads the commit_sha from this file and compares it
+    against the currently requested SHA. All fields are read from env vars
+    (set by the Jenkinsfile):
       KB_MANIFEST_REPO_URL, KB_MANIFEST_BRANCH, KB_MANIFEST_COMMIT_SHA, KB_MANIFEST_ANALYSIS_MODE
     """
     try:
@@ -869,10 +894,11 @@ def _write_kb_manifest(dataset_id: str, doc_count: int, path: str = "/data/kb_ma
 
 def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str,
                purge_first: bool = False) -> int:
-    """RESULT_DIR 의 *.jsonl (AST 청크) + fallback *.md (레거시) 를 Dify 로 업로드.
+    """Upload *.jsonl (AST chunks) under RESULT_DIR plus fallback *.md (legacy) to Dify.
 
-    purge_first=True 일 때 업로드 전에 Dataset 의 기존 문서를 모두 삭제한다.
-    02 --mode full 에서 프로젝트 간 청크 혼재 방지 용도 (Fix A).
+    When purge_first=True, delete every existing document in the dataset
+    before uploading — used in 02 --mode full to keep chunks of different
+    projects from getting mixed (Fix A).
     """
     log("=== [Hybrid Doc Processor] Upload Start ===")
     ensure_doc_form_matches(api_key, dataset_id, doc_form)
@@ -882,22 +908,22 @@ def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str,
 
     result_root = Path(RESULT_DIR)
     if not result_root.exists():
-        log("[FAIL] 변환 결과 디렉터리가 없습니다. 먼저 convert/repo_context_builder 를 실행하세요.")
+        log("[FAIL] no conversion result directory. run convert/repo_context_builder first.")
         return 1
 
     indexing_technique = _get_dataset_indexing_technique(api_key, dataset_id)
     log(f"Dataset indexing_technique: {indexing_technique}")
 
-    # 1) JSONL (AST 청크) 모드 우선 — repo_context_builder 가 만든 파일당 여러 document
+    # 1) Prefer JSONL (AST chunk) mode — multiple documents per file produced by repo_context_builder
     jsonl_success, jsonl_fail = upload_jsonl_chunks(
         api_key, dataset_id, doc_form, doc_language, indexing_technique
     )
 
-    # 2) fallback: 레거시 *.md 업로드 (JSONL 이 없을 때만)
+    # 2) Fallback: legacy *.md upload (only when no JSONL is present)
     md_success = 0
     md_fail = 0
     if jsonl_success == 0 and jsonl_fail == 0:
-        log("[Upload] JSONL 없음 — 레거시 *.md 업로드로 폴백")
+        log("[Upload] no JSONL — falling back to legacy *.md upload")
         for p in sorted(result_root.glob("*.md")):
             text = safe_read_text(p)
             if not text:
@@ -921,8 +947,9 @@ def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str,
         f"Fail={total_fail} ==="
     )
 
-    # Phase 1.5: 업로드 성공 후 kb_manifest 기록 (P2/P3 freshness assert 근거).
-    # 실패도 일부 있을 수 있으니 total_success > 0 기준.
+    # Phase 1.5: write the kb_manifest after a successful upload (basis for
+    # the P2/P3 freshness assert). Even partial failures count, so use
+    # total_success > 0 as the trigger.
     if total_success > 0:
         _write_kb_manifest(dataset_id, total_success)
 
@@ -930,30 +957,30 @@ def upload_all(api_key: str, dataset_id: str, doc_form: str, doc_language: str,
     return total_fail
 
 # ============================================================================
-# [메인] 프로그램 진입점 (CLI 파서)
+# [Main] Program entry point (CLI parser)
 # ============================================================================
 
 def main() -> None:
     """
-    명령행 인자를 파싱하여 convert 또는 upload 모드를 실행합니다.
-    사용법:
-      1. 변환: python3 doc_processor.py convert
-      2. 업로드: python3 doc_processor.py upload <API_KEY> <DATASET_ID> <FORM> <LANG>
+    Parse CLI args and run convert or upload mode.
+    Usage:
+      1. Convert: python3 doc_processor.py convert
+      2. Upload:  python3 doc_processor.py upload <API_KEY> <DATASET_ID> <FORM> <LANG>
     """
     if len(sys.argv) < 2:
         raise SystemExit("usage: doc_processor.py [convert|upload] ...")
-    
+
     cmd = sys.argv[1].strip().lower()
-    
-    # 1. 변환 모드 실행
+
+    # 1. Convert mode
     if cmd == "convert":
         convert_all()
         return
-    
-    # 2. 업로드 모드 실행
+
+    # 2. Upload mode
     if cmd == "upload":
-        # 최소 2개의 인자(API_KEY, DATASET_ID)가 필요함. --purge 플래그 지원.
-        # 사용법:
+        # Requires at least 2 args (API_KEY, DATASET_ID). Supports the --purge flag.
+        # Usage:
         #   doc_processor.py upload <API_KEY> <DATASET_ID> [doc_form] [doc_language] [--purge]
         argv = sys.argv[2:]
         purge_first = False
@@ -965,13 +992,13 @@ def main() -> None:
 
         api_key = argv[0]
         dataset_id = argv[1]
-        # 인자가 없으면 기본값 사용 (하위 호환성 유지)
+        # When omitted, fall back to defaults (preserves backward compatibility).
         doc_form = argv[2] if len(argv) > 2 else "text_model"
         doc_language = argv[3] if len(argv) > 3 else "Korean"
 
         fail_count = upload_all(api_key, dataset_id, doc_form, doc_language, purge_first=purge_first)
         if fail_count > 0:
-            sys.exit(1) # 실패가 있으면 에러 코드를 반환하여 Jenkins 빌드를 실패 처리함
+            sys.exit(1) # any failure → return error code, fails the Jenkins build
         return
 
 if __name__ == "__main__":

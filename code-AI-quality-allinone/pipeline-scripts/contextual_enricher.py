@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-# Contextual Retrieval (Anthropic 2024-09) — 각 코드 청크 앞에 LLM 생성 1~2줄 요약 prepend.
+# Contextual Retrieval (Anthropic 2024-09) — prepend a 1-2 line LLM-generated
+# summary in front of each code chunk.
 #
-# 효과: retrieval recall +35% (Anthropic 공식 실측). 에어갭 호환: 호스트 Ollama gemma4:e4b 사용.
+# Effect: retrieval recall +35% (Anthropic published measurement). Air-gap
+# compatible: uses the host's Ollama gemma4:e4b.
 #
-# 입력: --in <디렉터리>   — repo_context_builder 가 생성한 *.jsonl 여러 개
-# 출력: 동일 JSONL 덮어쓰기 — 각 청크의 "code" 필드 앞에 다음 헤더 prepend:
-#     [path:lines] role: {llm_summary_1~2_sentences}
+# Input: --in <directory>  — the *.jsonl files produced by repo_context_builder
+# Output: overwrites the same JSONL files — each chunk's "code" field is
+# prefixed with the following header:
+#     [path:lines] role: {llm_summary_1_or_2_sentences}
 #     ...original code...
 #
-# 각 청크는 독립 Ollama 호출 1회. 레포 ~500 청크 기준 ~5분 (1회성, 이미지 변경 시 재실행).
-# 호출 실패 시: 해당 청크는 요약 없이 원본 유지 (graceful fallback). 파이프라인 비차단.
+# Each chunk makes one independent Ollama call. ~5 minutes for a ~500-chunk
+# repo (one-shot, rerun only when the image changes). On call failure the
+# chunk keeps its original body (graceful fallback), so the pipeline does
+# not block.
 import argparse
 import json
 import os
@@ -28,18 +33,19 @@ MAX_RETRIES = int(os.getenv("ENRICH_RETRIES", "2"))
 
 SYSTEM_PROMPT = (
     "You are a code summarizer. Given a source code chunk, write EXACTLY one or two short "
-    "Korean sentences describing its role in the project. Focus on WHAT it does and WHY it "
+    "English sentences describing its role in the project. Focus on WHAT it does and WHY it "
     "exists. No code, no bullets, no preamble — just the sentences."
 )
 
 
 def ollama_summarize(path: str, lines: str, symbol: str, code: str) -> str:
-    """Ollama gemma4 에게 코드 청크 요약 1~2문장 요청. 실패 시 빈 문자열."""
+    """Ask Ollama gemma4 for a 1-2 sentence summary of a code chunk. Returns
+    an empty string on failure."""
     user_prompt = (
         f"File: {path} (lines {lines})\n"
         f"Symbol: {symbol}\n\n"
         f"```\n{code[:4000]}\n```\n\n"
-        "Write 1-2 Korean sentences describing this code's role."
+        "Write 1-2 English sentences describing this code's role."
     )
     body = {
         "model": ENRICH_MODEL,
@@ -61,21 +67,21 @@ def ollama_summarize(path: str, lines: str, symbol: str, code: str) -> str:
             r.raise_for_status()
             data = r.json()
             msg = data.get("message", {}).get("content", "").strip()
-            # 잡음 정리: 양 끝 따옴표·코드블록 마커 제거
-            for marker in ("```", "역할:", "Role:"):
+            # Cleanup noise: strip leading quote markers / code-block fences.
+            for marker in ("```", "Role:", "role:"):
                 if msg.startswith(marker):
                     msg = msg[len(marker):].strip()
-            return " ".join(msg.split())  # 줄바꿈 평탄화
+            return " ".join(msg.split())  # flatten newlines
         except Exception as e:
             last_err = e
             if attempt < MAX_RETRIES:
                 time.sleep(1 + attempt)
-    print(f"[enricher:WARN] {path}:{lines} 요약 실패: {last_err}", file=sys.stderr)
+    print(f"[enricher:WARN] {path}:{lines} summarize failed: {last_err}", file=sys.stderr)
     return ""
 
 
 def enrich_chunk(chunk: dict) -> dict:
-    """chunk['code'] 앞에 역할 요약 헤더 prepend. 원본 필드는 유지."""
+    """Prepend a role-summary header to chunk['code']. Original fields kept."""
     summary = ollama_summarize(
         chunk.get("path", ""),
         chunk.get("lines", ""),
@@ -84,15 +90,16 @@ def enrich_chunk(chunk: dict) -> dict:
     )
     header_parts = [f"[{chunk.get('path','')}:{chunk.get('lines','')}]"]
     if summary:
-        header_parts.append(f"역할: {summary}")
+        header_parts.append(f"role: {summary}")
     header = " ".join(header_parts)
     chunk["code"] = header + "\n\n" + chunk.get("code", "")
-    chunk["_context_summary"] = summary  # metadata 로도 보관 (업로드 시 optional)
+    chunk["_context_summary"] = summary  # also kept as metadata (optional on upload)
     return chunk
 
 
 def process_file(jsonl_path: Path) -> tuple[int, int]:
-    """단일 JSONL 파일을 읽어 각 청크 enrich 후 덮어쓰기. (total, enriched_ok) 반환."""
+    """Read a single JSONL file, enrich each chunk, then overwrite. Returns
+    (total, enriched_ok)."""
     total = 0
     ok = 0
     enriched_lines = []
@@ -105,7 +112,7 @@ def process_file(jsonl_path: Path) -> tuple[int, int]:
             try:
                 chunk = json.loads(line)
             except Exception as e:
-                print(f"[enricher:WARN] {jsonl_path.name} 파싱 실패: {e}", file=sys.stderr)
+                print(f"[enricher:WARN] {jsonl_path.name} parse failed: {e}", file=sys.stderr)
                 enriched_lines.append(line)
                 continue
             enriched = enrich_chunk(chunk)
@@ -118,16 +125,16 @@ def process_file(jsonl_path: Path) -> tuple[int, int]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Contextual Retrieval enricher for JSONL chunks")
-    ap.add_argument("--in", dest="in_dir", required=True, help="JSONL 파일들이 있는 디렉터리")
+    ap.add_argument("--in", dest="in_dir", required=True, help="Directory containing JSONL files")
     args = ap.parse_args()
 
     in_dir = Path(args.in_dir).resolve()
     if not in_dir.is_dir():
-        raise SystemExit(f"[enricher] 입력 디렉터리 없음: {in_dir}")
+        raise SystemExit(f"[enricher] input directory not found: {in_dir}")
 
     files = sorted(in_dir.glob("*.jsonl"))
     if not files:
-        print(f"[enricher] JSONL 없음 → skip: {in_dir}")
+        print(f"[enricher] no JSONL files → skip: {in_dir}")
         return 0
 
     total_chunks = 0

@@ -2,29 +2,31 @@
 # -*- coding: utf-8 -*-
 
 # ==================================================================================
-# 파일명: sonar_issue_exporter.py
-# 버전: 1.2
+# File: sonar_issue_exporter.py
+# Version: 1.2
 #
-# [시스템 개요]
-# 이 스크립트는 품질 분석 파이프라인(Phase 3)의 **1단계(정적 분석 결과 수집)**를 담당합니다.
-# SonarQube REST API를 통해 미해결(open) 이슈 목록을 페이지네이션으로 전수 조회하고,
-# 각 이슈에 대해 관련 소스 코드 라인과 위반 규칙 상세 정보를 추가로 수집(enrichment)하여
-# 하나의 JSON 파일로 통합합니다.
+# [Overview]
+# This script handles **stage 1 (static-analysis result collection)** of the
+# quality analysis pipeline (Phase 3). It pulls the open-issue list via the
+# SonarQube REST API with full pagination, then enriches each issue with the
+# related source-code lines and rule details, and finally consolidates
+# everything into a single JSON file.
 #
-# [파이프라인 내 위치]
-# SonarQube (정적 분석 결과)
+# [Position in the pipeline]
+# SonarQube (static analysis result)
 #       ↓ REST API
-# >>> sonar_issue_exporter.py (이슈 수집 + 코드/룰 보강) <<<
+# >>> sonar_issue_exporter.py (collect issues + enrich code/rule) <<<
 #       ↓ sonar_issues.json
-# dify_sonar_issue_analyzer.py (AI 분석)
+# dify_sonar_issue_analyzer.py (AI analysis)
 #
-# [핵심 동작 흐름]
-# 1. /api/issues/search: 미해결 이슈 목록을 100건 단위로 페이지네이션하여 전수 조회
-# 2. /api/rules/show: 각 이슈의 위반 규칙 상세 설명을 조회 (캐싱하여 중복 호출 방지)
-# 3. /api/sources/lines: 이슈 발생 위치 전후 100줄의 소스 코드를 조회
-# 4. 모든 정보를 통합하여 sonar_issues.json 파일로 저장
+# [Core flow]
+# 1. /api/issues/search: paginate the open-issue list 100 at a time.
+# 2. /api/rules/show: fetch the violated-rule detail for each issue (cached
+#    to avoid duplicate calls).
+# 3. /api/sources/lines: fetch ~100 lines around the issue location.
+# 4. Save the consolidated information to sonar_issues.json.
 #
-# [실행 예시]
+# [Run example]
 # python3 sonar_issue_exporter.py \
 #   --sonar-host-url http://sonarqube:9000 \
 #   --sonar-token squ_xxxxx \
@@ -46,10 +48,11 @@ from pathlib import Path
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
-# Step R 에서 enclosing_function 추출을 위해 repo_context_builder 의 청킹
-# 로직 재사용. 같은 /opt/pipeline-scripts/ (entrypoint.sh 가 scripts 로 심볼릭
-# 링크) 안에 형제 모듈이므로 직접 import. 실패 시 graceful — enclosing_function
-# 추출만 skip 되고 나머지 파이프라인은 동작.
+# Step R reuses repo_context_builder's chunking logic to extract the
+# enclosing_function. The sibling module lives in the same
+# /opt/pipeline-scripts/ tree (entrypoint.sh symlinks it as `scripts`),
+# so direct import is fine. On failure we degrade gracefully — only the
+# enclosing_function extraction is skipped, the rest of the pipeline runs.
 try:
     from repo_context_builder import extract_chunks_from_file, LANG_CONFIG  # type: ignore
     _TS_AVAILABLE = True
@@ -60,32 +63,32 @@ except Exception as _e:  # noqa: BLE001
 
 def _clean_html_tags(text: str) -> str:
     """
-    HTML 태그를 제거하고 HTML 엔티티를 디코딩합니다.
+    Strip HTML tags and decode HTML entities.
 
-    SonarQube API 응답에는 코드와 룰 설명에 HTML 태그가 포함되어 있습니다.
-    (예: <span class="k">public</span>, &lt;String&gt;)
-    LLM이 코드를 정확히 분석하려면 순수 텍스트가 필요하므로,
-    태그를 제거하고 엔티티를 원래 문자로 복원합니다.
+    SonarQube API responses include HTML tags inside the code and rule
+    descriptions (e.g. <span class="k">public</span>, &lt;String&gt;).
+    The LLM needs plain text to analyze the code accurately, so we strip
+    the tags and decode the entities back to literal characters.
 
     Args:
-        text: HTML이 포함된 원본 텍스트
+        text: original text containing HTML
 
     Returns:
-        HTML 태그가 제거되고 엔티티가 디코딩된 순수 텍스트
+        Plain text with HTML tags removed and entities decoded
     """
     if not text: return ""
-    # 1단계: HTML 태그 제거 (<span ...>, </div> 등)
+    # Step 1: drop HTML tags (<span ...>, </div>, etc.)
     text = re.sub(r'<[^>]+>', '', text)
-    # 2단계: HTML 엔티티 디코딩 (&lt; → <, &amp; → & 등)
+    # Step 2: decode HTML entities (&lt; → <, &amp; → &, ...)
     text = html.unescape(text)
     return text
 
 
 def _http_get_json(url: str, headers: dict, timeout: int = 60) -> dict:
     """
-    HTTP GET 요청을 보내고 JSON 응답을 파싱하여 반환합니다.
+    Send an HTTP GET request and return the parsed JSON response.
 
-    SonarQube의 모든 API 호출에 공통으로 사용되는 헬퍼 함수입니다.
+    A common helper used by every SonarQube API call.
     """
     req = Request(url, headers=headers, method="GET")
     with urlopen(req, timeout=timeout) as resp:
@@ -94,25 +97,25 @@ def _http_get_json(url: str, headers: dict, timeout: int = 60) -> dict:
 
 def _build_basic_auth(token: str) -> str:
     """
-    SonarQube 토큰을 HTTP Basic Authentication 헤더 값으로 변환합니다.
+    Convert a SonarQube token into an HTTP Basic Authentication header value.
 
-    SonarQube는 토큰을 사용자명으로, 비밀번호는 빈 문자열로 하는
-    Basic Auth 방식을 사용합니다. (token: 형식)
+    SonarQube uses Basic Auth with the token as the username and an empty
+    password (token: format).
     """
     return "Basic " + base64.b64encode(f"{token}:".encode("utf-8")).decode("ascii")
 
 
 def _api_url(host: str, path: str, params: dict = None) -> str:
     """
-    SonarQube API 엔드포인트의 전체 URL을 생성합니다.
+    Build the full URL for a SonarQube API endpoint.
 
     Args:
-        host: SonarQube 호스트 URL (예: http://sonarqube:9000)
-        path: API 경로 (예: /api/issues/search)
-        params: 쿼리 파라미터 딕셔너리
+        host: SonarQube host URL (e.g. http://sonarqube:9000)
+        path: API path (e.g. /api/issues/search)
+        params: query parameter dictionary
 
     Returns:
-        완전한 URL 문자열 (쿼리스트링 포함)
+        Complete URL string (with query string)
     """
     base = host.rstrip("/") + "/"
     url = urljoin(base, path.lstrip("/"))
@@ -122,29 +125,31 @@ def _api_url(host: str, path: str, params: dict = None) -> str:
 
 def _get_rule_details(host: str, headers: dict, rule_key: str) -> dict:
     """
-    SonarQube 위반 규칙의 상세 정보를 조회합니다.
+    Fetch the detail of a SonarQube violation rule.
 
-    /api/rules/show 엔드포인트에서 규칙의 이름, 설명, 심각도, 언어 정보를 가져옵니다.
-    이 정보는 LLM이 이슈를 분석할 때 "왜 이것이 문제인지"를 이해하는 데 사용됩니다.
+    Pulls name, description, severity, and language from /api/rules/show.
+    The LLM uses this information to understand "why this is a problem".
 
-    SonarQube 규칙 설명은 여러 섹션(descriptionSections)으로 구성될 수 있으며,
-    각 섹션에는 HTML 태그가 포함되어 있으므로 태그를 제거한 후 반환합니다.
+    SonarQube rule descriptions can be split into several
+    descriptionSections, each containing HTML tags. Tags are stripped
+    before returning.
 
     Args:
-        host: SonarQube 호스트 URL
-        headers: Basic Auth 인증 헤더
-        rule_key: 규칙 키 (예: "java:S1192")
+        host: SonarQube host URL
+        headers: Basic Auth header
+        rule_key: rule key (e.g. "java:S1192")
 
     Returns:
-        dict: 규칙 상세 정보 (key, name, description, severity, lang)
-              API 호출 실패 시 기본값을 반환하여 전체 프로세스가 중단되지 않습니다.
+        dict: rule detail (key, name, description, severity, lang).
+              On API failure returns defaults so the whole process keeps
+              running.
     """
     if not rule_key:
         return {"key": "UNKNOWN", "name": "Unknown", "description": "No rule key."}
 
     url = _api_url(host, "/api/rules/show", {"key": rule_key})
 
-    # API 호출 실패 시 사용할 기본값
+    # Defaults used when the API call fails.
     fallback = {
         "key": rule_key,
         "name": f"Rule {rule_key}",
@@ -157,18 +162,19 @@ def _get_rule_details(host: str, headers: dict, rule_key: str) -> dict:
         rule = resp.get("rule", {})
         if not rule: return fallback
 
-        # 구조화된 설명 섹션(예: ROOT_CAUSE, HOW_TO_FIX)을 순회하며 텍스트를 수집합니다.
+        # Walk the structured description sections (e.g. ROOT_CAUSE,
+        # HOW_TO_FIX) and collect their text.
         desc_parts = []
         sections = rule.get("descriptionSections", [])
         for sec in sections:
-            k = sec.get("key", "").upper().replace("_", " ")  # 섹션 이름을 대문자로 정리
+            k = sec.get("key", "").upper().replace("_", " ")  # normalize section name to upper case
             c = sec.get("content", "")
             if c:
-                # HTML 태그를 제거하여 LLM이 순수 텍스트로 읽을 수 있게 합니다.
+                # Strip HTML tags so the LLM sees plain text.
                 desc_parts.append(f"[{k}]\n{_clean_html_tags(c)}")
 
         full_desc = "\n\n".join(desc_parts)
-        # 구조화 섹션이 없으면 레거시 필드(mdDesc, htmlDesc)를 대안으로 사용합니다.
+        # If no structured sections, fall back to the legacy fields (mdDesc, htmlDesc).
         if not full_desc:
             raw_desc = rule.get("mdDesc") or rule.get("htmlDesc") or rule.get("description") or ""
             full_desc = _clean_html_tags(raw_desc)
@@ -184,38 +190,41 @@ def _get_rule_details(host: str, headers: dict, rule_key: str) -> dict:
         return fallback
 
 def _relative_path_from_component(component: str, project_key: str) -> str:
-    """Sonar component (예: 'dscore-ttc-sample:src/auth.py') 에서 프로젝트 prefix 를
-    제거해 레포 상대 경로를 얻는다. 예상 패턴이 아니면 원문 유지.
+    """Strip the project prefix from a Sonar component (e.g.
+    'dscore-ttc-sample:src/auth.py') to obtain the repo-relative path.
+    Keeps the original text if it does not match the expected pattern.
     """
     if not component:
         return ""
     prefix = f"{project_key}:"
     if component.startswith(prefix):
         return component[len(prefix):]
-    # 프로젝트키 없이 그냥 'src/...' 로 들어온 경우 그대로
+    # If the project key is missing and only 'src/...' is given, return as-is
     return component
 
 
 def _enclosing_function(repo_root: str, rel_path: str, target_line: int) -> tuple:
-    """레포 루트·상대경로·이슈 라인을 받아 해당 라인을 포함하는 함수/메서드의
-    (symbol, lines_str) 튜플을 반환. 실패 시 ("", "").
+    """Given the repo root, relative path, and issue line, return the
+    (symbol, lines_str) tuple for the function/method containing that line.
+    Returns ("", "") on failure.
 
-    backward-compat. 신규 코드는 _enclosing_meta() 사용 — tree-sitter 추출
-    메타 (decorators / endpoint / doc_struct) 까지 함께 반환.
+    Backward-compat. New code should use _enclosing_meta() — it returns the
+    full tree-sitter extracted metadata (decorators / endpoint / doc_struct).
     """
     meta = _enclosing_meta(repo_root, rel_path, target_line)
     return (meta.get("symbol", ""), meta.get("lines", ""))
 
 
 def _enclosing_meta(repo_root: str, rel_path: str, target_line: int) -> dict:
-    """이슈 라인을 포함하는 청크 전체 메타를 반환.
+    """Return the full chunk metadata for the chunk that contains the issue line.
 
-    Phase B F2a: 기존 _enclosing_function 은 (symbol, lines) 만 줘 LLM 프롬프트
-    측에서 함수의 decorator / endpoint / docstring 구조를 알 수 없었다. 이제
-    매칭된 청크의 tree-sitter 메타를 통째로 가져와 analyzer 가 LLM 프롬프트에
-    구조화된 힌트로 넣을 수 있게 한다.
+    Phase B F2a: the older _enclosing_function only returned (symbol, lines),
+    so the LLM prompt could not see the function's decorators / endpoint /
+    docstring structure. Now we hand the matched chunk's tree-sitter metadata
+    to the analyzer wholesale, allowing it to inject structured hints into
+    the LLM prompt.
 
-    반환 dict 키 (모두 optional, 실패 시 빈 값):
+    Returned dict keys (all optional, empty on failure):
       symbol, lines, kind, lang, decorators, endpoint,
       doc_params, doc_returns, doc_throws, doc, callees
     """
@@ -269,10 +278,11 @@ def _enclosing_meta(repo_root: str, rel_path: str, target_line: int) -> dict:
 
 
 def _git_context(repo_root: str, rel_path: str, line: int) -> str:
-    """Step B — 이슈 라인의 git blame + 파일 최근 log 요약을 3줄 텍스트로 반환.
+    """Step B — return a 3-line text summarizing git blame for the issue line
+    plus the file's recent log.
 
-    실패 시 빈 문자열 (파이프라인 계속). LLM 에 "이 코드를 누가 언제 왜 넣었는지"
-    맥락을 공급.
+    Returns "" on failure (the pipeline keeps going). Provides the LLM with
+    the "who put this code in, when, and why" context.
     """
     if not repo_root or not rel_path or line <= 0:
         return ""
@@ -291,7 +301,7 @@ def _git_context(repo_root: str, rel_path: str, line: int) -> str:
                 if ln.startswith("author "):
                     author = ln[len("author "):]
                 elif ln.startswith("author-time "):
-                    # unix epoch — 사람 읽기 좋은 포맷으로 변환은 생략 (복잡도 회피)
+                    # unix epoch — skip human-readable formatting (avoid extra complexity)
                     committed = ln[len("author-time "):]
                 elif not sha and re.match(r"^[0-9a-f]{40}", ln):
                     sha = ln.split()[0][:12]
@@ -312,8 +322,10 @@ def _git_context(repo_root: str, rel_path: str, line: int) -> str:
         if log_line:
             parts.append(f"last_commit: {log_line}")
 
-        # Phase E E3 — 함수 라인 범위의 변경 이력 (최대 5개) + 같은 file 의 최근 5개 commit.
-        # git log -L 은 함수 변경 이력을 추적해 "이 코드가 왜 이렇게 작성됐나" 의 단서 제공.
+        # Phase E E3 — change history of the function's line range (up to 5)
+        # plus the file's 5 most recent commits. `git log -L` follows
+        # function-level changes and gives clues about "why this code was
+        # written this way".
         try:
             log_l = subprocess.run(
                 ["git", "-C", repo_root, "log", "-L",
@@ -338,18 +350,19 @@ def _git_context(repo_root: str, rel_path: str, line: int) -> str:
 
 
 def _similar_rule_history(repo_root: str, rule_key: str, limit: int = 3) -> list:
-    """Phase E E3 — 같은 rule_key 가 과거 commit 메시지에서 fix 된 이력 탐색.
+    """Phase E E3 — find prior commit messages where the same rule_key was fixed.
 
-    GitLab Issue 본문 / commit 메시지에 sonar 룰 키가 들어 있으면 매칭.
-    예: "fix: javascript:S6606 ..." 같은 패턴.
+    Matches GitLab issue bodies / commit messages that contain the Sonar rule
+    key. Example pattern: "fix: javascript:S6606 ...".
 
-    반환: ["abc1234 2 weeks ago alice fix Sonar S6606 in profile-dao", ...]
+    Returns: ["abc1234 2 weeks ago alice fix Sonar S6606 in profile-dao", ...]
     """
     if not repo_root or not rule_key or not Path(repo_root).is_dir():
         return []
     try:
-        # rule_key 의 short form (`S1234`) 만 검색 — `javascript:S1234` 의 콜론은
-        # git log --grep 정규식에서 escape 필요. short form 이 더 매칭 잘 됨.
+        # Search only on the short form (`S1234`) — the colon in
+        # `javascript:S1234` would have to be escaped for git log --grep
+        # regex, and the short form matches better anyway.
         short = rule_key.split(":")[-1] if ":" in rule_key else rule_key
         if not short or len(short) < 3:
             return []
@@ -369,8 +382,10 @@ def _similar_rule_history(repo_root: str, rule_key: str, limit: int = 3) -> list
 
 
 def _load_callgraph_index(callgraph_dir: str) -> dict:
-    """Step B — callgraph_dir 아래 *.jsonl 을 한 번 로딩해 `callee_symbol → [caller path::symbol, ...]`
-    역인덱스를 구성. exporter 실행당 최초 1회만 돌고, 이후 `_direct_callers` 는 이 dict 만 조회.
+    """Step B — load the *.jsonl files under callgraph_dir once and build a
+    `callee_symbol → [caller path::symbol, ...]` reverse index. Runs only
+    once per exporter invocation; later `_direct_callers` only does dict
+    lookups against this index.
     """
     idx: dict = {}
     if not callgraph_dir or not Path(callgraph_dir).is_dir():
@@ -402,11 +417,11 @@ def _load_callgraph_index(callgraph_dir: str) -> dict:
 
 
 def _direct_callers(cg_index: dict, symbol: str, limit: int = 10) -> list:
-    """cg_index 에서 symbol 을 호출하는 caller 리스트를 반환 (최대 limit)."""
+    """Return the callers of `symbol` (up to limit) from cg_index."""
     if not symbol or not cg_index:
         return []
     refs = cg_index.get(symbol, [])
-    # 동일 caller 가 중복으로 들어갈 수 있으므로 dedup + 순서 보존
+    # Same caller may appear multiple times — dedup while preserving order.
     seen = set()
     out = []
     for r in refs:
@@ -420,24 +435,25 @@ def _direct_callers(cg_index: dict, symbol: str, limit: int = 10) -> list:
 
 
 def _depth2_callers(cg_index: dict, symbol: str, max_d1: int = 5, max_d2: int = 5) -> dict:
-    """Phase E E1 — 영향 범위 추적용 depth-2 caller 그래프.
+    """Phase E E1 — depth-2 caller graph for impact-scope tracing.
 
-    enclosing 함수 → 직접 caller (depth 1) → caller 의 caller (depth 2). 답변이
-    "이 함수 변경 시 어디까지 영향" 을 더 정확히 추적할 수 있도록 LLM 프롬프트에
-    구조화 텍스트로 주입할 데이터.
+    enclosing function → direct caller (depth 1) → caller's caller (depth 2).
+    Lets the LLM trace "what is affected if we change this function" more
+    accurately when the analyzer injects this as structured text into the
+    prompt.
 
-    반환: {
-      "depth_1": [...],  # 직접 caller (path::symbol)
-      "depth_2": [...],  # 그 caller 들의 caller (depth 2)
+    Returns: {
+      "depth_1": [...],  # direct callers (path::symbol)
+      "depth_2": [...],  # callers of those callers (depth 2)
     }
     """
     if not symbol or not cg_index:
         return {"depth_1": [], "depth_2": []}
     d1 = _direct_callers(cg_index, symbol, limit=max_d1)
-    seen_d2 = set(d1) | {symbol}  # self / d1 중복 차단
+    seen_d2 = set(d1) | {symbol}  # block self/d1 duplicates
     d2 = []
     for ref in d1:
-        # ref = "path::caller_symbol" — caller symbol 만 추출
+        # ref = "path::caller_symbol" — extract caller symbol only
         caller_sym = ref.rsplit("::", 1)[-1] if "::" in ref else ref
         if not caller_sym or caller_sym == symbol:
             continue
@@ -454,22 +470,23 @@ def _depth2_callers(cg_index: dict, symbol: str, max_d1: int = 5, max_d2: int = 
 
 
 def _build_project_overview(repo_root: str, max_chars: int = 2400) -> str:
-    """Phase E E2-lite — 프로젝트 메타 정보를 한 텍스트 블록으로 묶어 LLM 프롬프트에
-    상시 첨부. 별도 KB 분리 없이 README / CONTRIBUTING / package.json 의 핵심만.
+    """Phase E E2-lite — bundle project metadata into a single text block to
+    attach to every LLM prompt. Pulls only the essentials from
+    README / CONTRIBUTING / package.json — no separate KB.
 
-    수집 우선순위:
-      1. package.json 의 name + description + 주요 dependencies (10개)
-      2. README.md 의 첫 1500자 (제목 + 개요 부분)
-      3. CONTRIBUTING.md 의 첫 500자
+    Collection priority:
+      1. package.json — name + description + key dependencies (10)
+      2. README.md — first 1500 chars (title + overview)
+      3. CONTRIBUTING.md — first 500 chars
 
-    cap: 2400자. LLM 프롬프트 토큰 부담 < 1KB.
+    Cap: 2400 chars. LLM prompt token overhead < 1KB.
     """
     if not repo_root or not Path(repo_root).is_dir():
         return ""
     parts = []
     root = Path(repo_root)
 
-    # 1) package.json — 의존성 + 설명
+    # 1) package.json — dependencies + description
     pkg_path = root / "package.json"
     if pkg_path.is_file():
         try:
@@ -502,9 +519,9 @@ def _build_project_overview(repo_root: str, max_chars: int = 2400) -> str:
         if p.is_file():
             try:
                 txt = p.read_text(encoding="utf-8", errors="ignore").strip()
-                # 첫 비-빈 1500자
+                # First 1500 non-empty chars
                 if len(txt) > 1500:
-                    txt = txt[:1500] + "\n... (생략)"
+                    txt = txt[:1500] + "\n... (truncated)"
                 parts.append(f"[README]\n{txt}")
             except Exception:
                 pass
@@ -525,23 +542,26 @@ def _build_project_overview(repo_root: str, max_chars: int = 2400) -> str:
 
     overview = "\n\n".join(parts)
     if len(overview) > max_chars:
-        overview = overview[:max_chars] + "\n... (생략)"
+        overview = overview[:max_chars] + "\n... (truncated)"
     return overview
 
 
 def _classify_severity(severity: str) -> tuple:
-    """Step B — 모든 severity 를 gemma4:e4b 로 분석.
+    """Step B — analyze every severity with gemma4:e4b.
 
-    severity 와 무관하게 Dify/LLM 분석을 수행하며 skip_llm 분기를 사용하지 않는다.
+    Always run Dify/LLM analysis regardless of severity; the skip_llm branch
+    is no longer used.
     """
     _ = (severity or "").upper()
     return ("gemma4:e4b", False)
 
 
 def _cluster_key(rule_key: str, enclosing_function: str, component: str) -> str:
-    """Step B — 같은 규칙 · 같은 함수 · 같은 디렉터리 안 이슈는 한 cluster.
+    """Step B — cluster issues that share the same rule, same function, and
+    same directory.
 
-    대표 1건만 emit 하고 나머지는 affected_locations 로 묶어 P3 LLM 호출 절감.
+    Only the representative is emitted; the rest go into affected_locations
+    to cut down on P3 LLM calls.
     """
     base_dir = os.path.dirname(component or "")
     raw = f"{rule_key or ''}|{enclosing_function or ''}|{base_dir}"
@@ -549,16 +569,17 @@ def _cluster_key(rule_key: str, enclosing_function: str, component: str) -> str:
 
 
 def _severity_rank(sev: str) -> int:
-    """Clustering 대표 선정용 — 심각도가 높을수록 작은 rank 값."""
+    """Used when picking the cluster representative — more severe = smaller rank value."""
     order = {"BLOCKER": 0, "CRITICAL": 1, "MAJOR": 2, "MINOR": 3, "INFO": 4}
     return order.get((sev or "").upper(), 9)
 
 
 def _apply_clustering(records: list) -> list:
-    """cluster_key 동일 그룹 → 대표 1건만 남기고 나머지는 affected_locations 로 합침.
+    """Group by cluster_key, keep one representative, fold the rest into affected_locations.
 
-    대표 선정: severity 가장 심각 → line 번호 작은 순.
-    비결정적 정렬 회피를 위해 cluster_key 내 원본 순서 유지 후 key 로만 pick.
+    Representative selection: most severe → smallest line number.
+    To avoid non-deterministic ordering, preserve the original order within a
+    cluster_key and only `pick` by the sort key.
     """
     groups: dict = {}
     for r in records:
@@ -589,9 +610,10 @@ def _apply_clustering(records: list) -> list:
 def _diff_mode_filter(records: list, state_dir: str, mode: str) -> tuple:
     """Step B — diff-mode.
 
-    `mode=incremental` → {state_dir}/last_scan.json 의 이슈 key set 과 비교, 기존 key 는 drop.
-    `mode=full` → 필터 없음 + last_scan 덮어쓰기.
-    반환: (filtered_records, skipped_count).
+    `mode=incremental` → compare against the issue-key set in
+    {state_dir}/last_scan.json and drop existing keys.
+    `mode=full` → no filtering + overwrite last_scan.
+    Returns: (filtered_records, skipped_count).
     """
     state_path = Path(state_dir) / "last_scan.json" if state_dir else None
     prev_keys: set = set()
@@ -608,7 +630,8 @@ def _diff_mode_filter(records: list, state_dir: str, mode: str) -> tuple:
         filtered = [r for r in records if r.get("sonar_issue_key") not in prev_keys]
         skipped = len(records) - len(filtered)
 
-    # 새 last_scan 기록 (full/incremental 무관 — 다음 incremental 실행이 이 snapshot 기준)
+    # Write the new last_scan (regardless of full/incremental — the next
+    # incremental run uses this snapshot as its baseline)
     if state_path:
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -618,34 +641,34 @@ def _diff_mode_filter(records: list, state_dir: str, mode: str) -> tuple:
             }
             state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
-            print(f"[WARN] last_scan.json 기록 실패: {e}", file=sys.stderr)
+            print(f"[WARN] last_scan.json write failed: {e}", file=sys.stderr)
 
     return (filtered, skipped)
 
 
 def _get_code_lines(host: str, headers: dict, component: str, target_line: int) -> str:
     """
-    이슈가 발생한 소스 코드의 전후 50줄(총 101줄)을 텍스트로 추출합니다.
+    Extract the 50 lines before and after the issue line (101 total) as text.
 
-    SonarQube /api/sources/lines 엔드포인트에서 코드를 가져오며,
-    이슈 발생 라인에 ">>" 마커를 붙여 LLM이 문제 지점을 쉽게 식별할 수 있도록 합니다.
+    Pulls the code from SonarQube /api/sources/lines and prefixes the issue
+    line with a ">>" marker so the LLM can spot it easily.
 
-    SonarQube가 반환하는 코드에는 구문 강조용 HTML 태그가 포함되어 있으므로
-    _clean_html_tags()로 제거합니다.
+    SonarQube returns code with syntax-highlight HTML tags, so they are
+    stripped via _clean_html_tags().
 
     Args:
-        host: SonarQube 호스트 URL
-        headers: Basic Auth 인증 헤더
-        component: 파일 컴포넌트 키 (예: "myproject:src/main/App.java")
-        target_line: 이슈가 발생한 라인 번호
+        host: SonarQube host URL
+        headers: Basic Auth header
+        component: file component key (e.g. "myproject:src/main/App.java")
+        target_line: issue line number
 
     Returns:
-        str: 줄번호가 포함된 코드 텍스트 (이슈 라인에 ">>" 표시)
-             조회 실패 시 빈 문자열 반환
+        str: code text with line numbers (issue line marked with ">>").
+             Returns an empty string on lookup failure.
     """
     if target_line <= 0 or not component: return ""
 
-    # 이슈 발생 라인 전후 50줄을 요청합니다.
+    # Request 50 lines before and after the issue line.
     start = max(1, target_line - 50)
     end = target_line + 50
 
@@ -660,13 +683,13 @@ def _get_code_lines(host: str, headers: dict, component: str, target_line: int) 
             ln = src.get("line", 0)
             raw_code = src.get("code", "")
 
-            # SonarQube가 구문 강조용으로 삽입한 HTML 태그를 제거합니다.
-            # (예: <span class="k">public</span> → public)
+            # Strip the syntax-highlight HTML tags SonarQube embeds.
+            # (e.g. <span class="k">public</span> → public)
             code = _clean_html_tags(raw_code)
 
-            # 이슈 발생 라인에 ">>" 마커를 붙여 시각적으로 구분합니다.
+            # Mark the issue line with ">>" for visual distinction.
             marker = ">> " if ln == target_line else "   "
-            # 한 줄이 너무 길면 잘라냅니다 (LLM 토큰 절약).
+            # Truncate very long lines (saves LLM tokens).
             if len(code) > 400: code = code[:400] + " ...[TRUNCATED]"
             out.append(f"{marker}{ln:>5} | {code}")
         return "\n".join(out)
@@ -675,61 +698,64 @@ def _get_code_lines(host: str, headers: dict, component: str, target_line: int) 
 
 def main():
     """
-    메인 실행 함수: SonarQube에서 미해결 이슈를 전수 조회하고 코드/룰 정보로 보강합니다.
+    Main entry point: enumerate open issues from SonarQube and enrich with code/rule info.
 
-    [전체 처리 흐름]
-    1. CLI 인자 파싱 (SonarQube 접속 정보, 프로젝트 키 등)
-    2. /api/issues/search로 미해결 이슈 목록을 페이지네이션하여 전수 조회
-    3. 각 이슈에 대해:
-       a. 위반 규칙 상세 정보 조회 (동일 규칙은 캐싱하여 중복 호출 방지)
-       b. 이슈 발생 위치의 소스 코드 전후 50줄 조회
-       c. 모든 정보를 하나의 enriched 객체로 통합
-    4. 전체 결과를 sonar_issues.json 파일로 저장
+    [Overall flow]
+    1. Parse CLI args (SonarQube connection info, project key, etc.)
+    2. Page through /api/issues/search to gather all open issues.
+    3. For each issue:
+       a. Fetch the violation rule detail (cached to avoid duplicate calls
+          for the same rule).
+       b. Fetch the 50-line window around the issue location.
+       c. Combine everything into a single enriched object.
+    4. Save the entire result as sonar_issues.json.
     """
     # ---------------------------------------------------------------
-    # [1단계] CLI 인자 파싱
+    # [Step 1] Parse CLI args
     # ---------------------------------------------------------------
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sonar-host-url", required=True)   # SonarQube 호스트 URL
-    ap.add_argument("--sonar-token", required=True)       # SonarQube 인증 토큰
-    ap.add_argument("--project-key", required=True)       # 분석 대상 프로젝트 키
-    ap.add_argument("--output", default="sonar_issues.json")  # 출력 파일 경로
-    ap.add_argument("--severities", default="")           # 심각도 필터 (미사용, 하위 호환)
-    ap.add_argument("--statuses", default="")             # 상태 필터 (미사용, 하위 호환)
-    ap.add_argument("--sonar-public-url", default="")     # 외부 접근용 URL (미사용, 하위 호환)
-    # Step R 신규 — GitLab Issue 본문 렌더 및 RAG 검색의 스냅샷 고정에 사용.
-    # 03 Jenkinsfile 이 git ls-remote 로 해석해 전달 (Phase 1.5 정식 도입 전 임시).
+    ap.add_argument("--sonar-host-url", required=True)   # SonarQube host URL
+    ap.add_argument("--sonar-token", required=True)       # SonarQube auth token
+    ap.add_argument("--project-key", required=True)       # target project key
+    ap.add_argument("--output", default="sonar_issues.json")  # output file path
+    ap.add_argument("--severities", default="")           # severity filter (unused, kept for compat)
+    ap.add_argument("--statuses", default="")             # status filter (unused, kept for compat)
+    ap.add_argument("--sonar-public-url", default="")     # external-facing URL (unused, kept for compat)
+    # Step R new — used by the GitLab issue body renderer and to pin
+    # the snapshot for RAG search. The 03 Jenkinsfile resolves this via
+    # `git ls-remote` and forwards it (temporary until Phase 1.5 ships).
     ap.add_argument("--commit-sha", default="")
-    # Step R 신규 — enclosing_function 추출용 레포 루트. 보통 /var/knowledges/codes/<repo>.
-    # 비어있으면 enclosing_function 생략 (파이프라인은 정상 동작).
+    # Step R new — repo root used to extract enclosing_function. Usually
+    # /var/knowledges/codes/<repo>. When empty, enclosing_function is
+    # skipped (the pipeline still runs).
     ap.add_argument("--repo-root", default="")
-    # Step B 신규 — diff-mode, state, callgraph 경로.
+    # Step B new — diff-mode, state, callgraph paths.
     ap.add_argument("--mode", choices=["full", "incremental"], default="full",
-                    help="full: last_scan 리셋 후 전수 emit. incremental: 이전 스냅샷과 diff.")
+                    help="full: reset last_scan and emit everything. incremental: diff against the previous snapshot.")
     ap.add_argument("--state-dir", default="/var/knowledges/state",
-                    help="last_scan.json 등 스캐너 상태 저장 경로.")
+                    help="Path for scanner state files such as last_scan.json.")
     ap.add_argument("--callgraph-dir", default="/var/knowledges/docs/result",
-                    help="P1 이 남긴 JSONL 청크 디렉터리 — direct_callers 역인덱스 소스.")
+                    help="Directory of JSONL chunks left by P1 — source for the direct_callers reverse index.")
     ap.add_argument("--disable-clustering", action="store_true",
-                    help="같은 rule+function+dir 이슈를 대표 1건으로 합치지 않고 개별 emit.")
+                    help="Emit each issue separately instead of folding same rule+function+dir into one representative.")
     args, _ = ap.parse_known_args()
 
-    # SonarQube API 인증 헤더 (Basic Auth)
+    # SonarQube API auth header (Basic Auth)
     headers = {"Authorization": _build_basic_auth(args.sonar_token)}
 
     # ---------------------------------------------------------------
-    # [2단계] 미해결 이슈 전수 조회 (페이지네이션)
-    # SonarQube는 한 번에 최대 100건까지 반환하므로,
-    # 전체 이슈를 가져오려면 page를 증가시키며 반복 호출해야 합니다.
+    # [Step 2] Pull all open issues with pagination.
+    # SonarQube returns at most 100 per call, so loop while incrementing
+    # the page index.
     # ---------------------------------------------------------------
     issues = []
     p = 1
     while True:
         query = {
-            "componentKeys": args.project_key,  # 조회 대상 프로젝트
-            "resolved": "false",                # 미해결 이슈만 조회
-            "p": p, "ps": 100,                  # 페이지 번호 / 페이지 크기
-            "additionalFields": "_all"          # 모든 부가 정보 포함
+            "componentKeys": args.project_key,  # target project
+            "resolved": "false",                # open issues only
+            "p": p, "ps": 100,                  # page index / page size
+            "additionalFields": "_all"          # include all extras
         }
         if args.severities.strip():
             query["severities"] = args.severities.strip()
@@ -740,26 +766,28 @@ def main():
             res = _http_get_json(url, headers)
             items = res.get("issues", [])
             issues.extend(items)
-            # 더 이상 가져올 이슈가 없거나 전체 수에 도달하면 루프 종료
+            # Stop the loop once nothing more is left or we hit the total.
             if not items or p * 100 >= res.get("paging", {}).get("total", 0): break
             p += 1
         except: break
 
     print(f"[INFO] Processing {len(issues)} issues...", file=sys.stderr)
 
-    # Step B — callgraph 역인덱스 최초 1회 로드 (symbol → callers 리스트)
+    # Step B — load the callgraph reverse index once (symbol → callers list)
     cg_index = _load_callgraph_index(args.callgraph_dir)
     if cg_index:
         print(f"[INFO] callgraph index loaded: {len(cg_index)} callees", file=sys.stderr)
 
-    # Phase E E2-lite — 프로젝트 개요 1회 로드 (모든 이슈 분석에 동일 첨부).
-    # exporter 출력 JSON 의 metadata 섹션에 들어가 analyzer 가 모든 호출에 재사용.
+    # Phase E E2-lite — load the project overview once (attached identically
+    # to every issue analysis). Goes into the metadata section of the
+    # exporter output so the analyzer reuses it across all calls.
     project_overview = _build_project_overview(args.repo_root)
     if project_overview:
-        print(f"[INFO] project_overview 로드: {len(project_overview)}자", file=sys.stderr)
+        print(f"[INFO] project_overview loaded: {len(project_overview)} chars", file=sys.stderr)
 
-    # Phase E E5 — 같은 rule_key 의 다른 위치 사전 집계 (현재 스캔 범위 내).
-    # 같은 룰이 N곳에서 발생하면 LLM 이 "프로젝트 전반의 패턴" 으로 인식 가능.
+    # Phase E E5 — pre-aggregate other locations of the same rule_key (within
+    # the current scan). When the same rule fires in N places, the LLM can
+    # treat it as a "project-wide pattern".
     rule_to_locations: dict = {}
     for issue in issues:
         rk = issue.get("rule", "")
@@ -775,37 +803,38 @@ def main():
         })
 
     # ---------------------------------------------------------------
-    # [3단계] 각 이슈에 대해 룰 정보 + 소스 코드 보강(Enrichment)
+    # [Step 3] Enrich each issue with rule info + source code.
     # ---------------------------------------------------------------
     enriched = []
-    # 동일한 규칙 키에 대한 중복 API 호출을 방지하는 캐시입니다.
-    # 프로젝트에서 같은 규칙 위반이 수십~수백 건 발생할 수 있기 때문입니다.
+    # Cache to avoid duplicate API calls for the same rule key.
+    # A single project may have dozens-to-hundreds of identical violations.
     rule_cache = {}
-    # Phase E E3 — 같은 rule_key 의 commit 이력 캐시 (rule 별 1회만 git log 호출).
+    # Phase E E3 — cache of commit history for the same rule_key (one git log call per rule).
     similar_fix_cache: dict = {}
 
     for issue in issues:
-        key = issue.get("key")              # SonarQube 이슈 고유 키
-        rule_key = issue.get("rule")        # 위반 규칙 ID
-        component = issue.get("component")  # 파일 컴포넌트 키
+        key = issue.get("key")              # SonarQube issue unique key
+        rule_key = issue.get("rule")        # violated rule id
+        component = issue.get("component")  # file component key
 
-        # 이슈 발생 라인 번호 추출 (두 가지 위치 표현 방식을 모두 지원)
+        # Extract the issue line number (supports both location formats).
         line = issue.get("line")
         if not line and "textRange" in issue:
             line = issue["textRange"].get("startLine")
         line = int(line) if line else 0
 
-        # --- 3-a. 위반 규칙 상세 정보 조회 (캐싱) ---
+        # --- 3-a. Fetch rule detail (cached) ---
         if rule_key not in rule_cache:
             rule_cache[rule_key] = _get_rule_details(args.sonar_host_url, headers, rule_key)
 
-        # --- 3-b. 이슈 발생 위치의 소스 코드 조회 ---
+        # --- 3-b. Fetch the source code at the issue location ---
         snippet = _get_code_lines(args.sonar_host_url, headers, component, line)
         if not snippet: snippet = "(Code not found in SonarQube)"
 
-        # --- 3-c. Step R + Phase B F2a: 위치 메타 + tree-sitter 보강 ---
-        # _enclosing_meta 는 symbol/lines 외에도 decorators/endpoint/doc_struct
-        # 까지 한 번에 반환. analyzer 가 kb_query 와 LLM 프롬프트에 활용.
+        # --- 3-c. Step R + Phase B F2a: location meta + tree-sitter enrichment ---
+        # _enclosing_meta returns symbol/lines plus
+        # decorators/endpoint/doc_struct in one shot. The analyzer uses these
+        # for kb_query and the LLM prompt.
         rel_path = _relative_path_from_component(component, args.project_key)
         enc_meta = _enclosing_meta(args.repo_root, rel_path, line)
         enclosing_symbol = enc_meta["symbol"]
@@ -814,13 +843,13 @@ def main():
         # --- 3-d. Step B + Phase E: git context + callers + severity + cluster ---
         git_ctx = _git_context(args.repo_root, rel_path, line)
         callers = _direct_callers(cg_index, enclosing_symbol)
-        # Phase E E1 — depth-2 caller graph (영향 범위 확장)
+        # Phase E E1 — depth-2 caller graph (impact-scope expansion)
         graph = _depth2_callers(cg_index, enclosing_symbol)
-        # Phase E E3 — 같은 rule 의 과거 fix commit (rule 별 캐시)
+        # Phase E E3 — past fix commits for the same rule (per-rule cache)
         if rule_key not in similar_fix_cache:
             similar_fix_cache[rule_key] = _similar_rule_history(args.repo_root, rule_key)
         similar_fixes = similar_fix_cache[rule_key]
-        # Phase E E5 — 같은 rule 의 다른 위치 (자기 자신 제외, 현재 스캔 범위 내)
+        # Phase E E5 — other locations of the same rule (excluding self, within current scan)
         similar_locations = [
             loc for loc in rule_to_locations.get(rule_key, [])
             if loc.get("key") != key
@@ -829,25 +858,25 @@ def main():
         judge_model, skip_llm = _classify_severity(severity)
         cluster_k = _cluster_key(rule_key, enclosing_symbol, component)
 
-        # --- 3-e. 통합 객체 생성 ---
-        # 이 객체가 dify_sonar_issue_analyzer.py의 입력으로 사용됩니다.
+        # --- 3-e. Build the unified object ---
+        # This object becomes the input for dify_sonar_issue_analyzer.py.
         enriched.append({
-            "sonar_issue_key": key,           # 이슈 고유 키
-            "sonar_rule_key": rule_key,       # 위반 규칙 ID
-            "sonar_project_key": args.project_key,  # 프로젝트 키
-            "sonar_issue_url": f"{args.sonar_host_url}/project/issues?id={args.project_key}&issues={key}&open={key}",  # SonarQube 이슈 직링크
-            "issue_search_item": issue,       # /api/issues/search 원본 응답 항목
-            "rule_detail": rule_cache[rule_key],  # 규칙 상세 (이름, 설명, 심각도)
-            "code_snippet": snippet,          # 이슈 전후 소스 코드 (">>" 마커 포함)
-            "component": component,           # 파일 컴포넌트 키
-            # Step R 신규 필드 — creator 의 deterministic 렌더에 사용
-            "relative_path": rel_path,        # 예: "src/auth.py"
-            "line": line,                     # 정수 라인 번호
-            "enclosing_function": enclosing_symbol,   # 예: "login" (tree-sitter, 실패 시 "")
-            "enclosing_lines": enclosing_lines,       # 예: "22-27"
-            # Phase B F2a — enclosing 청크의 tree-sitter 메타. analyzer 의
-            # build_kb_query (F1) 와 enclosing_meta inputs (F2b) 가 활용.
-            # 빈 값이면 LLM 프롬프트에서 해당 줄 자동 생략.
+            "sonar_issue_key": key,           # issue unique key
+            "sonar_rule_key": rule_key,       # violated rule id
+            "sonar_project_key": args.project_key,  # project key
+            "sonar_issue_url": f"{args.sonar_host_url}/project/issues?id={args.project_key}&issues={key}&open={key}",  # SonarQube direct link
+            "issue_search_item": issue,       # original /api/issues/search response item
+            "rule_detail": rule_cache[rule_key],  # rule detail (name, description, severity)
+            "code_snippet": snippet,          # code around issue (with ">>" marker)
+            "component": component,           # file component key
+            # Step R new fields — used by the creator's deterministic renderer
+            "relative_path": rel_path,        # e.g. "src/auth.py"
+            "line": line,                     # integer line number
+            "enclosing_function": enclosing_symbol,   # e.g. "login" (tree-sitter, "" on failure)
+            "enclosing_lines": enclosing_lines,       # e.g. "22-27"
+            # Phase B F2a — tree-sitter metadata of the enclosing chunk.
+            # Used by analyzer's build_kb_query (F1) and enclosing_meta inputs (F2b).
+            # When empty the LLM prompt automatically omits the corresponding line.
             "enclosing_kind": enc_meta["kind"],
             "enclosing_lang": enc_meta["lang"],
             "enclosing_decorators": enc_meta["decorators"],
@@ -857,26 +886,26 @@ def main():
             "enclosing_doc_throws": enc_meta["doc_throws"],
             "enclosing_doc": enc_meta["doc"],
             "enclosing_callees": enc_meta["callees"],
-            "commit_sha": args.commit_sha,            # 빈 문자열이면 본문에 commit 섹션 생략
-            # Step B 신규 필드 — P3 LLM 프롬프트 + clustering + skip_llm 분기
-            "git_context": git_ctx,                   # "blame L24: alice (abc123)" 등 3줄
-            "direct_callers": callers,                # 최대 10개. fs-based callgraph.
-            "cluster_key": cluster_k,                 # sha1 앞 16글자
+            "commit_sha": args.commit_sha,            # empty → creator omits the commit section
+            # Step B new fields — used by the P3 LLM prompt + clustering + skip_llm branch
+            "git_context": git_ctx,                   # 3-line text like "blame L24: alice (abc123)"
+            "direct_callers": callers,                # up to 10. fs-based callgraph.
+            "cluster_key": cluster_k,                 # first 16 chars of sha1
             "judge_model": judge_model,               # "qwen3-coder:30b" / "gemma4:e4b" / "skip_llm"
-            "skip_llm": skip_llm,                     # True 면 analyzer 가 Dify 호출 생략
-            "severity": severity,                     # clustering/creator 용 top-level 복사
-            # affected_locations 은 _apply_clustering 에서 채움 (대표 1건만 비지 않음)
+            "skip_llm": skip_llm,                     # if True analyzer skips the Dify call
+            "severity": severity,                     # top-level copy used by clustering/creator
+            # affected_locations is filled in _apply_clustering (only the representative is non-empty)
             "affected_locations": [],
-            # Phase E 신규 필드
-            "depth2_callers": graph["depth_2"],        # E1 — 그 caller 들의 caller (영향 범위 depth 2)
-            "git_history_similar": similar_fixes,      # E3 — 같은 rule 의 과거 commit fix 이력
-            "similar_rule_locations": similar_locations,  # E5 — 같은 rule 의 다른 위치 (현재 스캔)
+            # Phase E new fields
+            "depth2_callers": graph["depth_2"],        # E1 — callers' callers (impact scope depth 2)
+            "git_history_similar": similar_fixes,      # E3 — past commit fix history for the same rule
+            "similar_rule_locations": similar_locations,  # E5 — other locations of the same rule (current scan)
         })
 
     # ---------------------------------------------------------------
-    # [4단계] Step B — Clustering + diff-mode
+    # [Step 4] Step B — Clustering + diff-mode
     # ---------------------------------------------------------------
-    # (a) Clustering: 같은 rule+function+dir 이슈 → 대표 1건 + affected_locations 리스트
+    # (a) Clustering: same rule+function+dir issues → one representative + affected_locations list
     pre_cluster = len(enriched)
     if args.disable_clustering:
         clustered = enriched
@@ -887,18 +916,19 @@ def main():
         if cluster_reduced > 0:
             print(f"[INFO] clustering: {pre_cluster} → {len(clustered)} ({cluster_reduced} merged into affected_locations)", file=sys.stderr)
 
-    # (b) Diff-mode: last_scan 과 비교해 이미 본 이슈는 skip (incremental) + snapshot 갱신
+    # (b) Diff-mode: skip issues already seen in last_scan (incremental) + refresh snapshot
     filtered, skipped = _diff_mode_filter(clustered, args.state_dir, args.mode)
     if skipped > 0:
         print(f"[diff-mode] skipped {skipped} cached issues (mode={args.mode})", file=sys.stderr)
 
     # ---------------------------------------------------------------
-    # [5단계] 결과 저장
-    # 전체 enriched 이슈를 하나의 JSON 파일로 저장합니다.
-    # 다음 단계(dify_sonar_issue_analyzer.py)가 이 파일을 입력으로 사용합니다.
+    # [Step 5] Save the result.
+    # The full enriched issue list goes into a single JSON file used as
+    # input by the next stage (dify_sonar_issue_analyzer.py).
     # ---------------------------------------------------------------
-    # Phase E E2-lite — metadata 섹션에 project_overview 등 모든 이슈에 공통인 정보를
-    # 한 번만 기록. analyzer 가 metadata 를 읽어 모든 LLM 호출에 동일 첨부.
+    # Phase E E2-lite — write fields common to every issue (project_overview
+    # etc.) once into the metadata section. The analyzer reads metadata and
+    # attaches it identically to every LLM call.
     output_payload = {
         "metadata": {
             "project_overview": project_overview,
