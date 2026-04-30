@@ -1654,9 +1654,10 @@ async function _onDiscoverTourScript() {
   checked.forEach((c) => { if (c.checked && c.dataset.url) urls.push(c.dataset.url); });
   if (urls.length === 0) return;
   const ap = ($("#discover-auth-profile") || {}).value || "";
+  const headless = !!($("#discover-headless") && $("#discover-headless").checked);
   const payload = {
     urls,
-    headless: true,
+    headless,
     preflight_verify: true,
   };
   if (ap) payload.auth_profile = ap;
