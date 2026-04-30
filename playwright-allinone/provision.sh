@@ -26,7 +26,7 @@
 #   OFFLINE_DIFY_PLUGIN_DIR      /opt/seed/dify-plugins (langgenius-ollama-*.difypkg)
 #   OFFLINE_DIFY_CHATFLOW_YAML   /opt/dify-chatflow.yaml
 #   OFFLINE_JENKINS_PIPELINE     /opt/ZeroTouch-QA.jenkinsPipeline
-#   OLLAMA_MODEL                 gemma4:26b   (Sprint 5 §10.2 기본 모델 — chatflow YAML 과 일치)
+#   OLLAMA_MODEL                 gemma4:26b   (Dify provider / chatflow LLM node 모델)
 #   DEBUG=1                      상세 출력
 # ============================================================================
 set -euo pipefail
@@ -356,6 +356,26 @@ DELETE FROM provider_model_credentials pmc
    AND pmc.model_name = '${OLLAMA_MODEL}'
    AND pmc.encrypted_config NOT LIKE '%${SWAP_TARGET_PATTERN}%'
    AND NOT EXISTS (SELECT 1 FROM provider_models pm WHERE pm.credential_id = pmc.id);
+-- WSL2/lightweight reprovision cleanup: remove old baked-in LLM models so the
+-- Dify model settings UI cannot keep selecting a stale Gemma entry.
+DELETE FROM provider_model_settings
+ WHERE provider_name LIKE '%ollama%'
+   AND model_name IN ('gemma4:e4b', 'gemma4:26b')
+   AND model_name <> '${OLLAMA_MODEL}';
+DELETE FROM load_balancing_model_configs
+ WHERE provider_name LIKE '%ollama%'
+   AND model_name IN ('gemma4:e4b', 'gemma4:26b')
+   AND model_name <> '${OLLAMA_MODEL}';
+DELETE FROM provider_models
+ WHERE provider_name LIKE '%ollama%'
+   AND model_name IN ('gemma4:e4b', 'gemma4:26b')
+   AND model_name <> '${OLLAMA_MODEL}'
+   AND model_type IN ('llm', 'text-generation');
+DELETE FROM provider_model_credentials
+ WHERE provider_name LIKE '%ollama%'
+   AND model_name IN ('gemma4:e4b', 'gemma4:26b')
+   AND model_name <> '${OLLAMA_MODEL}'
+   AND model_type IN ('llm', 'text-generation');
 SQL
 )
   SWAP_OUT=$(PGPASSWORD=difyai123456 psql -h 127.0.0.1 -U postgres -d dify -tAc "$SWAP_SQL" 2>&1 || echo "psql-error")
@@ -739,6 +759,23 @@ dify_import_chatflow() {
   local tmp_yaml
   tmp_yaml=$(mktemp /tmp/chatflow.XXXXXX.yaml)
   cp "$src_yaml" "$tmp_yaml"
+
+  # Runtime model override. The baked chatflow YAMLs carry the macOS/default
+  # model names, but WSL2 often provisions lighter local models.
+  CHATFLOW_LLM_MODEL="$OLLAMA_MODEL" CHATFLOW_EMBEDDING_MODEL="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}" \
+    $PY - "$tmp_yaml" <<'PYEOF'
+import os, sys
+
+path = sys.argv[1]
+content = open(path, encoding="utf-8").read()
+llm_model = os.environ["CHATFLOW_LLM_MODEL"]
+embedding_model = os.environ["CHATFLOW_EMBEDDING_MODEL"]
+for legacy in ("gemma4:26b", "gemma4:e4b"):
+    content = content.replace(legacy, llm_model)
+content = content.replace("bona/bge-m3-korean:latest", embedding_model)
+open(path, "w", encoding="utf-8").write(content)
+PYEOF
+
   if [ "${#kb_ids[@]}" -gt 0 ]; then
     log "  KB UUID substitute: ${#kb_ids[@]} 개 → $tmp_yaml"
     KB_IDS_JSON=$(printf '%s\n' "${kb_ids[@]}" | $PY -c "

@@ -119,6 +119,7 @@ fi
 # 이 값은 docker buildx 가 Dockerfile ARG 로 받아두긴 하지만 실질적 효과는 없음.
 # 실제 런타임 모델 지정은 docker run 의 `-e OLLAMA_MODEL=...` 로 Dify provider 에 등록됨.
 OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+EMBEDDING_MODEL="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
 OUTPUT_TAR="${OUTPUT_TAR:-dscore.ttc.playwright-$(date +%Y%m%d-%H%M%S).tar.gz}"
 
 JENKINS_PLUGINS=(
@@ -345,6 +346,7 @@ if [ "$REDEPLOY" = "true" ]; then
     --add-host host.docker.internal:host-gateway \
     -e OLLAMA_BASE_URL="http://host.docker.internal:11434" \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \
+    -e EMBEDDING_MODEL="$EMBEDDING_MODEL" \
     -e AGENT_NAME="$HOST_AGENT_NAME" \
     --restart unless-stopped \
     "$IMAGE_TAG" >/dev/null
@@ -459,6 +461,7 @@ log "    -v \"\$HOST_RECORDINGS_DIR\":/recordings:rw \\"
 log "    --add-host host.docker.internal:host-gateway \\"
 log "    -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \\"
 log "    -e OLLAMA_MODEL=${OLLAMA_MODEL} \\"
+log "    -e EMBEDDING_MODEL=${EMBEDDING_MODEL} \\"
 log "    -e AGENT_NAME=\"\$AGENT_NAME\" \\"
 log "    --restart unless-stopped \\"
 log "    $IMAGE_TAG"
