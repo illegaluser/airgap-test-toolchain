@@ -173,6 +173,51 @@
       </dialog>
     </section>
 
+    <!-- 섹션 1-B: Discover URLs (URL 자동 수집) -->
+    <section class="card">
+      <details id="discover-section" open>
+        <summary><h2 style="display:inline-block; margin:0;">🔍 Discover URLs</h2></summary>
+        <p class="muted">
+          시작 URL 한 개와 (선택) 로그인 프로파일을 지정하면 같은 사이트 안의
+          링크를 BFS 로 수집합니다. 결과는 CSV/JSON 으로 받고, 선택한 URL 만
+          순회하는 Python Playwright tour script 도 생성할 수 있습니다.
+        </p>
+        <form id="discover-form">
+          <label>
+            <span>시작 URL</span>
+            <input type="url" name="seed_url" required placeholder="https://...">
+          </label>
+          <label>
+            <span>로그인 프로파일 <em>(선택)</em></span>
+            <select name="auth_profile" id="discover-auth-profile">
+              <option value="">(없음)</option>
+            </select>
+          </label>
+          <label class="optional">
+            <span>최대 페이지 수</span>
+            <input type="number" name="max_pages" value="200" min="1" max="2000">
+          </label>
+          <label class="optional">
+            <span>최대 깊이</span>
+            <input type="number" name="max_depth" value="3" min="0" max="10">
+          </label>
+          <div class="form-actions">
+            <button type="submit" id="btn-discover-start">Discover URLs</button>
+            <button type="button" id="btn-discover-cancel" hidden>취소</button>
+          </div>
+        </form>
+        <p class="muted" id="discover-status">— idle —</p>
+        <div id="discover-actions" class="form-actions" hidden>
+          <a id="discover-csv-link" class="dl-link" href="#" download>⬇ CSV 다운로드</a>
+          <button type="button" id="btn-discover-select-all">전체 선택</button>
+          <button type="button" id="btn-discover-select-none">선택 해제</button>
+          <button type="button" id="btn-discover-tour-script" disabled>선택 URL Tour Script 생성</button>
+          <span class="muted" id="discover-selected-count">0개 선택</span>
+        </div>
+        <div id="discover-result"></div>
+      </details>
+    </section>
+
     <!-- 섹션 2: 활성 세션 -->
     <section class="card" id="active-session" hidden>
       <h2>녹화 진행 중</h2>
