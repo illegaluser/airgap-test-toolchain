@@ -1,12 +1,12 @@
-"""Zero-Touch QA `convert` 모드 입력용 Playwright 스크립트 샘플.
+"""Sample Playwright script for the Zero-Touch QA `convert` mode input.
 
-목표:
-- 외부 사이트 `https://playwright.dev` 를 20 step 으로 순회
-- `zero_touch_qa.converter` 가 실제로 target 을 추출할 수 있는 형태로 작성
-- `page.goto(...)`, `page.locator(...).click()`, `expect(...).to_have_text(...)`
-  패턴 위주로 맞춰 DSL 변환 안정성 확보
+Goals:
+- Walk through the external site `https://playwright.dev` in 20 steps.
+- Written in a form `zero_touch_qa.converter` can actually extract targets from.
+- Sticks to `page.goto(...)`, `page.locator(...).click()`, and
+  `expect(...).to_have_text(...)` patterns to keep DSL conversion stable.
 
-사용 예:
+Usage:
   PYTHONPATH=playwright-allinone python3 -m zero_touch_qa \
     --mode convert \
     --file playwright-allinone/examples/playwright_dev_convert_input.py

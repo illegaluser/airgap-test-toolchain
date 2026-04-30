@@ -1,11 +1,11 @@
-"""Zero-Touch QA `convert` 모드 입력용 외부 사이트 예제.
+"""External-site example for the Zero-Touch QA `convert` mode input.
 
-대상:
-- Selenium 공개 테스트 페이지 `https://www.selenium.dev/selenium/web/web-form.html`
+Target:
+- The public Selenium test page `https://www.selenium.dev/selenium/web/web-form.html`.
 
-목표:
-- 외부 사이트 기반으로 9대 DSL 액션을 모두 포함하는 샘플 제공
-- convert 모드에서 deterministic 하게 변환 가능한 Playwright 코드 유지
+Goals:
+- Provide a sample that exercises all 9 DSL actions against an external site.
+- Keep the Playwright code deterministically convertible in convert mode.
 """
 
 from playwright.sync_api import Playwright, expect, sync_playwright

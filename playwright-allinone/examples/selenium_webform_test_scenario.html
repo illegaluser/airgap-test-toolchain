@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Selenium Web Form Zero-Touch QA Test Scenario</title>
@@ -83,56 +83,57 @@
 </head>
 <body>
   <div class="page">
-    <h1>Selenium Web Form Zero-Touch QA 테스트 시나리오</h1>
+    <h1>Selenium Web Form Zero-Touch QA test scenario</h1>
     <p>
-      본 문서는 외부 사이트 기반으로 9대 DSL 액션을 모두 포함하는 회귀 테스트 예제다.
-      대응 Playwright 입력 스크립트는 <code>selenium_webform_convert_input.py</code> 이다.
+      This document is a regression-test example covering all 9 DSL actions on an
+      external site. The matching Playwright input script is
+      <code>selenium_webform_convert_input.py</code>.
     </p>
 
     <div class="meta">
-      <strong>대상 사이트</strong><div>https://www.selenium.dev/selenium/web/web-form.html</div>
-      <strong>테스트 목적</strong><div>외부 사이트에서 9대 DSL 액션 전체를 회귀 검증</div>
-      <strong>실행 방식</strong><div>Playwright convert 입력 또는 PDF doc 입력</div>
-      <strong>완료 기준</strong><div>폼 입력 후 제출 결과 메시지 <code>Received!</code>가 표시됨</div>
+      <strong>Target site</strong><div>https://www.selenium.dev/selenium/web/web-form.html</div>
+      <strong>Test purpose</strong><div>Regression-cover all 9 DSL actions on an external site.</div>
+      <strong>Run mechanics</strong><div>Playwright convert input or PDF doc input.</div>
+      <strong>Done when</strong><div>After form submission, the result message <code>Received!</code> is shown.</div>
     </div>
 
-    <h2>세부 절차</h2>
+    <h2>Detailed steps</h2>
     <table>
       <thead>
         <tr>
           <th class="step">Step</th>
-          <th class="action">액션</th>
-          <th class="target">대상</th>
-          <th>설명 / 기대 결과</th>
+          <th class="action">Action</th>
+          <th class="target">Target</th>
+          <th>Description / expected result</th>
         </tr>
       </thead>
       <tbody>
-        <tr><td class="step">1</td><td>navigate</td><td>https://www.selenium.dev/selenium/web/web-form.html</td><td>폼 테스트 페이지로 이동한다.</td></tr>
-        <tr><td class="step">2</td><td>verify</td><td><code>h1</code></td><td>페이지 제목이 <code>Web form</code> 이어야 한다.</td></tr>
-        <tr><td class="step">3</td><td>fill</td><td><code>#my-text-id</code></td><td>텍스트 입력란에 <code>Zero Touch QA</code>를 입력한다.</td></tr>
-        <tr><td class="step">4</td><td>press</td><td><code>#my-text-id</code></td><td><code>Tab</code> 키를 눌러 다음 필드로 포커스를 이동한다.</td></tr>
-        <tr><td class="step">5</td><td>fill</td><td><code>textarea[name='my-textarea']</code></td><td>설명 텍스트를 입력한다.</td></tr>
-        <tr><td class="step">6</td><td>select</td><td><code>select[name='my-select']</code></td><td>드롭다운에서 <code>Two</code>를 선택한다.</td></tr>
-        <tr><td class="step">7</td><td>check</td><td><code>#my-check-2</code></td><td>기본 체크박스를 활성화한다.</td></tr>
-        <tr><td class="step">8</td><td>hover</td><td><code>button</code></td><td>제출 버튼 위에 마우스를 올린다.</td></tr>
-        <tr><td class="step">9</td><td>wait</td><td>-</td><td>400ms 대기한다.</td></tr>
-        <tr><td class="step">10</td><td>click</td><td><code>button</code></td><td>제출 버튼을 클릭한다.</td></tr>
-        <tr><td class="step">11</td><td>verify</td><td><code>#message</code></td><td>결과 메시지가 <code>Received!</code> 여야 한다.</td></tr>
+        <tr><td class="step">1</td><td>navigate</td><td>https://www.selenium.dev/selenium/web/web-form.html</td><td>Navigate to the form test page.</td></tr>
+        <tr><td class="step">2</td><td>verify</td><td><code>h1</code></td><td>The page title must be <code>Web form</code>.</td></tr>
+        <tr><td class="step">3</td><td>fill</td><td><code>#my-text-id</code></td><td>Enter <code>Zero Touch QA</code> in the text field.</td></tr>
+        <tr><td class="step">4</td><td>press</td><td><code>#my-text-id</code></td><td>Press <code>Tab</code> to move focus to the next field.</td></tr>
+        <tr><td class="step">5</td><td>fill</td><td><code>textarea[name='my-textarea']</code></td><td>Enter the description text.</td></tr>
+        <tr><td class="step">6</td><td>select</td><td><code>select[name='my-select']</code></td><td>Select <code>Two</code> in the dropdown.</td></tr>
+        <tr><td class="step">7</td><td>check</td><td><code>#my-check-2</code></td><td>Enable the default checkbox.</td></tr>
+        <tr><td class="step">8</td><td>hover</td><td><code>button</code></td><td>Hover the mouse over the submit button.</td></tr>
+        <tr><td class="step">9</td><td>wait</td><td>-</td><td>Wait 400ms.</td></tr>
+        <tr><td class="step">10</td><td>click</td><td><code>button</code></td><td>Click the submit button.</td></tr>
+        <tr><td class="step">11</td><td>verify</td><td><code>#message</code></td><td>The result message must be <code>Received!</code>.</td></tr>
       </tbody>
     </table>
 
-    <h2>Machine Readable Step Markers</h2>
-    <p><code>ZTQA_STEP|1|navigate||https://www.selenium.dev/selenium/web/web-form.html|폼 테스트 페이지로 이동한다.</code></p>
-    <p><code>ZTQA_STEP|2|verify|h1|Web form|페이지 제목이 Web form 이어야 한다.</code></p>
-    <p><code>ZTQA_STEP|3|fill|#my-text-id|Zero Touch QA|텍스트 입력란에 Zero Touch QA를 입력한다.</code></p>
-    <p><code>ZTQA_STEP|4|press|#my-text-id|Tab|Tab 키를 눌러 다음 필드로 포커스를 이동한다.</code></p>
-    <p><code>ZTQA_STEP|5|fill|textarea[name='my-textarea']|External site regression scenario|설명 텍스트를 입력한다.</code></p>
-    <p><code>ZTQA_STEP|6|select|select[name='my-select']|Two|드롭다운에서 Two를 선택한다.</code></p>
-    <p><code>ZTQA_STEP|7|check|#my-check-2|on|기본 체크박스를 활성화한다.</code></p>
-    <p><code>ZTQA_STEP|8|hover|button||제출 버튼 위에 마우스를 올린다.</code></p>
-    <p><code>ZTQA_STEP|9|wait||400|400ms 대기한다.</code></p>
-    <p><code>ZTQA_STEP|10|click|button||제출 버튼을 클릭한다.</code></p>
-    <p><code>ZTQA_STEP|11|verify|#message|Received!|결과 메시지가 Received! 여야 한다.</code></p>
+    <h2>Machine-readable step markers</h2>
+    <p><code>ZTQA_STEP|1|navigate||https://www.selenium.dev/selenium/web/web-form.html|Navigate to the form test page.</code></p>
+    <p><code>ZTQA_STEP|2|verify|h1|Web form|The page title must be Web form.</code></p>
+    <p><code>ZTQA_STEP|3|fill|#my-text-id|Zero Touch QA|Enter Zero Touch QA in the text field.</code></p>
+    <p><code>ZTQA_STEP|4|press|#my-text-id|Tab|Press Tab to move focus to the next field.</code></p>
+    <p><code>ZTQA_STEP|5|fill|textarea[name='my-textarea']|External site regression scenario|Enter the description text.</code></p>
+    <p><code>ZTQA_STEP|6|select|select[name='my-select']|Two|Select Two in the dropdown.</code></p>
+    <p><code>ZTQA_STEP|7|check|#my-check-2|on|Enable the default checkbox.</code></p>
+    <p><code>ZTQA_STEP|8|hover|button||Hover the mouse over the submit button.</code></p>
+    <p><code>ZTQA_STEP|9|wait||400|Wait 400ms.</code></p>
+    <p><code>ZTQA_STEP|10|click|button||Click the submit button.</code></p>
+    <p><code>ZTQA_STEP|11|verify|#message|Received!|The result message must be Received!.</code></p>
   </div>
 </body>
 </html>
