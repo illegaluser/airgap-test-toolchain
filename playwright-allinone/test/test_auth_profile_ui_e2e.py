@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
+pytestmark = pytest.mark.e2e
 
 E2E_PORT = 18095
 E2E_BASE = f"http://127.0.0.1:{E2E_PORT}"
