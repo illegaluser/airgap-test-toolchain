@@ -35,7 +35,7 @@ services:
     environment:
       TZ: Asia/Seoul
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:4b}
       JENKINS_PORT: "28080"
       JENKINS_AGENT_PORT: "50002"
       DIFY_GATEWAY_PORT: "28081"

@@ -94,7 +94,7 @@ pipeline {
                 sh '''
                 set -e
                 # 실패해도 파이프라인 통과 (graceful). 요약 없이 원본 청크 유지.
-                python3 ${SCRIPTS_DIR}/contextual_enricher.py --in ${RESULT_DIR} || \
+                ENRICH_MODEL="${OLLAMA_MODEL:-gemma4:e4b}" python3 ${SCRIPTS_DIR}/contextual_enricher.py --in ${RESULT_DIR} || \
                     echo "[Enrich:WARN] enricher 일부 실패 — 원본 청크로 계속"
                 '''
             }

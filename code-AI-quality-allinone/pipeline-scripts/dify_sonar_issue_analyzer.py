@@ -763,7 +763,7 @@ def main():
     # 에는 영향 0, 마지막 retry 에서만 부담.
     parser.add_argument("--hyde-ollama-base-url", default="",
                         help="Ollama base URL (예: http://host.docker.internal:11434). 빈 값 = HyDE off")
-    parser.add_argument("--hyde-ollama-model", default="gemma4:e4b",
+    parser.add_argument("--hyde-ollama-model", default=os.getenv("OLLAMA_MODEL", "gemma4:e4b"),
                         help="HyDE 변환에 사용할 Ollama 모델")
     # Step R 신규 — creator 가 deterministic 본문 렌더에 쓸 commit 정보 전달용.
     # 비어있으면 out_row 의 commit_sha 도 빈 문자열 (creator 가 commit 섹션 생략).

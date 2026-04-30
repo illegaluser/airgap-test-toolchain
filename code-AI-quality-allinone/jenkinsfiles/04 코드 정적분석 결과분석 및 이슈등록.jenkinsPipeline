@@ -143,7 +143,7 @@ pipeline {
               --max-issues ${params.MAX_ISSUES} \
               --commit-sha "${env.COMMIT_SHA}" \
               --hyde-ollama-base-url "http://host.docker.internal:11434" \
-              --hyde-ollama-model "gemma4:e4b" \
+              --hyde-ollama-model "\${OLLAMA_MODEL:-gemma4:e4b}" \
               --print-first-errors 5
           """
         }
@@ -177,7 +177,7 @@ pipeline {
               --sonar-token "\${SONAR_TOKEN_PRIVATE}" \
               --analysis-mode "${params.ANALYSIS_MODE}" \
               --ollama-base-url "http://host.docker.internal:11434" \
-              --ollama-model "gemma4:e4b"
+              --ollama-model "\${OLLAMA_MODEL:-gemma4:e4b}"
           """
         }
       }

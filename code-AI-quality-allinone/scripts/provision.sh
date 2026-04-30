@@ -97,10 +97,14 @@ jenkins_create_pipeline_job() {
     local encoded tmp_xml rc=0
     encoded=$(urlencode "$name")
     tmp_xml=$(mktemp)
-    python3 <<PY > "$tmp_xml"
+    MODEL_FOR_JENKINS="$OLLAMA_MODEL" python3 <<PY > "$tmp_xml"
 import html
+import os
 with open(r"$jenkinsfile", encoding="utf-8") as f:
     script = f.read()
+model = os.environ.get("MODEL_FOR_JENKINS", "gemma4:e4b")
+if model and model != "gemma4:e4b":
+    script = script.replace("gemma4:e4b", model)
 print("""<?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
   <description>TTC All-in-One auto-provisioned: $name</description>
@@ -583,6 +587,20 @@ dify_import_workflow() {
     fi
 
     # 2. yaml 에서 app.name 추출 (동일명 검색 키)
+    if [ -n "$OLLAMA_MODEL" ]; then
+        WORKFLOW_MODEL="$OLLAMA_MODEL" TMP_YAML="$tmp_yaml" python3 <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["TMP_YAML"])
+model = os.environ["WORKFLOW_MODEL"]
+text = path.read_text(encoding="utf-8")
+text = text.replace("name: gemma4:e4b", f"name: {model}", 1)
+path.write_text(text, encoding="utf-8")
+PY
+        log "  Workflow LLM model 설정: $OLLAMA_MODEL"
+    fi
+
     local app_name; app_name=$(TMP_YAML="$tmp_yaml" python3 -c "
 import os, yaml
 with open(os.environ['TMP_YAML'], encoding='utf-8') as f:

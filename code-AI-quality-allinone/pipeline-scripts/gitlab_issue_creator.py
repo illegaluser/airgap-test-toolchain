@@ -845,7 +845,7 @@ def main() -> int:
     ap.add_argument("--ollama-base-url", default="",
                     help="Ollama API base URL (예: http://host.docker.internal:11434). "
                          "비어있으면 rule 번역 skip.")
-    ap.add_argument("--ollama-model", default="gemma4:e4b",
+    ap.add_argument("--ollama-model", default=os.getenv("OLLAMA_MODEL", "gemma4:e4b"),
                     help="Ollama 모델 이름 (rule 번역용)")
     args = ap.parse_args()
 

@@ -21,7 +21,7 @@ import requests
 
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
-ENRICH_MODEL = os.getenv("ENRICH_MODEL", "gemma4:e4b")
+ENRICH_MODEL = os.getenv("ENRICH_MODEL") or os.getenv("OLLAMA_MODEL", "gemma4:e4b")
 TIMEOUT = float(os.getenv("ENRICH_TIMEOUT", "30"))
 MAX_RETRIES = int(os.getenv("ENRICH_RETRIES", "2"))
 

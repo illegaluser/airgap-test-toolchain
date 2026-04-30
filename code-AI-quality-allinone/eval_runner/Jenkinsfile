@@ -44,7 +44,8 @@ properties([
 
                         // ScriptApproval/네트워크 이슈가 있을 때에도 Build 화면 선택이 가능해야 하므로
                         // fallback 가능한 기본 목록을 유지합니다.
-                        def defaultModels = ['gemma4:e4b', 'qwen3.5:4b', 'qwen3-coder:30b', 'qwen2:7b']
+                        def envDefault = System.getenv('OLLAMA_MODEL') ?: 'gemma4:e4b'
+                        def defaultModels = ([envDefault, 'gemma4:e4b', 'qwen3.5:4b', 'qwen3-coder:30b', 'qwen2:7b']).unique()
                         def baseUrl = (OLLAMA_BASE_URL ?: 'http://host.docker.internal:11434').trim()
                         if (!baseUrl) {
                             return defaultModels
@@ -125,6 +126,7 @@ pipeline {
                     echo "Installed Ollama models:"
                     python3 - "$TMP_JSON" "${JUDGE_MODEL:-}" "$EFFECTIVE_MODEL_FILE" <<'PY'
 import json
+import os
 import sys
 
 payload_path, selected_model, output_path = sys.argv[1], sys.argv[2].strip(), sys.argv[3]
@@ -146,7 +148,7 @@ if selected_model:
         )
     effective_model = selected_model
 else:
-    preferred = ["gemma4:e4b", "qwen3.5:4b", "qwen3-coder:30b", "qwen2:7b"]
+    preferred = [os.environ.get("OLLAMA_MODEL", "gemma4:e4b"), "gemma4:e4b", "qwen3.5:4b", "qwen3-coder:30b", "qwen2:7b"]
     effective_model = next((m for m in preferred if m in models), models[0])
     print("JUDGE_MODEL was empty. Auto-selected installed model:", effective_model)
 

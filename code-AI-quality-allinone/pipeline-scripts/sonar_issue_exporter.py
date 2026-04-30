@@ -535,7 +535,7 @@ def _classify_severity(severity: str) -> tuple:
     severity 와 무관하게 Dify/LLM 분석을 수행하며 skip_llm 분기를 사용하지 않는다.
     """
     _ = (severity or "").upper()
-    return ("gemma4:e4b", False)
+    return (os.getenv("SONAR_LLM_MODEL") or os.getenv("OLLAMA_MODEL", "gemma4:e4b"), False)
 
 
 def _cluster_key(rule_key: str, enclosing_function: str, component: str) -> str:
