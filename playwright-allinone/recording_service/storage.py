@@ -26,6 +26,19 @@ def host_root() -> Path:
     return Path(os.environ.get("RECORDING_HOST_ROOT", DEFAULT_HOST_RECORDINGS_DIR))
 
 
+def discoveries_root() -> Path:
+    """호스트 측 Discover URLs 결과 루트. env `DISCOVERY_HOST_ROOT` override 가능.
+
+    `host_root()` 와 분리 — recordings 루트를 그대로 쓰면
+    `recordings/discoveries/...` 로 잘못 저장되므로 별도 헬퍼.
+    """
+    raw = os.environ.get("DISCOVERY_HOST_ROOT")
+    if raw:
+        return Path(raw).expanduser()
+    base = os.environ.get("DSCORE_AGENT_DIR", "~/.dscore.ttc.playwright-agent")
+    return Path(base).expanduser() / "discoveries"
+
+
 def session_dir(session_id: str) -> Path:
     """`<host_root>/<session_id>/` 경로 반환 + 디렉토리 생성."""
     p = host_root() / session_id

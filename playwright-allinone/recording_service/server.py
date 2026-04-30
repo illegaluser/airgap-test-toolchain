@@ -9,11 +9,15 @@ TR.2 단계에서 /start /stop 이 실 codegen subprocess 와 연동된다.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import re
 import threading
-from typing import Optional
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Literal, Optional
 
 from pathlib import Path as _Path
 
@@ -129,14 +133,18 @@ def _save_metadata_preserving_auth(sid: str, new_meta: dict) -> None:
 
 # ── auth-profile 통합 헬퍼 (P3.7) ────────────────────────────────────────
 
-def _resolve_auth_profile_extras(
+def _load_profile_for_browser(
     profile_name: Optional[str],
-) -> tuple[Optional[list[str]], bool]:
-    """auth_profile 이름 → codegen extra_args + machine_mismatch 플래그.
+) -> tuple[Optional[_Path], object, bool]:
+    """auth_profile 이름 → (storage_path, fingerprint, machine_mismatch).
+
+    codegen extra args 가 필요 없는 호출자(예: discover 워커)가 storageState
+    파일 경로 + fingerprint 객체만 받기 위한 공통 헬퍼. 기존
+    ``_resolve_auth_profile_extras`` 도 이 헬퍼를 거쳐 extra_args 를 조립한다.
 
     Returns:
-        (extra_args, machine_mismatch). extra_args 는 ``--load-storage <path> +
-        fingerprint 옵션``. profile 이 None 이면 ``(None, False)``.
+        (storage_path, fingerprint, machine_mismatch). profile 이 None 이면
+        ``(None, None, False)``. 두 번째 원소는 ``FingerprintProfile`` 인스턴스.
 
     Raises:
         HTTPException(404): 프로파일 미발견.
@@ -144,7 +152,7 @@ def _resolve_auth_profile_extras(
         HTTPException(503): CHIPS 미지원 등 환경 문제.
     """
     if not profile_name:
-        return None, False
+        return None, None, False
     # auth_profiles 는 fcntl 등 POSIX 의존성이 있어 lazy import.
     from zero_touch_qa import auth_profiles
     from zero_touch_qa.auth_profiles import (
@@ -185,11 +193,32 @@ def _resolve_auth_profile_extras(
             detail={"reason": "profile_expired", **vdetail},
         )
 
-    # 머신 결속 (D11) — 차단 안 함, 헤더로만 알림.
+    # 머신 결속 (D11) — 차단 안 함, 헤더로만 알림. 결정 책임은 본 헬퍼 한 곳.
     machine_mismatch = (prof.host_machine_id != auth_profiles.current_machine_id())
 
-    extra_args: list[str] = ["--load-storage", str(prof.storage_path)]
-    extra_args += prof.fingerprint.to_playwright_open_args()
+    return prof.storage_path, prof.fingerprint, machine_mismatch
+
+
+def _resolve_auth_profile_extras(
+    profile_name: Optional[str],
+) -> tuple[Optional[list[str]], bool]:
+    """auth_profile 이름 → codegen extra_args + machine_mismatch 플래그.
+
+    Returns:
+        (extra_args, machine_mismatch). extra_args 는 ``--load-storage <path> +
+        fingerprint 옵션``. profile 이 None 이면 ``(None, False)``.
+
+    Raises:
+        HTTPException(404): 프로파일 미발견.
+        HTTPException(409): verify 실패 (만료) — UI 가 재시드 모달로 분기.
+        HTTPException(503): CHIPS 미지원 등 환경 문제.
+    """
+    storage_path, fingerprint, machine_mismatch = _load_profile_for_browser(profile_name)
+    if storage_path is None:
+        return None, False
+
+    extra_args: list[str] = ["--load-storage", str(storage_path)]
+    extra_args += fingerprint.to_playwright_open_args()  # type: ignore[union-attr]
     return extra_args, machine_mismatch
 
 
@@ -1401,3 +1430,663 @@ def auth_profile_delete(name: str) -> Response:
             detail={"reason": "delete_failed", "message": str(e)},
         )
     return Response(status_code=204)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Discover URLs (URL 자동 수집) — docs/PLAN_URL_DISCOVERY.md 참조
+# ─────────────────────────────────────────────────────────────────────────
+
+# 1차 정책: 동시 실행 상한 2. 운영 사이트 부하 + 로컬 Chromium 프로세스 수 가드.
+DISCOVER_MAX_CONCURRENT = 2
+
+
+def _now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class DiscoverReq(BaseModel):
+    seed_url: str = Field(..., description="크롤 시작 URL")
+    auth_profile: Optional[str] = None
+    max_pages: int = Field(200, ge=1, le=2000)
+    max_depth: int = Field(3, ge=0, le=10)
+
+
+class TourScriptReq(BaseModel):
+    # NOTE: 일부러 list[str]. Pydantic v2 HttpUrl 은 끝슬래시/host case 등을
+    # 정규화해 urls.json 의 원본 문자열과 매칭이 깨진다. 검증은
+    # url_discovery.normalize_url() 로 양쪽을 정규화한 set 비교로 수행.
+    urls: list[str] = Field(..., min_length=1, max_length=500)
+    auth_profile: Optional[str] = None
+    headless: bool = True
+    preflight_verify: bool = True
+    wait_until: Literal["domcontentloaded", "load", "networkidle"] = "domcontentloaded"
+    nav_timeout_ms: int = Field(15000, ge=1000, le=120000)
+
+
+class DiscoverJob(BaseModel):
+    job_id: str
+    state: Literal["running", "cancelling", "done", "failed", "cancelled"]
+    seed_url: str
+    auth_profile: Optional[str] = None
+    machine_mismatch: bool = False
+    started_at: str
+    finished_at: Optional[str] = None
+    count: int = 0
+    last_url: Optional[str] = None
+    result_dir: Optional[str] = None
+    error: Optional[str] = None
+    aborted_reason: Optional[str] = None  # "auth_drift" 등
+
+
+_discover_jobs: dict[str, DiscoverJob] = {}
+_discover_cancel_events: dict[str, threading.Event] = {}
+_discover_lock = threading.Lock()
+
+
+def _discover_worker(
+    job_id: str,
+    storage_path: Optional[_Path],
+    fingerprint: object,
+    max_pages: int,
+    max_depth: int,
+    cancel_event: threading.Event,
+) -> None:
+    """discover 백그라운드 워커. Playwright sync API 를 thread 에서 직접 호출."""
+    from zero_touch_qa.url_discovery import DiscoverConfig, discover_urls
+
+    with _discover_lock:
+        job = _discover_jobs[job_id]
+
+    out_dir = storage.discoveries_root() / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        fp_kwargs = fingerprint.to_browser_context_kwargs() if fingerprint else {}
+        cfg = DiscoverConfig(
+            seed_url=job.seed_url,
+            storage_state_path=storage_path,
+            fingerprint_kwargs=fp_kwargs,
+            max_pages=max_pages,
+            max_depth=max_depth,
+        )
+
+        def _progress(count: int, last_url: str) -> None:
+            with _discover_lock:
+                j = _discover_jobs.get(job_id)
+                if j is not None:
+                    j.count = count
+                    j.last_url = last_url
+
+        results, abort_reason = discover_urls(
+            cfg, on_progress=_progress, cancel_event=cancel_event
+        )
+
+        finished_at = _now_iso_utc()
+        cancelled_by_user = cancel_event.is_set()
+        meta = {
+            "seed_url": job.seed_url,
+            "auth_profile": job.auth_profile,
+            "machine_mismatch": job.machine_mismatch,
+            "max_pages": max_pages,
+            "max_depth": max_depth,
+            "started_at": job.started_at,
+            "finished_at": finished_at,
+            "count": len(results),
+            "aborted_reason": abort_reason,
+            "cancelled_by_user": cancelled_by_user,
+        }
+        (out_dir / "meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (out_dir / "urls.json").write_text(
+            json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        # utf-8-sig: Excel 호환 BOM (한국어 사용자 다수).
+        with (out_dir / "urls.csv").open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["url", "status", "title", "depth", "found_at"]
+            )
+            writer.writeheader()
+            for r in results:
+                writer.writerow(asdict(r))
+
+        with _discover_lock:
+            j = _discover_jobs.get(job_id)
+            if j is not None:
+                j.state = "cancelled" if cancelled_by_user else "done"
+                j.aborted_reason = abort_reason
+                j.finished_at = finished_at
+                j.count = len(results)
+                j.result_dir = str(out_dir)
+    except Exception as e:  # noqa: BLE001 — worker 최상위 가드
+        log.exception("[discover] job=%s 워커 실패", job_id)
+        with _discover_lock:
+            j = _discover_jobs.get(job_id)
+            if j is not None:
+                j.state = "failed"
+                j.error = repr(e)
+                j.finished_at = _now_iso_utc()
+    finally:
+        with _discover_lock:
+            _discover_cancel_events.pop(job_id, None)
+
+
+from string import Template as _StrTemplate
+
+_TOUR_SCRIPT_TEMPLATE = _StrTemplate('''"""Auto-generated tour script — pytest 기반 회귀 검증.
+
+선택한 URL 들이 *정상 화면을 노출하는지* 자동 확인한다. URL 별로 4가지를 본다:
+  1. navigation 자체 성공 (예외 없음)
+  2. HTTP status < 400
+  3. 최종 URL host 가 seed host 와 같은 도메인 계열 (로그인 페이지로 빠지지 않음)
+  4. <title> 비어있지 않음 + body 텍스트 길이 >= MIN_BODY_TEXT_LEN
+
+실행 (Recording UI venv 안에서):
+    pytest tour_selected.py -v
+    pytest tour_selected.py -v -k "/user/co"               # 특정 URL 서브셋
+    TOUR_HEADLESS=0 python tour_selected.py                # 브라우저 창 띄움
+    TOUR_HEADLESS=1 python tour_selected.py                # 헤드리스 강제 (CI 등)
+    TOUR_SCREENSHOTS_FAILED_ONLY=1 pytest tour_selected.py # 실패한 URL 만 PNG (기본: 전체)
+    python tour_selected.py                                # Recording UI 'Play Script from File' 호환
+
+결과 (스크립트와 같은 디렉토리에 생성):
+    tour_results.jsonl   — URL 별 결과 (status, title, body_len, ok, error, screenshot 경로)
+    tour_screenshots/    — 모든 URL PNG (full_page=True). 옵션으로 실패만 저장 가능.
+
+의존성: pytest, playwright (Recording UI venv 에 이미 설치).
+같은 머신/사용자 환경 실행 전제 — STORAGE_STATE 절대경로가 박혀 있다.
+공유 시 auth_profile 없이 재생성 권장.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+from urllib.parse import urlparse
+
+import pytest
+from playwright.sync_api import sync_playwright
+
+
+# ── 설정 (서버에서 박힘) ──────────────────────────────────────────────────
+URLS = $urls_block
+SEED_HOST = $seed_host_literal
+OUT_DIR = Path(__file__).resolve().parent
+RESULTS = OUT_DIR / "tour_results.jsonl"
+SCREENSHOT_DIR = OUT_DIR / "tour_screenshots"
+STORAGE_STATE = $storage_state_literal    # auth_profile 없으면 None
+CONTEXT_KWARGS_JSON = $context_kwargs_json_literal
+HEADLESS = $headless_literal
+PREFLIGHT_VERIFY = $preflight_verify_literal
+VERIFY_SERVICE_URL = $verify_url_literal
+VERIFY_SERVICE_TEXT = $verify_text_literal
+WAIT_UNTIL = $wait_until_literal
+NAV_TIMEOUT_MS = $nav_timeout_ms_literal
+MIN_BODY_TEXT_LEN = 50  # body inner_text 최소 길이 — 빈 화면/스피너만 도는 페이지 차단
+SETTLE_TIMEOUT_MS = 1500  # screenshot 찍기 직전 networkidle best-effort 대기 (부분 렌더 방지)
+# 기본: 모든 URL 의 PNG 저장. opt-out: TOUR_SCREENSHOTS_FAILED_ONLY=1 (CI 등 디스크 절약).
+SCREENSHOTS_FAILED_ONLY = os.environ.get("TOUR_SCREENSHOTS_FAILED_ONLY", "0") == "1"
+
+# 환경변수로 즉시 override 가능 (스크립트 재생성 없이):
+#   TOUR_HEADLESS=0 ...   → 브라우저 창이 뜸 (사용자가 직접 확인)
+#   TOUR_HEADLESS=1 ...   → headless 강제 (CI/배경 실행)
+_headless_env = os.environ.get("TOUR_HEADLESS")
+if _headless_env is not None:
+    HEADLESS = _headless_env not in ("0", "false", "False", "no", "")
+
+
+# ── 유틸 ─────────────────────────────────────────────────────────────────
+def _same_or_related_host(actual: str, expected: str) -> bool:
+    if not expected:
+        return True
+    return actual == expected or actual.endswith("." + expected)
+
+
+def _shot_path(idx: int, url: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", url)[:80]
+    return SCREENSHOT_DIR / f"{idx:03d}_{safe}.png"
+
+
+def _record(rec: dict) -> None:
+    with RESULTS.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\\n")
+
+
+# ── fixtures ────────────────────────────────────────────────────────────
+@pytest.fixture(scope="session", autouse=True)
+def _reset_results():
+    """매 세션 시작 시 jsonl 리셋, 스크린샷 디렉토리 보장."""
+    if RESULTS.exists():
+        RESULTS.unlink()
+    SCREENSHOT_DIR.mkdir(exist_ok=True)
+    yield
+
+
+@pytest.fixture(scope="session")
+def _storage_state_path():
+    """STORAGE_STATE 가 지정됐는데 파일이 없으면 친절한 메시지로 즉시 종료."""
+    if STORAGE_STATE is None:
+        return None
+    p = Path(STORAGE_STATE).expanduser()
+    if not p.is_file():
+        pytest.exit(
+            "\\n[tour] STORAGE_STATE 파일을 찾을 수 없습니다:\\n"
+            f"  {p}\\n"
+            "  같은 머신에서 시드한 storageState 가 필요합니다.\\n"
+            "  Recording UI 의 'Auth Profile' 영역에서 다시 시드한 뒤,\\n"
+            "  Discover URLs 화면에서 tour script 를 재생성하세요.\\n",
+            returncode=2,
+        )
+    return p
+
+
+@pytest.fixture(scope="session")
+def browser_context(_storage_state_path):
+    """세션 단위 1개 컨텍스트. 각 테스트는 fresh page 를 새로 연다."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=HEADLESS)
+        ctx_kwargs = json.loads(CONTEXT_KWARGS_JSON)
+        if _storage_state_path is not None:
+            ctx_kwargs["storage_state"] = str(_storage_state_path)
+        context = browser.new_context(**ctx_kwargs)
+        try:
+            yield context
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.fixture(scope="session")
+def preflight(browser_context):
+    """auth_profile 의 verify_url 로 미리 한 번 이동해 세션 만료를 사전 검출.
+
+    실패 시 모든 URL 테스트를 skip (사유와 함께).
+    """
+    rec = {"phase": "preflight", "url": VERIFY_SERVICE_URL}
+    if not PREFLIGHT_VERIFY or not VERIFY_SERVICE_URL:
+        rec["skipped"] = "preflight disabled or no verify_url"
+        rec["ok"] = True
+        _record(rec)
+        return
+    page = browser_context.new_page()
+    try:
+        try:
+            response = page.goto(VERIFY_SERVICE_URL, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
+        except Exception as e:
+            rec["ok"] = False
+            rec["error"] = repr(e)
+            _record(rec)
+            pytest.skip(f"preflight failed (navigation error): {e!r}")
+            return
+        status = response.status if response else None
+        rec["status"] = status
+        rec["final_url"] = page.url
+        if VERIFY_SERVICE_TEXT:
+            try:
+                body = page.inner_text("body", timeout=5000)
+            except Exception:
+                body = ""
+            ok = (status is None or status < 400) and (VERIFY_SERVICE_TEXT in body)
+            if not ok:
+                rec["error"] = "verify_service_text_not_found_or_status_failed"
+        else:
+            expected_host = urlparse(VERIFY_SERVICE_URL).hostname or ""
+            final_host = urlparse(page.url).hostname or ""
+            ok = (status is None or status < 400) and _same_or_related_host(final_host, expected_host)
+            if not ok:
+                rec["error"] = "verify_service_not_reachable_or_redirected"
+        rec["ok"] = ok
+        _record(rec)
+        if not ok:
+            pytest.skip(
+                f"preflight failed — auth_profile 만료 가능성. "
+                f"status={status}, final_url={page.url}. "
+                f"Recording UI 에서 프로파일 재시드 후 tour script 재생성하세요."
+            )
+    finally:
+        page.close()
+
+
+# ── 테스트 ──────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("url", URLS, ids=lambda u: u)
+def test_url_renders_normally(url, browser_context, preflight):
+    """선택 URL 이 정상 화면을 노출하는지 검증 (검증 항목 1~4)."""
+    idx = URLS.index(url) + 1
+    rec = {"phase": "tour", "index": idx, "url": url, "ok": False}
+    page = browser_context.new_page()
+    page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+    try:
+        # 1. navigation 자체 성공
+        try:
+            response = page.goto(url, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
+        except Exception as e:
+            rec["error"] = repr(e)
+            pytest.fail(f"navigation 실패: {e!r}")
+
+        status = response.status if response else None
+        final_url = page.url
+        rec["status"] = status
+        rec["final_url"] = final_url
+
+        # 2. HTTP status < 400
+        assert status is None or status < 400, \\
+            f"HTTP {status} ({final_url})"
+
+        # 3. seed host 같은 도메인 계열
+        final_host = urlparse(final_url).hostname or ""
+        assert _same_or_related_host(final_host, SEED_HOST), \\
+            f"세션 만료 또는 외부 redirect 의심 — final_host={final_host}, expected={SEED_HOST}"
+
+        # 4. title + body 길이
+        title = (page.title() or "").strip()
+        rec["title"] = title
+        try:
+            body_text = page.inner_text("body", timeout=5000)
+        except Exception:
+            body_text = ""
+        body_len = len(body_text.strip())
+        rec["body_len"] = body_len
+
+        assert title, "<title> 이 비어 있음"
+        assert body_len >= MIN_BODY_TEXT_LEN, \\
+            f"body 텍스트 길이 {body_len} < {MIN_BODY_TEXT_LEN}자 — 빈 화면 의심"
+
+        rec["ok"] = True
+    except AssertionError as e:
+        rec.setdefault("error", str(e))
+        raise
+    finally:
+        failed = not rec.get("ok", False)
+        # 기본: 모든 URL 저장. SCREENSHOTS_FAILED_ONLY=1 일 때만 실패 URL 만 저장.
+        should_shot = failed or (not SCREENSHOTS_FAILED_ONLY)
+        if should_shot:
+            # screenshot 직전 networkidle best-effort settle — 부분 렌더 방지.
+            try:
+                page.wait_for_load_state("networkidle", timeout=SETTLE_TIMEOUT_MS)
+            except Exception:
+                pass
+            try:
+                shot = _shot_path(idx, url)
+                page.screenshot(path=str(shot), full_page=True)
+                rec["screenshot"] = str(shot)
+            except Exception:
+                pass
+        _record(rec)
+        page.close()
+
+
+# ── Recording UI 'Play Script from File' 호환 ───────────────────────────
+# 이 파일은 pytest 테스트 파일이지만, Recording UI 가 Play 시 단순
+# `python <script.py>` 로 실행하므로 같은 결과를 얻기 위해 pytest 를
+# 라이브러리로 호출. rc=0(전부 PASS) / 1(하나 이상 FAIL) / 2(skip 뿐) 등.
+if __name__ == "__main__":
+    import sys
+    sys.exit(pytest.main([__file__, "-v", "-p", "no:cacheprovider"]))
+''')
+
+
+def _shrink_home_path(path: _Path) -> str:
+    """절대 경로를 가능하면 ~ prefix 로 축약. 다른 경우 절대 경로 유지."""
+    try:
+        rel = path.relative_to(_Path.home())
+        return f"~/{rel}"
+    except ValueError:
+        return str(path)
+
+
+def _format_urls_block(urls: list[str]) -> str:
+    """URL 리스트를 한 줄당 하나씩 들여쓴 Python 리터럴로 직렬화 (가독성)."""
+    if not urls:
+        return "[]"
+    indent = "    "
+    body = ",\n".join(f"{indent}{repr(u)}" for u in urls)
+    return f"[\n{body},\n]"
+
+
+def _generate_tour_script(
+    *,
+    urls: list[str],
+    seed_url: str,
+    storage_path: Optional[_Path],
+    fingerprint: object,
+    headless: bool,
+    preflight_verify: bool,
+    verify_service_url: str,
+    verify_service_text: str,
+    wait_until: str,
+    nav_timeout_ms: int,
+) -> str:
+    """선택 URL tour script (pytest 형식) 의 Python 소스 텍스트 생성.
+
+    `CONTEXT_KWARGS` 는 JSON 직렬화로 안전 복원. 비호환 객체가 끼어 있으면
+    HTTPException(500) 으로 거부.
+    """
+    fp_kwargs = fingerprint.to_browser_context_kwargs() if fingerprint else {}
+    try:
+        context_kwargs_json = json.dumps(fp_kwargs, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "reason": "fingerprint_not_serializable",
+                "message": f"Fingerprint kwargs 가 JSON 으로 직렬화되지 않습니다: {e}",
+            },
+        )
+
+    storage_literal: str
+    if storage_path is None:
+        storage_literal = "None"
+    else:
+        storage_literal = repr(_shrink_home_path(storage_path))
+
+    from urllib.parse import urlparse as _urlparse
+    seed_host = (_urlparse(seed_url).hostname or "").lower()
+
+    return _TOUR_SCRIPT_TEMPLATE.safe_substitute(
+        urls_block=_format_urls_block(list(urls)),
+        seed_host_literal=repr(seed_host),
+        storage_state_literal=storage_literal,
+        context_kwargs_json_literal=repr(context_kwargs_json),
+        headless_literal=repr(bool(headless)),
+        preflight_verify_literal=repr(bool(preflight_verify)),
+        verify_url_literal=repr(verify_service_url or ""),
+        verify_text_literal=repr(verify_service_text or ""),
+        wait_until_literal=repr(wait_until),
+        nav_timeout_ms_literal=repr(int(nav_timeout_ms)),
+    )
+
+
+@app.post("/discover", status_code=202)
+def discover_start(req: DiscoverReq, response: Response) -> dict:
+    """discover job 을 백그라운드 worker 로 시작.
+
+    동시 실행 상한 초과 시 429. auth_profile 검증 실패는
+    `_load_profile_for_browser()` 가 던지는 HTTPException 에 위임.
+    """
+    with _discover_lock:
+        running = sum(
+            1 for j in _discover_jobs.values()
+            if j.state in ("running", "cancelling")
+        )
+    if running >= DISCOVER_MAX_CONCURRENT:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "too_many_running_discover_jobs",
+                "limit": DISCOVER_MAX_CONCURRENT,
+            },
+        )
+
+    storage_path, fingerprint, machine_mismatch = _load_profile_for_browser(req.auth_profile)
+
+    job_id = uuid.uuid4().hex[:12]
+    job = DiscoverJob(
+        job_id=job_id,
+        state="running",
+        seed_url=req.seed_url,
+        auth_profile=req.auth_profile,
+        machine_mismatch=machine_mismatch,
+        started_at=_now_iso_utc(),
+    )
+    cancel_event = threading.Event()
+    with _discover_lock:
+        _discover_jobs[job_id] = job
+        _discover_cancel_events[job_id] = cancel_event
+
+    threading.Thread(
+        target=_discover_worker,
+        args=(job_id, storage_path, fingerprint, req.max_pages, req.max_depth, cancel_event),
+        daemon=True,
+    ).start()
+
+    if machine_mismatch:
+        response.headers["X-Auth-Machine-Mismatch"] = "1"
+    return {
+        "job_id": job_id,
+        "state": "running",
+        "machine_mismatch": machine_mismatch,
+    }
+
+
+@app.get("/discover/{job_id}")
+def discover_status(job_id: str) -> DiscoverJob:
+    with _discover_lock:
+        job = _discover_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail={"reason": "job_not_found"})
+    return job
+
+
+@app.post("/discover/{job_id}/cancel")
+def discover_cancel(job_id: str) -> dict:
+    with _discover_lock:
+        job = _discover_jobs.get(job_id)
+        ev = _discover_cancel_events.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail={"reason": "job_not_found"})
+        if job.state not in ("running", "cancelling"):
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "job_not_cancellable", "state": job.state},
+            )
+        if ev is not None:
+            ev.set()
+        job.state = "cancelling"
+    return {"job_id": job_id, "state": "cancelling"}
+
+
+def _require_finished_job(job_id: str) -> DiscoverJob:
+    with _discover_lock:
+        job = _discover_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail={"reason": "job_not_found"})
+    if job.state not in ("done", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": "job_not_finished", "state": job.state},
+        )
+    return job
+
+
+@app.get("/discover/{job_id}/csv")
+def discover_csv(job_id: str):
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+    csv_path = _Path(job.result_dir) / "urls.csv"
+    if not csv_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "csv_not_found"})
+    return FileResponse(
+        path=str(csv_path),
+        media_type="text/csv; charset=utf-8",
+        filename=f"discover-{job_id}.csv",
+    )
+
+
+@app.get("/discover/{job_id}/json")
+def discover_json(job_id: str):
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+    json_path = _Path(job.result_dir) / "urls.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "json_not_found"})
+    return FileResponse(
+        path=str(json_path),
+        media_type="application/json; charset=utf-8",
+        filename=f"discover-{job_id}.json",
+    )
+
+
+@app.post("/discover/{job_id}/tour-script")
+def discover_tour_script(job_id: str, req: TourScriptReq):
+    """선택 URL 만 순회하는 Python Playwright tour script 를 생성/반환."""
+    from zero_touch_qa.url_discovery import DiscoverConfig, normalize_url
+
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+
+    urls_json_path = _Path(job.result_dir) / "urls.json"
+    if not urls_json_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "urls_json_not_found"})
+
+    discovered = json.loads(urls_json_path.read_text(encoding="utf-8"))
+    trash = DiscoverConfig.__dataclass_fields__["trash_query_params"].default
+    norm_to_original: dict[str, str] = {}
+    for rec in discovered:
+        u = rec.get("url")
+        if isinstance(u, str):
+            norm_to_original.setdefault(
+                normalize_url(u, trash_query_params=trash), u
+            )
+
+    selected_originals: list[str] = []
+    missing: list[str] = []
+    for raw in req.urls:
+        key = normalize_url(raw, trash_query_params=trash)
+        original = norm_to_original.get(key)
+        if original is None:
+            missing.append(raw)
+        else:
+            selected_originals.append(original)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"reason": "urls_not_in_discovery", "missing": missing},
+        )
+
+    storage_path: Optional[_Path] = None
+    fingerprint: object = None
+    verify_url = ""
+    verify_text = ""
+    if req.auth_profile:
+        storage_path, fingerprint, _ = _load_profile_for_browser(req.auth_profile)
+        # verify spec 도 다시 가져와 script 에 박는다.
+        from zero_touch_qa import auth_profiles
+        prof = auth_profiles.get_profile(req.auth_profile)
+        verify_url = prof.verify.service_url
+        verify_text = prof.verify.service_text or ""
+
+    script_text = _generate_tour_script(
+        urls=selected_originals,
+        seed_url=job.seed_url,
+        storage_path=storage_path,
+        fingerprint=fingerprint,
+        headless=req.headless,
+        preflight_verify=req.preflight_verify,
+        verify_service_url=verify_url,
+        verify_service_text=verify_text,
+        wait_until=req.wait_until,
+        nav_timeout_ms=req.nav_timeout_ms,
+    )
+
+    out_path = _Path(job.result_dir) / "tour_selected.py"
+    out_path.write_text(script_text, encoding="utf-8")
+    return FileResponse(
+        path=str(out_path),
+        media_type="text/x-python",
+        filename="tour_selected.py",
+    )
