@@ -1363,6 +1363,346 @@ if (typeof _origOpenSession === "function") {
   };
 }
 
+// ── Discover URLs (URL 자동 수집) ───────────────────────────────────────────
+//
+// 보안: row.title / row.url 은 임의 사이트의 임의 문자열이므로 DOM 삽입 시
+// 반드시 textContent 사용. innerHTML 금지. URL 컬럼의 클릭 가능한 링크는
+// href 만 setAttribute 로 설정하되, javascript:/data: 스킴은 클라이언트에서도
+// 한 번 더 거른다 (서버는 exclude_patterns 로 거름).
+
+const _discover = {
+  pollTimer: null,
+  lastJobId: null,
+  authTouched: false,  // 사용자가 discover-auth-profile 을 직접 바꾼 적 있는가
+};
+
+function _populateDiscoverAuthSelect(profiles) {
+  const sel = $("#discover-auth-profile");
+  if (!sel) return;
+  const prev = sel.value;
+  const opts = [`<option value="">(없음)</option>`].concat(
+    (profiles || []).map((p) => {
+      const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
+      return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
+    }),
+  );
+  sel.innerHTML = opts.join("");
+  if (prev && (profiles || []).some((p) => p.name === prev)) {
+    sel.value = prev;
+  } else if (!_discover.authTouched) {
+    // recording selector 와 동기화 (사용자가 손대기 전까지만)
+    const main = $("#auth-profile-select");
+    if (main && (profiles || []).some((p) => p.name === main.value)) {
+      sel.value = main.value;
+    }
+  }
+}
+
+function _setDiscoverStatus(text) {
+  const el = $("#discover-status");
+  if (el) el.textContent = text;
+}
+
+function _isHttpUrl(u) {
+  try {
+    const p = new URL(u);
+    return p.protocol === "http:" || p.protocol === "https:";
+  } catch (_) {
+    return false;
+  }
+}
+
+function _statePillHtml(status) {
+  // status: number | null
+  if (status == null) return `<span class="state-pill state-warn">—</span>`;
+  if (status >= 400) return `<span class="state-pill state-err">${status}</span>`;
+  return `<span class="state-pill state-ok">${status}</span>`;
+}
+
+function _renderDiscoverTable(rootEl, list) {
+  rootEl.replaceChildren();
+  if (!Array.isArray(list) || list.length === 0) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "— 결과 없음 —";
+    rootEl.appendChild(p);
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "discover-table-wrap";
+  const table = document.createElement("table");
+  table.className = "discover-table";
+
+  const thead = document.createElement("thead");
+  thead.innerHTML = `
+    <tr>
+      <th style="width:36px;"><input type="checkbox" id="discover-th-check" title="전체 선택/해제"></th>
+      <th style="width:60px;">status</th>
+      <th style="width:50px;">depth</th>
+      <th>title</th>
+      <th>URL</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of list) {
+    const tr = document.createElement("tr");
+
+    const tdCheck = document.createElement("td");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "discover-url-check";
+    cb.dataset.url = row.url || "";
+    tdCheck.appendChild(cb);
+    tr.appendChild(tdCheck);
+
+    const tdStatus = document.createElement("td");
+    tdStatus.innerHTML = _statePillHtml(row.status);  // 정적 HTML — 안전
+    tr.appendChild(tdStatus);
+
+    const tdDepth = document.createElement("td");
+    tdDepth.textContent = row.depth == null ? "—" : String(row.depth);
+    tr.appendChild(tdDepth);
+
+    const tdTitle = document.createElement("td");
+    tdTitle.className = "ellipsis";
+    tdTitle.textContent = row.title || "—";
+    if (row.title) tdTitle.title = row.title;
+    tr.appendChild(tdTitle);
+
+    const tdUrl = document.createElement("td");
+    tdUrl.className = "ellipsis";
+    if (_isHttpUrl(row.url)) {
+      const a = document.createElement("a");
+      a.textContent = row.url;
+      a.setAttribute("href", row.url);
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener noreferrer");
+      a.title = row.url;
+      tdUrl.appendChild(a);
+    } else {
+      tdUrl.textContent = row.url || "";
+    }
+    tr.appendChild(tdUrl);
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  rootEl.appendChild(wrap);
+
+  // bind checkboxes
+  const allChecks = wrap.querySelectorAll(".discover-url-check");
+  const headerCheck = wrap.querySelector("#discover-th-check");
+  function _updateCount() {
+    const n = wrap.querySelectorAll(".discover-url-check:checked").length;
+    const cntEl = $("#discover-selected-count");
+    if (cntEl) cntEl.textContent = `${n}개 선택`;
+    const btn = $("#btn-discover-tour-script");
+    if (btn) btn.disabled = (n === 0);
+  }
+  allChecks.forEach((c) => c.addEventListener("change", _updateCount));
+  if (headerCheck) {
+    headerCheck.addEventListener("change", () => {
+      allChecks.forEach((c) => { c.checked = headerCheck.checked; });
+      _updateCount();
+    });
+  }
+  _updateCount();
+}
+
+async function _pollDiscoverOnce(jobId) {
+  let s;
+  try {
+    s = await api(`/discover/${jobId}`);
+  } catch (e) {
+    _setDiscoverStatus(`조회 실패: ${e.message || e}`);
+    _stopDiscoverPolling();
+    return;
+  }
+  let line = `[${s.state}] ${s.count}건`;
+  if (s.last_url) line += ` · 최근: ${s.last_url}`;
+  _setDiscoverStatus(line);
+
+  if (s.state === "done" || s.state === "cancelled") {
+    _stopDiscoverPolling();
+    let list = [];
+    try { list = await api(`/discover/${jobId}/json`); } catch (e) { /* 빈 결과 */ }
+    const link = $("#discover-csv-link");
+    if (link) link.setAttribute("href", `/discover/${jobId}/csv`);
+    const actions = $("#discover-actions");
+    if (actions) actions.hidden = false;
+    _toggleDiscoverButtons({ running: false });
+    let suffix = "";
+    if (s.state === "cancelled") suffix += " · 취소됨";
+    if (s.aborted_reason === "auth_drift") suffix += " · 세션 만료 자동 중단";
+    if (suffix) _setDiscoverStatus(line + suffix);
+    _renderDiscoverTable($("#discover-result"), list);
+    return;
+  }
+  if (s.state === "failed") {
+    _stopDiscoverPolling();
+    _setDiscoverStatus(`실패: ${s.error || "알 수 없는 오류"}`);
+    _toggleDiscoverButtons({ running: false });
+    return;
+  }
+}
+
+function _startDiscoverPolling(jobId) {
+  _stopDiscoverPolling();
+  _discover.lastJobId = jobId;
+  _pollDiscoverOnce(jobId);
+  _discover.pollTimer = setInterval(() => _pollDiscoverOnce(jobId), 1500);
+}
+
+function _stopDiscoverPolling() {
+  if (_discover.pollTimer) {
+    clearInterval(_discover.pollTimer);
+    _discover.pollTimer = null;
+  }
+}
+
+function _toggleDiscoverButtons({ running }) {
+  const start = $("#btn-discover-start");
+  const cancel = $("#btn-discover-cancel");
+  if (start) start.disabled = !!running;
+  if (cancel) cancel.hidden = !running;
+}
+
+async function _onDiscoverSubmit(ev) {
+  ev.preventDefault();
+  const form = ev.target;
+  const fd = new FormData(form);
+  const seed = (fd.get("seed_url") || "").trim();
+  if (!seed) return;
+  const payload = {
+    seed_url: seed,
+    max_pages: Number(fd.get("max_pages") || 200),
+    max_depth: Number(fd.get("max_depth") || 3),
+  };
+  const ap = (fd.get("auth_profile") || "").trim();
+  if (ap) payload.auth_profile = ap;
+
+  // 새 작업 시작: 기존 결과 영역 초기화
+  $("#discover-actions").hidden = true;
+  $("#discover-result").replaceChildren();
+  _setDiscoverStatus("시작 중...");
+  _toggleDiscoverButtons({ running: true });
+
+  let resp;
+  try {
+    resp = await api("/discover", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    _setDiscoverStatus(`시작 실패: ${e.message || e}`);
+    _toggleDiscoverButtons({ running: false });
+    return;
+  }
+  if (resp.machine_mismatch) {
+    _setDiscoverStatus(`⚠ machine_mismatch — 다른 머신에서 시드된 프로파일입니다`);
+  }
+  _startDiscoverPolling(resp.job_id);
+}
+
+async function _onDiscoverCancel() {
+  if (!_discover.lastJobId) return;
+  try {
+    await api(`/discover/${_discover.lastJobId}/cancel`, { method: "POST" });
+  } catch (e) {
+    // 무시 — 다음 폴링에서 state 동기화됨
+  }
+}
+
+async function _onDiscoverTourScript() {
+  if (!_discover.lastJobId) return;
+  const checked = $all(".discover-url-check");
+  const urls = [];
+  checked.forEach((c) => { if (c.checked && c.dataset.url) urls.push(c.dataset.url); });
+  if (urls.length === 0) return;
+  const ap = ($("#discover-auth-profile") || {}).value || "";
+  const payload = {
+    urls,
+    headless: true,
+    include_screenshots: true,
+    preflight_verify: true,
+  };
+  if (ap) payload.auth_profile = ap;
+
+  const btn = $("#btn-discover-tour-script");
+  const orig = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "생성 중..."; }
+  try {
+    const r = await fetch(`/discover/${_discover.lastJobId}/tour-script`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      let detail = `HTTP ${r.status}`;
+      try {
+        const j = await r.json();
+        detail = (j && j.detail) ? (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)) : detail;
+      } catch (_) { /* ignore */ }
+      _setDiscoverStatus(`tour-script 실패: ${detail}`);
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tour_selected.py";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    _setDiscoverStatus(`tour_selected.py 생성됨 (${urls.length}개 URL)`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || "선택 URL Tour Script 생성"; }
+  }
+}
+
+function _wireDiscover() {
+  const form = $("#discover-form");
+  if (form) form.addEventListener("submit", _onDiscoverSubmit);
+  const cancel = $("#btn-discover-cancel");
+  if (cancel) cancel.addEventListener("click", _onDiscoverCancel);
+  const tour = $("#btn-discover-tour-script");
+  if (tour) tour.addEventListener("click", _onDiscoverTourScript);
+  const sa = $("#btn-discover-select-all");
+  if (sa) sa.addEventListener("click", () => {
+    $all(".discover-url-check").forEach((c) => { c.checked = true; });
+    $all(".discover-url-check").forEach((c) => c.dispatchEvent(new Event("change")));
+  });
+  const sn = $("#btn-discover-select-none");
+  if (sn) sn.addEventListener("click", () => {
+    $all(".discover-url-check").forEach((c) => { c.checked = false; });
+    $all(".discover-url-check").forEach((c) => c.dispatchEvent(new Event("change")));
+  });
+  const da = $("#discover-auth-profile");
+  if (da) da.addEventListener("change", () => { _discover.authTouched = true; });
+}
+
+// loadAuthProfiles 의 결과(_authState.profiles)를 폴링해 discover selector 에 반영.
+// 함수 재할당으로 hook 하지 않고 별도 인터벌로 동기화 — 모듈 경계가 깔끔.
+let _lastAuthProfilesSnapshot = null;
+function _syncDiscoverAuthSelect() {
+  const profs = (typeof _authState !== "undefined" && _authState.profiles) || [];
+  // 얕은 비교 — 길이 + 이름 join 으로 변경 감지 (충분).
+  const sig = profs.length + ":" + profs.map((p) => p.name).join(",");
+  if (sig === _lastAuthProfilesSnapshot) return;
+  _lastAuthProfilesSnapshot = sig;
+  _populateDiscoverAuthSelect(profs);
+}
+
+_wireDiscover();
+setInterval(_syncDiscoverAuthSelect, 1500);
+// 초기 1회는 loadAuthProfiles() 가 _authState.profiles 를 채운 직후 시도.
+setTimeout(_syncDiscoverAuthSelect, 500);
+
 // ── 시작 ─────────────────────────────────────────────────────────────────────
 loadHealth();
 loadSessions();
