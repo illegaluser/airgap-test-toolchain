@@ -1010,13 +1010,16 @@ function _renderAuthStatus() {
   const p = _selectedProfile();
   const status = $("#auth-status");
   const verifyBtn = $("#btn-auth-verify");
+  const deleteBtn = $("#btn-auth-delete");
   if (!p) {
     status.textContent = "— 프로파일을 선택하거나 새로 시드하세요 —";
     status.className = "auth-status muted";
     verifyBtn.disabled = true;
+    if (deleteBtn) deleteBtn.disabled = true;
     return;
   }
   verifyBtn.disabled = false;
+  if (deleteBtn) deleteBtn.disabled = false;
   let txt = `프로파일 "${p.name}" — ${p.service_domain}`;
   if (p.last_verified_at) {
     txt += ` · ${_formatRelative(p.last_verified_at)} 검증`;
@@ -1046,6 +1049,33 @@ $("#auth-profile-select").addEventListener("change", (e) => {
   _authState.selected = e.target.value;
   _authState.lastVerify = null;
   _renderAuthStatus();
+});
+
+// 🗑 삭제 — 카탈로그 + storageState 파일 제거.
+$("#btn-auth-delete").addEventListener("click", async () => {
+  const p = _selectedProfile();
+  if (!p) return;
+  const ok = window.confirm(
+    `프로파일 "${p.name}" (${p.service_domain}) 을 삭제하시겠습니까?\n` +
+    `카탈로그 항목과 저장된 storageState 파일이 함께 제거됩니다.`,
+  );
+  if (!ok) return;
+  const btn = $("#btn-auth-delete");
+  btn.disabled = true;
+  $("#auth-status").textContent = `"${p.name}" 삭제 중...`;
+  $("#auth-status").className = "auth-status muted";
+  try {
+    await deleteAuthProfile(p.name);
+    _authState.selected = "";
+    _authState.lastVerify = null;
+    await loadAuthProfiles();
+    $("#auth-status").textContent = `✓ "${p.name}" 삭제됨`;
+    $("#auth-status").className = "auth-status ok";
+  } catch (err) {
+    $("#auth-status").textContent = `✗ 삭제 실패: ${err.message || err}`;
+    $("#auth-status").className = "auth-status err";
+    btn.disabled = false;
+  }
 });
 
 // ↻ verify (P5.3).

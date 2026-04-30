@@ -588,6 +588,13 @@ dialog textarea {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.auth-btn-danger {
+  color: var(--err);
+  border-color: #f1aeb5;
+}
+.auth-btn-danger:hover:not(:disabled) {
+  background: #fde7e6;
+}
 .auth-status {
   font-size: 0.88em;
   margin: 6px 0;
