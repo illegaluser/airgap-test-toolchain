@@ -11,6 +11,7 @@
 #   1) test_recording_ui_e2e.py            (port 18093) — Recording UI 회귀
 #   2) test_auth_profile_api_e2e.py        (port 18094) — Auth Profile HTTP API
 #   3) test_auth_profile_ui_e2e.py         (port 18095) — Auth Profile UI
+#   4) test_discover_api_e2e.py            (port 18096) — Discover URLs API
 
 set -e
 
@@ -19,7 +20,7 @@ cd "$REPO_ROOT/playwright-allinone"
 
 # 1. 변경 영역 필터 — UI / Auth Profile / E2E / 의존 backend 가 안 바뀌었으면 skip.
 #    auth_profiles / executor / __main__ 변경 시에도 트리거.
-RELEVANT_PATTERN='^playwright-allinone/(recording_service/|zero_touch_qa/(auth_profiles|executor|__main__)\.py|test/(test_recording_(ui_e2e|service)|test_auth_profile_(api|ui)_e2e|test_auth_(profiles|cli)|test_post_process|test_replay_proxy_auth|test_executor_fingerprint_env|test_visibility_healer.*)\.py|test/e2e_p1_auth_profiles\.py)'
+RELEVANT_PATTERN='^playwright-allinone/(recording_service/|zero_touch_qa/(auth_profiles|executor|__main__|url_discovery)\.py|test/(test_recording_(ui_e2e|service)|test_auth_profile_(api|ui)_e2e|test_auth_(profiles|cli)|test_post_process|test_replay_proxy_auth|test_executor_fingerprint_env|test_visibility_healer.*|test_discover_api_e2e|test_url_discovery)\.py|test/e2e_p1_auth_profiles\.py)'
 CHANGED=$(git diff --cached --name-only --diff-filter=ACMR)
 if ! echo "$CHANGED" | grep -qE "$RELEVANT_PATTERN"; then
   echo "[pre-commit] Recording UI / Auth Profile / 의존 영역 변경 없음 — E2E 스킵"
@@ -34,8 +35,8 @@ if [ ! -x "$VENV_PY" ]; then
   exit 0
 fi
 
-# 3. 포트 충돌 감지 — 3개 슈트가 각각 18093/18094/18095 사용.
-for PORT in 18093 18094 18095; do
+# 3. 포트 충돌 감지 — 4개 슈트가 각각 18093/18094/18095/18096 사용.
+for PORT in 18093 18094 18095 18096; do
   if command -v lsof >/dev/null 2>&1 && lsof -i :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "[pre-commit] ⚠ port $PORT 점유 중 — E2E 스킵"
     echo "  점유 프로세스: $(lsof -i :$PORT -sTCP:LISTEN -t | head -1)"
@@ -46,13 +47,14 @@ done
 # 4. E2E 실행. 회귀 시 commit 차단.
 #    AUTH_PROFILE_VERIFY_HEADLESS=1 — verify 단계 headless (CI/headless 환경 친화).
 #    운영 기본은 headed (D9 — fingerprint 안정성). 본 hook 안에서만 한정 override.
-echo "[pre-commit] E2E 슈트 실행 (3개, port 18093/18094/18095, headless chromium)..."
+echo "[pre-commit] E2E 슈트 실행 (4개, port 18093/18094/18095/18096, headless chromium)..."
 START=$(date +%s)
 RC=0
 for TEST_FILE in \
   test/test_recording_ui_e2e.py \
   test/test_auth_profile_api_e2e.py \
-  test/test_auth_profile_ui_e2e.py
+  test/test_auth_profile_ui_e2e.py \
+  test/test_discover_api_e2e.py
 do
   echo "[pre-commit] → $TEST_FILE"
   PYTHONPATH=. AUTH_PROFILE_VERIFY_HEADLESS=1 "$VENV_PY" -m pytest \
