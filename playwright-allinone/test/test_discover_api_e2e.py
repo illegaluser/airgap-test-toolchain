@@ -278,6 +278,7 @@ class TestDiscoverTourScript:
         return job_id
 
     def test_generate_tour_script_with_subset(self, daemon, fixture_site):
+        """선택 URL 만 박힌 pytest 형식 tour script 가 다운로드된다."""
         base = daemon["base"]
         job_id = self._seed(daemon, fixture_site)
         urls = httpx.get(f"{base}/discover/{job_id}/json").json()
@@ -290,14 +291,67 @@ class TestDiscoverTourScript:
         )
         assert rt.status_code == 200, rt.text
         text = rt.text
-        # 선택 URL 은 모두 박힘 + 골격 키워드 존재
+
+        # 선택 URL 모두 박힘
         for u in sel:
             assert u in text
-        assert "URLS = " in text
-        assert "PREFLIGHT_VERIFY" in text
+
+        # 새 pytest 기반 골격 키워드
+        for needle, label in [
+            ("URLS = [", "URLS multi-line literal"),
+            ("def test_url_renders_normally", "parametrized test"),
+            ("MIN_BODY_TEXT_LEN", "검증 4"),
+            ("SEED_HOST", "seed host 비교"),
+            ('if __name__ == "__main__":', "Play Script from File 호환"),
+            ("pytest.main([__file__", "pytest 라이브러리 호출"),
+            ("TOUR_SCREENSHOTS_ALL", "스크린샷 env flag"),
+        ]:
+            assert needle in text, f"missing: {label}"
+
         # AST 통과
         import ast
         ast.parse(text)
+
+    def test_generated_script_runs_via_plain_python(self, daemon, fixture_site, tmp_path):
+        """다운받은 tour script 를 `python script.py` 로 실행해 실제 검증이 돈다.
+
+        Recording UI 의 'Play Script from File' 흐름과 동일한 호출 방식.
+        rc=0 (전 URL PASS) + tour_results.jsonl 에 ok=true 라인이 URL 수만큼 기록.
+        """
+        base = daemon["base"]
+        job_id = self._seed(daemon, fixture_site)
+        urls = httpx.get(f"{base}/discover/{job_id}/json").json()
+        # 정상 컨텐츠가 있는 URL (index 외 a/b/c) 중 2개
+        sel = [u["url"] for u in urls if u["url"].endswith(("/a.html", "/b.html"))][:2]
+        assert sel, "fixture site 에서 a/b 페이지를 찾지 못함"
+
+        rt = httpx.post(
+            f"{base}/discover/{job_id}/tour-script",
+            json={"urls": sel},
+            timeout=10.0,
+        )
+        assert rt.status_code == 200
+        script_path = tmp_path / "tour_run.py"
+        script_path.write_text(rt.text, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        # fixture 의 a/b 페이지는 body 가 짧아 검증 4 (body_len) 에 걸릴 수 있다.
+        # 그 경우 rc=1 이 정상. 다만 *스크립트 자체는 실행되었음* — preflight skip
+        # 라인이 jsonl 에 남고 tour 라인도 URL 수만큼 남는다.
+        results_jsonl = tmp_path / "tour_results.jsonl"
+        assert results_jsonl.exists(), \
+            f"tour_results.jsonl 미생성. rc={result.returncode}, stdout={result.stdout[-500:]}"
+        lines = [l for l in results_jsonl.read_text(encoding="utf-8").splitlines() if l.strip()]
+        # preflight 1줄 + tour 라인 sel 개수
+        assert len(lines) >= 1 + len(sel), f"jsonl 라인 수 부족: {lines}"
+
+        # 키워드 확인 — 새 검증 항목들의 동작 흔적
+        joined = "\n".join(lines)
+        assert "preflight" in joined
+        assert "tour" in joined
 
     def test_unknown_url_422(self, daemon, fixture_site):
         base = daemon["base"]

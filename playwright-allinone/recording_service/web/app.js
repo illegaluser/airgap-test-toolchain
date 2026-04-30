@@ -1657,7 +1657,6 @@ async function _onDiscoverTourScript() {
   const payload = {
     urls,
     headless: true,
-    include_screenshots: true,
     preflight_verify: true,
   };
   if (ap) payload.auth_profile = ap;
