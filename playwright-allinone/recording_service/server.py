@@ -1449,6 +1449,12 @@ class DiscoverReq(BaseModel):
     auth_profile: Optional[str] = None
     max_pages: int = Field(200, ge=1, le=2000)
     max_depth: int = Field(3, ge=0, le=10)
+    # 커버리지 보강 옵션 (PLAN_URL_DISCOVERY_COVERAGE.md)
+    use_sitemap: bool = True
+    capture_requests: bool = True
+    spa_selectors: bool = False
+    ignore_query: bool = False
+    include_subdomains: bool = False
 
 
 class TourScriptReq(BaseModel):
@@ -1490,6 +1496,12 @@ def _discover_worker(
     max_pages: int,
     max_depth: int,
     cancel_event: threading.Event,
+    *,
+    use_sitemap: bool = True,
+    capture_requests: bool = True,
+    spa_selectors: bool = False,
+    ignore_query: bool = False,
+    include_subdomains: bool = False,
 ) -> None:
     """discover 백그라운드 워커. Playwright sync API 를 thread 에서 직접 호출."""
     from zero_touch_qa.url_discovery import DiscoverConfig, discover_urls
@@ -1508,6 +1520,11 @@ def _discover_worker(
             fingerprint_kwargs=fp_kwargs,
             max_pages=max_pages,
             max_depth=max_depth,
+            use_sitemap=use_sitemap,
+            capture_requests=capture_requests,
+            spa_selectors=spa_selectors,
+            ignore_query=ignore_query,
+            include_subdomains=include_subdomains,
         )
 
         def _progress(count: int, last_url: str) -> None:
@@ -1534,6 +1551,13 @@ def _discover_worker(
             "count": len(results),
             "aborted_reason": abort_reason,
             "cancelled_by_user": cancelled_by_user,
+            "options": {
+                "use_sitemap": use_sitemap,
+                "capture_requests": capture_requests,
+                "spa_selectors": spa_selectors,
+                "ignore_query": ignore_query,
+                "include_subdomains": include_subdomains,
+            },
         }
         (out_dir / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1545,7 +1569,8 @@ def _discover_worker(
         # utf-8-sig: Excel 호환 BOM (한국어 사용자 다수).
         with (out_dir / "urls.csv").open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(
-                f, fieldnames=["url", "status", "title", "depth", "found_at"]
+                f,
+                fieldnames=["url", "status", "title", "depth", "source", "found_at"],
             )
             writer.writeheader()
             for r in results:
@@ -1938,6 +1963,13 @@ def discover_start(req: DiscoverReq, response: Response) -> dict:
     threading.Thread(
         target=_discover_worker,
         args=(job_id, storage_path, fingerprint, req.max_pages, req.max_depth, cancel_event),
+        kwargs={
+            "use_sitemap": req.use_sitemap,
+            "capture_requests": req.capture_requests,
+            "spa_selectors": req.spa_selectors,
+            "ignore_query": req.ignore_query,
+            "include_subdomains": req.include_subdomains,
+        },
         daemon=True,
     ).start()
 
@@ -2035,18 +2067,28 @@ def discover_tour_script(job_id: str, req: TourScriptReq):
 
     discovered = json.loads(urls_json_path.read_text(encoding="utf-8"))
     trash = DiscoverConfig.__dataclass_fields__["trash_query_params"].default
+    # discover 실행 시 사용된 ignore_query 와 동일한 정규화 정책으로 매칭한다.
+    strip_q = False
+    meta_path = _Path(job.result_dir) / "meta.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            strip_q = bool(meta.get("options", {}).get("ignore_query", False))
+        except Exception:
+            strip_q = False
     norm_to_original: dict[str, str] = {}
     for rec in discovered:
         u = rec.get("url")
         if isinstance(u, str):
             norm_to_original.setdefault(
-                normalize_url(u, trash_query_params=trash), u
+                normalize_url(u, trash_query_params=trash, strip_all_query=strip_q),
+                u,
             )
 
     selected_originals: list[str] = []
     missing: list[str] = []
     for raw in req.urls:
-        key = normalize_url(raw, trash_query_params=trash)
+        key = normalize_url(raw, trash_query_params=trash, strip_all_query=strip_q)
         original = norm_to_original.get(key)
         if original is None:
             missing.append(raw)

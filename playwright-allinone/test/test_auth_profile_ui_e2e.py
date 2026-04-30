@@ -285,6 +285,11 @@ def page(ui_daemon):
         ctx = browser.new_context()
         page_ = ctx.new_page()
         page_.goto(ui_daemon["base"] + "/", wait_until="networkidle")
+        # 메인 카드의 <details> 토글들은 default 닫힘 — 테스트는 열린 상태에서
+        # 진행 (Playwright 가 collapsed 영역 내부 요소를 클릭/select 못 함).
+        page_.evaluate(
+            "document.querySelectorAll('details').forEach((d) => { d.open = true; });"
+        )
         # 인증 블록 fetch 완료 대기.
         page_.wait_for_function(
             "document.querySelector('#auth-profile-select').options.length > 1",

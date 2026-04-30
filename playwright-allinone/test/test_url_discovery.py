@@ -18,6 +18,7 @@ import pytest
 
 from zero_touch_qa.url_discovery import (
     DiscoverConfig,
+    _host_matches,
     discover_urls,
     normalize_url,
 )
@@ -321,3 +322,138 @@ def test_auth_drift_aborts():
     # window=1 이면 첫 redirect 응답에서 즉시 abort.
     assert abort == "auth_drift"
     assert len(results) >= 1
+
+
+# ── 커버리지 보강 옵션 ──────────────────────────────────────────────────────
+
+
+def test_host_matches_exact_and_subdomain():
+    assert _host_matches("a.example", "a.example", include_subdomains=False)
+    assert not _host_matches("a.example", "b.a.example", include_subdomains=False)
+    assert _host_matches("a.example", "b.a.example", include_subdomains=True)
+    # "evil-a.example" 가 "a.example" 를 잡으면 안 됨 (점 포함 가드)
+    assert not _host_matches("a.example", "evil-a.example", include_subdomains=True)
+    assert not _host_matches("a.example", "evil.com", include_subdomains=True)
+    assert not _host_matches("", "a.example", include_subdomains=True)
+
+
+def test_normalize_strip_all_query():
+    assert normalize_url("http://x/p?a=1&b=2", strip_all_query=True) == "http://x/p"
+    # 같은 path 의 다른 쿼리 변종은 strip_all_query 시 같은 키로 dedup
+    assert normalize_url("http://x/list?page=1", strip_all_query=True) == \
+        normalize_url("http://x/list?page=2", strip_all_query=True)
+    # OFF 일 땐 별개
+    assert normalize_url("http://x/list?page=1") != normalize_url("http://x/list?page=2")
+
+
+def test_use_sitemap_seeds_queue(tmp_path: Path):
+    """fixture sitemap.xml 의 <urlset><loc> 가 결과에 포함되고 source=sitemap."""
+    (tmp_path / "index.html").write_text(
+        "<title>Index</title>", encoding="utf-8",
+    )
+    (tmp_path / "a.html").write_text("<title>A</title>", encoding="utf-8")
+    (tmp_path / "b.html").write_text("<title>B</title>", encoding="utf-8")
+    with _serve(tmp_path) as port:
+        (tmp_path / "sitemap.xml").write_text(
+            f'<?xml version="1.0"?>\n'
+            f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f'  <url><loc>http://127.0.0.1:{port}/a.html</loc></url>\n'
+            f'  <url><loc>http://127.0.0.1:{port}/b.html</loc></url>\n'
+            f'</urlset>\n',
+            encoding="utf-8",
+        )
+        seed = f"http://127.0.0.1:{port}/index.html"
+        cfg_on = _make_cfg(seed, use_sitemap=True)
+        results_on, _ = discover_urls(cfg_on)
+        cfg_off = _make_cfg(seed, use_sitemap=False)
+        results_off, _ = discover_urls(cfg_off)
+
+    sources_on = {r.source for r in results_on}
+    assert "sitemap" in sources_on
+    assert any(r.source == "sitemap" and r.url.endswith("/a.html") for r in results_on)
+    assert any(r.source == "sitemap" and r.url.endswith("/b.html") for r in results_on)
+    # OFF 일 땐 sitemap 출처 없음 (anchor 없는 fixture 이므로 index 만 남음)
+    assert all(r.source != "sitemap" for r in results_off)
+    assert len(results_off) == 1
+
+
+def test_use_sitemap_via_robots_txt(tmp_path: Path):
+    """robots.txt 의 Sitemap: 디렉티브로 sitemap 위치를 알려주는 경로."""
+    (tmp_path / "index.html").write_text("<title>I</title>", encoding="utf-8")
+    (tmp_path / "x.html").write_text("<title>X</title>", encoding="utf-8")
+    with _serve(tmp_path) as port:
+        (tmp_path / "robots.txt").write_text(
+            f"User-agent: *\nSitemap: http://127.0.0.1:{port}/sm.xml\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "sm.xml").write_text(
+            f'<?xml version="1.0"?>\n'
+            f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f'  <url><loc>http://127.0.0.1:{port}/x.html</loc></url>\n'
+            f'</urlset>\n',
+            encoding="utf-8",
+        )
+        seed = f"http://127.0.0.1:{port}/index.html"
+        results, _ = discover_urls(_make_cfg(seed, use_sitemap=True))
+    assert any(r.source == "sitemap" and r.url.endswith("/x.html") for r in results)
+
+
+def test_capture_requests_picks_up_fetch(tmp_path: Path):
+    """page 가 fetch() 로 부르는 같은 호스트 URL 이 source=request 로 잡힌다."""
+    (tmp_path / "api").mkdir()
+    (tmp_path / "api" / "x.html").write_text("<title>API</title>", encoding="utf-8")
+    (tmp_path / "y.html").write_text("<title>Y</title>", encoding="utf-8")
+    (tmp_path / "index.html").write_text(
+        '<a href="y.html">Y</a>'
+        '<script>fetch("/api/x.html")</script>',
+        encoding="utf-8",
+    )
+    with _serve(tmp_path) as port:
+        seed = f"http://127.0.0.1:{port}/index.html"
+        results_on, _ = discover_urls(_make_cfg(seed, capture_requests=True))
+        results_off, _ = discover_urls(_make_cfg(seed, capture_requests=False))
+
+    on_sources = {(r.url.split("?")[0], r.source) for r in results_on}
+    assert any(u.endswith("/api/x.html") and s == "request" for u, s in on_sources)
+    # OFF 일 땐 anchor 만: index + y.html
+    off_urls = [r.url for r in results_off]
+    assert any(u.endswith("/y.html") for u in off_urls)
+    assert all("/api/x.html" not in u for u in off_urls)
+
+
+def test_spa_selectors_extract_data_href(tmp_path: Path):
+    """data-href / role=link[data-href] 가 ON 일 때 추가 수집된다."""
+    (tmp_path / "x.html").write_text("<title>X</title>", encoding="utf-8")
+    (tmp_path / "y.html").write_text("<title>Y</title>", encoding="utf-8")
+    (tmp_path / "index.html").write_text(
+        '<button data-href="x.html">x</button>'
+        '<div role="link" data-href="y.html">y</div>',
+        encoding="utf-8",
+    )
+    with _serve(tmp_path) as port:
+        seed = f"http://127.0.0.1:{port}/index.html"
+        results_on, _ = discover_urls(_make_cfg(seed, spa_selectors=True))
+        results_off, _ = discover_urls(_make_cfg(seed, spa_selectors=False))
+
+    on_urls = {r.url.rsplit("/", 1)[-1] for r in results_on}
+    assert "x.html" in on_urls and "y.html" in on_urls
+    assert any(r.source == "spa_selector" for r in results_on)
+    # OFF 일 땐 index 만 (anchor 없음)
+    off_urls = [r.url for r in results_off]
+    assert len(off_urls) == 1
+
+
+def test_ignore_query_dedups_pagination(tmp_path: Path):
+    """?page=1..10 변종이 ignore_query=True 면 1건으로 dedup."""
+    (tmp_path / "list.html").write_text("<title>List</title>", encoding="utf-8")
+    anchors = "".join(f'<a href="list.html?page={i}">p{i}</a>' for i in range(1, 11))
+    (tmp_path / "index.html").write_text(anchors, encoding="utf-8")
+    with _serve(tmp_path) as port:
+        seed = f"http://127.0.0.1:{port}/index.html"
+        results_on, _ = discover_urls(_make_cfg(seed, ignore_query=True))
+        results_off, _ = discover_urls(_make_cfg(seed, ignore_query=False))
+
+    list_on = [r for r in results_on if "list.html" in r.url]
+    list_off = [r for r in results_off if "list.html" in r.url]
+    assert len(list_on) == 1
+    assert len(list_off) == 10
