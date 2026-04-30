@@ -470,6 +470,22 @@ fi
 # WSL2 환경에서도 mac 과 동일 패턴 — nohup 백그라운드 기동. systemd 사용자
 # 단위는 WSL distro 별 가용성이 들쭉날쭉이라 R-MVP 단계는 nohup 으로 통일.
 # 운영자가 WSL 재시작 시 본 setup 스크립트 재실행으로 복구.
+#
+# [Mac->Windows 포팅] SKIP_RECORDING_SERVICE 옵션 추가 (기본 false 라 무변화).
+# Windows 호스트에 recording_service 를 직접 띄우는 하이브리드 토폴로지 (WSLg 의
+# 한글 IME 한계 회피 — windows-recording-setup.ps1 사용) 에서 WSL 측이 포트 18092 를
+# 점유하면 안 되므로 본 섹션 전체를 환경변수 가드로 감쌈. 가드 종료는 §7 직전 `fi`.
+if [ "${SKIP_RECORDING_SERVICE:-false}" = "true" ]; then
+  log "[6.5] SKIP_RECORDING_SERVICE=true — WSL recording_service 기동 스킵"
+  if [ -f "$AGENT_DIR/recording-service.pid" ]; then
+    OLD_PID=$(cat "$AGENT_DIR/recording-service.pid" 2>/dev/null || true)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+      log "  기존 WSL 데몬 PID=$OLD_PID 정지"
+      kill "$OLD_PID" 2>/dev/null || true
+    fi
+    rm -f "$AGENT_DIR/recording-service.pid"
+  fi
+else
 
 REC_PORT="${RECORDING_PORT:-18092}"
 REC_PID_FILE="$AGENT_DIR/recording-service.pid"
@@ -499,6 +515,13 @@ set -e
 export PYTHONPATH="$ROOT_DIR:\${PYTHONPATH:-}"
 export RECORDING_HOST_ROOT="\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}"
 export PYTHONUNBUFFERED="\${PYTHONUNBUFFERED:-1}"
+# [Mac->Windows 포팅 작업 중 발견된 WSL 측 버그 수정]
+# 원본은 이 export 줄이 없음 → uvicorn 자식 프로세스의 PATH 에 venv/bin 이 포함되지
+# 않아 codegen_runner.is_codegen_available() 의 shutil.which("playwright") 가 None
+# 반환 → UI 가 "⚠ codegen 미설치" 로 표시. venv 안에 playwright CLI 가 설치돼있어도
+# PATH 에 안 보이면 의미 없음. (mac-agent-setup.sh 에도 동일 누락 있음 — Mac 도입 시
+# 같은 한 줄 추가 필요.)
+export PATH="$VENV_DIR/bin:\$PATH"
 LOG_FILE="\${RECORDING_SERVICE_LOG:-$REC_LOG_FILE}"
 PID_FILE="\${RECORDING_SERVICE_PID:-$REC_PID_FILE}"
 mkdir -p "$AGENT_DIR"
@@ -533,6 +556,7 @@ if [ $_w -ge 10 ]; then
   log "  [6.5] ⚠ recording_service 헬스체크 실패 — 로그 확인: $REC_LOG_FILE"
 fi
 
+fi  # [Mac->Windows 포팅] SKIP_RECORDING_SERVICE 가드 종료
 
 # ── 7. 기동 스크립트 생성 + agent 연결 ─────────────────────────────────────
 # 기존 agent.jar 프로세스 정리는 이미 step 0-A 에서 수행됨 (스크립트 시작 시점).

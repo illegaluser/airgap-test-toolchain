@@ -21,7 +21,6 @@ Phase: P1.1 (디렉토리/스키마 헬퍼 + 이름 sanitize + index 락) 까지
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import logging
@@ -32,6 +31,18 @@ import stat
 import subprocess
 import sys
 import time
+
+# [Mac->Windows 포팅] fcntl 은 POSIX 전용 — Windows Python 에는 없음.
+# 원본 코드는 `import fcntl` 한 줄. WSLg 한글 IME 한계 회피 위해 recording_service
+# 를 Windows 호스트에 직접 띄우는 토폴로지를 지원하려면 본 모듈이 Windows 에서도
+# import 가능해야 하므로 OS 분기 import 로 변경. 실제 락 호출은 _index_lock() 에서
+# fcntl.flock / msvcrt.locking 으로 분기 처리.
+if sys.platform == "win32":
+    import msvcrt
+    fcntl = None  # type: ignore[assignment]
+else:
+    import fcntl  # type: ignore[no-redef]
+    msvcrt = None  # type: ignore[assignment]
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -148,12 +159,10 @@ def _validate_name(name: str) -> None:
 def _index_lock() -> Iterator[None]:
     """``_index.lock`` 파일에 대한 advisory exclusive lock 보유.
 
-    POSIX ``fcntl.flock`` 사용. 동일 프로세스 내 여러 스레드 / 다른 프로세스
-    모두 직렬화. ``with _index_lock():`` 블록 안에서 ``_load_index`` /
-    ``_save_index`` 를 호출하면 read-modify-write 사이클이 안전하다.
-
-    Note: macOS / Linux 모두 지원. Windows 는 fcntl 자체가 없어 본 모듈은
-    POSIX 전용. (호스트 데몬 가정 — Recording UI 와 동일한 운영 모델.)
+    POSIX 는 ``fcntl.flock``, Windows 는 ``msvcrt.locking`` 으로 분기.
+    동일 프로세스 내 여러 스레드 / 다른 프로세스 모두 직렬화.
+    ``with _index_lock():`` 블록 안에서 ``_load_index`` / ``_save_index`` 를
+    호출하면 read-modify-write 사이클이 안전하다.
     """
     _ensure_root()
     lock_p = _lock_path()
@@ -164,11 +173,32 @@ def _index_lock() -> Iterator[None]:
     except OSError:
         pass
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+        if fcntl is not None:
+            # POSIX (Mac/Linux) — 원본 경로. fcntl.flock 으로 advisory exclusive lock.
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            # [Mac->Windows 포팅] Windows 분기 — msvcrt.locking 으로 1 byte 영역 잠금.
+            # LK_LOCK 은 10회 자동 재시도 후 OSError 던지므로 외부 while 로 감싸 무한
+            # 블로킹 보장 (POSIX flock 의 LOCK_EX 와 동일한 시멘틱).
+            while True:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
     finally:
         os.close(fd)
 
