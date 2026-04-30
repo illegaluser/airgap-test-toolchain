@@ -129,14 +129,18 @@ def _save_metadata_preserving_auth(sid: str, new_meta: dict) -> None:
 
 # ── auth-profile 통합 헬퍼 (P3.7) ────────────────────────────────────────
 
-def _resolve_auth_profile_extras(
+def _load_profile_for_browser(
     profile_name: Optional[str],
-) -> tuple[Optional[list[str]], bool]:
-    """auth_profile 이름 → codegen extra_args + machine_mismatch 플래그.
+) -> tuple[Optional[_Path], object, bool]:
+    """auth_profile 이름 → (storage_path, fingerprint, machine_mismatch).
+
+    codegen extra args 가 필요 없는 호출자(예: discover 워커)가 storageState
+    파일 경로 + fingerprint 객체만 받기 위한 공통 헬퍼. 기존
+    ``_resolve_auth_profile_extras`` 도 이 헬퍼를 거쳐 extra_args 를 조립한다.
 
     Returns:
-        (extra_args, machine_mismatch). extra_args 는 ``--load-storage <path> +
-        fingerprint 옵션``. profile 이 None 이면 ``(None, False)``.
+        (storage_path, fingerprint, machine_mismatch). profile 이 None 이면
+        ``(None, None, False)``. 두 번째 원소는 ``FingerprintProfile`` 인스턴스.
 
     Raises:
         HTTPException(404): 프로파일 미발견.
@@ -144,7 +148,7 @@ def _resolve_auth_profile_extras(
         HTTPException(503): CHIPS 미지원 등 환경 문제.
     """
     if not profile_name:
-        return None, False
+        return None, None, False
     # auth_profiles 는 fcntl 등 POSIX 의존성이 있어 lazy import.
     from zero_touch_qa import auth_profiles
     from zero_touch_qa.auth_profiles import (
@@ -185,11 +189,32 @@ def _resolve_auth_profile_extras(
             detail={"reason": "profile_expired", **vdetail},
         )
 
-    # 머신 결속 (D11) — 차단 안 함, 헤더로만 알림.
+    # 머신 결속 (D11) — 차단 안 함, 헤더로만 알림. 결정 책임은 본 헬퍼 한 곳.
     machine_mismatch = (prof.host_machine_id != auth_profiles.current_machine_id())
 
-    extra_args: list[str] = ["--load-storage", str(prof.storage_path)]
-    extra_args += prof.fingerprint.to_playwright_open_args()
+    return prof.storage_path, prof.fingerprint, machine_mismatch
+
+
+def _resolve_auth_profile_extras(
+    profile_name: Optional[str],
+) -> tuple[Optional[list[str]], bool]:
+    """auth_profile 이름 → codegen extra_args + machine_mismatch 플래그.
+
+    Returns:
+        (extra_args, machine_mismatch). extra_args 는 ``--load-storage <path> +
+        fingerprint 옵션``. profile 이 None 이면 ``(None, False)``.
+
+    Raises:
+        HTTPException(404): 프로파일 미발견.
+        HTTPException(409): verify 실패 (만료) — UI 가 재시드 모달로 분기.
+        HTTPException(503): CHIPS 미지원 등 환경 문제.
+    """
+    storage_path, fingerprint, machine_mismatch = _load_profile_for_browser(profile_name)
+    if storage_path is None:
+        return None, False
+
+    extra_args: list[str] = ["--load-storage", str(storage_path)]
+    extra_args += fingerprint.to_playwright_open_args()  # type: ignore[union-attr]
     return extra_args, machine_mismatch
 
 
