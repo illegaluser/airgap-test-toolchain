@@ -1458,7 +1458,6 @@ class TourScriptReq(BaseModel):
     urls: list[str] = Field(..., min_length=1, max_length=500)
     auth_profile: Optional[str] = None
     headless: bool = True
-    include_screenshots: bool = True
     preflight_verify: bool = True
     wait_until: Literal["domcontentloaded", "load", "networkidle"] = "domcontentloaded"
     nav_timeout_ms: int = Field(15000, ge=1000, le=120000)
@@ -1573,65 +1572,154 @@ def _discover_worker(
             _discover_cancel_events.pop(job_id, None)
 
 
-_TOUR_SCRIPT_TEMPLATE = '''"""Auto-generated tour script — DO NOT EDIT by hand.
+from string import Template as _StrTemplate
 
-같은 머신/사용자 환경 실행 전제. 다른 머신에서는 STORAGE_STATE 가 없어 즉시 fail.
+_TOUR_SCRIPT_TEMPLATE = _StrTemplate('''"""Auto-generated tour script — pytest 기반 회귀 검증.
+
+선택한 URL 들이 *정상 화면을 노출하는지* 자동 확인한다. URL 별로 4가지를 본다:
+  1. navigation 자체 성공 (예외 없음)
+  2. HTTP status < 400
+  3. 최종 URL host 가 seed host 와 같은 도메인 계열 (로그인 페이지로 빠지지 않음)
+  4. <title> 비어있지 않음 + body 텍스트 길이 >= MIN_BODY_TEXT_LEN
+
+실행 (Recording UI venv 안에서):
+    pytest tour_selected.py -v
+    pytest tour_selected.py -v -k "/user/co"          # 특정 URL 서브셋
+    TOUR_SCREENSHOTS_ALL=1 pytest tour_selected.py    # 모든 URL PNG 저장 (기본: 실패만)
+    python tour_selected.py                           # Recording UI 'Play Script from File' 호환
+
+결과 (스크립트 옆에 생성):
+    tour_results.jsonl   — URL 별 결과 (status, title, body_len, ok, error 등)
+    tour_screenshots/    — 실패한 URL PNG (또는 TOUR_SCREENSHOTS_ALL=1 시 전체)
+
+의존성: pytest, playwright (Recording UI venv 에 이미 설치).
+같은 머신/사용자 환경 실행 전제 — STORAGE_STATE 절대경로가 박혀 있다.
 공유 시 auth_profile 없이 재생성 권장.
-
-방문 로그(tour_results.jsonl)와 스크린샷(tour_screenshots/)을 남기는 smoke
-helper 다. pass/fail 자동 판정은 하지 않는다.
 """
 from __future__ import annotations
 
 import json
-import sys
+import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pytest
 from playwright.sync_api import sync_playwright
 
 
-URLS = {urls_literal}
+# ── 설정 (서버에서 박힘) ──────────────────────────────────────────────────
+URLS = $urls_block
+SEED_HOST = $seed_host_literal
 OUT_DIR = Path(__file__).resolve().parent
 RESULTS = OUT_DIR / "tour_results.jsonl"
 SCREENSHOT_DIR = OUT_DIR / "tour_screenshots"
-STORAGE_STATE = {storage_state_literal}
-CONTEXT_KWARGS_JSON = {context_kwargs_json_literal}
-CONTEXT_KWARGS = json.loads(CONTEXT_KWARGS_JSON)
-HEADLESS = {headless_literal}
-INCLUDE_SCREENSHOTS = {include_screenshots_literal}
-PREFLIGHT_VERIFY = {preflight_verify_literal}
-VERIFY_SERVICE_URL = {verify_url_literal}
-VERIFY_SERVICE_TEXT = {verify_text_literal}
-WAIT_UNTIL = {wait_until_literal}
-NAV_TIMEOUT_MS = {nav_timeout_ms_literal}
+STORAGE_STATE = $storage_state_literal    # auth_profile 없으면 None
+CONTEXT_KWARGS_JSON = $context_kwargs_json_literal
+HEADLESS = $headless_literal
+PREFLIGHT_VERIFY = $preflight_verify_literal
+VERIFY_SERVICE_URL = $verify_url_literal
+VERIFY_SERVICE_TEXT = $verify_text_literal
+WAIT_UNTIL = $wait_until_literal
+NAV_TIMEOUT_MS = $nav_timeout_ms_literal
+MIN_BODY_TEXT_LEN = 50  # body inner_text 최소 길이 — 빈 화면/스피너만 도는 페이지 차단
+SCREENSHOTS_ALL = os.environ.get("TOUR_SCREENSHOTS_ALL", "0") == "1"  # 기본: 실패한 URL 만 저장
 
 
+# ── 유틸 ─────────────────────────────────────────────────────────────────
 def _same_or_related_host(actual: str, expected: str) -> bool:
     if not expected:
         return True
     return actual == expected or actual.endswith("." + expected)
 
 
-def _write_result(f, rec: dict) -> None:
-    f.write(json.dumps(rec, ensure_ascii=False) + "\\n")
-    f.flush()
+def _shot_path(idx: int, url: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", url)[:80]
+    return SCREENSHOT_DIR / f"{idx:03d}_{safe}.png"
 
 
-def _preflight(page, f) -> bool:
+def _record(rec: dict) -> None:
+    with RESULTS.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\\n")
+
+
+# ── fixtures ────────────────────────────────────────────────────────────
+@pytest.fixture(scope="session", autouse=True)
+def _reset_results():
+    """매 세션 시작 시 jsonl 리셋, 스크린샷 디렉토리 보장."""
+    if RESULTS.exists():
+        RESULTS.unlink()
+    SCREENSHOT_DIR.mkdir(exist_ok=True)
+    yield
+
+
+@pytest.fixture(scope="session")
+def _storage_state_path():
+    """STORAGE_STATE 가 지정됐는데 파일이 없으면 친절한 메시지로 즉시 종료."""
+    if STORAGE_STATE is None:
+        return None
+    p = Path(STORAGE_STATE).expanduser()
+    if not p.is_file():
+        pytest.exit(
+            "\\n[tour] STORAGE_STATE 파일을 찾을 수 없습니다:\\n"
+            f"  {p}\\n"
+            "  같은 머신에서 시드한 storageState 가 필요합니다.\\n"
+            "  Recording UI 의 'Auth Profile' 영역에서 다시 시드한 뒤,\\n"
+            "  Discover URLs 화면에서 tour script 를 재생성하세요.\\n",
+            returncode=2,
+        )
+    return p
+
+
+@pytest.fixture(scope="session")
+def browser_context(_storage_state_path):
+    """세션 단위 1개 컨텍스트. 각 테스트는 fresh page 를 새로 연다."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=HEADLESS)
+        ctx_kwargs = json.loads(CONTEXT_KWARGS_JSON)
+        if _storage_state_path is not None:
+            ctx_kwargs["storage_state"] = str(_storage_state_path)
+        context = browser.new_context(**ctx_kwargs)
+        try:
+            yield context
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.fixture(scope="session")
+def preflight(browser_context):
+    """auth_profile 의 verify_url 로 미리 한 번 이동해 세션 만료를 사전 검출.
+
+    실패 시 모든 URL 테스트를 skip (사유와 함께).
+    """
+    rec = {"phase": "preflight", "url": VERIFY_SERVICE_URL}
     if not PREFLIGHT_VERIFY or not VERIFY_SERVICE_URL:
-        return True
-    rec = {{"phase": "preflight", "url": VERIFY_SERVICE_URL}}
+        rec["skipped"] = "preflight disabled or no verify_url"
+        rec["ok"] = True
+        _record(rec)
+        return
+    page = browser_context.new_page()
     try:
-        response = page.goto(VERIFY_SERVICE_URL, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
+        try:
+            response = page.goto(VERIFY_SERVICE_URL, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
+        except Exception as e:
+            rec["ok"] = False
+            rec["error"] = repr(e)
+            _record(rec)
+            pytest.skip(f"preflight failed (navigation error): {e!r}")
+            return
         status = response.status if response else None
         rec["status"] = status
         rec["final_url"] = page.url
         if VERIFY_SERVICE_TEXT:
-            body = page.inner_text("body", timeout=5000)
-            ok = VERIFY_SERVICE_TEXT in body
+            try:
+                body = page.inner_text("body", timeout=5000)
+            except Exception:
+                body = ""
+            ok = (status is None or status < 400) and (VERIFY_SERVICE_TEXT in body)
             if not ok:
-                rec["error"] = "verify_service_text_not_found"
+                rec["error"] = "verify_service_text_not_found_or_status_failed"
         else:
             expected_host = urlparse(VERIFY_SERVICE_URL).hostname or ""
             final_host = urlparse(page.url).hostname or ""
@@ -1639,49 +1727,86 @@ def _preflight(page, f) -> bool:
             if not ok:
                 rec["error"] = "verify_service_not_reachable_or_redirected"
         rec["ok"] = ok
-    except Exception as e:
-        rec["ok"] = False
-        rec["error"] = repr(e)
-    _write_result(f, rec)
-    return bool(rec.get("ok"))
+        _record(rec)
+        if not ok:
+            pytest.skip(
+                f"preflight failed — auth_profile 만료 가능성. "
+                f"status={status}, final_url={page.url}. "
+                f"Recording UI 에서 프로파일 재시드 후 tour script 재생성하세요."
+            )
+    finally:
+        page.close()
 
 
-def main() -> None:
-    if INCLUDE_SCREENSHOTS:
-        SCREENSHOT_DIR.mkdir(exist_ok=True)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
-        ctx_kwargs = dict(CONTEXT_KWARGS)
-        if STORAGE_STATE:
-            ctx_kwargs["storage_state"] = str(Path(STORAGE_STATE).expanduser())
-        context = browser.new_context(**ctx_kwargs)
-        page = context.new_page()
-        with RESULTS.open("w", encoding="utf-8") as f:
-            if not _preflight(page, f):
-                context.close()
-                browser.close()
-                sys.exit(2)
-            for idx, url in enumerate(URLS, start=1):
-                rec = {{"phase": "tour", "index": idx, "url": url}}
-                try:
-                    response = page.goto(url, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
-                    rec["status"] = response.status if response else None
-                    rec["final_url"] = page.url
-                    rec["title"] = page.title()
-                    if INCLUDE_SCREENSHOTS:
-                        shot = SCREENSHOT_DIR / f"{{idx:03d}}.png"
-                        page.screenshot(path=str(shot), full_page=True)
-                        rec["screenshot"] = str(shot)
-                except Exception as e:
-                    rec["error"] = repr(e)
-                _write_result(f, rec)
-        context.close()
-        browser.close()
+# ── 테스트 ──────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("url", URLS, ids=lambda u: u)
+def test_url_renders_normally(url, browser_context, preflight):
+    """선택 URL 이 정상 화면을 노출하는지 검증 (검증 항목 1~4)."""
+    idx = URLS.index(url) + 1
+    rec = {"phase": "tour", "index": idx, "url": url, "ok": False}
+    page = browser_context.new_page()
+    page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+    try:
+        # 1. navigation 자체 성공
+        try:
+            response = page.goto(url, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
+        except Exception as e:
+            rec["error"] = repr(e)
+            pytest.fail(f"navigation 실패: {e!r}")
+
+        status = response.status if response else None
+        final_url = page.url
+        rec["status"] = status
+        rec["final_url"] = final_url
+
+        # 2. HTTP status < 400
+        assert status is None or status < 400, \\
+            f"HTTP {status} ({final_url})"
+
+        # 3. seed host 같은 도메인 계열
+        final_host = urlparse(final_url).hostname or ""
+        assert _same_or_related_host(final_host, SEED_HOST), \\
+            f"세션 만료 또는 외부 redirect 의심 — final_host={final_host}, expected={SEED_HOST}"
+
+        # 4. title + body 길이
+        title = (page.title() or "").strip()
+        rec["title"] = title
+        try:
+            body_text = page.inner_text("body", timeout=5000)
+        except Exception:
+            body_text = ""
+        body_len = len(body_text.strip())
+        rec["body_len"] = body_len
+
+        assert title, "<title> 이 비어 있음"
+        assert body_len >= MIN_BODY_TEXT_LEN, \\
+            f"body 텍스트 길이 {body_len} < {MIN_BODY_TEXT_LEN}자 — 빈 화면 의심"
+
+        rec["ok"] = True
+    except AssertionError as e:
+        rec.setdefault("error", str(e))
+        raise
+    finally:
+        failed = not rec.get("ok", False)
+        if failed or SCREENSHOTS_ALL:
+            try:
+                shot = _shot_path(idx, url)
+                page.screenshot(path=str(shot), full_page=True)
+                rec["screenshot"] = str(shot)
+            except Exception:
+                pass
+        _record(rec)
+        page.close()
 
 
+# ── Recording UI 'Play Script from File' 호환 ───────────────────────────
+# 이 파일은 pytest 테스트 파일이지만, Recording UI 가 Play 시 단순
+# `python <script.py>` 로 실행하므로 같은 결과를 얻기 위해 pytest 를
+# 라이브러리로 호출. rc=0(전부 PASS) / 1(하나 이상 FAIL) / 2(skip 뿐) 등.
 if __name__ == "__main__":
-    main()
-'''
+    import sys
+    sys.exit(pytest.main([__file__, "-v", "-p", "no:cacheprovider"]))
+''')
 
 
 def _shrink_home_path(path: _Path) -> str:
@@ -1693,20 +1818,29 @@ def _shrink_home_path(path: _Path) -> str:
         return str(path)
 
 
+def _format_urls_block(urls: list[str]) -> str:
+    """URL 리스트를 한 줄당 하나씩 들여쓴 Python 리터럴로 직렬화 (가독성)."""
+    if not urls:
+        return "[]"
+    indent = "    "
+    body = ",\n".join(f"{indent}{repr(u)}" for u in urls)
+    return f"[\n{body},\n]"
+
+
 def _generate_tour_script(
     *,
     urls: list[str],
+    seed_url: str,
     storage_path: Optional[_Path],
     fingerprint: object,
     headless: bool,
-    include_screenshots: bool,
     preflight_verify: bool,
     verify_service_url: str,
     verify_service_text: str,
     wait_until: str,
     nav_timeout_ms: int,
 ) -> str:
-    """선택 URL tour script 의 Python 소스 텍스트 생성.
+    """선택 URL tour script (pytest 형식) 의 Python 소스 텍스트 생성.
 
     `CONTEXT_KWARGS` 는 JSON 직렬화로 안전 복원. 비호환 객체가 끼어 있으면
     HTTPException(500) 으로 거부.
@@ -1729,12 +1863,15 @@ def _generate_tour_script(
     else:
         storage_literal = repr(_shrink_home_path(storage_path))
 
-    return _TOUR_SCRIPT_TEMPLATE.format(
-        urls_literal=repr(list(urls)),
+    from urllib.parse import urlparse as _urlparse
+    seed_host = (_urlparse(seed_url).hostname or "").lower()
+
+    return _TOUR_SCRIPT_TEMPLATE.safe_substitute(
+        urls_block=_format_urls_block(list(urls)),
+        seed_host_literal=repr(seed_host),
         storage_state_literal=storage_literal,
         context_kwargs_json_literal=repr(context_kwargs_json),
         headless_literal=repr(bool(headless)),
-        include_screenshots_literal=repr(bool(include_screenshots)),
         preflight_verify_literal=repr(bool(preflight_verify)),
         verify_url_literal=repr(verify_service_url or ""),
         verify_text_literal=repr(verify_service_text or ""),
@@ -1917,10 +2054,10 @@ def discover_tour_script(job_id: str, req: TourScriptReq):
 
     script_text = _generate_tour_script(
         urls=selected_originals,
+        seed_url=job.seed_url,
         storage_path=storage_path,
         fingerprint=fingerprint,
         headless=req.headless,
-        include_screenshots=req.include_screenshots,
         preflight_verify=req.preflight_verify,
         verify_service_url=verify_url,
         verify_service_text=verify_text,
