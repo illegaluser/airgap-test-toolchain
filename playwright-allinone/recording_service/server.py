@@ -1625,6 +1625,13 @@ NAV_TIMEOUT_MS = $nav_timeout_ms_literal
 MIN_BODY_TEXT_LEN = 50  # body inner_text 최소 길이 — 빈 화면/스피너만 도는 페이지 차단
 SCREENSHOTS_ALL = os.environ.get("TOUR_SCREENSHOTS_ALL", "0") == "1"  # 기본: 실패한 URL 만 저장
 
+# 환경변수로 즉시 override 가능 (스크립트 재생성 없이):
+#   TOUR_HEADLESS=0 ...   → 브라우저 창이 뜸 (사용자가 직접 확인)
+#   TOUR_HEADLESS=1 ...   → headless 강제 (CI/배경 실행)
+_headless_env = os.environ.get("TOUR_HEADLESS")
+if _headless_env is not None:
+    HEADLESS = _headless_env not in ("0", "false", "False", "no", "")
+
 
 # ── 유틸 ─────────────────────────────────────────────────────────────────
 def _same_or_related_host(actual: str, expected: str) -> bool:
