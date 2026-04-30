@@ -369,8 +369,9 @@ DISCOVER_MAX_CONCURRENT = 2
 - 시작 시 `Path(STORAGE_STATE).expanduser().is_file()` 검사. 파일 없으면 한국어 안내와 함께 `pytest.exit(returncode=2)` — 어떤 URL 도 시도하지 않는다.
 - 시작 시 preflight verify (auth_profile 의 verify_url) 도 한 번 수행. 실패하면 모든 URL 테스트를 `pytest.skip` (사유 포함). 생성 시점 verify 와 실행 시점 사이에 세션이 만료될 수 있기 때문.
 - 생성 파일은 `discoveries_root() / job_id / "tour_selected.py"` 에 저장한다.
-- 실행 결과는 같은 디렉토리 기준 `tour_results.jsonl` (URL 별 status/title/body_len/ok/error) 과 `tour_screenshots/` 에 저장한다.
-- **스크린샷 정책**: 기본은 *실패한 URL 만* 저장. 환경변수 `TOUR_SCREENSHOTS_ALL=1` 을 설정하면 모든 URL 의 PNG 도 함께 저장.
+- 실행 결과는 같은 디렉토리 기준 `tour_results.jsonl` (URL 별 status/title/body_len/ok/error/screenshot 경로) 과 `tour_screenshots/` 에 저장한다.
+- **스크린샷 정책**: 기본은 *모든 URL* 저장 (`full_page=True`). headed 모드 검토 시 부분 렌더 페이지 확인용. 디스크 절약이 필요하면 `TOUR_SCREENSHOTS_FAILED_ONLY=1` 로 실패만 저장.
+- 스크린샷 직전 `networkidle` best-effort settle (1.5s) 로 부분 렌더 노출을 줄인다.
 - 이 스크립트는 단순 visitor 가 아니라 **자동 회귀 판정** 스크립트다. exit code 0 = 모두 통과, 1 = 하나 이상 실패, 2 = STORAGE_STATE 누락, 5 = no tests collected.
 
 #### 2.3.2 검증 항목 (한 URL 의 PASS 조건)
@@ -401,10 +402,10 @@ DISCOVER_MAX_CONCURRENT = 2
 
 실행:
     pytest tour_selected.py -v
-    TOUR_SCREENSHOTS_ALL=1 pytest tour_selected.py     # 모든 URL PNG 저장 (기본: 실패만)
-    TOUR_HEADLESS=0 python tour_selected.py            # 브라우저 창 띄움 (생성 시 OFF 였더라도 강제)
-    TOUR_HEADLESS=1 python tour_selected.py            # 헤드리스 강제 (CI 등)
-    python tour_selected.py                            # Recording UI 'Play Script from File' 호환
+    TOUR_SCREENSHOTS_FAILED_ONLY=1 pytest tour_selected.py   # 실패만 PNG (기본: 전체)
+    TOUR_HEADLESS=0 python tour_selected.py                  # 브라우저 창 띄움
+    TOUR_HEADLESS=1 python tour_selected.py                  # 헤드리스 강제 (CI 등)
+    python tour_selected.py                                  # Recording UI 'Play Script from File' 호환
 """
 import json, os, re
 from pathlib import Path
@@ -424,7 +425,8 @@ PREFLIGHT_VERIFY = True
 VERIFY_SERVICE_URL = "..."
 VERIFY_SERVICE_TEXT = ""
 MIN_BODY_TEXT_LEN = 50
-SCREENSHOTS_ALL = os.environ.get("TOUR_SCREENSHOTS_ALL", "0") == "1"
+SETTLE_TIMEOUT_MS = 1500       # screenshot 직전 networkidle best-effort settle
+SCREENSHOTS_FAILED_ONLY = os.environ.get("TOUR_SCREENSHOTS_FAILED_ONLY", "0") == "1"
 # 환경변수로 즉시 override (스크립트 재생성 없이):
 _he = os.environ.get("TOUR_HEADLESS")
 if _he is not None:

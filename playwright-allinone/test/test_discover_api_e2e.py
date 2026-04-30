@@ -304,7 +304,7 @@ class TestDiscoverTourScript:
             ("SEED_HOST", "seed host 비교"),
             ('if __name__ == "__main__":', "Play Script from File 호환"),
             ("pytest.main([__file__", "pytest 라이브러리 호출"),
-            ("TOUR_SCREENSHOTS_ALL", "스크린샷 env flag"),
+            ("TOUR_SCREENSHOTS_FAILED_ONLY", "스크린샷 env flag"),
         ]:
             assert needle in text, f"missing: {label}"
 
