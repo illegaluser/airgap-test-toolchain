@@ -246,6 +246,10 @@ def e2e_page(e2e_browser, e2e_daemon) -> Page:
     )
     page = ctx.new_page()
     page.goto(f"{e2e_daemon}/", wait_until="networkidle")
+    # 메인 카드 토글들은 default 닫힘 — 테스트는 펼친 상태에서 진행.
+    page.evaluate(
+        "document.querySelectorAll('details').forEach((d) => { d.open = true; });"
+    )
     yield page
     ctx.close()
 
@@ -318,6 +322,9 @@ def test_session_filter_persists_across_reload(e2e_page: Page, e2e_daemon):
     e2e_page.evaluate("() => localStorage.setItem('rec.sessionFilter', '" + SID_FULL + "')")
     e2e_page.goto(f"{e2e_daemon}/")
     e2e_page.wait_for_load_state("networkidle")
+    e2e_page.evaluate(
+        "document.querySelectorAll('details').forEach((d) => { d.open = true; });"
+    )
     val = e2e_page.input_value("#session-filter")
     assert val == SID_FULL
 

@@ -66,11 +66,13 @@ function _renderSessionRows() {
   const tbody = $("#session-tbody");
   if (!filtered.length) {
     const all = _sessionsCache.length;
-    tbody.innerHTML = `<tr class="muted"><td colspan="7">— ${all > 0 ? "필터 일치 0건 (" + all + "건 중)" : "세션 없음"} —</td></tr>`;
+    tbody.innerHTML = `<tr class="muted"><td colspan="8">— ${all > 0 ? "필터 일치 0건 (" + all + "건 중)" : "세션 없음"} —</td></tr>`;
+    _updateSessionBulkUi();
     return;
   }
   tbody.innerHTML = filtered.map((s) => `
     <tr>
+      <td><input type="checkbox" class="session-row-check" data-sid="${s.id}"></td>
       <td><code>${s.id}</code></td>
       <td><span class="state-pill state-${s.state}">${s.state}</span></td>
       <td class="ellipsis" title="${escapeHtml(s.target_url || "")}">${escapeHtml(s.target_url || "")}</td>
@@ -83,6 +85,34 @@ function _renderSessionRows() {
       </td>
     </tr>
   `).join("");
+  _updateSessionBulkUi();
+}
+
+function _selectedSessionIds() {
+  return [...document.querySelectorAll(".session-row-check:checked")]
+    .map((el) => el.dataset.sid);
+}
+
+function _updateSessionBulkUi() {
+  const n = _selectedSessionIds().length;
+  const cnt = $("#session-selected-count");
+  if (cnt) cnt.textContent = `${n}개 선택`;
+  const btn = $("#btn-session-delete-selected");
+  if (btn) btn.disabled = (n === 0);
+  // header check 상태: 전부 체크면 ON, 일부면 indeterminate, 아니면 OFF
+  const head = $("#session-th-check");
+  const all = document.querySelectorAll(".session-row-check");
+  if (head) {
+    if (all.length === 0) {
+      head.checked = false; head.indeterminate = false;
+    } else if (n === all.length) {
+      head.checked = true; head.indeterminate = false;
+    } else if (n === 0) {
+      head.checked = false; head.indeterminate = false;
+    } else {
+      head.checked = false; head.indeterminate = true;
+    }
+  }
 }
 
 async function loadSessions() {
@@ -570,6 +600,52 @@ $("#session-tbody").addEventListener("click", async (e) => {
   }
 });
 
+// 세션 행 체크박스 — change 이벤트 위임
+$("#session-tbody").addEventListener("change", (e) => {
+  if (e.target.classList.contains("session-row-check")) {
+    _updateSessionBulkUi();
+  }
+});
+
+// 일괄 선택 / 해제 / 삭제
+document.addEventListener("DOMContentLoaded", () => {
+  const all = $("#btn-session-select-all");
+  const none = $("#btn-session-select-none");
+  const head = $("#session-th-check");
+  const del = $("#btn-session-delete-selected");
+
+  function _setAll(checked) {
+    document.querySelectorAll(".session-row-check").forEach((c) => {
+      c.checked = checked;
+    });
+    _updateSessionBulkUi();
+  }
+  if (all) all.addEventListener("click", () => _setAll(true));
+  if (none) none.addEventListener("click", () => _setAll(false));
+  if (head) head.addEventListener("change", () => _setAll(head.checked));
+
+  if (del) del.addEventListener("click", async () => {
+    const sids = _selectedSessionIds();
+    if (!sids.length) return;
+    if (!confirm(`선택한 ${sids.length}개 세션을 삭제할까요?\n(호스트 디렉토리도 함께 제거)`)) return;
+    del.disabled = true;
+    const failures = [];
+    for (const sid of sids) {
+      try {
+        await deleteSession(sid);
+      } catch (err) {
+        failures.push(`${sid}: ${err.message || err}`);
+      }
+    }
+    $("#result-section").hidden = true;
+    $("#assertion-section").hidden = true;
+    await loadSessions();
+    if (failures.length) {
+      alert(`${sids.length - failures.length}/${sids.length} 삭제 완료. 실패:\n` + failures.join("\n"));
+    }
+  });
+});
+
 // ── util ─────────────────────────────────────────────────────────────────────
 function setStatePill(sel, state) {
   const el = $(sel);
@@ -985,20 +1061,31 @@ async function loadAuthProfiles() {
     return;
   }
   _authState.profiles = profiles;
-  const sel = $("#auth-profile-select");
-  const current = _authState.selected;
-  sel.innerHTML = `<option value="">(없음 — 비로그인 녹화)</option>` +
+  const optionsHtml = `<option value="">(없음 — 비로그인 녹화)</option>` +
     profiles.map((p) => {
       const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
       return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
     }).join("");
-  // 이전 선택 복원.
+
+  const sel = $("#auth-profile-select");
+  const current = _authState.selected;
+  sel.innerHTML = optionsHtml;
   if (current && profiles.some((p) => p.name === current)) {
     sel.value = current;
     _renderAuthStatus();
   } else {
     _authState.selected = "";
     _renderAuthStatus();
+  }
+
+  // New Recording 의 단순 dropdown 도 같은 옵션으로 채운다 (선택값 보존).
+  const recSel = $("#recording-auth-profile");
+  if (recSel) {
+    const prevRec = recSel.value;
+    recSel.innerHTML = optionsHtml;
+    if (prevRec && profiles.some((p) => p.name === prevRec)) {
+      recSel.value = prevRec;
+    }
   }
 }
 
@@ -1229,6 +1316,11 @@ $("#btn-auth-seed-done").addEventListener("click", () => {
   if (profile) {
     _authState.selected = profile;
     $("#auth-profile-select").value = profile;
+    // 새로 시드한 프로파일을 New Recording 에서도 즉시 사용할 수 있게 미리 선택.
+    const recSel = $("#recording-auth-profile");
+    if (recSel && [...recSel.options].some((o) => o.value === profile)) {
+      recSel.value = profile;
+    }
     _renderAuthStatus();
   }
   $("#auth-seed-progress").close();
@@ -1421,7 +1513,7 @@ function _populateDiscoverAuthSelect(profiles) {
     sel.value = prev;
   } else if (!_discover.authTouched) {
     // recording selector 와 동기화 (사용자가 손대기 전까지만)
-    const main = $("#auth-profile-select");
+    const main = $("#recording-auth-profile");
     if (main && (profiles || []).some((p) => p.name === main.value)) {
       sel.value = main.value;
     }
@@ -1470,6 +1562,7 @@ function _renderDiscoverTable(rootEl, list) {
       <th style="width:36px;"><input type="checkbox" id="discover-th-check" title="전체 선택/해제"></th>
       <th style="width:60px;">status</th>
       <th style="width:50px;">depth</th>
+      <th style="width:90px;">출처</th>
       <th>title</th>
       <th>URL</th>
     </tr>
@@ -1495,6 +1588,10 @@ function _renderDiscoverTable(rootEl, list) {
     const tdDepth = document.createElement("td");
     tdDepth.textContent = row.depth == null ? "—" : String(row.depth);
     tr.appendChild(tdDepth);
+
+    const tdSource = document.createElement("td");
+    tdSource.textContent = row.source || "anchor";
+    tr.appendChild(tdSource);
 
     const tdTitle = document.createElement("td");
     tdTitle.className = "ellipsis";
@@ -1611,6 +1708,12 @@ async function _onDiscoverSubmit(ev) {
     seed_url: seed,
     max_pages: Number(fd.get("max_pages") || 200),
     max_depth: Number(fd.get("max_depth") || 3),
+    // 체크박스: FormData 는 unchecked 면 키 자체가 없으므로 element 직접 조회.
+    use_sitemap: !!form.elements.use_sitemap?.checked,
+    capture_requests: !!form.elements.capture_requests?.checked,
+    spa_selectors: !!form.elements.spa_selectors?.checked,
+    ignore_query: !!form.elements.ignore_query?.checked,
+    include_subdomains: !!form.elements.include_subdomains?.checked,
   };
   const ap = (fd.get("auth_profile") || "").trim();
   if (ap) payload.auth_profile = ap;

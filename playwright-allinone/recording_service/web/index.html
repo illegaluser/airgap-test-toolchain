@@ -19,9 +19,10 @@
   </header>
 
   <main>
-    <!-- 섹션 1: 새 녹화 시작 -->
+    <!-- 섹션 1: New Recording -->
     <section class="card">
-      <h2>새 녹화 시작</h2>
+      <details id="new-recording-section">
+        <summary><h2 style="display:inline-block; margin:0;">▶ New Recording</h2></summary>
       <p class="muted hover-hint">
         💡 <strong>호버 메뉴 (드롭다운/GNB) 녹화 팁</strong> — codegen 은
         <em>클릭만</em> 기록하고 마우스 hover 는 기록하지 않습니다.
@@ -43,32 +44,12 @@
           <span>planning_doc_ref <em>(선택)</em></span>
           <input type="text" name="planning_doc_ref" placeholder="feature_login.md">
         </label>
-        <fieldset class="auth-block">
-          <legend>인증 (선택) — 시드된 storageState 재사용</legend>
-          <div class="auth-row">
-            <label class="auth-select-wrap">
-              <span>Auth Profile</span>
-              <select name="auth_profile" id="auth-profile-select">
-                <option value="">(없음 — 비로그인 녹화)</option>
-              </select>
-            </label>
-            <button type="button" id="btn-auth-verify" class="auth-btn"
-                    disabled
-                    title="선택된 프로파일을 즉시 verify (서비스 측 + 네이버 weak probe)">
-              ↻ verify
-            </button>
-            <button type="button" id="btn-auth-delete" class="auth-btn auth-btn-danger"
-                    disabled
-                    title="선택된 프로파일을 삭제 (카탈로그 + storageState 파일)">
-              🗑 삭제
-            </button>
-          </div>
-          <p class="auth-status muted" id="auth-status">— 프로파일을 선택하거나 새로 시드하세요 —</p>
-          <button type="button" id="btn-auth-seed" class="auth-btn"
-                  title="새 인증 세션 시드 — 별도 브라우저 창에서 직접 로그인 + 2중 확인 통과">
-            + 새 세션 시드
-          </button>
-        </fieldset>
+        <label>
+          <span>로그인 프로파일 <em>(선택 — 등록·검증·삭제는 아래 "Login Profile Registration" 섹션)</em></span>
+          <select name="auth_profile" id="recording-auth-profile">
+            <option value="">(없음 — 비로그인 녹화)</option>
+          </select>
+        </label>
         <div class="form-actions">
           <button type="submit" id="btn-start">▶ Start Recording</button>
           <button type="button" id="btn-import-script"
@@ -78,109 +59,12 @@
         </div>
       </form>
       <input type="file" id="import-file-input" accept=".py" hidden>
-
-      <!-- 시드 입력 모달 -->
-      <dialog id="auth-seed-dialog" class="auth-dialog">
-        <form id="auth-seed-form" method="dialog">
-          <h3>새 인증 세션 만들기</h3>
-          <p class="muted">
-            이 단계는 1회만 수행합니다 (만료 시 재시드). 사람이 직접 네이버에 로그인 +
-            2중 확인을 통과하면 그 결과 세션을 저장해서 이후 녹화/재생에 자동으로 재사용.
-          </p>
-          <label>
-            <span>이름</span>
-            <input type="text" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"
-                   placeholder="booking-via-naver"
-                   title="영문/숫자/_/- 1~64자, 첫 글자는 영문/숫자">
-          </label>
-          <label>
-            <span>시작 URL <em>(⚠️ 테스트 대상 *서비스* 진입 페이지 — 네이버 로그인 페이지 아님)</em></span>
-            <input type="url" name="seed_url" required
-                   placeholder="https://booking.example.com/">
-          </label>
-          <label>
-            <span>검증 URL</span>
-            <input type="url" name="verify_service_url" required
-                   placeholder="https://booking.example.com/mypage">
-          </label>
-          <label>
-            <span>검증 텍스트 <em>(선택 — 비우면 검증 URL 접근 성공만 확인)</em></span>
-            <input type="text" name="verify_service_text"
-                   placeholder="김QA님 환영합니다">
-          </label>
-          <label class="optional">
-            <span>TTL 힌트 (시간) — 일 1회 재시드 가정 권장</span>
-            <input type="number" name="ttl_hint_hours" min="1" max="168" value="12">
-          </label>
-          <label class="auth-checkbox">
-            <input type="checkbox" name="naver_probe" checked>
-            <span>네이버 측 weak probe 활성 (best-effort, 권장)</span>
-          </label>
-          <p class="auth-warning">
-            ⚠ 운영 계정 사용 금지 — 테스트 전용 계정 권장
-          </p>
-          <div class="dialog-actions">
-            <button type="button" id="btn-auth-seed-cancel-input">취소</button>
-            <button value="submit" id="btn-auth-seed-submit">열기 →</button>
-          </div>
-        </form>
-      </dialog>
-
-      <!-- 시드 진행 모달 -->
-      <dialog id="auth-seed-progress" class="auth-dialog">
-        <h3>🪟 로그인 세션 저장 중</h3>
-        <ol class="auth-steps">
-          <li>대상 서비스의 [네이버로 로그인] 버튼 클릭</li>
-          <li>네이버 로그인 화면에서 ID / 비밀번호 입력</li>
-          <li>2중 확인 (SMS 등) 직접 통과</li>
-          <li>서비스로 자동 복귀 → 검증 대상 페이지 확인</li>
-          <li><strong>로그인 완료 화면을 확인한 뒤 열린 브라우저 창을 닫으세요</strong></li>
-        </ol>
-        <p class="auth-status" id="auth-seed-progress-status">⏳ 사용자 입력 대기 중</p>
-        <p class="muted" id="auth-seed-progress-elapsed">경과 0초 / 한도 600초</p>
-        <p class="muted" id="auth-seed-progress-hint">
-          브라우저 창이 닫히면 세션을 저장하고, 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.
-        </p>
-        <div class="dialog-actions">
-          <button type="button" id="btn-auth-seed-cancel">취소 (창은 직접 닫으세요)</button>
-          <button type="button" id="btn-auth-seed-skip" hidden>사용하지 않음</button>
-          <button type="button" id="btn-auth-seed-done" hidden>이 프로파일 사용</button>
-        </div>
-      </dialog>
-
-      <!-- 만료 알림 모달 (Start 시 409 → 재시드 유도) -->
-      <dialog id="auth-expired-dialog" class="auth-dialog">
-        <h3>⚠ 인증 세션 만료</h3>
-        <p>
-          인증 세션 <code id="auth-expired-name">—</code> 가 만료되었습니다.
-        </p>
-        <p class="muted" id="auth-expired-reason">원인: 세션 만료 또는 IP 변경.</p>
-        <p>재시드하면 시작 URL / 검증 URL / 검증 텍스트 입력값이 그대로 유지됩니다.</p>
-        <div class="dialog-actions">
-          <button type="button" id="btn-auth-expired-cancel">취소</button>
-          <button type="button" id="btn-auth-expired-reseed">재시드</button>
-        </div>
-      </dialog>
-
-      <!-- 머신 불일치 경고 모달 -->
-      <dialog id="auth-machine-mismatch-dialog" class="auth-dialog">
-        <h3>⚠ 머신 불일치 경고</h3>
-        <p>
-          이 인증 세션은 다른 머신에서 시드되었습니다. 네이버는 IP / 디바이스 핑거프린트가
-          바뀌면 세션을 자주 무효화합니다 — 거의 바로 재시드가 필요해질 수 있습니다.
-        </p>
-        <p class="muted">권장: 이 머신에서 새로 시드.</p>
-        <div class="dialog-actions">
-          <button type="button" id="btn-mm-cancel">취소</button>
-          <button type="button" id="btn-mm-proceed">그대로 시도</button>
-          <button type="button" id="btn-mm-reseed">이 머신에서 새로 시드</button>
-        </div>
-      </dialog>
+      </details>
     </section>
 
     <!-- 섹션 1-B: Discover URLs (URL 자동 수집) -->
     <section class="card">
-      <details id="discover-section" open>
+      <details id="discover-section">
         <summary><h2 style="display:inline-block; margin:0;">🔍 Discover URLs</h2></summary>
         <p class="muted">
           시작 URL 한 개와 (선택) 로그인 프로파일을 지정하면 같은 사이트 안의
@@ -206,6 +90,29 @@
             <span>최대 깊이</span>
             <input type="number" name="max_depth" value="3" min="0" max="10">
           </label>
+          <details class="discover-advanced">
+            <summary>고급 옵션</summary>
+            <label class="optional">
+              <input type="checkbox" name="use_sitemap" checked>
+              sitemap.xml / robots.txt 의 Sitemap 사용 (기본 ON)
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="capture_requests" checked>
+              페이지가 부르는 같은 호스트의 요청 URL 도 수집 (기본 ON)
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="spa_selectors">
+              SPA 신호 셀렉터(data-href, role=link 등) 추가 수집
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="ignore_query">
+              URL 의 쿼리 문자열 무시 (페이지네이션/필터 변종 통합)
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="include_subdomains">
+              같은 루트 도메인의 서브도메인 포함
+            </label>
+          </details>
           <div class="form-actions">
             <button type="submit" id="btn-discover-start">Discover URLs</button>
             <button type="button" id="btn-discover-cancel" hidden>취소</button>
@@ -223,6 +130,141 @@
           <span class="muted" id="discover-selected-count">0개 선택</span>
         </div>
         <div id="discover-result"></div>
+      </details>
+    </section>
+
+    <!-- 섹션 1-C: Login Profile Registration -->
+    <section class="card">
+      <details id="login-profile-section">
+        <summary><h2 style="display:inline-block; margin:0;">🔐 Login Profile Registration</h2></summary>
+        <p class="muted">
+          테스트 대상 서비스의 로그인 세션을 시드/검증/삭제합니다. 시드된 프로파일은
+          New Recording 과 Discover URLs 섹션에서 선택해 재사용할 수 있습니다.
+        </p>
+        <fieldset class="auth-block">
+          <legend>인증 프로파일 — 시드된 storageState 재사용</legend>
+          <div class="auth-row">
+            <label class="auth-select-wrap">
+              <span>Auth Profile</span>
+              <select id="auth-profile-select">
+                <option value="">(없음 — 비로그인 녹화)</option>
+              </select>
+            </label>
+            <button type="button" id="btn-auth-verify" class="auth-btn"
+                    disabled
+                    title="선택된 프로파일을 즉시 verify (서비스 측 + 네이버 weak probe)">
+              ↻ verify
+            </button>
+            <button type="button" id="btn-auth-delete" class="auth-btn auth-btn-danger"
+                    disabled
+                    title="선택된 프로파일을 삭제 (카탈로그 + storageState 파일)">
+              🗑 삭제
+            </button>
+          </div>
+          <p class="auth-status muted" id="auth-status">— 프로파일을 선택하거나 새로 시드하세요 —</p>
+          <button type="button" id="btn-auth-seed" class="auth-btn"
+                  title="새 인증 세션 시드 — 별도 브라우저 창에서 직접 로그인 + 2중 확인 통과">
+            + 새 세션 시드
+          </button>
+        </fieldset>
+
+        <!-- 시드 입력 모달 -->
+        <dialog id="auth-seed-dialog" class="auth-dialog">
+          <form id="auth-seed-form" method="dialog">
+            <h3>새 인증 세션 만들기</h3>
+            <p class="muted">
+              이 단계는 1회만 수행합니다 (만료 시 재시드). 사람이 직접 네이버에 로그인 +
+              2중 확인을 통과하면 그 결과 세션을 저장해서 이후 녹화/재생에 자동으로 재사용.
+            </p>
+            <label>
+              <span>이름</span>
+              <input type="text" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"
+                     placeholder="booking-via-naver"
+                     title="영문/숫자/_/- 1~64자, 첫 글자는 영문/숫자">
+            </label>
+            <label>
+              <span>시작 URL <em>(⚠️ 테스트 대상 *서비스* 진입 페이지 — 네이버 로그인 페이지 아님)</em></span>
+              <input type="url" name="seed_url" required
+                     placeholder="https://booking.example.com/">
+            </label>
+            <label>
+              <span>검증 URL</span>
+              <input type="url" name="verify_service_url" required
+                     placeholder="https://booking.example.com/mypage">
+            </label>
+            <label>
+              <span>검증 텍스트 <em>(선택 — 비우면 검증 URL 접근 성공만 확인)</em></span>
+              <input type="text" name="verify_service_text"
+                     placeholder="김QA님 환영합니다">
+            </label>
+            <label class="optional">
+              <span>TTL 힌트 (시간) — 일 1회 재시드 가정 권장</span>
+              <input type="number" name="ttl_hint_hours" min="1" max="168" value="12">
+            </label>
+            <label class="auth-checkbox">
+              <input type="checkbox" name="naver_probe" checked>
+              <span>네이버 측 weak probe 활성 (best-effort, 권장)</span>
+            </label>
+            <p class="auth-warning">
+              ⚠ 운영 계정 사용 금지 — 테스트 전용 계정 권장
+            </p>
+            <div class="dialog-actions">
+              <button type="button" id="btn-auth-seed-cancel-input">취소</button>
+              <button value="submit" id="btn-auth-seed-submit">열기 →</button>
+            </div>
+          </form>
+        </dialog>
+
+        <!-- 시드 진행 모달 -->
+        <dialog id="auth-seed-progress" class="auth-dialog">
+          <h3>🪟 로그인 세션 저장 중</h3>
+          <ol class="auth-steps">
+            <li>대상 서비스의 [네이버로 로그인] 버튼 클릭</li>
+            <li>네이버 로그인 화면에서 ID / 비밀번호 입력</li>
+            <li>2중 확인 (SMS 등) 직접 통과</li>
+            <li>서비스로 자동 복귀 → 검증 대상 페이지 확인</li>
+            <li><strong>로그인 완료 화면을 확인한 뒤 열린 브라우저 창을 닫으세요</strong></li>
+          </ol>
+          <p class="auth-status" id="auth-seed-progress-status">⏳ 사용자 입력 대기 중</p>
+          <p class="muted" id="auth-seed-progress-elapsed">경과 0초 / 한도 600초</p>
+          <p class="muted" id="auth-seed-progress-hint">
+            브라우저 창이 닫히면 세션을 저장하고, 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.
+          </p>
+          <div class="dialog-actions">
+            <button type="button" id="btn-auth-seed-cancel">취소 (창은 직접 닫으세요)</button>
+            <button type="button" id="btn-auth-seed-skip" hidden>사용하지 않음</button>
+            <button type="button" id="btn-auth-seed-done" hidden>이 프로파일 사용</button>
+          </div>
+        </dialog>
+
+        <!-- 만료 알림 모달 (Start 시 409 → 재시드 유도) -->
+        <dialog id="auth-expired-dialog" class="auth-dialog">
+          <h3>⚠ 인증 세션 만료</h3>
+          <p>
+            인증 세션 <code id="auth-expired-name">—</code> 가 만료되었습니다.
+          </p>
+          <p class="muted" id="auth-expired-reason">원인: 세션 만료 또는 IP 변경.</p>
+          <p>재시드하면 시작 URL / 검증 URL / 검증 텍스트 입력값이 그대로 유지됩니다.</p>
+          <div class="dialog-actions">
+            <button type="button" id="btn-auth-expired-cancel">취소</button>
+            <button type="button" id="btn-auth-expired-reseed">재시드</button>
+          </div>
+        </dialog>
+
+        <!-- 머신 불일치 경고 모달 -->
+        <dialog id="auth-machine-mismatch-dialog" class="auth-dialog">
+          <h3>⚠ 머신 불일치 경고</h3>
+          <p>
+            이 인증 세션은 다른 머신에서 시드되었습니다. 네이버는 IP / 디바이스 핑거프린트가
+            바뀌면 세션을 자주 무효화합니다 — 거의 바로 재시드가 필요해질 수 있습니다.
+          </p>
+          <p class="muted">권장: 이 머신에서 새로 시드.</p>
+          <div class="dialog-actions">
+            <button type="button" id="btn-mm-cancel">취소</button>
+            <button type="button" id="btn-mm-proceed">그대로 시도</button>
+            <button type="button" id="btn-mm-reseed">이 머신에서 새로 시드</button>
+          </div>
+        </dialog>
       </details>
     </section>
 
@@ -439,15 +481,22 @@
           <option value="error">error</option>
         </select>
       </div>
+      <div class="session-bulk-actions">
+        <button type="button" id="btn-session-select-all">전체 선택</button>
+        <button type="button" id="btn-session-select-none">선택 해제</button>
+        <button type="button" id="btn-session-delete-selected" class="danger" disabled>선택 삭제</button>
+        <span class="muted" id="session-selected-count">0개 선택</span>
+      </div>
       <table id="session-table">
         <thead>
           <tr>
+            <th style="width:32px;"><input type="checkbox" id="session-th-check" title="현재 보이는 세션 전체 선택/해제"></th>
             <th>id</th><th>state</th><th>target_url</th>
             <th>auth</th><th>steps</th><th>created</th><th></th>
           </tr>
         </thead>
         <tbody id="session-tbody">
-          <tr class="muted"><td colspan="7">— 세션 없음 —</td></tr>
+          <tr class="muted"><td colspan="8">— 세션 없음 —</td></tr>
         </tbody>
       </table>
     </section>

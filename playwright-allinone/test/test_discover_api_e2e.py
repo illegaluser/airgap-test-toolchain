@@ -196,7 +196,7 @@ class TestDiscoverHappyPath:
         # CSV (utf-8-sig BOM + header)
         rc = httpx.get(f"{base}/discover/{job_id}/csv", timeout=5.0)
         assert rc.status_code == 200
-        assert rc.content.startswith(b"\xef\xbb\xbfurl,status,title,depth,found_at")
+        assert rc.content.startswith(b"\xef\xbb\xbfurl,status,title,depth,source,found_at")
         assert seed.encode() in rc.content
 
     def test_csv_before_done_409(self, daemon, fixture_site):
@@ -428,3 +428,88 @@ class TestDiscoveryRootIsolation:
         rec_root = daemon["rec_root"]
         assert not (rec_root / "discoveries").exists()
         assert not (rec_root / job_id).exists()
+
+
+class TestCoverageOptions:
+    """5개 커버리지 옵션이 페이로드 → worker → 결과까지 전달되는지."""
+
+    def test_options_persisted_to_meta_json(self, daemon, fixture_site):
+        import json as _json
+        base = daemon["base"]
+        seed = f"{fixture_site['base']}/index.html"
+        r = httpx.post(
+            f"{base}/discover",
+            json={
+                "seed_url": seed,
+                "max_pages": 5,
+                "max_depth": 1,
+                "use_sitemap": False,
+                "capture_requests": False,
+                "spa_selectors": True,
+                "ignore_query": True,
+                "include_subdomains": True,
+            },
+            timeout=5.0,
+        )
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+        _poll(base, job_id)
+
+        meta_path = daemon["disc_root"] / job_id / "meta.json"
+        meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+        opts = meta.get("options")
+        assert opts == {
+            "use_sitemap": False,
+            "capture_requests": False,
+            "spa_selectors": True,
+            "ignore_query": True,
+            "include_subdomains": True,
+        }
+
+    def test_options_default_values(self, daemon, fixture_site):
+        """페이로드에 옵션 미지정 → 기본값(sitemap/capture ON, 나머지 OFF)."""
+        import json as _json
+        base = daemon["base"]
+        seed = f"{fixture_site['base']}/index.html"
+        r = httpx.post(
+            f"{base}/discover",
+            json={"seed_url": seed, "max_pages": 5, "max_depth": 1},
+            timeout=5.0,
+        )
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+        _poll(base, job_id)
+        meta = _json.loads(
+            (daemon["disc_root"] / job_id / "meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["options"] == {
+            "use_sitemap": True,
+            "capture_requests": True,
+            "spa_selectors": False,
+            "ignore_query": False,
+            "include_subdomains": False,
+        }
+
+    def test_csv_includes_source_column(self, daemon, fixture_site):
+        """urls.csv 에 source 컬럼이 포함되고 seed 행은 source=seed."""
+        base = daemon["base"]
+        seed = f"{fixture_site['base']}/index.html"
+        r = httpx.post(
+            f"{base}/discover",
+            json={"seed_url": seed, "max_pages": 5, "max_depth": 1},
+            timeout=5.0,
+        )
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+        _poll(base, job_id)
+        rc = httpx.get(f"{base}/discover/{job_id}/csv", timeout=5.0)
+        assert rc.status_code == 200
+        text = rc.content.decode("utf-8-sig")
+        header = text.splitlines()[0]
+        assert header == "url,status,title,depth,source,found_at"
+        # seed 행
+        seed_lines = [ln for ln in text.splitlines()[1:] if ln.startswith(seed + ",")]
+        assert seed_lines, "seed row not in CSV"
+        # source 컬럼이 'seed'
+        cells = seed_lines[0].split(",")
+        assert "seed" in cells

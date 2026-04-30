@@ -578,6 +578,7 @@ dialog textarea {
   border: 1px solid #c7c7cc;
   border-radius: 4px;
   background: #fff;
+  color: var(--text);
   cursor: pointer;
   font-size: 0.9em;
 }
@@ -711,12 +712,51 @@ dialog textarea {
   filter: brightness(0.95);
 }
 
-/* ── Discover URLs ────────────────────────────────────────────────────── */
-#discover-section > summary {
+/* ── Section toggles (New Recording / Discover URLs / Login Profile) ── */
+#new-recording-section > summary,
+#discover-section > summary,
+#login-profile-section > summary {
   cursor: pointer;
   list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-#discover-section > summary::-webkit-details-marker { display: none; }
+#new-recording-section > summary::-webkit-details-marker,
+#discover-section > summary::-webkit-details-marker,
+#login-profile-section > summary::-webkit-details-marker { display: none; }
+#new-recording-section > summary::before,
+#discover-section > summary::before,
+#login-profile-section > summary::before {
+  content: "▸";
+  display: inline-block;
+  font-size: 0.85em;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+#new-recording-section[open] > summary::before,
+#discover-section[open] > summary::before,
+#login-profile-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* ── Recent sessions bulk actions ─────────────────────────────────────── */
+.session-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.session-bulk-actions button {
+  padding: 4px 10px;
+  font-size: 0.9em;
+}
+#session-table th:first-child,
+#session-table td:first-child {
+  text-align: center;
+}
 .discover-table-wrap {
   max-height: 520px;
   overflow: auto;
