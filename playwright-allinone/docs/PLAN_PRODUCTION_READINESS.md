@@ -33,7 +33,7 @@ recording 라운드트립 6/6 스텝, Jenkins 파이프라인 stage 1~2.4 그린
 | --- | --- | --- |
 | 14-DSL 액션 커버리지 | navigate / click / fill / press / select / check / hover / verify / wait / upload / drag / scroll / mock_status / mock_data 전부 executor 구현 | [zero_touch_qa/executor.py](zero_touch_qa/executor.py) — 1496 라인, 14 핸들러 모두 존재 |
 | 녹화→변환→재실행 사이클 | playwright codegen → 14-DSL JSON → executor 재실행 라운드트립 | 2026-04-29 검증: naver popup 6/6 스텝 (commit 316a132) |
-| 자가 치유 3단계 | fallback target → LocalHealer → DifyClient (Ollama/gemma4:26b) | [zero_touch_qa/local_healer.py](zero_touch_qa/local_healer.py) + dify_client |
+| 자가 치유 3단계 | fallback target → LocalHealer → DifyClient (Ollama/qwen3.5:9b) | [zero_touch_qa/local_healer.py](zero_touch_qa/local_healer.py) + dify_client |
 | CI 통합 | Jenkins 5-stage + 30일 artifact + JUnit + 208 passing 회귀 | [ZeroTouch-QA.jenkinsPipeline](ZeroTouch-QA.jenkinsPipeline), `pytest test --ignore=test/native` → 208 passed |
 | 에어갭 호환 | 호스트 Ollama + 컨테이너 Jenkins/Dify/RAG 하이브리드, 단일 tar.gz 배포 | [build.sh](build.sh), [README.md](README.md) §"이미지 로드" |
 
@@ -43,7 +43,7 @@ recording 라운드트립 6/6 스텝, Jenkins 파이프라인 stage 1~2.4 그린
 | --- | --- | --- | --- |
 | B1 | 인증/로그인 | Phase 2 OUT 명시 ([PLAN_GROUNDING_RECORDING_AGENT.md](PLAN_GROUNDING_RECORDING_AGENT.md) §"명시적 OUT 항목") | 대부분 SaaS 의 첫 페이지가 로그인 폼 → 진입 자체 불가 |
 | B2 | iframe / Shadow DOM | Phase 3 backlog | 결제 위젯, 임베디드 폼, 디자인 시스템 (Lit/Stencil) 거의 다 해당 |
-| B3 | Phase 1.5 모델 신뢰성 게이트 | gemma4:26b tool-calling 90% 신뢰도 검증 진행 중 | 통과 못하면 Phase 2 진입 불가 → 복잡 시나리오 LLM 자율 생성 불가 |
+| B3 | Phase 1.5 모델 신뢰성 게이트 | qwen3.5:9b tool-calling 90% 신뢰도 검증 진행 중 | 통과 못하면 Phase 2 진입 불가 → 복잡 시나리오 LLM 자율 생성 불가 |
 | B4 | 세션/데이터 격리 | 메커니즘 부재 (확인 못 함) | 시나리오 간 쿠키/storage/DB 오염 → 멱등성 무너지면 회귀 자동화 불가 |
 | B5 | 실 도메인 검증 데이터 | fixtures 18개 HTML, 실 SaaS 안정성 측정 데이터 없음 | selector 변동 / 모달 race / SPA 라우팅 등에 대한 안정성 미지수 |
 | B6 | 운영 관찰성 / RCA | 스크린샷 + 로그만, healer 통계 미수집, 시나리오 Git 미통합, 대시보드 미구현 | 실패 원인 추적 불가 → 회귀 도입해도 디버깅 비용 폭증 |
@@ -746,7 +746,7 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
 
 #### P2.1 — 모델 신뢰성 게이트 통과 *(B3 해소)*
 
-- gemma4:26b 또는 대체 모델 (qwen2.5:32b / llama-3.3-70b 후보) 의 다중턴
+- qwen3.5:9b 또는 대체 모델 (qwen2.5:32b / llama-3.3-70b 후보) 의 다중턴
   도구 호출 90% 신뢰도 검증
 - **완료**: PLAN_GROUNDING_RECORDING_AGENT.md §"R-Plus 진입 게이트" 의 4 항목 통과
 
@@ -799,7 +799,7 @@ T-E 는 T-A 와 완전 독립 — DevOps 가 병행 처리 가능.
    도구로도 접근 불가. 일부 디자인 시스템 (Salesforce LWC 등) 은 closed shadow.
    범위 명시 필요.
 
-2. **gemma4:26b 의 한국어 / 다중턴 신뢰도** — 검증 진행 중. 통과 못 시 Phase 2
+2. **qwen3.5:9b 의 한국어 / 다중턴 신뢰도** — 검증 진행 중. 통과 못 시 Phase 2
    가 24주~ 단위로 지연.
 
 3. **인증 방식의 다양성** — SAML / OIDC / WebAuthn / passkey / MFA 까지 가면

@@ -368,7 +368,7 @@ def _sanitize_scenario(scenario):
     """LLM 비결정성 1차 흡수 — action 누락/invalid 한 step 은 drop 후 반환.
 
     Planner LLM 이 14스텝 중 1개 step 의 action 키를 누락하거나 typos 가 섞이는 케이스
-    가 빈번. 시나리오 전체를 reject + retry 하는 비용 (gemma4:26b 추론 ~30s+) 보다
+    가 빈번. 시나리오 전체를 reject + retry 하는 비용 (qwen3.5:9b 추론 ~30s+) 보다
     invalid step 만 drop 하고 진행하는 게 결정적이고 빠르다. 단, drop 사유는 WARNING
     으로 남겨 사용자가 추적 가능.
 

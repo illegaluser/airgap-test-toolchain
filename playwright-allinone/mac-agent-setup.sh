@@ -25,7 +25,7 @@ AGENT_DIR="${MAC_AGENT_WORKDIR:-$HOME/.dscore.ttc.playwright-agent}"
 JENKINS_URL="${JENKINS_URL:-http://localhost:18080}"
 AGENT_NAME="${AGENT_NAME:-mac-ui-tester}"
 PY_VERSION_MIN="${PY_VERSION_MIN:-3.11}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5:9b}"
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-false}"
 # NODE_SECRET 자동 추출 시 읽을 컨테이너 이름 (env override 가능)
 CONTAINER_NAME="${CONTAINER_NAME:-dscore.ttc.playwright}"

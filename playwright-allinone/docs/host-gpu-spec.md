@@ -39,7 +39,7 @@ free -h | head -2
 
 | 모델 | Q4 VRAM 요구 | 적합 룰 |
 | --- | --- | --- |
-| `gemma4:26b` | ~17GB | 가용 VRAM ≥ 17000 MiB |
+| `qwen3.5:9b` | ~17GB | 가용 VRAM ≥ 17000 MiB |
 | `qwen2.5:32b` | ~22GB | 가용 VRAM ≥ 22000 MiB |
 | `llama3.3:70b-q4_K_M` | ~42GB | 가용 VRAM ≥ 42000 MiB |
 | `granite3-dense:8b` | ~6GB | 가용 VRAM ≥ 6000 MiB |

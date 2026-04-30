@@ -888,7 +888,7 @@ def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_ro
 
     def fake_enrich(*, scenario, target_url, page_title=None, inventory_block=None):
         return EnrichResult(
-            markdown=fake_md, elapsed_ms=42.0, model="gemma4:26b",
+            markdown=fake_md, elapsed_ms=42.0, model="qwen3.5:9b",
             prompt_tokens_estimate=420,
         )
 
@@ -898,7 +898,7 @@ def test_enrich_success_writes_doc_enriched_md(client, monkeypatch, temp_host_ro
     r = client.post(f"/experimental/sessions/{sess.id}/enrich", json={})
     assert r.status_code == 201
     body = r.json()
-    assert body["model"] == "gemma4:26b"
+    assert body["model"] == "qwen3.5:9b"
     assert body["markdown"] == fake_md
     assert body["char_count"] == len(fake_md)
     # 디스크에 저장됐는지
@@ -1716,7 +1716,7 @@ def test_diff_analysis_returns_markdown(
         return DiffAnalysisResult(
             markdown="### 1. 핵심 변경 요약\n- selector swap 1건\n",
             elapsed_ms=2500.0,
-            model="gemma4:26b",
+            model="qwen3.5:9b",
         )
 
     monkeypatch.setattr(rplus_router, "_run_diff_analysis_impl", fake_analyze)
@@ -1730,7 +1730,7 @@ def test_diff_analysis_returns_markdown(
     assert r.status_code == 200
     body = r.json()
     assert "selector swap" in body["markdown"]
-    assert body["model"] == "gemma4:26b"
+    assert body["model"] == "qwen3.5:9b"
     assert body["elapsed_ms"] >= 0
     # fake 가 입력 받은 파일 본문 확인
     assert "page.click('#healed')" in captured["reg"]

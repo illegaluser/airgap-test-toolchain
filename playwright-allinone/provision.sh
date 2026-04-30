@@ -26,7 +26,7 @@
 #   OFFLINE_DIFY_PLUGIN_DIR      /opt/seed/dify-plugins (langgenius-ollama-*.difypkg)
 #   OFFLINE_DIFY_CHATFLOW_YAML   /opt/dify-chatflow.yaml
 #   OFFLINE_JENKINS_PIPELINE     /opt/ZeroTouch-QA.jenkinsPipeline
-#   OLLAMA_MODEL                 gemma4:26b   (Sprint 5 §10.2 기본 모델 — chatflow YAML 과 일치)
+#   OLLAMA_MODEL                 qwen3.5:9b   (Sprint 5 §10.2 기본 모델 — chatflow YAML 과 일치)
 #   DEBUG=1                      상세 출력
 # ============================================================================
 set -euo pipefail
@@ -41,7 +41,7 @@ JENKINS_ADMIN_PW="${JENKINS_ADMIN_PW:-password}"
 OFFLINE_DIFY_PLUGIN_DIR="${OFFLINE_DIFY_PLUGIN_DIR:-/opt/seed/dify-plugins}"
 OFFLINE_DIFY_CHATFLOW_YAML="${OFFLINE_DIFY_CHATFLOW_YAML:-/opt/dify-chatflow.yaml}"
 OFFLINE_JENKINS_PIPELINE="${OFFLINE_JENKINS_PIPELINE:-/opt/ZeroTouch-QA.jenkinsPipeline}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5:9b}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 DEBUG="${DEBUG:-0}"
 

@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:26b")
+DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
 DEFAULT_TIMEOUT_SEC = int(os.environ.get("RECORDING_ENRICH_TIMEOUT_SEC", "180"))
 
 
@@ -150,7 +150,7 @@ def enrich_recording(
         page_title: 페이지 타이틀 (있으면 컨텍스트 강화).
         inventory_block: Phase 1 grounding 인벤토리 블록 (선택).
         ollama_url: 호스트 Ollama 베이스 URL.
-        model: 모델 이름. default gemma4:26b (env OLLAMA_MODEL override).
+        model: 모델 이름. default qwen3.5:9b (env OLLAMA_MODEL override).
         timeout_sec: HTTP 타임아웃.
 
     Raises:
