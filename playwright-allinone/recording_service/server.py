@@ -9,11 +9,15 @@ TR.2 단계에서 /start /stop 이 실 codegen subprocess 와 연동된다.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import re
 import threading
-from typing import Optional
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Literal, Optional
 
 from pathlib import Path as _Path
 
@@ -1426,3 +1430,508 @@ def auth_profile_delete(name: str) -> Response:
             detail={"reason": "delete_failed", "message": str(e)},
         )
     return Response(status_code=204)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Discover URLs (URL 자동 수집) — docs/PLAN_URL_DISCOVERY.md 참조
+# ─────────────────────────────────────────────────────────────────────────
+
+# 1차 정책: 동시 실행 상한 2. 운영 사이트 부하 + 로컬 Chromium 프로세스 수 가드.
+DISCOVER_MAX_CONCURRENT = 2
+
+
+def _now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class DiscoverReq(BaseModel):
+    seed_url: str = Field(..., description="크롤 시작 URL")
+    auth_profile: Optional[str] = None
+    max_pages: int = Field(200, ge=1, le=2000)
+    max_depth: int = Field(3, ge=0, le=10)
+
+
+class TourScriptReq(BaseModel):
+    # NOTE: 일부러 list[str]. Pydantic v2 HttpUrl 은 끝슬래시/host case 등을
+    # 정규화해 urls.json 의 원본 문자열과 매칭이 깨진다. 검증은
+    # url_discovery.normalize_url() 로 양쪽을 정규화한 set 비교로 수행.
+    urls: list[str] = Field(..., min_length=1, max_length=500)
+    auth_profile: Optional[str] = None
+    headless: bool = True
+    include_screenshots: bool = True
+    preflight_verify: bool = True
+    wait_until: Literal["domcontentloaded", "load", "networkidle"] = "domcontentloaded"
+    nav_timeout_ms: int = Field(15000, ge=1000, le=120000)
+
+
+class DiscoverJob(BaseModel):
+    job_id: str
+    state: Literal["running", "cancelling", "done", "failed", "cancelled"]
+    seed_url: str
+    auth_profile: Optional[str] = None
+    machine_mismatch: bool = False
+    started_at: str
+    finished_at: Optional[str] = None
+    count: int = 0
+    last_url: Optional[str] = None
+    result_dir: Optional[str] = None
+    error: Optional[str] = None
+    aborted_reason: Optional[str] = None  # "auth_drift" 등
+
+
+_discover_jobs: dict[str, DiscoverJob] = {}
+_discover_cancel_events: dict[str, threading.Event] = {}
+_discover_lock = threading.Lock()
+
+
+def _discover_worker(
+    job_id: str,
+    storage_path: Optional[_Path],
+    fingerprint: object,
+    max_pages: int,
+    max_depth: int,
+    cancel_event: threading.Event,
+) -> None:
+    """discover 백그라운드 워커. Playwright sync API 를 thread 에서 직접 호출."""
+    from zero_touch_qa.url_discovery import DiscoverConfig, discover_urls
+
+    with _discover_lock:
+        job = _discover_jobs[job_id]
+
+    out_dir = storage.discoveries_root() / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        fp_kwargs = fingerprint.to_browser_context_kwargs() if fingerprint else {}
+        cfg = DiscoverConfig(
+            seed_url=job.seed_url,
+            storage_state_path=storage_path,
+            fingerprint_kwargs=fp_kwargs,
+            max_pages=max_pages,
+            max_depth=max_depth,
+        )
+
+        def _progress(count: int, last_url: str) -> None:
+            with _discover_lock:
+                j = _discover_jobs.get(job_id)
+                if j is not None:
+                    j.count = count
+                    j.last_url = last_url
+
+        results, abort_reason = discover_urls(
+            cfg, on_progress=_progress, cancel_event=cancel_event
+        )
+
+        finished_at = _now_iso_utc()
+        cancelled_by_user = cancel_event.is_set()
+        meta = {
+            "seed_url": job.seed_url,
+            "auth_profile": job.auth_profile,
+            "machine_mismatch": job.machine_mismatch,
+            "max_pages": max_pages,
+            "max_depth": max_depth,
+            "started_at": job.started_at,
+            "finished_at": finished_at,
+            "count": len(results),
+            "aborted_reason": abort_reason,
+            "cancelled_by_user": cancelled_by_user,
+        }
+        (out_dir / "meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (out_dir / "urls.json").write_text(
+            json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        # utf-8-sig: Excel 호환 BOM (한국어 사용자 다수).
+        with (out_dir / "urls.csv").open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["url", "status", "title", "depth", "found_at"]
+            )
+            writer.writeheader()
+            for r in results:
+                writer.writerow(asdict(r))
+
+        with _discover_lock:
+            j = _discover_jobs.get(job_id)
+            if j is not None:
+                j.state = "cancelled" if cancelled_by_user else "done"
+                j.aborted_reason = abort_reason
+                j.finished_at = finished_at
+                j.count = len(results)
+                j.result_dir = str(out_dir)
+    except Exception as e:  # noqa: BLE001 — worker 최상위 가드
+        log.exception("[discover] job=%s 워커 실패", job_id)
+        with _discover_lock:
+            j = _discover_jobs.get(job_id)
+            if j is not None:
+                j.state = "failed"
+                j.error = repr(e)
+                j.finished_at = _now_iso_utc()
+    finally:
+        with _discover_lock:
+            _discover_cancel_events.pop(job_id, None)
+
+
+_TOUR_SCRIPT_TEMPLATE = '''"""Auto-generated tour script — DO NOT EDIT by hand.
+
+같은 머신/사용자 환경 실행 전제. 다른 머신에서는 STORAGE_STATE 가 없어 즉시 fail.
+공유 시 auth_profile 없이 재생성 권장.
+
+방문 로그(tour_results.jsonl)와 스크린샷(tour_screenshots/)을 남기는 smoke
+helper 다. pass/fail 자동 판정은 하지 않는다.
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+from playwright.sync_api import sync_playwright
+
+
+URLS = {urls_literal}
+OUT_DIR = Path(__file__).resolve().parent
+RESULTS = OUT_DIR / "tour_results.jsonl"
+SCREENSHOT_DIR = OUT_DIR / "tour_screenshots"
+STORAGE_STATE = {storage_state_literal}
+CONTEXT_KWARGS_JSON = {context_kwargs_json_literal}
+CONTEXT_KWARGS = json.loads(CONTEXT_KWARGS_JSON)
+HEADLESS = {headless_literal}
+INCLUDE_SCREENSHOTS = {include_screenshots_literal}
+PREFLIGHT_VERIFY = {preflight_verify_literal}
+VERIFY_SERVICE_URL = {verify_url_literal}
+VERIFY_SERVICE_TEXT = {verify_text_literal}
+WAIT_UNTIL = {wait_until_literal}
+NAV_TIMEOUT_MS = {nav_timeout_ms_literal}
+
+
+def _same_or_related_host(actual: str, expected: str) -> bool:
+    if not expected:
+        return True
+    return actual == expected or actual.endswith("." + expected)
+
+
+def _write_result(f, rec: dict) -> None:
+    f.write(json.dumps(rec, ensure_ascii=False) + "\\n")
+    f.flush()
+
+
+def _preflight(page, f) -> bool:
+    if not PREFLIGHT_VERIFY or not VERIFY_SERVICE_URL:
+        return True
+    rec = {{"phase": "preflight", "url": VERIFY_SERVICE_URL}}
+    try:
+        response = page.goto(VERIFY_SERVICE_URL, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
+        status = response.status if response else None
+        rec["status"] = status
+        rec["final_url"] = page.url
+        if VERIFY_SERVICE_TEXT:
+            body = page.inner_text("body", timeout=5000)
+            ok = VERIFY_SERVICE_TEXT in body
+            if not ok:
+                rec["error"] = "verify_service_text_not_found"
+        else:
+            expected_host = urlparse(VERIFY_SERVICE_URL).hostname or ""
+            final_host = urlparse(page.url).hostname or ""
+            ok = (status is None or status < 400) and _same_or_related_host(final_host, expected_host)
+            if not ok:
+                rec["error"] = "verify_service_not_reachable_or_redirected"
+        rec["ok"] = ok
+    except Exception as e:
+        rec["ok"] = False
+        rec["error"] = repr(e)
+    _write_result(f, rec)
+    return bool(rec.get("ok"))
+
+
+def main() -> None:
+    if INCLUDE_SCREENSHOTS:
+        SCREENSHOT_DIR.mkdir(exist_ok=True)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=HEADLESS)
+        ctx_kwargs = dict(CONTEXT_KWARGS)
+        if STORAGE_STATE:
+            ctx_kwargs["storage_state"] = str(Path(STORAGE_STATE).expanduser())
+        context = browser.new_context(**ctx_kwargs)
+        page = context.new_page()
+        with RESULTS.open("w", encoding="utf-8") as f:
+            if not _preflight(page, f):
+                context.close()
+                browser.close()
+                sys.exit(2)
+            for idx, url in enumerate(URLS, start=1):
+                rec = {{"phase": "tour", "index": idx, "url": url}}
+                try:
+                    response = page.goto(url, wait_until=WAIT_UNTIL, timeout=NAV_TIMEOUT_MS)
+                    rec["status"] = response.status if response else None
+                    rec["final_url"] = page.url
+                    rec["title"] = page.title()
+                    if INCLUDE_SCREENSHOTS:
+                        shot = SCREENSHOT_DIR / f"{{idx:03d}}.png"
+                        page.screenshot(path=str(shot), full_page=True)
+                        rec["screenshot"] = str(shot)
+                except Exception as e:
+                    rec["error"] = repr(e)
+                _write_result(f, rec)
+        context.close()
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _shrink_home_path(path: _Path) -> str:
+    """절대 경로를 가능하면 ~ prefix 로 축약. 다른 경우 절대 경로 유지."""
+    try:
+        rel = path.relative_to(_Path.home())
+        return f"~/{rel}"
+    except ValueError:
+        return str(path)
+
+
+def _generate_tour_script(
+    *,
+    urls: list[str],
+    storage_path: Optional[_Path],
+    fingerprint: object,
+    headless: bool,
+    include_screenshots: bool,
+    preflight_verify: bool,
+    verify_service_url: str,
+    verify_service_text: str,
+    wait_until: str,
+    nav_timeout_ms: int,
+) -> str:
+    """선택 URL tour script 의 Python 소스 텍스트 생성.
+
+    `CONTEXT_KWARGS` 는 JSON 직렬화로 안전 복원. 비호환 객체가 끼어 있으면
+    HTTPException(500) 으로 거부.
+    """
+    fp_kwargs = fingerprint.to_browser_context_kwargs() if fingerprint else {}
+    try:
+        context_kwargs_json = json.dumps(fp_kwargs, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "reason": "fingerprint_not_serializable",
+                "message": f"Fingerprint kwargs 가 JSON 으로 직렬화되지 않습니다: {e}",
+            },
+        )
+
+    storage_literal: str
+    if storage_path is None:
+        storage_literal = "None"
+    else:
+        storage_literal = repr(_shrink_home_path(storage_path))
+
+    return _TOUR_SCRIPT_TEMPLATE.format(
+        urls_literal=repr(list(urls)),
+        storage_state_literal=storage_literal,
+        context_kwargs_json_literal=repr(context_kwargs_json),
+        headless_literal=repr(bool(headless)),
+        include_screenshots_literal=repr(bool(include_screenshots)),
+        preflight_verify_literal=repr(bool(preflight_verify)),
+        verify_url_literal=repr(verify_service_url or ""),
+        verify_text_literal=repr(verify_service_text or ""),
+        wait_until_literal=repr(wait_until),
+        nav_timeout_ms_literal=repr(int(nav_timeout_ms)),
+    )
+
+
+@app.post("/discover", status_code=202)
+def discover_start(req: DiscoverReq, response: Response) -> dict:
+    """discover job 을 백그라운드 worker 로 시작.
+
+    동시 실행 상한 초과 시 429. auth_profile 검증 실패는
+    `_load_profile_for_browser()` 가 던지는 HTTPException 에 위임.
+    """
+    with _discover_lock:
+        running = sum(
+            1 for j in _discover_jobs.values()
+            if j.state in ("running", "cancelling")
+        )
+    if running >= DISCOVER_MAX_CONCURRENT:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "too_many_running_discover_jobs",
+                "limit": DISCOVER_MAX_CONCURRENT,
+            },
+        )
+
+    storage_path, fingerprint, machine_mismatch = _load_profile_for_browser(req.auth_profile)
+
+    job_id = uuid.uuid4().hex[:12]
+    job = DiscoverJob(
+        job_id=job_id,
+        state="running",
+        seed_url=req.seed_url,
+        auth_profile=req.auth_profile,
+        machine_mismatch=machine_mismatch,
+        started_at=_now_iso_utc(),
+    )
+    cancel_event = threading.Event()
+    with _discover_lock:
+        _discover_jobs[job_id] = job
+        _discover_cancel_events[job_id] = cancel_event
+
+    threading.Thread(
+        target=_discover_worker,
+        args=(job_id, storage_path, fingerprint, req.max_pages, req.max_depth, cancel_event),
+        daemon=True,
+    ).start()
+
+    if machine_mismatch:
+        response.headers["X-Auth-Machine-Mismatch"] = "1"
+    return {
+        "job_id": job_id,
+        "state": "running",
+        "machine_mismatch": machine_mismatch,
+    }
+
+
+@app.get("/discover/{job_id}")
+def discover_status(job_id: str) -> DiscoverJob:
+    with _discover_lock:
+        job = _discover_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail={"reason": "job_not_found"})
+    return job
+
+
+@app.post("/discover/{job_id}/cancel")
+def discover_cancel(job_id: str) -> dict:
+    with _discover_lock:
+        job = _discover_jobs.get(job_id)
+        ev = _discover_cancel_events.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail={"reason": "job_not_found"})
+        if job.state not in ("running", "cancelling"):
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "job_not_cancellable", "state": job.state},
+            )
+        if ev is not None:
+            ev.set()
+        job.state = "cancelling"
+    return {"job_id": job_id, "state": "cancelling"}
+
+
+def _require_finished_job(job_id: str) -> DiscoverJob:
+    with _discover_lock:
+        job = _discover_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail={"reason": "job_not_found"})
+    if job.state not in ("done", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": "job_not_finished", "state": job.state},
+        )
+    return job
+
+
+@app.get("/discover/{job_id}/csv")
+def discover_csv(job_id: str):
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+    csv_path = _Path(job.result_dir) / "urls.csv"
+    if not csv_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "csv_not_found"})
+    return FileResponse(
+        path=str(csv_path),
+        media_type="text/csv; charset=utf-8",
+        filename=f"discover-{job_id}.csv",
+    )
+
+
+@app.get("/discover/{job_id}/json")
+def discover_json(job_id: str):
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+    json_path = _Path(job.result_dir) / "urls.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "json_not_found"})
+    return FileResponse(
+        path=str(json_path),
+        media_type="application/json; charset=utf-8",
+        filename=f"discover-{job_id}.json",
+    )
+
+
+@app.post("/discover/{job_id}/tour-script")
+def discover_tour_script(job_id: str, req: TourScriptReq):
+    """선택 URL 만 순회하는 Python Playwright tour script 를 생성/반환."""
+    from zero_touch_qa.url_discovery import DiscoverConfig, normalize_url
+
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+
+    urls_json_path = _Path(job.result_dir) / "urls.json"
+    if not urls_json_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "urls_json_not_found"})
+
+    discovered = json.loads(urls_json_path.read_text(encoding="utf-8"))
+    trash = DiscoverConfig.__dataclass_fields__["trash_query_params"].default
+    norm_to_original: dict[str, str] = {}
+    for rec in discovered:
+        u = rec.get("url")
+        if isinstance(u, str):
+            norm_to_original.setdefault(
+                normalize_url(u, trash_query_params=trash), u
+            )
+
+    selected_originals: list[str] = []
+    missing: list[str] = []
+    for raw in req.urls:
+        key = normalize_url(raw, trash_query_params=trash)
+        original = norm_to_original.get(key)
+        if original is None:
+            missing.append(raw)
+        else:
+            selected_originals.append(original)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"reason": "urls_not_in_discovery", "missing": missing},
+        )
+
+    storage_path: Optional[_Path] = None
+    fingerprint: object = None
+    verify_url = ""
+    verify_text = ""
+    if req.auth_profile:
+        storage_path, fingerprint, _ = _load_profile_for_browser(req.auth_profile)
+        # verify spec 도 다시 가져와 script 에 박는다.
+        from zero_touch_qa import auth_profiles
+        prof = auth_profiles.get_profile(req.auth_profile)
+        verify_url = prof.verify.service_url
+        verify_text = prof.verify.service_text or ""
+
+    script_text = _generate_tour_script(
+        urls=selected_originals,
+        storage_path=storage_path,
+        fingerprint=fingerprint,
+        headless=req.headless,
+        include_screenshots=req.include_screenshots,
+        preflight_verify=req.preflight_verify,
+        verify_service_url=verify_url,
+        verify_service_text=verify_text,
+        wait_until=req.wait_until,
+        nav_timeout_ms=req.nav_timeout_ms,
+    )
+
+    out_path = _Path(job.result_dir) / "tour_selected.py"
+    out_path.write_text(script_text, encoding="utf-8")
+    return FileResponse(
+        path=str(out_path),
+        media_type="text/x-python",
+        filename="tour_selected.py",
+    )
