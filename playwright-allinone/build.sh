@@ -56,7 +56,7 @@ while [ $# -gt 0 ]; do
     --no-agent)    SKIP_AGENT=true; shift ;;
     -h|--help)
       cat <<'USAGE'
-사용법: ./e2e-pipeline/offline/playwright-allinone/build.sh [옵션]
+사용법: ./build.sh [옵션]
 
   --redeploy     빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
                  (기존 dscore.ttc.playwright 컨테이너가 있으면 rm -f, 기존 agent.jar
@@ -370,7 +370,7 @@ if [ "$REDEPLOY" = "true" ]; then
     done
     if [ -z "$NODE_SECRET" ]; then
       log "  [5-3] ⚠ NODE_SECRET 15분 내 확보 실패. 수동 확인: docker logs $CONTAINER_NAME | grep NODE_SECRET"
-      log "      이후 agent 연결: NODE_SECRET=<값> ./offline/<mac|wsl>-agent-setup.sh"
+      log "      이후 agent 연결: NODE_SECRET=<값> ./<mac|wsl>-agent-setup.sh"
     else
       log "  [5-3] NODE_SECRET 확보: ${NODE_SECRET:0:16}..."
 
@@ -411,7 +411,7 @@ if [ "$REDEPLOY" = "true" ]; then
     log "  [5-3] --no-agent — agent 재연결 스킵"
     log "        수동 연결:"
     log "          docker logs $CONTAINER_NAME | grep NODE_SECRET"
-    log "          NODE_SECRET=<값> ./offline/<mac|wsl>-agent-setup.sh"
+    log "          NODE_SECRET=<값> ./<mac|wsl>-agent-setup.sh"
   fi
 
   log ""
@@ -446,27 +446,34 @@ log "  D. Docker:  Docker Desktop (WSL2 백엔드) 또는 WSL native Docker Engi
 log ""
 log "[이미지 로드 및 컨테이너 기동 — 호스트 플랫폼에 맞는 AGENT_NAME 주입]"
 log "  docker load -i $OUTPUT_TAR"
-log "  # Mac 에선 AGENT_NAME=mac-ui-tester, WSL2/Linux 에선 AGENT_NAME=wsl-ui-tester"
+log "  case \"\$(uname -s)\" in"
+log "    Darwin) AGENT_NAME=mac-ui-tester ;;"
+log "    *)      AGENT_NAME=wsl-ui-tester ;;"
+log "  esac"
+log "  HOST_RECORDINGS_DIR=\"\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}\""
+log "  mkdir -p \"\$HOST_RECORDINGS_DIR\""
 log "  docker run -d --name dscore.ttc.playwright \\"
 log "    -p 18080:18080 -p 18081:18081 -p 50001:50001 \\"
 log "    -v dscore-data:/data \\"
+log "    -v \"\$HOST_RECORDINGS_DIR\":/recordings:rw \\"
 log "    --add-host host.docker.internal:host-gateway \\"
 log "    -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \\"
 log "    -e OLLAMA_MODEL=${OLLAMA_MODEL} \\"
-log "    -e AGENT_NAME=wsl-ui-tester   # Mac 이면 mac-ui-tester \\"
+log "    -e AGENT_NAME=\"\$AGENT_NAME\" \\"
 log "    --restart unless-stopped \\"
 log "    $IMAGE_TAG"
 log ""
 log "[호스트 agent 연결 — 컨테이너 기동 완료 후]"
 log "  1) docker logs dscore.ttc.playwright | grep NODE_SECRET        # 64자 hex 값 확인"
-log "  2) Mac:  NODE_SECRET=<위 값> ./offline/mac-agent-setup.sh"
-log "     WSL2: NODE_SECRET=<위 값> ./offline/wsl-agent-setup.sh"
+log "  2) Mac:  NODE_SECRET=<위 값> ./mac-agent-setup.sh"
+log "     WSL2: NODE_SECRET=<위 값> ./wsl-agent-setup.sh"
 log "     → JDK/venv/Chromium 설치 + agent 연결. 성공 시 호스트 화면에 headed Chromium"
 log ""
 log "접속:"
 log "  - Jenkins:  http://localhost:18080  (admin / password)"
 log "  - Dify:     http://localhost:18081  (admin@example.com / Admin1234!)"
+log "  - Recording UI: http://localhost:18092"
 log ""
 log "⚠️  호스트 Ollama 미기동 / 호스트 agent 미연결 시 Pipeline Stage 3 가 실패한다."
-log "    자세한 가이드: e2e-pipeline/offline/README.md"
+log "    자세한 가이드: playwright-allinone_QUICKSTART.md / playwright-allinone_OPERATIONS.md"
 log "=========================================================================="
