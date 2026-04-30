@@ -1689,7 +1689,10 @@ async function _onDiscoverTourScript() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    _setDiscoverStatus(`tour_selected.py 생성됨 (${urls.length}개 URL)`);
+    _setDiscoverStatus(
+      `tour_selected.py 생성됨 (${urls.length}개 URL) · ` +
+      `실행 후 결과는 스크립트 옆 'tour_results.jsonl' + 'tour_screenshots/' 에 저장됩니다`,
+    );
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = orig || "선택 URL Tour Script 생성"; }
   }

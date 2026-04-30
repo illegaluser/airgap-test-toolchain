@@ -1584,13 +1584,15 @@ _TOUR_SCRIPT_TEMPLATE = _StrTemplate('''"""Auto-generated tour script — pytest
 
 실행 (Recording UI venv 안에서):
     pytest tour_selected.py -v
-    pytest tour_selected.py -v -k "/user/co"          # 특정 URL 서브셋
-    TOUR_SCREENSHOTS_ALL=1 pytest tour_selected.py    # 모든 URL PNG 저장 (기본: 실패만)
-    python tour_selected.py                           # Recording UI 'Play Script from File' 호환
+    pytest tour_selected.py -v -k "/user/co"               # 특정 URL 서브셋
+    TOUR_HEADLESS=0 python tour_selected.py                # 브라우저 창 띄움
+    TOUR_HEADLESS=1 python tour_selected.py                # 헤드리스 강제 (CI 등)
+    TOUR_SCREENSHOTS_FAILED_ONLY=1 pytest tour_selected.py # 실패한 URL 만 PNG (기본: 전체)
+    python tour_selected.py                                # Recording UI 'Play Script from File' 호환
 
-결과 (스크립트 옆에 생성):
-    tour_results.jsonl   — URL 별 결과 (status, title, body_len, ok, error 등)
-    tour_screenshots/    — 실패한 URL PNG (또는 TOUR_SCREENSHOTS_ALL=1 시 전체)
+결과 (스크립트와 같은 디렉토리에 생성):
+    tour_results.jsonl   — URL 별 결과 (status, title, body_len, ok, error, screenshot 경로)
+    tour_screenshots/    — 모든 URL PNG (full_page=True). 옵션으로 실패만 저장 가능.
 
 의존성: pytest, playwright (Recording UI venv 에 이미 설치).
 같은 머신/사용자 환경 실행 전제 — STORAGE_STATE 절대경로가 박혀 있다.
@@ -1623,7 +1625,9 @@ VERIFY_SERVICE_TEXT = $verify_text_literal
 WAIT_UNTIL = $wait_until_literal
 NAV_TIMEOUT_MS = $nav_timeout_ms_literal
 MIN_BODY_TEXT_LEN = 50  # body inner_text 최소 길이 — 빈 화면/스피너만 도는 페이지 차단
-SCREENSHOTS_ALL = os.environ.get("TOUR_SCREENSHOTS_ALL", "0") == "1"  # 기본: 실패한 URL 만 저장
+SETTLE_TIMEOUT_MS = 1500  # screenshot 찍기 직전 networkidle best-effort 대기 (부분 렌더 방지)
+# 기본: 모든 URL 의 PNG 저장. opt-out: TOUR_SCREENSHOTS_FAILED_ONLY=1 (CI 등 디스크 절약).
+SCREENSHOTS_FAILED_ONLY = os.environ.get("TOUR_SCREENSHOTS_FAILED_ONLY", "0") == "1"
 
 # 환경변수로 즉시 override 가능 (스크립트 재생성 없이):
 #   TOUR_HEADLESS=0 ...   → 브라우저 창이 뜸 (사용자가 직접 확인)
@@ -1795,7 +1799,14 @@ def test_url_renders_normally(url, browser_context, preflight):
         raise
     finally:
         failed = not rec.get("ok", False)
-        if failed or SCREENSHOTS_ALL:
+        # 기본: 모든 URL 저장. SCREENSHOTS_FAILED_ONLY=1 일 때만 실패 URL 만 저장.
+        should_shot = failed or (not SCREENSHOTS_FAILED_ONLY)
+        if should_shot:
+            # screenshot 직전 networkidle best-effort settle — 부분 렌더 방지.
+            try:
+                page.wait_for_load_state("networkidle", timeout=SETTLE_TIMEOUT_MS)
+            except Exception:
+                pass
             try:
                 shot = _shot_path(idx, url)
                 page.screenshot(path=str(shot), full_page=True)
