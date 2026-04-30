@@ -40,6 +40,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
+pytestmark = pytest.mark.e2e
 
 E2E_PORT = 18094
 E2E_BASE = f"http://127.0.0.1:{E2E_PORT}"
