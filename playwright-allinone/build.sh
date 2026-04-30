@@ -381,12 +381,19 @@ if [ "$REDEPLOY" = "true" ]; then
         *)      log "  [5-4] ⚠ 알 수 없는 OS ($(uname -s)) — agent 수동 연결 필요"; AGENT_SCRIPT="" ;;
       esac
       if [ -n "$AGENT_SCRIPT" ]; then
-        log "  [5-4] $AGENT_LABEL 기동 (setsid 분리 + /tmp/dscore-agent.log 로 리다이렉트)"
+        log "  [5-4] $AGENT_LABEL 기동 (분리 실행 + /tmp/dscore-agent.log 로 리다이렉트)"
         # agent-setup 스크립트 자신이 기존 프로세스 정리 + 새 연결 수행
         if command -v setsid >/dev/null 2>&1; then
           setsid env NODE_SECRET="$NODE_SECRET" bash "$AGENT_SCRIPT" \
             </dev/null >/tmp/dscore-agent.log 2>&1 &
           disown
+        elif command -v screen >/dev/null 2>&1; then
+          # macOS 에는 setsid 가 없고 nohup 백그라운드 실행이 부모 셸 종료와 함께
+          # 내려가는 경우가 있어 detached screen 세션을 우선 사용한다.
+          screen -S dscore-agent-setup -X quit >/dev/null 2>&1 || true
+          screen -dmS dscore-agent-setup bash -lc \
+            'NODE_SECRET="$1" exec bash "$2" >/tmp/dscore-agent.log 2>&1' \
+            _ "$NODE_SECRET" "$AGENT_SCRIPT"
         else
           # Mac 에는 setsid 가 없을 수 있음 — nohup 으로 대체
           nohup env NODE_SECRET="$NODE_SECRET" bash "$AGENT_SCRIPT" \
