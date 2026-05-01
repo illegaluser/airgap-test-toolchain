@@ -101,8 +101,9 @@ def main():
     config = Config.from_env()
     headed = not args.headless
     if args.slow_mo > 0:
-        # CLI 가 명시한 값이 env 기본값 (SLOW_MO=800) 을 덮어쓴다.
-        config.slow_mo = args.slow_mo
+        # Config 는 frozen dataclass 라 직접 assign 불가 — replace 로 새 인스턴스 생성.
+        from dataclasses import replace as _replace
+        config = _replace(config, slow_mo=args.slow_mo)
 
     # 환경변수 폴백 (Jenkins에서 env로 전달하는 경우)
     target_url = args.target_url or os.getenv("TARGET_URL", "")

@@ -81,3 +81,30 @@ class TestApplyFingerprintEnv:
         _apply_fingerprint_env(kwargs)
         assert "user_agent" not in kwargs
         assert "userAgent" not in kwargs
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# --slow-mo CLI 인자 회귀 가드 (frozen Config 직접 assign 사고 재발 방지)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_slow_mo_override_uses_dataclass_replace_not_direct_assign():
+    """`--slow-mo N` 흐름이 frozen ``Config`` 에 직접 assign 하지 않고 ``replace()`` 사용해야 한다.
+
+    회귀 사고: 사용자 보고로 `LLM 적용 코드 실행` 이 ``FrozenInstanceError: cannot
+    assign to field 'slow_mo'`` 로 깨짐. 원인은 `__main__.main()` 이
+    ``config.slow_mo = args.slow_mo`` 로 직접 할당했던 것.
+    """
+    import pytest as _pytest
+    from dataclasses import replace
+    from zero_touch_qa.config import Config
+
+    base = Config.from_env()
+    # 직접 assign 은 막혀야 — 회귀 가드.
+    with _pytest.raises(Exception):
+        base.slow_mo = 9999  # type: ignore[misc]
+    # replace() 는 정상.
+    new_cfg = replace(base, slow_mo=2500)
+    assert new_cfg.slow_mo == 2500
+    # 원본은 불변.
+    assert base.slow_mo != 2500
