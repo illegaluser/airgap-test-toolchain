@@ -444,51 +444,52 @@ class TestSectionOrdering:
         loc.wait_for(state="attached", timeout=5_000)
         return loc.evaluate("el => el.getBoundingClientRect().top + window.scrollY")
 
-    def test_run_log_appears_inside_result_area_before_rplus(self, opened_page: Page):
-        """run-log-card 가 '결과 확인 및 스텝 추가' 토글 안에 들어와 rplus 보다 앞에 위치.
+    def test_run_log_appears_inside_result_area_after_rplus(self, opened_page: Page):
+        """run-log-card 가 '결과 확인 및 스텝 추가' 토글 안에 nested 되어 있고,
+        결과 영역이 rplus 보다 *뒤* 에 위치 (사용자 결정 순서, 2026-05-02).
 
-        DOM 순서로 검사 (시각 y 비교는 hidden/접힘 요소가 끼면 흔들리므로).
+        DOM 순서 검사 — 시각 y 는 hidden/접힘 요소에 흔들림.
         """
         _open_session(opened_page, SID_BOTH)
+        # rplus 가 run-log 보다 앞 (FOLLOWING bit).
         order_ok = opened_page.evaluate(
             """() => {
                 const r = document.querySelector('#run-log-card');
                 const p = document.querySelector('#rplus-section');
                 if (!r || !p) return false;
-                return !!(r.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING);
+                return !!(p.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING);
             }"""
         )
-        assert order_ok, "run-log-card 가 rplus-section 보다 앞에 있어야 함"
-        # 결과 토글 안에 nest 된 것까지 확인.
+        assert order_ok, "rplus-section 이 run-log-card 보다 앞에 있어야 함"
+        # 결과 토글 안에 nest 된 것까지 확인 (구조 보존).
         nested = opened_page.evaluate(
             "() => !!document.querySelector('#result-area-toggle #run-log-card')"
         )
         assert nested, "run-log-card 가 result-area-toggle 안에 위치해야 함"
 
-    def test_step_add_appears_after_rplus_predecessors(self, opened_page: Page):
-        """assertion-section 은 #diff-card 아래 / R-PLUS 위 — 결과 영역 그룹 안.
+    def test_step_add_appears_after_diff_inside_result_area(self, opened_page: Page):
+        """assertion-section 은 #diff-card 아래 — 결과 영역 그룹 안.
 
-        DOM 순서로 검사 (시각 y 비교는 hidden 요소가 끼면 흔들리므로).
+        사용자 결정 순서(2026-05-02) 로 결과 영역이 rplus 보다 *뒤* 로 옮겨졌으므로
+        rplus 와의 상대 순서는 검사하지 않고, 결과 영역 *안* 의 diff → assertion
+        순서만 보장.
         """
         _open_session(opened_page, SID_BOTH)
         order_ok = opened_page.evaluate(
             """() => {
                 const a = document.querySelector('#diff-card');
                 const b = document.querySelector('#assertion-section');
-                const c = document.querySelector('#rplus-section');
-                if (!a || !b || !c) return false;
-                // a 가 b 보다 앞 (FOLLOWING bit) + b 가 c 보다 앞.
-                return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
-                    && !!(b.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING);
+                if (!a || !b) return false;
+                return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
             }"""
         )
-        assert order_ok, "DOM 순서 위반 — 기대: diff-card → assertion-section → rplus-section"
+        assert order_ok, "DOM 순서 위반 — 기대: diff-card → assertion-section"
 
     def test_three_toggles_in_canonical_order(self, fresh_page: Page):
-        """New Recording → Discover URLs → Login Profile Registration."""
-        a = self._y(fresh_page, "#new-recording-section")
+        """Login Profile → Discover URLs → Recording (사용자 결정 순서, 2026-05-02)."""
+        a = self._y(fresh_page, "#login-profile-section")
         b = self._y(fresh_page, "#discover-section")
-        c = self._y(fresh_page, "#login-profile-section")
+        c = self._y(fresh_page, "#new-recording-section")
         assert a < b < c
 
 

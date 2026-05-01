@@ -19,139 +19,6 @@
   </header>
 
   <main>
-    <!-- 섹션 1: Recording (codegen 으로 새 시나리오 녹화). 외부 .py 업로드는 Play & more 섹션에서 처리. -->
-    <section class="card">
-      <details id="new-recording-section">
-        <summary><h2 style="display:inline-block; margin:0;">🎬 Recording</h2></summary>
-      <p class="muted hover-hint">
-        💡 <strong>호버 메뉴 (드롭다운/GNB) 녹화 팁</strong> — codegen 은
-        <em>클릭만</em> 기록하고 마우스 hover 는 기록하지 않습니다.
-        상위 메뉴는 <strong>마우스만 올리고 클릭하지 마세요</strong>
-        (클릭하면 페이지가 이동되어 의도와 다른 시나리오가 됩니다). 서브메뉴가
-        펼쳐지면 원하는 항목만 클릭하세요. 다단(2~3 level) 메뉴도 동일 —
-        leaf 항목 클릭만 1회 기록되며, 재생 시 visibility healer 가 자동으로
-        부모 메뉴를 cascade hover 해 펼칩니다.
-      </p>
-      <form id="start-form">
-        <label>
-          <span>target_url</span>
-          <input
-            type="text" name="target_url" required
-            placeholder="https://example.com/login 또는 file:///app/test/fixtures/click.html"
-          >
-        </label>
-        <label>
-          <span>planning_doc_ref <em>(선택)</em></span>
-          <input type="text" name="planning_doc_ref" placeholder="feature_login.md">
-        </label>
-        <label>
-          <span>로그인 프로파일 <em>(선택 — 등록·검증·삭제는 아래 "Login Profile Registration" 섹션)</em></span>
-          <select name="auth_profile" id="recording-auth-profile">
-            <option value="">(없음 — 비로그인 녹화)</option>
-          </select>
-        </label>
-        <div class="form-actions">
-          <button type="submit" id="btn-start">▶ Start Recording</button>
-        </div>
-      </form>
-      <!-- 녹화 진행 중 — Recording 흐름의 다음 단계. 같은 카드 안에 인라인 -->
-      <div id="active-session" class="active-session-block" hidden
-           style="margin-top:14px;padding-top:14px;border-top:1px solid #eee;">
-        <h3 style="margin:0 0 8px 0;font-size:1rem;">녹화 진행 중</h3>
-        <dl class="kv">
-          <dt>세션 ID</dt><dd><code id="active-id">—</code></dd>
-          <dt>target_url</dt><dd id="active-url">—</dd>
-          <dt>state</dt><dd><span class="state-pill" id="active-state">—</span></dd>
-          <dt>경과 시간</dt><dd id="active-elapsed">0초</dd>
-        </dl>
-        <button id="btn-stop">■ Stop &amp; Convert</button>
-        <p class="muted">
-          Stop 클릭 시 codegen 이 정상 종료되고 컨테이너 측 변환이 실행됩니다.
-          시간이 약간 걸릴 수 있습니다.
-        </p>
-      </div>
-      </details>
-    </section>
-
-    <!-- 섹션 1-B: Discover URLs (URL 자동 수집) -->
-    <section class="card">
-      <details id="discover-section">
-        <summary><h2 style="display:inline-block; margin:0;">🔍 Discover URLs</h2></summary>
-        <p class="muted">
-          시작 URL 한 개와 (선택) 로그인 프로파일을 지정하면 같은 사이트 안의
-          링크를 BFS 로 수집합니다. 결과는 CSV/JSON 으로 받고, 선택한 URL 만
-          순회하는 Python Playwright tour script 도 생성할 수 있습니다.
-        </p>
-        <form id="discover-form">
-          <label>
-            <span>시작 URL</span>
-            <input type="url" name="seed_url" required placeholder="https://...">
-          </label>
-          <label>
-            <span>로그인 프로파일 <em>(선택)</em></span>
-            <select name="auth_profile" id="discover-auth-profile">
-              <option value="">(없음)</option>
-            </select>
-          </label>
-          <label class="optional">
-            <span>최대 페이지 수</span>
-            <input type="number" name="max_pages" value="200" min="1" max="2000">
-          </label>
-          <label class="optional">
-            <span>최대 깊이</span>
-            <input type="number" name="max_depth" value="3" min="0" max="10">
-          </label>
-          <details class="discover-advanced">
-            <summary>고급 옵션</summary>
-            <label class="optional">
-              <input type="checkbox" name="use_sitemap" checked>
-              sitemap.xml / robots.txt 의 Sitemap 사용 (기본 ON)
-            </label>
-            <label class="optional">
-              <input type="checkbox" name="capture_requests" checked>
-              페이지가 부르는 같은 호스트의 요청 URL 도 수집 (기본 ON)
-            </label>
-            <label class="optional">
-              <input type="checkbox" name="spa_selectors">
-              SPA 신호 셀렉터(data-href, role=link 등) 추가 수집
-            </label>
-            <label class="optional">
-              <input type="checkbox" name="ignore_query">
-              URL 의 쿼리 문자열 무시 (페이지네이션/필터 변종 통합)
-            </label>
-            <label class="optional">
-              <input type="checkbox" name="include_subdomains">
-              같은 루트 도메인의 서브도메인 포함
-            </label>
-          </details>
-          <div class="form-actions">
-            <button type="submit" id="btn-discover-start">Discover URLs</button>
-            <button type="button" id="btn-discover-cancel" hidden>취소</button>
-          </div>
-        </form>
-        <p class="muted" id="discover-status">— idle —</p>
-        <div id="discover-actions" class="form-actions" hidden>
-          <a id="discover-csv-link" class="dl-link" href="#" download>⬇ CSV 다운로드</a>
-          <button type="button" id="btn-discover-select-all">전체 선택</button>
-          <button type="button" id="btn-discover-select-none">선택 해제</button>
-          <button type="button" id="btn-discover-tour-script" disabled>선택 URL Tour Script 생성</button>
-          <label class="discover-headless-toggle" title="기본 OFF — 브라우저 창이 뜨고 진행을 직접 볼 수 있습니다. ON 시 백그라운드(headless) 실행.">
-            <input type="checkbox" id="discover-headless"> 헤드리스(백그라운드) 실행
-          </label>
-          <label title="스크린샷 직전 콘텐츠가 안정될 때까지 기다리는 강도. '엄격' 은 네트워크 idle + DOM 변화가 멈출 때까지 추가 대기 — 비어 있는 화면이 잡히는 일을 줄이지만 URL 당 0.5~5초 추가될 수 있음.">
-            콘텐츠 안정성 대기
-            <select id="discover-content-settle">
-              <option value="off">꺼짐 (빠름)</option>
-              <option value="network" selected>보통 (네트워크)</option>
-              <option value="strict">엄격 (네트워크 + DOM)</option>
-            </select>
-          </label>
-          <span class="muted" id="discover-selected-count">0개 선택</span>
-        </div>
-        <div id="discover-result"></div>
-      </details>
-    </section>
-
     <!-- 섹션 1-C: Login Profile Registration -->
     <section class="card">
       <details id="login-profile-section">
@@ -287,8 +154,229 @@
       </details>
     </section>
 
+    <!-- 섹션 1-B: Discover URLs (URL 자동 수집) -->
+    <section class="card">
+      <details id="discover-section">
+        <summary><h2 style="display:inline-block; margin:0;">🔍 Discover URLs</h2></summary>
+        <p class="muted">
+          시작 URL 한 개와 (선택) 로그인 프로파일을 지정하면 같은 사이트 안의
+          링크를 BFS 로 수집합니다. 결과는 CSV/JSON 으로 받고, 선택한 URL 만
+          순회하는 Python Playwright tour script 도 생성할 수 있습니다.
+        </p>
+        <form id="discover-form">
+          <label>
+            <span>시작 URL</span>
+            <input type="url" name="seed_url" required placeholder="https://...">
+          </label>
+          <label>
+            <span>로그인 프로파일 <em>(선택)</em></span>
+            <select name="auth_profile" id="discover-auth-profile">
+              <option value="">(없음)</option>
+            </select>
+          </label>
+          <label class="optional">
+            <span>최대 페이지 수</span>
+            <input type="number" name="max_pages" value="200" min="1" max="2000">
+          </label>
+          <label class="optional">
+            <span>최대 깊이</span>
+            <input type="number" name="max_depth" value="3" min="0" max="10">
+          </label>
+          <details class="discover-advanced">
+            <summary>고급 옵션</summary>
+            <label class="optional">
+              <input type="checkbox" name="use_sitemap" checked>
+              sitemap.xml / robots.txt 의 Sitemap 사용 (기본 ON)
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="capture_requests" checked>
+              페이지가 부르는 같은 호스트의 요청 URL 도 수집 (기본 ON)
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="spa_selectors">
+              SPA 신호 셀렉터(data-href, role=link 등) 추가 수집
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="ignore_query">
+              URL 의 쿼리 문자열 무시 (페이지네이션/필터 변종 통합)
+            </label>
+            <label class="optional">
+              <input type="checkbox" name="include_subdomains">
+              같은 루트 도메인의 서브도메인 포함
+            </label>
+          </details>
+          <div class="form-actions">
+            <button type="submit" id="btn-discover-start">Discover URLs</button>
+            <button type="button" id="btn-discover-cancel" hidden>취소</button>
+          </div>
+        </form>
+        <p class="muted" id="discover-status">— idle —</p>
+        <div id="discover-actions" class="form-actions" hidden>
+          <a id="discover-csv-link" class="dl-link" href="#" download>⬇ CSV 다운로드</a>
+          <button type="button" id="btn-discover-select-all">전체 선택</button>
+          <button type="button" id="btn-discover-select-none">선택 해제</button>
+          <button type="button" id="btn-discover-tour-script" disabled>선택 URL Tour Script 생성</button>
+          <label class="discover-headless-toggle" title="기본 OFF — 브라우저 창이 뜨고 진행을 직접 볼 수 있습니다. ON 시 백그라운드(headless) 실행.">
+            <input type="checkbox" id="discover-headless"> 헤드리스(백그라운드) 실행
+          </label>
+          <label title="스크린샷 직전 콘텐츠가 안정될 때까지 기다리는 강도. '엄격' 은 네트워크 idle + DOM 변화가 멈출 때까지 추가 대기 — 비어 있는 화면이 잡히는 일을 줄이지만 URL 당 0.5~5초 추가될 수 있음.">
+            콘텐츠 안정성 대기
+            <select id="discover-content-settle">
+              <option value="off">꺼짐 (빠름)</option>
+              <option value="network" selected>보통 (네트워크)</option>
+              <option value="strict">엄격 (네트워크 + DOM)</option>
+            </select>
+          </label>
+          <span class="muted" id="discover-selected-count">0개 선택</span>
+        </div>
+        <div id="discover-result"></div>
+      </details>
+    </section>
+
+    <!-- 섹션 1: Recording (codegen 으로 새 시나리오 녹화). 외부 .py 업로드는 Play & more 섹션에서 처리. -->
+    <section class="card">
+      <details id="new-recording-section">
+        <summary><h2 style="display:inline-block; margin:0;">🎬 Recording</h2></summary>
+      <p class="muted hover-hint">
+        💡 <strong>호버 메뉴 (드롭다운/GNB) 녹화 팁</strong> — codegen 은
+        <em>클릭만</em> 기록하고 마우스 hover 는 기록하지 않습니다.
+        상위 메뉴는 <strong>마우스만 올리고 클릭하지 마세요</strong>
+        (클릭하면 페이지가 이동되어 의도와 다른 시나리오가 됩니다). 서브메뉴가
+        펼쳐지면 원하는 항목만 클릭하세요. 다단(2~3 level) 메뉴도 동일 —
+        leaf 항목 클릭만 1회 기록되며, 재생 시 visibility healer 가 자동으로
+        부모 메뉴를 cascade hover 해 펼칩니다.
+      </p>
+      <form id="start-form">
+        <label>
+          <span>target_url</span>
+          <input
+            type="text" name="target_url" required
+            placeholder="https://example.com/login 또는 file:///app/test/fixtures/click.html"
+          >
+        </label>
+        <label>
+          <span>planning_doc_ref <em>(선택)</em></span>
+          <input type="text" name="planning_doc_ref" placeholder="feature_login.md">
+        </label>
+        <label>
+          <span>로그인 프로파일 <em>(선택 — 등록·검증·삭제는 아래 "Login Profile Registration" 섹션)</em></span>
+          <select name="auth_profile" id="recording-auth-profile">
+            <option value="">(없음 — 비로그인 녹화)</option>
+          </select>
+        </label>
+        <div class="form-actions">
+          <button type="submit" id="btn-start">▶ Start Recording</button>
+        </div>
+      </form>
+      <!-- 녹화 진행 중 — Recording 흐름의 다음 단계. 같은 카드 안에 인라인 -->
+      <div id="active-session" class="active-session-block" hidden
+           style="margin-top:14px;padding-top:14px;border-top:1px solid #eee;">
+        <h3 style="margin:0 0 8px 0;font-size:1rem;">녹화 진행 중</h3>
+        <dl class="kv">
+          <dt>세션 ID</dt><dd><code id="active-id">—</code></dd>
+          <dt>target_url</dt><dd id="active-url">—</dd>
+          <dt>state</dt><dd><span class="state-pill" id="active-state">—</span></dd>
+          <dt>경과 시간</dt><dd id="active-elapsed">0초</dd>
+        </dl>
+        <button id="btn-stop">■ Stop &amp; Convert</button>
+        <p class="muted">
+          Stop 클릭 시 codegen 이 정상 종료되고 컨테이너 측 변환이 실행됩니다.
+          시간이 약간 걸릴 수 있습니다.
+        </p>
+      </div>
+      </details>
+    </section>
+
     <!-- 섹션 2 자리는 Recording details 안으로 이동됨 (active-session block).
          녹화가 시작되면 form 아래에서 같은 카드 안에 인라인으로 표시. -->
+
+    <!-- 섹션 5: Play & more — 스크립트 실행 + 문서화의 통합 진입점.
+         업로드 진입은 항상 가능, 옵션·Play·Doc 영역은 세션 선택 시 활성화. -->
+    <section class="card" id="rplus-section">
+      <details id="rplus-toggle">
+        <summary><h2 style="display:inline-block; margin:0;">▶️ Play &amp; more</h2></summary>
+      <!-- 업로드 진입 — 세션 유무와 무관하게 항상 노출 -->
+      <div class="rplus-upload-block" style="margin-bottom:14px;padding:10px;border:1px dashed #ccc;border-radius:6px;">
+        <strong>새 스크립트 업로드</strong>
+        <p class="muted" style="margin:4px 0 8px 0;">
+          이미 작성된 Playwright .py 를 업로드해 새 세션으로 등록 + 즉시 재생합니다.
+        </p>
+        <button type="button" id="btn-import-script"
+                title="이미 작성된 Playwright .py 스크립트를 업로드해 바로 재생 (Codegen 녹화 우회)">
+          📁 Play Script from File
+        </button>
+        <input type="file" id="import-file-input" accept=".py" hidden>
+      </div>
+      <!-- 세션 종속 영역 — sid 미선택 시 비활성. 헤더 + 옵션 + 버튼 전부 포함. -->
+      <div id="rplus-session-area" aria-disabled="true">
+      <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.
+        <span id="rplus-empty-hint" class="muted" style="margin-left:6px;">
+          — 선택된 세션 없음. 위에서 .py 를 업로드하거나 '최근 세션' 에서 선택하세요.
+        </span>
+      </p>
+      <div class="plus-options" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="display:flex;gap:6px;align-items:center;">
+          <span class="muted">로그인 프로파일</span>
+          <select id="rplus-auth-profile">
+            <option value="__default__">(세션 기본값 사용)</option>
+            <option value="">(인증 없이 실행)</option>
+          </select>
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;">
+          <input type="checkbox" id="rplus-headed" checked>
+          <span>화면 표시 (headed)</span>
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;"
+               title="각 액션 사이에 지연을 줍니다. 사람이 눈으로 따라가며 디버깅할 때 유용 — 다만 액션 수만큼 누적되어 전체 실행 시간이 길어집니다.">
+          <input type="checkbox" id="rplus-slowmo-enabled">
+          <span>액션 사이 지연</span>
+          <input type="number" id="rplus-slowmo-ms" value="1000" min="0" step="100"
+                 style="width:80px;" disabled>
+          <span class="muted">ms</span>
+        </label>
+      </div>
+      <div class="plus-buttons">
+        <div class="dropdown-group" data-group="play">
+          <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+            ▶ Play <span class="caret">▾</span>
+          </button>
+          <div class="dropdown-menu" role="menu">
+            <button id="btn-play-codegen" type="button" title="codegen 녹화 또는 업로드된 테스트 코드를 호스트에서 그대로 실행 (codegen 녹화 시 자동 annotate hover 주입, 업로드 스크립트는 우회)">
+              ▶ 테스트코드 원본 실행
+            </button>
+            <button id="btn-play-llm" type="button" title="14-DSL 변환본을 executor 로 실행 (healing/verify/mock 동작, 화면 표시)">
+              ▶ LLM 적용 코드 실행
+            </button>
+          </div>
+        </div>
+        <div class="dropdown-group" data-group="doc">
+          <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+            📝 Generate Doc <span class="caret">▾</span>
+          </button>
+          <div class="dropdown-menu" role="menu">
+            <button id="btn-enrich" type="button" title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)">
+              📝 코드 기반 시나리오 생성
+            </button>
+            <button id="btn-compare-open" type="button" title="doc-DSL JSON 업로드 후 의미 비교 + 5분류 HTML 리포트 (TR.6)">
+              ⚖ 시나리오 문서 ↔ JSON 비교
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="rplus-output-header" style="display:flex;align-items:center;gap:8px;margin:6px 0 4px 0;">
+        <strong>실행 결과</strong>
+        <button type="button" class="copy-btn" data-copy-target="rplus-output"
+                title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
+        <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
+      </div>
+      <pre id="rplus-output" class="json-preview" hidden>—</pre>
+      <details id="play-progress-details" hidden>
+        <summary>실시간 진행 로그</summary>
+        <pre id="play-progress" class="play-progress"></pre>
+      </details>
+      </div><!-- /#rplus-session-area -->
+      </details><!-- /#rplus-toggle -->
+    </section>
 
     <!-- 섹션 3-X: 결과 확인 및 스텝 추가 — 결과 메타/시나리오/원본/run-log/regression/diff/Step 추가
          를 한 토글로 묶음. 세션 선택 시 자동 펼침. -->
@@ -437,94 +525,6 @@
     </section>
 
       </details><!-- /#result-area-toggle -->
-    </section>
-
-    <!-- 섹션 5: Play & more — 스크립트 실행 + 문서화의 통합 진입점.
-         업로드 진입은 항상 가능, 옵션·Play·Doc 영역은 세션 선택 시 활성화. -->
-    <section class="card" id="rplus-section">
-      <details id="rplus-toggle">
-        <summary><h2 style="display:inline-block; margin:0;">▶️ Play &amp; more</h2></summary>
-      <!-- 업로드 진입 — 세션 유무와 무관하게 항상 노출 -->
-      <div class="rplus-upload-block" style="margin-bottom:14px;padding:10px;border:1px dashed #ccc;border-radius:6px;">
-        <strong>새 스크립트 업로드</strong>
-        <p class="muted" style="margin:4px 0 8px 0;">
-          이미 작성된 Playwright .py 를 업로드해 새 세션으로 등록 + 즉시 재생합니다.
-        </p>
-        <button type="button" id="btn-import-script"
-                title="이미 작성된 Playwright .py 스크립트를 업로드해 바로 재생 (Codegen 녹화 우회)">
-          📁 Play Script from File
-        </button>
-        <input type="file" id="import-file-input" accept=".py" hidden>
-      </div>
-      <!-- 세션 종속 영역 — sid 미선택 시 비활성. 헤더 + 옵션 + 버튼 전부 포함. -->
-      <div id="rplus-session-area" aria-disabled="true">
-      <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.
-        <span id="rplus-empty-hint" class="muted" style="margin-left:6px;">
-          — 선택된 세션 없음. 위에서 .py 를 업로드하거나 '최근 세션' 에서 선택하세요.
-        </span>
-      </p>
-      <div class="plus-options" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-        <label style="display:flex;gap:6px;align-items:center;">
-          <span class="muted">로그인 프로파일</span>
-          <select id="rplus-auth-profile">
-            <option value="__default__">(세션 기본값 사용)</option>
-            <option value="">(인증 없이 실행)</option>
-          </select>
-        </label>
-        <label style="display:flex;gap:6px;align-items:center;">
-          <input type="checkbox" id="rplus-headed" checked>
-          <span>화면 표시 (headed)</span>
-        </label>
-        <label style="display:flex;gap:6px;align-items:center;"
-               title="각 액션 사이에 지연을 줍니다. 사람이 눈으로 따라가며 디버깅할 때 유용 — 다만 액션 수만큼 누적되어 전체 실행 시간이 길어집니다.">
-          <input type="checkbox" id="rplus-slowmo-enabled">
-          <span>액션 사이 지연</span>
-          <input type="number" id="rplus-slowmo-ms" value="1000" min="0" step="100"
-                 style="width:80px;" disabled>
-          <span class="muted">ms</span>
-        </label>
-      </div>
-      <div class="plus-buttons">
-        <div class="dropdown-group" data-group="play">
-          <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
-            ▶ Play <span class="caret">▾</span>
-          </button>
-          <div class="dropdown-menu" role="menu">
-            <button id="btn-play-codegen" type="button" title="codegen 녹화 또는 업로드된 테스트 코드를 호스트에서 그대로 실행 (codegen 녹화 시 자동 annotate hover 주입, 업로드 스크립트는 우회)">
-              ▶ 테스트코드 원본 실행
-            </button>
-            <button id="btn-play-llm" type="button" title="14-DSL 변환본을 executor 로 실행 (healing/verify/mock 동작, 화면 표시)">
-              ▶ LLM 적용 코드 실행
-            </button>
-          </div>
-        </div>
-        <div class="dropdown-group" data-group="doc">
-          <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
-            📝 Generate Doc <span class="caret">▾</span>
-          </button>
-          <div class="dropdown-menu" role="menu">
-            <button id="btn-enrich" type="button" title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)">
-              📝 코드 기반 시나리오 생성
-            </button>
-            <button id="btn-compare-open" type="button" title="doc-DSL JSON 업로드 후 의미 비교 + 5분류 HTML 리포트 (TR.6)">
-              ⚖ 시나리오 문서 ↔ JSON 비교
-            </button>
-          </div>
-        </div>
-      </div>
-      <div class="rplus-output-header" style="display:flex;align-items:center;gap:8px;margin:6px 0 4px 0;">
-        <strong>실행 결과</strong>
-        <button type="button" class="copy-btn" data-copy-target="rplus-output"
-                title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
-      </div>
-      <pre id="rplus-output" class="json-preview" hidden>—</pre>
-      <details id="play-progress-details" hidden>
-        <summary>실시간 진행 로그</summary>
-        <pre id="play-progress" class="play-progress"></pre>
-      </details>
-      </div><!-- /#rplus-session-area -->
-      </details><!-- /#rplus-toggle -->
     </section>
 
     <!-- Compare 모달 (간단 폼) -->
