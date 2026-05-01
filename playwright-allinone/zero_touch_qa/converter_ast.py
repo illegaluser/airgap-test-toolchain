@@ -100,14 +100,114 @@ class _AstConverter(ast.NodeVisitor):
             self._handle_stmt(stmt)
 
     def _handle_stmt(self, stmt: ast.stmt) -> None:
-        """각 statement 를 처리. with / Expr / Assign 만 의미 있음."""
+        """각 statement 를 처리. with / Expr / Assign / Assert 만 의미 있음."""
         if isinstance(stmt, ast.With):
             self._handle_with(stmt)
         elif isinstance(stmt, ast.Expr):
             self._handle_expr(stmt.value)
         elif isinstance(stmt, ast.Assign):
             self._handle_assign(stmt)
+        elif isinstance(stmt, ast.Assert):
+            self._handle_assert(stmt)
         # If/For/Try 등은 codegen 이 만들지 않음 — 무시
+
+    def _handle_assert(self, node: ast.Assert) -> None:
+        """``assert ... `` 라인을 14-DSL ``verify`` step 으로 변환.
+
+        지원 패턴:
+          1. ``assert "X" not in page.url``           → url_not_contains
+          2. ``assert "X" in page.url``               → url_contains
+          3. ``assert len(page.inner_text("S")) >= N`` → min_text_length
+
+        매칭 안 되는 assert 는 무시 — 변환되지 않은 assert 는 실 스크립트
+        실행(`테스트코드 원본 실행`) 에서 그대로 raise 되므로 검증 자체는 보존됨.
+        """
+        step = (
+            self._assert_to_url_membership(node.test)
+            or self._assert_to_min_text_length(node.test)
+        )
+        if step is None:
+            return
+        step["step"] = len(self.steps) + 1
+        step.setdefault("fallback_targets", [])
+        self.steps.append(step)
+
+    def _assert_to_url_membership(self, test: ast.expr) -> Optional[dict]:
+        """``"X" in page.url`` / ``"X" not in page.url`` → verify step.
+
+        반환된 dict 에 ``step`` 키는 caller 가 부여.
+        """
+        if not isinstance(test, ast.Compare):
+            return None
+        if len(test.ops) != 1 or len(test.comparators) != 1:
+            return None
+        op = test.ops[0]
+        if not isinstance(op, (ast.In, ast.NotIn)):
+            return None
+        # 좌변: 문자열 상수
+        if not (isinstance(test.left, ast.Constant) and isinstance(test.left.value, str)):
+            return None
+        needle = test.left.value
+        # 우변: page.url (page 가 page_vars 안에 등록된 변수면 모두 허용).
+        right = test.comparators[0]
+        if not (
+            isinstance(right, ast.Attribute)
+            and right.attr == "url"
+            and isinstance(right.value, ast.Name)
+            and right.value.id in self.page_vars
+        ):
+            return None
+        condition = "url_not_contains" if isinstance(op, ast.NotIn) else "url_contains"
+        return {
+            "action": "verify",
+            "target": "page.url",
+            "value": needle,
+            "condition": condition,
+            "description": f"URL {'미포함' if isinstance(op, ast.NotIn) else '포함'} 검증 — '{needle}'",
+        }
+
+    def _assert_to_min_text_length(self, test: ast.expr) -> Optional[dict]:
+        """``len(page.inner_text("S")) >= N`` → verify min_text_length step."""
+        if not isinstance(test, ast.Compare):
+            return None
+        if len(test.ops) != 1 or len(test.comparators) != 1:
+            return None
+        op = test.ops[0]
+        if not isinstance(op, (ast.GtE, ast.Gt)):
+            return None
+        # 좌변: len(page.inner_text("body")) 형태
+        left = test.left
+        if not (isinstance(left, ast.Call) and isinstance(left.func, ast.Name) and left.func.id == "len"):
+            return None
+        if len(left.args) != 1:
+            return None
+        inner = left.args[0]
+        if not (
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "inner_text"
+            and isinstance(inner.func.value, ast.Name)
+            and inner.func.value.id in self.page_vars
+        ):
+            return None
+        # inner_text 의 첫 인자가 selector 문자열.
+        if not inner.args or not (
+            isinstance(inner.args[0], ast.Constant) and isinstance(inner.args[0].value, str)
+        ):
+            return None
+        selector = inner.args[0].value
+        # 우변: 정수 상수 (Gt 면 +1 보정 — 사용자 의도 보존).
+        right = test.comparators[0]
+        if not (isinstance(right, ast.Constant) and isinstance(right.value, int)):
+            return None
+        threshold = right.value + (1 if isinstance(op, ast.Gt) else 0)
+        return {
+            "action": "verify",
+            "target": selector,
+            "value": str(threshold),
+            "condition": "min_text_length",
+            "description": f"본문 텍스트 길이 ≥ {threshold} 검증",
+        }
 
     def _handle_with(self, node: ast.With) -> None:
         """``with page.expect_popup() as page1_info:`` 등 인식 + body 순회.

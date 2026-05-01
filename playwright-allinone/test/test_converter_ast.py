@@ -397,3 +397,85 @@ def test_hover_prepended_for_dropdown_class(tmp_path: Path) -> None:
     actions = [s["action"] for s in steps]
     assert actions[0] == "hover"
     assert ".dropdown" in steps[0]["target"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# assert → verify step 매핑 (tour 스크립트의 codegen 패턴 통합)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_assert_url_not_contains_maps_to_verify_step(tmp_path: Path) -> None:
+    """``assert "X" not in page.url`` → verify(url_not_contains)."""
+    src = _make_codegen_script(
+        tmp_path,
+        "page.goto('https://x.test/p')\n"
+        "assert \"errorMsg\" not in page.url",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert actions == ["navigate", "verify"], actions
+    assert steps[1]["condition"] == "url_not_contains"
+    assert steps[1]["target"] == "page.url"
+    assert steps[1]["value"] == "errorMsg"
+
+
+def test_assert_url_contains_maps_to_verify_step(tmp_path: Path) -> None:
+    """``assert "X" in page.url`` → verify(url_contains)."""
+    src = _make_codegen_script(
+        tmp_path,
+        "page.goto('https://x.test/search?q=foo')\n"
+        "assert \"q=foo\" in page.url",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert actions == ["navigate", "verify"]
+    assert steps[1]["condition"] == "url_contains"
+    assert steps[1]["value"] == "q=foo"
+
+
+def test_assert_inner_text_min_length_maps_to_verify_step(tmp_path: Path) -> None:
+    """``assert len(page.inner_text("body")) >= N`` → verify(min_text_length)."""
+    src = _make_codegen_script(
+        tmp_path,
+        "page.goto('https://x.test/p')\n"
+        "assert len(page.inner_text(\"body\")) >= 50",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert actions == ["navigate", "verify"]
+    assert steps[1]["condition"] == "min_text_length"
+    assert steps[1]["target"] == "body"
+    assert steps[1]["value"] == "50"
+
+
+def test_unrelated_assert_is_ignored(tmp_path: Path) -> None:
+    """매칭 안 되는 assert (예: ``assert page.title()``) 는 무시 — 시나리오에 안 들어감.
+
+    실 스크립트 실행에서는 그대로 raise 되므로 검증 의미는 보존.
+    """
+    src = _make_codegen_script(
+        tmp_path,
+        "page.goto('https://x.test/p')\n"
+        "assert page.title()",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert actions == ["navigate"], "untranslated assert 가 verify 로 잘못 잡힘"
+
+
+def test_tour_codegen_pattern_full_extraction(tmp_path: Path) -> None:
+    """tour 스크립트 전체 패턴 (URL 당 navigate + 2 verify) 정합 검증."""
+    src = _make_codegen_script(
+        tmp_path,
+        "page.goto('https://x.test/a')\n"
+        "assert \"errorMsg\" not in page.url\n"
+        "assert len(page.inner_text(\"body\")) >= 50\n"
+        "page.goto('https://x.test/b')\n"
+        "assert \"errorMsg\" not in page.url\n"
+        "assert len(page.inner_text(\"body\")) >= 50",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    assert len(steps) == 6
+    assert [s["action"] for s in steps] == [
+        "navigate", "verify", "verify", "navigate", "verify", "verify",
+    ]

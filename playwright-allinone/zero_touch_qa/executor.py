@@ -2022,10 +2022,40 @@ class QAExecutor:
                     expect(locator).to_have_value(str(value))
                 elif condition in ("text", "contains_text", "contains"):
                     expect(locator).to_contain_text(str(value))
+                elif condition in ("url_contains", "url_not_contains"):
+                    # target 은 무시 — page.url 자체를 검사. 합성된 tour
+                    # 시나리오의 "로그인 안내 페이지로 바운스 안 됐는지" 확인 등.
+                    current_url = page.url or ""
+                    needle = str(value)
+                    if condition == "url_contains" and needle not in current_url:
+                        raise VerificationAssertionError(
+                            f"URL 에 '{needle}' 포함되지 않음: {current_url}"
+                        )
+                    if condition == "url_not_contains" and needle in current_url:
+                        raise VerificationAssertionError(
+                            f"URL 에 '{needle}' 포함됨 (포함되면 안 됨): {current_url}"
+                        )
+                elif condition == "min_text_length":
+                    # 본문 텍스트 최소 길이 — '비어있는 화면 / 로그인 안내 페이지'
+                    # 같은 빈 응답을 잡아내는 용도.
+                    try:
+                        body_text = locator.inner_text(timeout=5000)
+                    except Exception:
+                        body_text = ""
+                    body_text = body_text.strip()
+                    try:
+                        threshold = int(value)
+                    except (TypeError, ValueError):
+                        threshold = 0
+                    if len(body_text) < threshold:
+                        raise VerificationAssertionError(
+                            f"본문 텍스트 길이 {len(body_text)} < {threshold} (비어있는 화면 의심)"
+                        )
                 else:
                     raise ValueError(
                         f"미지원 verify.condition: {condition!r} "
-                        f"(허용: visible, hidden, disabled, enabled, checked, value, text)"
+                        f"(허용: visible, hidden, disabled, enabled, checked, value, "
+                        f"text, url_contains, url_not_contains, min_text_length)"
                     )
             except AssertionError as e:
                 raise VerificationAssertionError(str(e)) from e
