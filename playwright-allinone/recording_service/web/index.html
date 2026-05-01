@@ -352,21 +352,11 @@
       </details>
     </section>
 
-    <!-- 섹션 3-C: Run Log (P1 — Play 실행 후 step 별 결과) -->
-    <section class="card" id="run-log-card" hidden>
-      <h2>실행 결과 (run_log)</h2>
-      <p class="muted">
-        가장 최근 ▶ Play 실행의 step 별 PASS / HEALED / FAIL 결과 + 스크린샷.
-        HEALED 의 <code>heal_stage</code> 가 <code>local</code>/<code>dify</code> 면
-        selector swap, <code>visibility</code> 면 cascade hover.
-      </p>
-      <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
-    </section>
-
     <!-- 스크린샷 모달 (P1) -->
     <dialog id="shot-dialog" class="shot-dialog">
       <form method="dialog">
-        <button class="shot-close" value="cancel" title="닫기">✕</button>
+        <button class="shot-close" value="cancel" type="submit"
+                title="닫기 (Esc)" aria-label="모달 닫기">✕</button>
       </form>
       <img id="shot-img" alt="step screenshot">
       <p class="shot-caption" id="shot-caption">—</p>
@@ -374,7 +364,8 @@
 
     <!-- 섹션 4: Step 추가 (TR.4 — codegen 미생성 액션 보충) -->
     <section class="card" id="assertion-section" hidden>
-      <h2>Step 추가 (codegen 미생성 액션)</h2>
+      <details id="assertion-toggle">
+        <summary><h2 style="display:inline-block; margin:0;">＋ Step 추가 <span class="muted" style="font-size:0.85em; font-weight:normal;">(codegen 미생성 액션)</span></h2></summary>
       <p class="muted">
         codegen 은 click / fill / press / select / check / navigate 만 녹화합니다.
         다음 14-DSL 액션은 직접 추가하세요:
@@ -410,11 +401,16 @@
         </label>
         <button type="submit">＋ Step 추가</button>
       </form>
+      </details>
     </section>
 
     <!-- 섹션 5: R-Plus (Play / Generate Doc / Compare) — state=done 일 때 노출 -->
     <section class="card r-plus" id="rplus-section" hidden>
-      <h2>결합 시나리오 <span class="badge ok">R-Plus</span></h2>
+      <h2>결합 시나리오 <span class="badge ok">R-Plus</span>
+        <button type="button" class="copy-btn" data-copy-target="rplus-output"
+                title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
+        <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
+      </h2>
       <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.</p>
       <div class="plus-buttons">
         <div class="dropdown-group" data-group="play">
@@ -449,6 +445,26 @@
         <summary>실시간 진행 로그</summary>
         <pre id="play-progress" class="play-progress"></pre>
       </details>
+    </section>
+
+    <!-- 섹션 5-A: Run Log (P1 — Play 실행 후 step 별 결과) — R-Plus 직후 위치 -->
+    <section class="card" id="run-log-card" hidden>
+      <div class="run-log-header">
+        <h2>실행 결과 (run_log)</h2>
+        <div class="run-log-mode-tabs" id="run-log-mode-tabs" role="tablist">
+          <button type="button" class="run-log-mode-tab" data-mode="llm"
+                  role="tab" aria-selected="true">LLM</button>
+          <button type="button" class="run-log-mode-tab" data-mode="codegen"
+                  role="tab" aria-selected="false">원본</button>
+        </div>
+      </div>
+      <p class="muted">
+        가장 최근 ▶ Play 실행의 step 별 결과 + 스크린샷. <strong>LLM</strong> 탭은
+        시나리오 executor 의 PASS / HEALED / FAIL 과 <code>heal_stage</code> 까지
+        보여주고, <strong>원본</strong> 탭은 codegen <code>original.py</code> 를
+        Playwright tracing 으로 캡처한 액션별 결과입니다.
+      </p>
+      <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
     </section>
 
     <!-- Compare 모달 (간단 폼) -->

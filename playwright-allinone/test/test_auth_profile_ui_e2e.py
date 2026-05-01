@@ -421,7 +421,9 @@ class TestExpiryModal:
         # 1. target_url 입력.
         page.fill("#start-form input[name='target_url']", "http://localhost:9/dummy")
         # 2. 만료된 프로파일 선택.
-        page.locator("#auth-profile-select").select_option("ui-expired")
+        # Round 3 이후: 녹화 form 은 #recording-auth-profile 을 읽음 — 관리용
+        # #auth-profile-select 와 분리됐다.
+        page.locator("#recording-auth-profile").select_option("ui-expired")
         page.wait_for_timeout(150)
         # 3. Start 클릭. → 백엔드가 verify_profile() 호출 → 실 Playwright 가 9999 포트로
         #    이동 시도 (도달 불가) → service_side_error → 409 → expired modal.
@@ -440,7 +442,7 @@ class TestExpiryModal:
     def test_reseed_button_opens_seed_dialog_with_prefill(self, page: Page):
         """expiry modal 의 [재시드] 클릭 → seed-dialog 가 prefill name 으로 열림."""
         page.fill("#start-form input[name='target_url']", "http://localhost:9/dummy")
-        page.locator("#auth-profile-select").select_option("ui-expired")
+        page.locator("#recording-auth-profile").select_option("ui-expired")
         page.wait_for_timeout(150)
         page.locator("#btn-start").click()
         expect(page.locator("#auth-expired-dialog")).to_be_visible(timeout=45_000)
