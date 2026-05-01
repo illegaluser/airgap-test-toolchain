@@ -216,6 +216,7 @@ def run_codegen_replay(
     prefer_annotated: bool = True,
     auth_profile_override: Optional[str] = None,
     headed: bool = True,
+    slow_mo_ms: Optional[int] = None,
 ) -> PlayResult:
     """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (기본 headed).
 
@@ -273,6 +274,9 @@ def run_codegen_replay(
     if not headed:
         # codegen wrapper 가 BrowserType.launch() 의 headless 인자를 강제 True 로 monkey-patch.
         env["CODEGEN_HEADLESS"] = "1"
+    if slow_mo_ms and slow_mo_ms > 0:
+        # wrapper 가 BrowserType.launch() kwargs 에 slow_mo 를 주입한다.
+        env["CODEGEN_SLOW_MO_MS"] = str(int(slow_mo_ms))
 
     log.info(
         "[play-codegen] %s (script=%s, traced)", " ".join(cmd), script_name
@@ -311,6 +315,7 @@ def run_llm_play(
     venv_py: str | None = None,
     auth_profile_override: Optional[str] = None,
     headed: bool = True,
+    slow_mo_ms: Optional[int] = None,
 ) -> PlayResult:
     """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행 (기본 headed).
 
@@ -336,6 +341,8 @@ def run_llm_play(
     ]
     if not headed:
         cmd.append("--headless")
+    if slow_mo_ms and slow_mo_ms > 0:
+        cmd += ["--slow-mo", str(int(slow_mo_ms))]
 
     # P4.2 — auth-profile 자동 매칭. 메타에 auth_profile 이 있으면 verify 통과 후
     # ``--storage-state-in <path>`` 인자 + fingerprint env 주입.

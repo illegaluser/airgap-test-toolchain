@@ -59,12 +59,14 @@ def _run_codegen_replay_impl(
     host_session_dir: str,
     auth_profile_override: Optional[str] = None,
     headed: bool = True,
+    slow_mo_ms: Optional[int] = None,
 ):
     """codegen 원본 ``original.py`` 호스트 실행 hook (monkeypatch 대상)."""
     return replay_proxy.run_codegen_replay(
         host_session_dir=host_session_dir,
         auth_profile_override=auth_profile_override,
         headed=headed,
+        slow_mo_ms=slow_mo_ms,
     )
 
 
@@ -74,6 +76,7 @@ def _run_llm_play_impl(
     project_root: str,
     auth_profile_override: Optional[str] = None,
     headed: bool = True,
+    slow_mo_ms: Optional[int] = None,
 ):
     """14-DSL ``scenario.json`` 의 zero_touch_qa executor 실행 hook."""
     return replay_proxy.run_llm_play(
@@ -81,6 +84,7 @@ def _run_llm_play_impl(
         project_root=project_root,
         auth_profile_override=auth_profile_override,
         headed=headed,
+        slow_mo_ms=slow_mo_ms,
     )
 
 
@@ -117,12 +121,19 @@ class PlayReq(BaseModel):
       이면 인증 없이 재생. 이름이면 그 프로파일로 override.
     - ``headed``: False 면 헤드리스 실행 (codegen 은 wrapper monkey-patch,
       LLM 은 ``--headless`` 플래그).
+    - ``slow_mo_ms``: 0/None 이면 꺼짐. >0 이면 Playwright ``slow_mo`` 로 각
+      액션 후 N 밀리초 지연 — 사람이 눈으로 따라가며 디버깅할 때 사용.
     """
     auth_profile: Optional[str] = Field(
         None,
         description="auth-profile override. None=세션 metadata 사용, ''=인증 없이, '<name>'=override.",
     )
     headed: bool = Field(True, description="False 면 헤드리스 실행.")
+    slow_mo_ms: Optional[int] = Field(
+        None,
+        ge=0,
+        description="각 액션 후 지연 (ms). 0/None 이면 끔.",
+    )
 
 
 class CompareReq(BaseModel):
@@ -231,6 +242,7 @@ def play_codegen(sid: str, req: Optional[PlayReq] = None) -> dict:
             host_session_dir=host_dir,
             auth_profile_override=opts.auth_profile,
             headed=opts.headed,
+            slow_mo_ms=opts.slow_mo_ms,
         )
     except ReplayAuthExpiredError as e:
         # post-review fix — auth-profile 만료/미존재는 502 가 아니라 409 +
@@ -288,6 +300,7 @@ def play_llm(sid: str, req: Optional[PlayReq] = None) -> dict:
             project_root=_project_root(),
             auth_profile_override=opts.auth_profile,
             headed=opts.headed,
+            slow_mo_ms=opts.slow_mo_ms,
         )
     except ReplayAuthExpiredError as e:
         # post-review fix — auth-profile 만료/미존재 → 409 + 구조화 detail.

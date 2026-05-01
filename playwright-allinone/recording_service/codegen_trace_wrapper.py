@@ -73,6 +73,11 @@ def _install_tracing_patches(session_dir: Path) -> None:
     stopped_paths: set[str] = set()  # 중복 stop 방지
 
     def patched_new_context(self, **kwargs):
+        # 로그인 프로파일 / fingerprint 주입 — 사용자 스크립트는 보통 빈 컨텍스트로
+        # 시작하므로(`browser.new_context()`), 이 시점에 storage_state / viewport
+        # / locale / timezone / color_scheme 을 끼워 넣어야 인증 상태가 적용된다.
+        # 사용자가 명시한 값은 절대 덮어쓰지 않음 (의도 보존).
+        _inject_auth_and_fingerprint(kwargs)
         ctx = real_new_context(self, **kwargs)
         try:
             ctx.tracing.start(screenshots=True, snapshots=True, sources=False)
@@ -111,17 +116,80 @@ def _install_tracing_patches(session_dir: Path) -> None:
     atexit.register(_flush_remaining)
 
 
-def _install_headless_patch() -> None:
-    """CODEGEN_HEADLESS=1 일 때 ``BrowserType.launch()`` 의 ``headless`` 인자를
-    강제 True 로 덮어쓴다. codegen 이 만든 스크립트는 보통 ``headless=False`` 가
-    하드코딩되어 있어, 호출자가 따로 헤드리스를 지정할 방법이 없다.
+def _inject_auth_and_fingerprint(kwargs: dict) -> None:
+    """``Browser.new_context()`` kwargs 에 로그인 storageState 와 fingerprint 환경값을 주입.
+
+    호출자(``replay_proxy.run_codegen_replay``) 가 다음 env 를 설정한다:
+      - ``AUTH_STORAGE_STATE_IN``: storage_state 파일 경로 (있으면)
+      - ``PLAYWRIGHT_VIEWPORT``: ``"<W>x<H>"`` (예: ``1280x800``)
+      - ``PLAYWRIGHT_LOCALE``: locale 문자열
+      - ``PLAYWRIGHT_TIMEZONE``: IANA timezone
+      - ``PLAYWRIGHT_COLOR_SCHEME``: ``light`` / ``dark`` / ``no-preference``
+
+    사용자가 ``new_context(storage_state=..., viewport=...)`` 처럼 직접 명시한
+    값이 있으면 그대로 둔다. UA 는 의도적으로 spoof 하지 않음 — sec-ch-ua
+    Client Hints 와의 어긋남 방지.
     """
-    if os.environ.get("CODEGEN_HEADLESS") != "1":
+    storage_path = os.environ.get("AUTH_STORAGE_STATE_IN")
+    if storage_path and "storage_state" not in kwargs:
+        kwargs["storage_state"] = storage_path
+        print(f"[codegen-trace] storage_state 주입 — {storage_path}", file=sys.stderr)
+
+    viewport_env = os.environ.get("PLAYWRIGHT_VIEWPORT", "")
+    if viewport_env and "x" in viewport_env and "viewport" not in kwargs:
+        try:
+            w_str, h_str = viewport_env.split("x", 1)
+            kwargs["viewport"] = {"width": int(w_str), "height": int(h_str)}
+        except (ValueError, IndexError):
+            print(
+                f"[codegen-trace] PLAYWRIGHT_VIEWPORT 형식 오류 (무시) — {viewport_env!r}",
+                file=sys.stderr,
+            )
+
+    locale_env = os.environ.get("PLAYWRIGHT_LOCALE")
+    if locale_env and "locale" not in kwargs:
+        kwargs["locale"] = locale_env
+
+    timezone_env = os.environ.get("PLAYWRIGHT_TIMEZONE")
+    if timezone_env and "timezone_id" not in kwargs:
+        kwargs["timezone_id"] = timezone_env
+
+    color_env = os.environ.get("PLAYWRIGHT_COLOR_SCHEME")
+    if color_env and "color_scheme" not in kwargs:
+        kwargs["color_scheme"] = color_env
+
+
+def _install_launch_overrides() -> None:
+    """``BrowserType.launch()`` kwargs 를 env 기반으로 덮어쓴다.
+
+    - ``CODEGEN_HEADLESS=1`` → ``headless=True`` 강제 (사용자 스크립트가 보통
+      ``headless=False`` 를 하드코딩).
+    - ``CODEGEN_SLOW_MO_MS=<n>`` → ``slow_mo=<n>`` 주입 (사람이 눈으로 따라가며
+      디버깅하기 위한 액션 사이 지연, ms). 사용자가 명시한 값이 있으면 보존.
+
+    둘 중 어느 env 도 없으면 patch 자체를 설치하지 않음 (정상 케이스 비용 0).
+    """
+    force_headless = os.environ.get("CODEGEN_HEADLESS") == "1"
+    slow_mo_raw = os.environ.get("CODEGEN_SLOW_MO_MS", "")
+    slow_mo_ms = 0
+    if slow_mo_raw:
+        try:
+            slow_mo_ms = max(0, int(slow_mo_raw))
+        except ValueError:
+            print(
+                f"[codegen-trace] CODEGEN_SLOW_MO_MS 형식 오류 (무시) — {slow_mo_raw!r}",
+                file=sys.stderr,
+            )
+    if not force_headless and slow_mo_ms <= 0:
         return
+
     real_launch = BrowserType.launch
 
     def patched_launch(self, **kwargs):
-        kwargs["headless"] = True
+        if force_headless:
+            kwargs["headless"] = True
+        if slow_mo_ms > 0 and "slow_mo" not in kwargs:
+            kwargs["slow_mo"] = slow_mo_ms
         return real_launch(self, **kwargs)
 
     BrowserType.launch = patched_launch  # type: ignore[assignment]
@@ -129,7 +197,7 @@ def _install_headless_patch() -> None:
 
 def main() -> None:
     sess, script = _resolve_paths()
-    _install_headless_patch()
+    _install_launch_overrides()
     _install_tracing_patches(sess)
     # 사용자 스크립트 실행 — 자체 종료 코드를 그대로 전파.
     # runpy.run_path 는 module __main__ 으로 실행하므로 `if __name__ == "__main__"`

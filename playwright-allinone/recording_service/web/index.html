@@ -424,6 +424,14 @@
           <input type="checkbox" id="rplus-headed" checked>
           <span>화면 표시 (headed)</span>
         </label>
+        <label style="display:flex;gap:6px;align-items:center;"
+               title="각 액션 사이에 지연을 줍니다. 사람이 눈으로 따라가며 디버깅할 때 유용 — 다만 액션 수만큼 누적되어 전체 실행 시간이 길어집니다.">
+          <input type="checkbox" id="rplus-slowmo-enabled">
+          <span>액션 사이 지연</span>
+          <input type="number" id="rplus-slowmo-ms" value="1000" min="0" step="100"
+                 style="width:80px;" disabled>
+          <span class="muted">ms</span>
+        </label>
       </div>
       <div class="plus-buttons">
         <div class="dropdown-group" data-group="play">
