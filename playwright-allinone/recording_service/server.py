@@ -1656,6 +1656,10 @@ class DiscoverReq(BaseModel):
     spa_selectors: bool = False
     ignore_query: bool = False
     include_subdomains: bool = False
+    # UI 의 '헤드리스(백그라운드) 실행' 체크박스 — 기본 False (브라우저 창 뜸).
+    # 이 필드가 없으면 worker 가 DiscoverConfig 기본값(True) 으로 떨어져 사용자가
+    # 체크박스를 풀어놨음에도 백그라운드로 도는 사고가 났었음.
+    headless: bool = False
 
 
 class TourScriptReq(BaseModel):
@@ -1711,6 +1715,7 @@ def _discover_worker(
     spa_selectors: bool = False,
     ignore_query: bool = False,
     include_subdomains: bool = False,
+    headless: bool = False,
 ) -> None:
     """discover 백그라운드 워커. Playwright sync API 를 thread 에서 직접 호출."""
     from zero_touch_qa.url_discovery import DiscoverConfig, discover_urls
@@ -1734,6 +1739,7 @@ def _discover_worker(
             spa_selectors=spa_selectors,
             ignore_query=ignore_query,
             include_subdomains=include_subdomains,
+            headless=headless,
         )
 
         def _progress(count: int, last_url: str) -> None:
@@ -1911,7 +1917,9 @@ def _format_tour_steps_block(urls: list[str]) -> str:
     """URL 리스트를 ``def run(playwright):`` 본문에 들어갈 codegen-style 호출 시퀀스로 직렬화.
 
     각 URL 블록: ``try:`` 안에서 navigate + URL 바운스 verify + 본문 길이 verify.
-    AssertionError 가 잡히면 다음 URL 로 진행 — 첫 URL fail 에서 전체 abort 방지.
+    예외가 잡히면 다음 URL 로 진행 — 전체 abort 방지. ``except Exception`` 으로
+    AssertionError 뿐 아니라 Playwright 의 navigation 예외도 흡수 (예: download
+    트리거 URL 이 발견된 경우 ``Page.goto: Download is starting`` raise).
     AST 변환기는 ``ast.Try`` body 를 재귀해 정상 흐름의 step 을 그대로 추출.
     """
     if not urls:
@@ -1923,8 +1931,8 @@ def _format_tour_steps_block(urls: list[str]) -> str:
         parts.append(f"        page.goto({url_lit})")
         parts.append('        assert "errorMsg" not in page.url')
         parts.append('        assert len(page.inner_text("body")) >= 50')
-        parts.append("    except AssertionError:")
-        parts.append("        # 검증 실패 — 다음 URL 로 진행 (전체 abort 방지)")
+        parts.append("    except Exception:")
+        parts.append("        # navigation 실패(다운로드 등) 또는 검증 실패 — 다음 URL 로")
         parts.append("        pass")
         parts.append("")  # 가독성 spacer
     while parts and parts[-1] == "":
@@ -2032,6 +2040,7 @@ def discover_start(req: DiscoverReq, response: Response) -> dict:
             "spa_selectors": req.spa_selectors,
             "ignore_query": req.ignore_query,
             "include_subdomains": req.include_subdomains,
+            "headless": req.headless,
         },
         daemon=True,
     ).start()
