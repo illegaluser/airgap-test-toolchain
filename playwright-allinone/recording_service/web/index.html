@@ -290,6 +290,12 @@
     <!-- 섹션 2 자리는 Recording details 안으로 이동됨 (active-session block).
          녹화가 시작되면 form 아래에서 같은 카드 안에 인라인으로 표시. -->
 
+    <!-- 섹션 3-X: 결과 확인 및 스텝 추가 — 결과 메타/시나리오/원본/run-log/regression/diff/Step 추가
+         를 한 토글로 묶음. 세션 선택 시 자동 펼침. -->
+    <section class="card">
+      <details id="result-area-toggle">
+        <summary><h2 style="display:inline-block; margin:0;">📊 결과 확인 및 스텝 추가</h2></summary>
+
     <!-- 섹션 3: 결과 메타 -->
     <section class="card" id="result-section" hidden>
       <h2>결과</h2>
@@ -322,6 +328,26 @@
         <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
       </h2>
       <pre id="result-original" class="json-preview">— original.py 미로드 —</pre>
+    </section>
+
+    <!-- 섹션 3-C: Run Log (P1 — Play 실행 후 step 별 결과). result-area-toggle 그룹 안. -->
+    <section class="card" id="run-log-card" hidden>
+      <div class="run-log-header">
+        <h2>실행 결과 (run_log)</h2>
+        <div class="run-log-mode-tabs" id="run-log-mode-tabs" role="tablist">
+          <button type="button" class="run-log-mode-tab" data-mode="llm"
+                  role="tab" aria-selected="true">LLM</button>
+          <button type="button" class="run-log-mode-tab" data-mode="codegen"
+                  role="tab" aria-selected="false">원본</button>
+        </div>
+      </div>
+      <p class="muted">
+        가장 최근 ▶ Play 실행의 step 별 결과 + 스크린샷. <strong>LLM</strong> 탭은
+        시나리오 executor 의 PASS / HEALED / FAIL 과 <code>heal_stage</code> 까지
+        보여주고, <strong>원본</strong> 탭은 codegen <code>original.py</code> 를
+        Playwright tracing 으로 캡처한 액션별 결과입니다.
+      </p>
+      <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
     </section>
 
     <!-- 섹션 3-D: Regression Test Script (.py) — Play with LLM 실행 후 자동 생성 -->
@@ -410,6 +436,9 @@
       </details>
     </section>
 
+      </details><!-- /#result-area-toggle -->
+    </section>
+
     <!-- 섹션 5: Play & more — 스크립트 실행 + 문서화의 통합 진입점.
          업로드 진입은 항상 가능, 옵션·Play·Doc 영역은 세션 선택 시 활성화. -->
     <section class="card r-plus" id="rplus-section">
@@ -496,26 +525,6 @@
       </details>
       </div><!-- /#rplus-session-area -->
       </details><!-- /#rplus-toggle -->
-    </section>
-
-    <!-- 섹션 5-A: Run Log (P1 — Play 실행 후 step 별 결과) — R-Plus 직후 위치 -->
-    <section class="card" id="run-log-card" hidden>
-      <div class="run-log-header">
-        <h2>실행 결과 (run_log)</h2>
-        <div class="run-log-mode-tabs" id="run-log-mode-tabs" role="tablist">
-          <button type="button" class="run-log-mode-tab" data-mode="llm"
-                  role="tab" aria-selected="true">LLM</button>
-          <button type="button" class="run-log-mode-tab" data-mode="codegen"
-                  role="tab" aria-selected="false">원본</button>
-        </div>
-      </div>
-      <p class="muted">
-        가장 최근 ▶ Play 실행의 step 별 결과 + 스크린샷. <strong>LLM</strong> 탭은
-        시나리오 executor 의 PASS / HEALED / FAIL 과 <code>heal_stage</code> 까지
-        보여주고, <strong>원본</strong> 탭은 codegen <code>original.py</code> 를
-        Playwright tracing 으로 캡처한 액션별 결과입니다.
-      </p>
-      <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
     </section>
 
     <!-- Compare 모달 (간단 폼) -->
