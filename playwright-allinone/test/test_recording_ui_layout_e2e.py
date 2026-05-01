@@ -267,12 +267,13 @@ class TestSectionToggleStructure:
         assert fresh_page.locator("#login-profile-section").get_attribute("open") is None
 
     def test_new_recording_renamed_to_english(self, fresh_page: Page):
-        """제목이 'Recording & Play' (영문) — 녹화 시작 + .py 업로드 두 진입의 통합 라벨."""
+        """제목이 'Recording' (영문) — 녹화 전용 섹션. 외부 .py 업로드는 'Play & more' 로 이전됨."""
         text = fresh_page.locator("#new-recording-section > summary").inner_text()
-        assert "Recording & Play" in text
+        assert "Recording" in text
         # 옛 명칭이 새지 않아야
         assert "새 녹화 시작" not in text
         assert "New Recording" not in text
+        assert "Recording & Play" not in text
 
     def test_step_add_section_uses_details_toggle(self, opened_page: Page):
         """Round 4 — Step 추가 카드 안에 details 토글 존재."""
@@ -449,12 +450,23 @@ class TestSectionOrdering:
             f"run-log-card 가 rplus-section 아래에 있어야 함 (rplus={rplus_y}, runlog={runlog_y})"
 
     def test_step_add_appears_after_rplus_predecessors(self, opened_page: Page):
-        """assertion-section 은 #diff-card 아래 / R-PLUS 위 — 결과 영역 그룹 안."""
+        """assertion-section 은 #diff-card 아래 / R-PLUS 위 — 결과 영역 그룹 안.
+
+        DOM 순서로 검사 (시각 y 비교는 hidden 요소가 끼면 흔들리므로).
+        """
         _open_session(opened_page, SID_BOTH)
-        diff_y = self._y(opened_page, "#diff-card")
-        assertion_y = self._y(opened_page, "#assertion-section")
-        rplus_y = self._y(opened_page, "#rplus-section")
-        assert diff_y < assertion_y < rplus_y
+        order_ok = opened_page.evaluate(
+            """() => {
+                const a = document.querySelector('#diff-card');
+                const b = document.querySelector('#assertion-section');
+                const c = document.querySelector('#rplus-section');
+                if (!a || !b || !c) return false;
+                // a 가 b 보다 앞 (FOLLOWING bit) + b 가 c 보다 앞.
+                return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+                    && !!(b.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING);
+            }"""
+        )
+        assert order_ok, "DOM 순서 위반 — 기대: diff-card → assertion-section → rplus-section"
 
     def test_three_toggles_in_canonical_order(self, fresh_page: Page):
         """New Recording → Discover URLs → Login Profile Registration."""

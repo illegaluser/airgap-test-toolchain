@@ -370,15 +370,65 @@ async function openSession(sid) {
   $("#assertion-section").hidden = s.state !== "done";
   $("#assertion-form").dataset.sid = sid;
 
-  // R-Plus 섹션 — state=done 일 때 항상 노출 (게이트 폐기 — TR.4+.4).
+  // Play & more 섹션은 항상 노출 (토글). 세션이 done 인 경우만 옵션/버튼을 활성화.
+  if (s.state === "done") {
+    _setRplusActive(sid);
+  } else {
+    _setRplusInactive();
+  }
+}
+
+// 세션 종속 영역(옵션·Play·Doc) 활성화 + sid 표시.
+function _setRplusActive(sid) {
   const rplus = $("#rplus-section");
-  const showRplus = s.state === "done";
-  rplus.hidden = !showRplus;
-  if (showRplus) {
-    rplus.dataset.sid = sid;
-    $("#rplus-sid").textContent = sid;
-    $("#rplus-output").hidden = true;
-    $("#rplus-output").textContent = "—";
+  rplus.dataset.sid = sid;
+  $("#rplus-sid").textContent = sid;
+  const hint = $("#rplus-empty-hint");
+  if (hint) hint.hidden = true;
+  const area = $("#rplus-session-area");
+  if (area) area.setAttribute("aria-disabled", "false");
+  $("#rplus-output").hidden = true;
+  $("#rplus-output").textContent = "—";
+  // 세션 종속 컨트롤들을 모두 활성.
+  _rplusToggleSessionControls(true);
+  // 토글이 닫혀 있으면 펼쳐서 사용자가 즉시 옵션을 볼 수 있게.
+  const dlg = $("#rplus-toggle");
+  if (dlg && !dlg.open) dlg.open = true;
+}
+
+// 세션 종속 영역 비활성화 — 업로드 진입은 그대로 사용 가능.
+function _setRplusInactive() {
+  const rplus = $("#rplus-section");
+  if (rplus) delete rplus.dataset.sid;
+  $("#rplus-sid").textContent = "—";
+  const hint = $("#rplus-empty-hint");
+  if (hint) hint.hidden = false;
+  const area = $("#rplus-session-area");
+  if (area) area.setAttribute("aria-disabled", "true");
+  _rplusToggleSessionControls(false);
+}
+
+// 세션 종속 컨트롤 disabled 토글 — 업로드 버튼/파일 input 은 제외.
+function _rplusToggleSessionControls(enable) {
+  const ids = [
+    "rplus-auth-profile", "rplus-headed",
+    "rplus-slowmo-enabled", "rplus-slowmo-ms",
+    "btn-play-codegen", "btn-play-llm",
+    "btn-enrich", "btn-compare-open",
+  ];
+  ids.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !enable;
+  });
+  // dropdown toggle 버튼들도 비활성.
+  document.querySelectorAll("#rplus-section .dropdown-toggle").forEach((b) => {
+    b.disabled = !enable;
+  });
+  // 슬로모 입력은 enable + 체크박스 켜졌을 때만 활성 — 재동기화.
+  if (enable) {
+    const cb = document.getElementById("rplus-slowmo-enabled");
+    const num = document.getElementById("rplus-slowmo-ms");
+    if (cb && num) num.disabled = !cb.checked;
   }
 }
 
@@ -397,7 +447,8 @@ $("#start-form").addEventListener("submit", async (e) => {
     $("#scenario-card").hidden = true;
     $("#original-card").hidden = true;
     $("#assertion-section").hidden = true;
-    $("#rplus-section").hidden = true;
+    // Play & more 카드 자체는 항상 노출 (토글) — 세션 종속 영역만 비활성.
+    _setRplusInactive();
     await loadSessions();
   } catch (err) {
     alert("Start 실패: " + err.message);
@@ -1598,7 +1649,8 @@ $("#start-form").addEventListener("submit", async (e) => {
     $("#scenario-card").hidden = true;
     $("#original-card").hidden = true;
     $("#assertion-section").hidden = true;
-    $("#rplus-section").hidden = true;
+    // Play & more 카드 자체는 항상 노출 (토글) — 세션 종속 영역만 비활성.
+    _setRplusInactive();
     await loadSessions();
     if (data._machineMismatch) {
       _showMachineMismatchDialog(null);
@@ -2001,6 +2053,8 @@ setInterval(_syncDiscoverAuthSelect, 1500);
 setTimeout(_syncDiscoverAuthSelect, 500);
 
 // ── 시작 ─────────────────────────────────────────────────────────────────────
+// Play & more 카드는 항상 노출 (토글). 페이지 진입 시 세션이 없으면 비활성 상태로.
+_setRplusInactive();
 loadHealth();
 loadSessions();
 loadAuthProfiles();
