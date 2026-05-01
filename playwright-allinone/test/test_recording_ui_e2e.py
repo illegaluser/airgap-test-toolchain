@@ -409,6 +409,42 @@ def test_screenshot_modal_opens_on_camera_click(e2e_page: Page, e2e_daemon):
     assert ".png" in img_src
 
 
+def test_screenshot_modal_close_restores_scroll_position(
+    e2e_page: Page, e2e_daemon,
+):
+    """회귀 가드: 스크린샷 모달 닫은 후 페이지가 최상단으로 점프하지 않고
+    원래 스크롤 위치로 복귀한다 (UX 보고).
+
+    원인 패턴: 네이티브 ``<dialog>.showModal()`` 가 일부 브라우저에서 스크롤을
+    reset 하거나, 닫힌 후 포커스가 trigger 가 아닌 곳으로 빠져 페이지가
+    최상단으로 점프. 본 테스트는 열기 전 스크롤 위치를 기억하고 닫은 후
+    같은 위치로 돌아왔는지 확인.
+    """
+    _open_full_session(e2e_page, e2e_daemon)
+    # shot-link 가 렌더링까지 끝난 뒤 스크롤 — run-log fetch 가 늦게 끝나
+    # 클릭 시점에 버튼이 없을 수 있다 (suite 동시 실행 시 산발적 실패 원인).
+    e2e_page.locator(".shot-link").first.wait_for(state="visible", timeout=5000)
+    e2e_page.locator("#run-log-card").scroll_into_view_if_needed()
+    e2e_page.evaluate("window.scrollBy(0, 200)")
+    # scroll 이 commit 됐는지 확인 — rAF 한 번 돌릴 시간만 줌.
+    e2e_page.wait_for_function("() => window.scrollY > 50", timeout=2000)
+    before = e2e_page.evaluate("window.scrollY")
+    assert before > 50, f"테스트 전제 — 스크롤이 진짜 내려가 있어야 함 (before={before})"
+
+    e2e_page.locator(".shot-link").first.click()
+    dlg = e2e_page.locator("#shot-dialog")
+    expect(dlg).to_have_attribute("open", "")
+    # Esc 로 닫음 — 사용자가 흔히 쓰는 동선
+    e2e_page.keyboard.press("Escape")
+    expect(dlg).not_to_have_attribute("open", "")
+
+    after = e2e_page.evaluate("window.scrollY")
+    # 픽셀 단위로 정확히 같지 않을 수 있어(브라우저 sub-pixel rounding 등) 약간 허용
+    assert abs(after - before) < 5, (
+        f"모달 닫힌 후 스크롤이 복원되지 않음: before={before}, after={after}"
+    )
+
+
 def test_per_step_json_copy_button_exists(e2e_page: Page, e2e_daemon):
     """P4 — run-log 표 행마다 📋 버튼."""
     _open_full_session(e2e_page, e2e_daemon)

@@ -1545,6 +1545,14 @@ class TourScriptReq(BaseModel):
     preflight_verify: bool = True
     wait_until: Literal["domcontentloaded", "load", "networkidle"] = "domcontentloaded"
     nav_timeout_ms: int = Field(15000, ge=1000, le=120000)
+    content_settle: Literal["off", "network", "strict"] = Field(
+        "network",
+        description=(
+            "스크린샷 직전 콘텐츠 안정성 대기 강도. "
+            "off=대기 안 함, network=네트워크 idle 만(빌트인, 적응형), "
+            "strict=네트워크 idle + DOM 변화 안정성(MutationObserver) 추가."
+        ),
+    )
 
 
 class DiscoverJob(BaseModel):
@@ -1729,6 +1737,13 @@ WAIT_UNTIL = $wait_until_literal
 NAV_TIMEOUT_MS = $nav_timeout_ms_literal
 MIN_BODY_TEXT_LEN = 50  # body inner_text 최소 길이 — 빈 화면/스피너만 도는 페이지 차단
 SETTLE_TIMEOUT_MS = 1500  # screenshot 찍기 직전 networkidle best-effort 대기 (부분 렌더 방지)
+# 콘텐츠 안정성 대기 강도: 'off' | 'network' | 'strict'
+#   off    — 대기 안 함 (빠르나 부분 렌더 가능)
+#   network — networkidle 만 (Playwright 빌트인, 적응형)
+#   strict — network + DOM mutation stability (MutationObserver 가 N ms 무변화)
+CONTENT_SETTLE = $content_settle_literal
+DOM_STABLE_IDLE_MS = 500    # MutationObserver 가 이 시간 동안 변화 없으면 안정으로 간주
+DOM_STABLE_MAX_WAIT_MS = 5000  # DOM 안정성 대기 상한 (그 이상이면 포기)
 # 기본: 모든 URL 의 PNG 저장. opt-out: TOUR_SCREENSHOTS_FAILED_ONLY=1 (CI 등 디스크 절약).
 SCREENSHOTS_FAILED_ONLY = os.environ.get("TOUR_SCREENSHOTS_FAILED_ONLY", "0") == "1"
 
@@ -1755,6 +1770,39 @@ def _shot_path(idx: int, url: str) -> Path:
 def _record(rec: dict) -> None:
     with RESULTS.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\\n")
+
+
+def _wait_dom_stable(page, idle_ms: int, max_wait_ms: int) -> bool:
+    """MutationObserver 로 DOM 변화가 ``idle_ms`` 동안 없을 때까지 대기.
+
+    네트워크가 끝나도 SPA 가 비동기로 본문을 채우는 경우, networkidle 만으로는
+    부분 렌더 스크린샷이 잡힌다. 이 헬퍼는 콘텐츠가 실제로 안정됐는지를
+    DOM 신호 자체로 확인. ``max_wait_ms`` 안에 안정되면 True, 그 안에 못
+    가라앉으면 best-effort 로 False (스크린샷은 그대로 진행).
+    """
+    js = (
+        "(opts) => new Promise((resolve) => {"
+        " const idleMs = opts.idleMs;"
+        " const maxMs = opts.maxMs;"
+        " let lastChange = performance.now();"
+        " const obs = new MutationObserver(() => { lastChange = performance.now(); });"
+        " obs.observe(document.documentElement, {"
+        "   childList: true, subtree: true, attributes: true, characterData: true,"
+        " });"
+        " const startedAt = performance.now();"
+        " const tick = () => {"
+        "   const now = performance.now();"
+        "   if (now - lastChange >= idleMs) { obs.disconnect(); resolve(true); return; }"
+        "   if (now - startedAt >= maxMs)  { obs.disconnect(); resolve(false); return; }"
+        "   setTimeout(tick, 100);"
+        " };"
+        " setTimeout(tick, 100);"
+        "})"
+    )
+    try:
+        return bool(page.evaluate(js, {"idleMs": idle_ms, "maxMs": max_wait_ms}))
+    except Exception:
+        return False
 
 
 # ── fixtures ────────────────────────────────────────────────────────────
@@ -1905,11 +1953,20 @@ def test_url_renders_normally(url, browser_context, preflight):
         # 기본: 모든 URL 저장. SCREENSHOTS_FAILED_ONLY=1 일 때만 실패 URL 만 저장.
         should_shot = failed or (not SCREENSHOTS_FAILED_ONLY)
         if should_shot:
-            # screenshot 직전 networkidle best-effort settle — 부분 렌더 방지.
-            try:
-                page.wait_for_load_state("networkidle", timeout=SETTLE_TIMEOUT_MS)
-            except Exception:
-                pass
+            # screenshot 직전 콘텐츠 안정성 대기 — CONTENT_SETTLE 강도에 따라 분기.
+            # off    — 대기 안 함 (빠르나 부분 렌더 가능)
+            # network — networkidle (빌트인 적응형 대기, 사이트 polling 시 timeout 까지)
+            # strict — network + DOM mutation stability (analytics 폴링 무시 가능)
+            if CONTENT_SETTLE != "off":
+                try:
+                    page.wait_for_load_state("networkidle", timeout=SETTLE_TIMEOUT_MS)
+                except Exception:
+                    pass
+            if CONTENT_SETTLE == "strict":
+                try:
+                    _wait_dom_stable(page, DOM_STABLE_IDLE_MS, DOM_STABLE_MAX_WAIT_MS)
+                except Exception:
+                    pass
             try:
                 shot = _shot_path(idx, url)
                 page.screenshot(path=str(shot), full_page=True)
@@ -1960,6 +2017,7 @@ def _generate_tour_script(
     verify_service_text: str,
     wait_until: str,
     nav_timeout_ms: int,
+    content_settle: str = "network",
 ) -> str:
     """선택 URL tour script (pytest 형식) 의 Python 소스 텍스트 생성.
 
@@ -1998,6 +2056,7 @@ def _generate_tour_script(
         verify_text_literal=repr(verify_service_text or ""),
         wait_until_literal=repr(wait_until),
         nav_timeout_ms_literal=repr(int(nav_timeout_ms)),
+        content_settle_literal=repr(content_settle),
     )
 
 
@@ -2201,6 +2260,7 @@ def discover_tour_script(job_id: str, req: TourScriptReq):
         verify_service_text=verify_text,
         wait_until=req.wait_until,
         nav_timeout_ms=req.nav_timeout_ms,
+        content_settle=req.content_settle,
     )
 
     out_path = _Path(job.result_dir) / "tour_selected.py"
