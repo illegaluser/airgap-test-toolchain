@@ -341,9 +341,24 @@ def enrich_session(sid: str, req: EnrichReq) -> dict:
 
     scenario = storage.load_scenario(sid)
     if not scenario:
+        # imported 세션이 codegen 산출물 패턴이 아니면 변환기가 0 step 을 내고
+        # tour 합성 fallback 도 마커 부재로 적용 안 됨. 사용자가 시도조차 안
+        # 하도록 UI 가 막아야 정상이지만, 직접 호출/우회 케이스에 대비해 명확한
+        # 사유 + 해결 가이드를 detail 로 제공.
+        meta = storage.load_metadata(sid) or {}
+        is_imported = bool(meta.get("imported_filename"))
+        if is_imported:
+            msg = (
+                f"역추정 불가 — 임포트한 스크립트 '{meta.get('imported_filename')}' "
+                "가 시나리오 형태로 변환되지 않습니다. codegen 산출물(직선적 "
+                "page.click/fill 호출) 또는 tour 스크립트(URLS = [...] 패턴) 만 "
+                "현재 변환기/합성기가 인식합니다."
+            )
+        else:
+            msg = f"세션 {sid} 의 scenario.json 이 비어있거나 누락됨."
         raise HTTPException(
             status_code=409,
-            detail=f"세션 {sid} 의 scenario.json 이 비어있거나 누락됨.",
+            detail={"reason": "scenario_empty", "message": msg, "imported": is_imported},
         )
 
     try:
