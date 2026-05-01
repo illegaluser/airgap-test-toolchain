@@ -1133,7 +1133,7 @@ def test_play_codegen_success(client, monkeypatch, temp_host_root, rplus_on):
         {"step": 1, "action": "navigate", "target": "", "value": "https://x.test"},
     ])
 
-    def fake_play(*, host_session_dir):
+    def fake_play(*, host_session_dir, **_kw):
         return PlayResult(returncode=0, stdout="ok\n", stderr="", elapsed_ms=2345.0)
 
     from recording_service.rplus import router as rplus_router
@@ -1156,7 +1156,7 @@ def test_play_llm_success(client, monkeypatch, temp_host_root, rplus_on):
 
     captured = {}
 
-    def fake_play(*, host_session_dir, project_root):
+    def fake_play(*, host_session_dir, project_root, **_kw):
         captured["project_root"] = project_root
         captured["host_session_dir"] = host_session_dir
         return PlayResult(returncode=0, stdout="PASS: 1\n", stderr="", elapsed_ms=4567.0)
@@ -1412,7 +1412,7 @@ def test_play_codegen_auto_annotates_before_running(
         encoding="utf-8",
     )
 
-    def fake_play(*, host_session_dir):
+    def fake_play(*, host_session_dir, **_kw):
         return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
 
     from recording_service.rplus import router as rplus_router
@@ -1454,7 +1454,7 @@ def test_play_codegen_annotate_summary_zero_injection(
         encoding="utf-8",
     )
 
-    def fake_play(*, host_session_dir):
+    def fake_play(*, host_session_dir, **_kw):
         return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
 
     from recording_service.rplus import router as rplus_router
@@ -1933,6 +1933,134 @@ def test_import_script_filename_sanitized(client, temp_host_root):
     assert body["imported_filename"].endswith(".py")
 
 
+# ── /recording/import-script — auth_profile 통합 ─────────────────────────
+#
+# 회귀 가드: imported 세션이 로그인 프로파일을 metadata 에 저장하지 못하면
+# Play 단계의 ``_resolve_auth_for_replay`` 가 인증 없이 실행해 로그인 필요
+# 페이지로 모두 바운스됨 (사용자 보고 사례).
+
+
+def _stub_load_profile_for_browser(monkeypatch):
+    """server._load_profile_for_browser 를 결정론적 fake 로 대체.
+
+    - "good-prof"   → verify 통과 (Path/Fingerprint stub).
+    - "expired-prof" → 409 (만료).
+    - "missing-prof" → 404 (미존재).
+    호출된 이름 목록을 ``calls`` 리스트로 기록.
+    """
+    from pathlib import Path
+    from fastapi import HTTPException
+    from recording_service import server as srv
+
+    calls: list = []
+
+    class _StubFP:
+        def to_playwright_open_args(self):
+            return []
+
+    def _fake(name):
+        calls.append(name)
+        if name == "expired-prof":
+            raise HTTPException(409, detail={"reason": "profile_expired"})
+        if name == "missing-prof":
+            raise HTTPException(404, detail={"reason": "profile_not_found"})
+        return Path("/tmp/stub-storage.json"), _StubFP(), False
+
+    monkeypatch.setattr(srv, "_load_profile_for_browser", _fake)
+    return calls
+
+
+def test_import_script_without_auth_profile_omits_metadata_key(
+    client, temp_host_root, monkeypatch,
+):
+    """auth_profile 미입력 → metadata 에 키 자체 미존재 (인증 없는 재생 기본)."""
+    from recording_service import storage
+
+    calls = _stub_load_profile_for_browser(monkeypatch)
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("a.py", src, "text/x-python")},
+    )
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    meta = storage.load_metadata(sid)
+    assert "auth_profile" not in meta
+    assert calls == []  # verify 호출 자체가 없어야 함
+
+
+def test_import_script_empty_auth_profile_normalized_to_none(
+    client, temp_host_root, monkeypatch,
+):
+    """빈 문자열 auth_profile 은 None 으로 정규화 → 키 미존재 + verify 미호출."""
+    from recording_service import storage
+
+    calls = _stub_load_profile_for_browser(monkeypatch)
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("b.py", src, "text/x-python")},
+        data={"auth_profile": "   "},  # 공백도 빈 값 취급
+    )
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    assert "auth_profile" not in storage.load_metadata(sid)
+    assert calls == []
+
+
+def test_import_script_persists_valid_auth_profile_to_metadata(
+    client, temp_host_root, monkeypatch,
+):
+    """verify 통과한 프로파일은 metadata.auth_profile 로 저장."""
+    from recording_service import storage
+
+    calls = _stub_load_profile_for_browser(monkeypatch)
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("c.py", src, "text/x-python")},
+        data={"auth_profile": "good-prof"},
+    )
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    assert storage.load_metadata(sid).get("auth_profile") == "good-prof"
+    assert calls == ["good-prof"]
+
+
+def test_import_script_expired_auth_profile_returns_409_no_metadata(
+    client, temp_host_root, monkeypatch,
+):
+    """만료된 프로파일은 409 + 세션 디렉토리/메타 자체가 만들어지지 않음."""
+    _stub_load_profile_for_browser(monkeypatch)
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("d.py", src, "text/x-python")},
+        data={"auth_profile": "expired-prof"},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["reason"] == "profile_expired"
+    # early raise — 세션 디렉토리가 새로 만들어지면 안 된다.
+    # temp_host_root 픽스처는 테스트마다 새 빈 디렉토리.
+    assert os.listdir(temp_host_root) == []
+
+
+def test_import_script_missing_auth_profile_returns_404(
+    client, temp_host_root, monkeypatch,
+):
+    """미존재 프로파일은 404 + 세션 미생성."""
+    _stub_load_profile_for_browser(monkeypatch)
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("e.py", src, "text/x-python")},
+        data={"auth_profile": "missing-prof"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["reason"] == "profile_not_found"
+    assert os.listdir(temp_host_root) == []
+
+
 def test_import_script_runs_converter_to_produce_scenario_json(
     client, temp_host_root, monkeypatch,
 ):
@@ -2036,7 +2164,7 @@ def test_imported_session_play_codegen_skips_annotator(
             src_path="x", dst_path="y", injected=99, examined_clicks=99, triggers=[],
         )
 
-    def fake_replay(*, host_session_dir):
+    def fake_replay(*, host_session_dir, **_kw):
         return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
 
     monkeypatch.setattr(annotator, "annotate_script", fake_annotate)
@@ -2070,7 +2198,7 @@ def test_codegen_session_play_still_runs_annotator(
             injected=2, examined_clicks=4, triggers=["x", "y"],
         )
 
-    def fake_replay(*, host_session_dir):
+    def fake_replay(*, host_session_dir, **_kw):
         return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=10.0)
 
     monkeypatch.setattr(annotator, "annotate_script", fake_annotate)

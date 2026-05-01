@@ -1011,6 +1011,10 @@ $("#import-file-input").addEventListener("change", async (e) => {
   if (!f) return;
   const fd = new FormData();
   fd.append("file", f);
+  // 상단 폼의 로그인 프로파일 셀렉터 값을 그대로 사용 — 사용자가 이미 골라뒀다면
+  // 그게 자연스러운 default. 빈 값이면 키를 빼서 서버에서 None 처리.
+  const ap = ($("#recording-auth-profile") || {}).value || "";
+  if (ap) fd.append("auth_profile", ap);
   const btn = $("#btn-import-script");
   btn.disabled = true;
   btn.textContent = "⏳ 업로드 중...";

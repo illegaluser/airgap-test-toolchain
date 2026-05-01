@@ -267,11 +267,12 @@ class TestSectionToggleStructure:
         assert fresh_page.locator("#login-profile-section").get_attribute("open") is None
 
     def test_new_recording_renamed_to_english(self, fresh_page: Page):
-        """제목이 'New Recording' (영문) — Round 3 명칭 통일."""
+        """제목이 'Recording & Play' (영문) — 녹화 시작 + .py 업로드 두 진입의 통합 라벨."""
         text = fresh_page.locator("#new-recording-section > summary").inner_text()
-        assert "New Recording" in text
-        # 옛 한글 명칭이 새지 않아야
+        assert "Recording & Play" in text
+        # 옛 명칭이 새지 않아야
         assert "새 녹화 시작" not in text
+        assert "New Recording" not in text
 
     def test_step_add_section_uses_details_toggle(self, opened_page: Page):
         """Round 4 — Step 추가 카드 안에 details 토글 존재."""

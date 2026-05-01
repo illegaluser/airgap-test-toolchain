@@ -535,6 +535,67 @@ def test_import_script_button_is_visible(e2e_page: Page):
     expect(btn).to_contain_text("Play Script from File")
 
 
+def test_import_script_sends_auth_profile_when_selected(
+    e2e_page: Page, e2e_daemon, tmp_path,
+):
+    """회귀 가드: 상단 폼의 로그인 프로파일 셀렉터 값이 업로드 multipart 에 실린다.
+
+    실제 시드된 프로파일이 없으면 daemon 이 4xx 로 거절하므로, 본 테스트는
+    ``page.route`` 로 서버 도착 직전 요청을 가로채 multipart 에 ``auth_profile``
+    필드가 포함됐는지만 검증한다 (실 업로드 흐름은 인접 테스트가 이미 커버).
+    """
+    # 셀렉터에 더미 프로파일 옵션을 동적으로 끼워 넣고 선택. 실제 시드 없이도
+    # JS 가 FormData 에 값을 싣는지를 단독 검증할 수 있다.
+    e2e_page.evaluate(
+        """
+        const sel = document.getElementById('recording-auth-profile');
+        const opt = document.createElement('option');
+        opt.value = 'fake-prof';
+        opt.textContent = 'fake-prof — example.test';
+        sel.appendChild(opt);
+        sel.value = 'fake-prof';
+        """,
+    )
+
+    captured: dict = {}
+
+    def _capture(route, request):
+        captured["body"] = request.post_data or ""
+        captured["headers"] = request.headers
+        # 실제 서버까지 보내지 않고 즉시 fulfill — 응답 형태만 그럴듯하게.
+        route.fulfill(
+            status=400,
+            content_type="application/json",
+            body='{"detail":"intercepted by e2e — auth_profile 회귀 가드"}',
+        )
+
+    e2e_page.route("**/recording/import-script", _capture)
+
+    script = tmp_path / "auth_e2e.py"
+    script.write_text(
+        "from playwright.sync_api import sync_playwright\npass\n",
+        encoding="utf-8",
+    )
+    # alert 가 뜨므로 자동 dismiss
+    e2e_page.once("dialog", lambda d: d.dismiss())
+    e2e_page.set_input_files("#import-file-input", str(script))
+
+    # 요청 도착 대기 (set_input_files → change → fetch). 1.5s 안에 도착해야 함.
+    e2e_page.wait_for_function(
+        "() => window.__e2e_intercepted__ === true || true",  # noop, polled by captured
+        timeout=3000,
+    )
+    # 폴링 — captured["body"] 가 들어올 때까지.
+    for _ in range(30):
+        if "body" in captured:
+            break
+        e2e_page.wait_for_timeout(100)
+
+    body = captured.get("body", "")
+    assert "auth_profile" in body, f"multipart 에 auth_profile 필드 없음: {body[:300]}"
+    assert "fake-prof" in body, f"선택한 프로파일 값이 안 실림: {body[:300]}"
+
+
 def test_import_script_uploads_and_opens_result_panel(
     e2e_page: Page, e2e_daemon, tmp_path,
 ):
