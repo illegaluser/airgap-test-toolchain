@@ -71,8 +71,6 @@ main {
   padding: 18px 20px;
 }
 .card h2 { margin: 0 0 12px; font-size: 1.15rem; }
-.card.r-plus { background: #fafafa; border-style: dashed; }
-
 /* Play & more — 세션 종속 영역. aria-disabled=true 일 때 시각적 톤다운. */
 #rplus-session-area[aria-disabled="true"] { opacity: 0.55; }
 #rplus-session-area[aria-disabled="true"] button:not(.copy-btn),
@@ -776,37 +774,16 @@ dialog textarea {
   filter: brightness(0.95);
 }
 
-/* ── Section toggles (New Recording / Discover URLs / Login Profile / Step 추가) */
+/* ── Section toggles — 모든 details/summary 가 브라우저 기본 disclosure
+   marker (▶) 를 그대로 사용하도록 커스텀 CSS 제거. cursor 만 보존. */
 #new-recording-section > summary,
 #discover-section > summary,
 #login-profile-section > summary,
+#result-area-toggle > summary,
+#rplus-toggle > summary,
 #assertion-toggle > summary {
   cursor: pointer;
-  list-style: none;
   user-select: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-#new-recording-section > summary::-webkit-details-marker,
-#discover-section > summary::-webkit-details-marker,
-#login-profile-section > summary::-webkit-details-marker,
-#assertion-toggle > summary::-webkit-details-marker { display: none; }
-#new-recording-section > summary::before,
-#discover-section > summary::before,
-#login-profile-section > summary::before,
-#assertion-toggle > summary::before {
-  content: "▸";
-  display: inline-block;
-  font-size: 0.85em;
-  color: var(--muted);
-  transition: transform 0.15s ease;
-}
-#new-recording-section[open] > summary::before,
-#discover-section[open] > summary::before,
-#login-profile-section[open] > summary::before,
-#assertion-toggle[open] > summary::before {
-  transform: rotate(90deg);
 }
 
 /* ── Recent sessions bulk actions ─────────────────────────────────────── */
