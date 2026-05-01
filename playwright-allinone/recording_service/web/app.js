@@ -935,6 +935,12 @@ async function _renderRegression(sid) {
 }
 
 // 스크린샷 모달 — 클릭 위임.
+// 모달 열기 직전 스크롤 위치를 저장해 두고 닫힐 때 복원한다. 네이티브
+// <dialog>.showModal() 가 일부 브라우저에서 스크롤을 reset 하거나, 모달 닫힌 뒤
+// 포커스가 trigger 가 아닌 곳으로 빠져 페이지가 최상단으로 점프하는 현상을
+// 방지 — 스크린샷을 확인한 그 자리(스텝 행) 로 자연스럽게 돌아오게 한다.
+let _shotPrevScrollY = null;
+let _shotOpenerBtn = null;
 document.addEventListener("click", (e) => {
   const btn = e.target.closest(".shot-link");
   if (!btn) return;
@@ -946,10 +952,29 @@ document.addEventListener("click", (e) => {
   const q = mode === "codegen" ? "?mode=codegen" : "";
   $("#shot-img").src = `/recording/sessions/${sid}/screenshot/${encodeURIComponent(name)}${q}`;
   $("#shot-caption").textContent = `Step ${step} — ${name}`;
+  _shotPrevScrollY = window.scrollY;
+  _shotOpenerBtn = btn;
   const dlg = $("#shot-dialog");
   if (typeof dlg.showModal === "function") dlg.showModal();
   else dlg.setAttribute("open", "");
 });
+
+// 모달 닫힘 — 저장한 스크롤 위치 복원 + opener 버튼에 포커스 (스크롤 점프 방지).
+(function _wireShotDialogRestore() {
+  const dlg = document.getElementById("shot-dialog");
+  if (!dlg) return;
+  dlg.addEventListener("close", () => {
+    if (_shotPrevScrollY != null) {
+      window.scrollTo({ top: _shotPrevScrollY, behavior: "instant" });
+    }
+    if (_shotOpenerBtn && document.contains(_shotOpenerBtn)) {
+      // preventScroll 로 포커스 복원이 추가 스크롤을 일으키지 않게 한다.
+      _shotOpenerBtn.focus({ preventScroll: true });
+    }
+    _shotPrevScrollY = null;
+    _shotOpenerBtn = null;
+  });
+})();
 
 // P4 — Step 단위 JSON 복사. data-step-json 에서 직접 읽음.
 document.addEventListener("click", async (e) => {
@@ -1892,10 +1917,12 @@ async function _onDiscoverTourScript() {
   if (urls.length === 0) return;
   const ap = ($("#discover-auth-profile") || {}).value || "";
   const headless = !!($("#discover-headless") && $("#discover-headless").checked);
+  const settle = ($("#discover-content-settle") || {}).value || "network";
   const payload = {
     urls,
     headless,
     preflight_verify: true,
+    content_settle: settle,
   };
   if (ap) payload.auth_profile = ap;
 

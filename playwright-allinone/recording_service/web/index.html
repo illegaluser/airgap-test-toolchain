@@ -127,6 +127,14 @@
           <label class="discover-headless-toggle" title="기본 OFF — 브라우저 창이 뜨고 진행을 직접 볼 수 있습니다. ON 시 백그라운드(headless) 실행.">
             <input type="checkbox" id="discover-headless"> 헤드리스(백그라운드) 실행
           </label>
+          <label title="스크린샷 직전 콘텐츠가 안정될 때까지 기다리는 강도. '엄격' 은 네트워크 idle + DOM 변화가 멈출 때까지 추가 대기 — 비어 있는 화면이 잡히는 일을 줄이지만 URL 당 0.5~5초 추가될 수 있음.">
+            콘텐츠 안정성 대기
+            <select id="discover-content-settle">
+              <option value="off">꺼짐 (빠름)</option>
+              <option value="network" selected>보통 (네트워크)</option>
+              <option value="strict">엄격 (네트워크 + DOM)</option>
+            </select>
+          </label>
           <span class="muted" id="discover-selected-count">0개 선택</span>
         </div>
         <div id="discover-result"></div>

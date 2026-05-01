@@ -353,6 +353,64 @@ class TestDiscoverTourScript:
         assert "preflight" in joined
         assert "tour" in joined
 
+    def test_content_settle_strict_injects_dom_stability_helper(
+        self, daemon, fixture_site,
+    ):
+        """``content_settle='strict'`` 요청 시 생성 스크립트에 DOM 안정성 헬퍼 + strict 분기가 포함된다.
+
+        회귀 가드: 사용자가 UI 에서 '엄격' 을 선택했는데 템플릿이 그 옵션을
+        무시해 부분 렌더 스크린샷이 또 잡히는 사고 방지.
+        """
+        base = daemon["base"]
+        job_id = self._seed(daemon, fixture_site)
+        urls = httpx.get(f"{base}/discover/{job_id}/json").json()
+        sel = [urls[0]["url"]]
+
+        rt = httpx.post(
+            f"{base}/discover/{job_id}/tour-script",
+            json={"urls": sel, "headless": True, "content_settle": "strict"},
+            timeout=10.0,
+        )
+        assert rt.status_code == 200, rt.text
+        text = rt.text
+        # 헬퍼 자체 + strict 분기 + MutationObserver 사용 흔적
+        assert "_wait_dom_stable" in text, "DOM 안정성 헬퍼 함수 미주입"
+        assert "MutationObserver" in text, "MutationObserver 코드 미주입"
+        assert "CONTENT_SETTLE = 'strict'" in text, f"CONTENT_SETTLE 상수 미설정: {text[:200]}"
+
+    def test_content_settle_default_is_network_only(
+        self, daemon, fixture_site,
+    ):
+        """content_settle 미지정 시 기본은 'network' 으로, 기존 동작과 호환."""
+        base = daemon["base"]
+        job_id = self._seed(daemon, fixture_site)
+        urls = httpx.get(f"{base}/discover/{job_id}/json").json()
+        sel = [urls[0]["url"]]
+        rt = httpx.post(
+            f"{base}/discover/{job_id}/tour-script",
+            json={"urls": sel, "headless": True},
+            timeout=10.0,
+        )
+        assert rt.status_code == 200
+        assert "CONTENT_SETTLE = 'network'" in rt.text
+
+    def test_content_settle_off_skips_settle(self, daemon, fixture_site):
+        """'off' 설정 시 콘텐츠 안정성 대기를 모두 건너뛴다 (스크립트 동작 분기)."""
+        base = daemon["base"]
+        job_id = self._seed(daemon, fixture_site)
+        urls = httpx.get(f"{base}/discover/{job_id}/json").json()
+        sel = [urls[0]["url"]]
+        rt = httpx.post(
+            f"{base}/discover/{job_id}/tour-script",
+            json={"urls": sel, "headless": True, "content_settle": "off"},
+            timeout=10.0,
+        )
+        assert rt.status_code == 200
+        text = rt.text
+        assert "CONTENT_SETTLE = 'off'" in text
+        # 분기 자체는 그대로 살아 있고 (다른 설정에서도 같은 스크립트가 동작) 상수만 'off'.
+        assert 'CONTENT_SETTLE != "off"' in text
+
     def test_unknown_url_422(self, daemon, fixture_site):
         base = daemon["base"]
         job_id = self._seed(daemon, fixture_site)
