@@ -1962,6 +1962,9 @@ async function _onDiscoverSubmit(ev) {
     spa_selectors: !!form.elements.spa_selectors?.checked,
     ignore_query: !!form.elements.ignore_query?.checked,
     include_subdomains: !!form.elements.include_subdomains?.checked,
+    // BFS 크롤링 자체의 headless 토글 — 이전엔 tour-script 흐름에서만 쓰여
+    // BFS 는 항상 백그라운드로 돌던 사고가 있었음.
+    headless: !!($("#discover-headless") && $("#discover-headless").checked),
   };
   const ap = (fd.get("auth_profile") || "").trim();
   if (ap) payload.auth_profile = ap;
