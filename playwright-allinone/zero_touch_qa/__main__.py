@@ -79,6 +79,10 @@ def main():
         "--storage-state-out", default=None,
         help="종료 후 덤프할 storage_state JSON 경로 (인증 결과 보존)",
     )
+    parser.add_argument(
+        "--slow-mo", type=int, default=0,
+        help="각 액션 후 지연 (ms). 0=꺼짐. 사람이 눈으로 따라가며 디버깅할 때 사용.",
+    )
     args = parser.parse_args()
 
     # 로깅 설정
@@ -96,6 +100,9 @@ def main():
 
     config = Config.from_env()
     headed = not args.headless
+    if args.slow_mo > 0:
+        # CLI 가 명시한 값이 env 기본값 (SLOW_MO=800) 을 덮어쓴다.
+        config.slow_mo = args.slow_mo
 
     # 환경변수 폴백 (Jenkins에서 env로 전달하는 경우)
     target_url = args.target_url or os.getenv("TARGET_URL", "")

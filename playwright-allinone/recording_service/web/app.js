@@ -225,14 +225,32 @@ async function _playRawFetch(path, body) {
 function _rplusPlayBody() {
   const sel = document.getElementById("rplus-auth-profile");
   const headedEl = document.getElementById("rplus-headed");
+  const slowmoEnabled = document.getElementById("rplus-slowmo-enabled");
+  const slowmoMs = document.getElementById("rplus-slowmo-ms");
   const body = {};
   if (sel) {
     const v = sel.value;
     if (v !== "__default__") body.auth_profile = v;
   }
   if (headedEl) body.headed = headedEl.checked;
+  // 슬로모 — 체크박스가 켜져 있을 때만 값을 실음. 빈/0 이면 키 자체를 빼서
+  // 서버가 "꺼짐"으로 판단하게 한다.
+  if (slowmoEnabled && slowmoEnabled.checked) {
+    const n = Number((slowmoMs && slowmoMs.value) || 0);
+    if (Number.isFinite(n) && n > 0) body.slow_mo_ms = n;
+  }
   return body;
 }
+
+// 슬로모 체크박스 ↔ 숫자 입력 활성화 토글.
+(function _wireSlowmoToggle() {
+  const cb = document.getElementById("rplus-slowmo-enabled");
+  const num = document.getElementById("rplus-slowmo-ms");
+  if (!cb || !num) return;
+  const sync = () => { num.disabled = !cb.checked; };
+  cb.addEventListener("change", sync);
+  sync();
+})();
 
 async function playCodegen(sid) {
   return _playRawFetch(`/experimental/sessions/${sid}/play-codegen`, _rplusPlayBody());
@@ -467,8 +485,14 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
   if (!sid) return;
   const btn = $(btnSel);
   btn.disabled = true;
-  _rplusOutputBox().textContent =
-    `⏳ ${label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)`;
+  // headless 모드면 브라우저 창이 안 뜨므로 안내 문구를 분기 — 사용자가
+  // "왜 창이 안 뜨지" 하고 헷갈리지 않게. 진행 상황은 아래 진행 로그가 유일한
+  // 신호가 된다 (1초 주기 폴링).
+  const headedEl = document.getElementById("rplus-headed");
+  const headed = headedEl ? headedEl.checked : true;
+  _rplusOutputBox().textContent = headed
+    ? `⏳ ${label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)`
+    : `⏳ ${label} 진행 중... (헤드리스 모드 — 화면에 창이 뜨지 않습니다. 아래 ‘실시간 진행 로그’ 가 진행 상황의 유일한 신호입니다)`;
 
   // P2 — 실시간 로그 진행 박스 초기화 + 1s 폴링.
   const progress = $("#play-progress");
@@ -535,11 +559,11 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
 }
 
 $("#btn-play-codegen").addEventListener("click", () =>
-  _runPlay("Codegen Output Replay", "#btn-play-codegen", playCodegen, "codegen"),
+  _runPlay("테스트코드 실행", "#btn-play-codegen", playCodegen, "codegen"),
 );
 
 $("#btn-play-llm").addEventListener("click", () =>
-  _runPlay("Play with LLM", "#btn-play-llm", playLLM, "llm"),
+  _runPlay("LLM 적용 코드 실행", "#btn-play-llm", playLLM, "llm"),
 );
 
 $("#btn-enrich").addEventListener("click", async () => {
