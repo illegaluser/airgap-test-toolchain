@@ -11,7 +11,8 @@
 # 일시 우회: `git commit --no-verify` (긴급 핫픽스용).
 #
 # 사용 포트: 18093 (Recording UI) · 18094 (Auth Profile API) ·
-#           18095 (Auth Profile UI) · 18096 (Discover URLs API)
+#           18095 (Auth Profile UI) · 18096 (Discover URLs API) ·
+#           18097 (Recording UI Layout — Round 3+4 회귀)
 
 set -e
 
@@ -19,7 +20,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT/playwright-allinone"
 
 # 1. 변경 영역 필터 — 무관한 변경이면 e2e 생략.
-RELEVANT_PATTERN='^playwright-allinone/(recording_service/|zero_touch_qa/(auth_profiles|executor|__main__|url_discovery)\.py|test/(test_recording_(ui_e2e|service)|test_auth_profile_(api|ui)_e2e|test_auth_(profiles|cli)|test_post_process|test_replay_proxy_auth|test_executor_fingerprint_env|test_visibility_healer.*|test_discover_api_e2e|test_url_discovery)\.py|test/e2e_p1_auth_profiles\.py)'
+RELEVANT_PATTERN='^playwright-allinone/(recording_service/|zero_touch_qa/(auth_profiles|executor|__main__|url_discovery)\.py|test/(test_recording_(ui_e2e|ui_layout_e2e|service)|test_auth_profile_(api|ui)_e2e|test_auth_(profiles|cli)|test_post_process|test_replay_proxy_auth|test_executor_fingerprint_env|test_visibility_healer.*|test_discover_api_e2e|test_url_discovery|test_trace_parser|test_codegen_trace_wrapper)\.py|test/e2e_p1_auth_profiles\.py)'
 CHANGED=$(git diff --cached --name-only --diff-filter=ACMR)
 if ! echo "$CHANGED" | grep -qE "$RELEVANT_PATTERN"; then
   echo "[pre-commit] 무관한 변경 — 통합 E2E 스킵"
@@ -35,7 +36,7 @@ if [ ! -x "$VENV_PY" ]; then
 fi
 
 # 3. 포트 충돌 감지 — 슈트가 4개 포트(18093~18096)를 사용한다.
-for PORT in 18093 18094 18095 18096; do
+for PORT in 18093 18094 18095 18096 18097; do
   if command -v lsof >/dev/null 2>&1 && lsof -i :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "[pre-commit] ⚠ port $PORT 점유 중 — E2E 스킵"
     echo "  점유 프로세스: $(lsof -i :$PORT -sTCP:LISTEN -t | head -1)"

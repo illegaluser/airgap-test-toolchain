@@ -163,3 +163,24 @@ def write_scenario_json(tmp_path: Path):
         return path
 
     return _write
+
+
+# ── 공유 sync_playwright (E2E UI 슈트 공통) ───────────────────────────────
+#
+# 여러 e2e 파일(test_recording_ui_e2e / test_recording_ui_layout_e2e 등) 이
+# 각자 ``with sync_playwright() as pw:`` 를 session-scoped 로 열면 두 번째
+# fixture 의 ``sync_playwright().__enter__()`` 가 *이미 실행 중인 asyncio
+# loop* 에러를 던진다. 한 프로세스에 단 하나의 sync_playwright 만 활성화
+# 되어야 하므로 본 conftest 에서 *공유 인스턴스* 를 제공한다.
+#
+# 사용: 의존하는 fixture 가 ``e2e_chromium`` 을 인자로 받아 browser 객체를
+# 그대로 사용 — 각 테스트는 ``browser.new_context()`` 로 fresh context 격리.
+
+@pytest.fixture(scope="session")
+def e2e_chromium():
+    """E2E UI 슈트 공통 headless Chromium 브라우저 (session-scoped)."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        yield browser
+        browser.close()

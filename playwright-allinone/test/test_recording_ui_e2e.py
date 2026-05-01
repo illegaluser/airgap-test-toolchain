@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Page, expect, sync_playwright
+from playwright.sync_api import Page, expect
 
 pytestmark = pytest.mark.e2e
 
@@ -229,13 +229,13 @@ def e2e_daemon(e2e_root):
 
 
 @pytest.fixture(scope="session")
-def e2e_browser(e2e_daemon):
-    """sync_playwright 컨텍스트 — pytest-playwright 의 page fixture 가 async/sync
-    혼재 시 깨지는 것을 회피하기 위해 자체 sync browser 사용."""
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        yield browser
-        browser.close()
+def e2e_browser(e2e_chromium, e2e_daemon):
+    """공유 Chromium browser (conftest.e2e_chromium 위임).
+
+    한 프로세스에서 ``with sync_playwright()`` 를 두 번 열면 두 번째가 asyncio
+    loop 충돌을 일으키므로, 본 fixture 는 conftest 의 단일 인스턴스를 그대로
+    파이프한다. 여전히 e2e_daemon 의존성으로 daemon 시작 후 사용 보장."""
+    yield e2e_chromium
 
 
 @pytest.fixture
