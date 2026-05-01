@@ -381,6 +381,11 @@ async function openSession(sid) {
   } else {
     _setRplusInactive();
   }
+
+  // 결과 확인 영역 토글 — 세션이 열렸으니 자동 펼침. 사용자가 직접 접은 의도가
+  // 없을 때 기본적으로 보여주는 게 자연스럽다.
+  const resultToggle = document.getElementById("result-area-toggle");
+  if (resultToggle) resultToggle.open = true;
 }
 
 // scenario.json 이 비면 (예: tour 가 아닌 일반 임포트가 변환 실패한 경우)
@@ -435,6 +440,9 @@ function _setRplusInactive() {
   const area = $("#rplus-session-area");
   if (area) area.setAttribute("aria-disabled", "true");
   _rplusToggleSessionControls(false);
+  // 결과 확인 토글도 함께 접음 — 세션이 없으면 보여줄 결과도 없음.
+  const resultToggle = document.getElementById("result-area-toggle");
+  if (resultToggle) resultToggle.open = false;
 }
 
 // 세션 종속 컨트롤 disabled 토글 — 업로드 버튼/파일 input 은 제외.

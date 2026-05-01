@@ -444,12 +444,26 @@ class TestSectionOrdering:
         loc.wait_for(state="attached", timeout=5_000)
         return loc.evaluate("el => el.getBoundingClientRect().top + window.scrollY")
 
-    def test_run_log_appears_after_rplus(self, opened_page: Page):
+    def test_run_log_appears_inside_result_area_before_rplus(self, opened_page: Page):
+        """run-log-card 가 '결과 확인 및 스텝 추가' 토글 안에 들어와 rplus 보다 앞에 위치.
+
+        DOM 순서로 검사 (시각 y 비교는 hidden/접힘 요소가 끼면 흔들리므로).
+        """
         _open_session(opened_page, SID_BOTH)
-        rplus_y = self._y(opened_page, "#rplus-section")
-        runlog_y = self._y(opened_page, "#run-log-card")
-        assert runlog_y > rplus_y, \
-            f"run-log-card 가 rplus-section 아래에 있어야 함 (rplus={rplus_y}, runlog={runlog_y})"
+        order_ok = opened_page.evaluate(
+            """() => {
+                const r = document.querySelector('#run-log-card');
+                const p = document.querySelector('#rplus-section');
+                if (!r || !p) return false;
+                return !!(r.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING);
+            }"""
+        )
+        assert order_ok, "run-log-card 가 rplus-section 보다 앞에 있어야 함"
+        # 결과 토글 안에 nest 된 것까지 확인.
+        nested = opened_page.evaluate(
+            "() => !!document.querySelector('#result-area-toggle #run-log-card')"
+        )
+        assert nested, "run-log-card 가 result-area-toggle 안에 위치해야 함"
 
     def test_step_add_appears_after_rplus_predecessors(self, opened_page: Page):
         """assertion-section 은 #diff-card 아래 / R-PLUS 위 — 결과 영역 그룹 안.
