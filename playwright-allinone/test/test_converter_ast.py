@@ -479,3 +479,32 @@ def test_tour_codegen_pattern_full_extraction(tmp_path: Path) -> None:
     assert [s["action"] for s in steps] == [
         "navigate", "verify", "verify", "navigate", "verify", "verify",
     ]
+
+
+def test_try_except_body_is_recursed_for_extraction(tmp_path: Path) -> None:
+    """tour 스크립트가 각 URL 을 try/except 로 감싸도 변환기가 body 의 step 을 추출.
+
+    회귀 가드: 사용자가 받은 tour 가 첫 URL fail 에서 abort 되지 않게 try/except
+    로 감싸는데, 이때 변환기가 try.body 안의 navigate/assert 를 못 보면 시나리오가
+    비게 된다.
+    """
+    src = _make_codegen_script(
+        tmp_path,
+        "try:\n"
+        "    page.goto('https://x.test/a')\n"
+        "    assert \"errorMsg\" not in page.url\n"
+        "    assert len(page.inner_text(\"body\")) >= 50\n"
+        "except AssertionError:\n"
+        "    pass\n"
+        "try:\n"
+        "    page.goto('https://x.test/b')\n"
+        "    assert \"errorMsg\" not in page.url\n"
+        "except AssertionError:\n"
+        "    pass",
+    )
+    steps = convert_via_ast(str(src), str(tmp_path))
+    actions = [s["action"] for s in steps]
+    assert actions == [
+        "navigate", "verify", "verify",  # a: navigate + 2 verify
+        "navigate", "verify",            # b: navigate + 1 verify
+    ], f"unexpected: {actions}"

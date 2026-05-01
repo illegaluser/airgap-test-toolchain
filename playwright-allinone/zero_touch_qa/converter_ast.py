@@ -100,7 +100,7 @@ class _AstConverter(ast.NodeVisitor):
             self._handle_stmt(stmt)
 
     def _handle_stmt(self, stmt: ast.stmt) -> None:
-        """각 statement 를 처리. with / Expr / Assign / Assert 만 의미 있음."""
+        """각 statement 를 처리. with / Expr / Assign / Assert / Try (body 재귀)."""
         if isinstance(stmt, ast.With):
             self._handle_with(stmt)
         elif isinstance(stmt, ast.Expr):
@@ -109,7 +109,13 @@ class _AstConverter(ast.NodeVisitor):
             self._handle_assign(stmt)
         elif isinstance(stmt, ast.Assert):
             self._handle_assert(stmt)
-        # If/For/Try 등은 codegen 이 만들지 않음 — 무시
+        elif isinstance(stmt, ast.Try):
+            # tour 가 각 URL 블록을 try/except 로 감싸 첫 실패에서 abort 안 되게
+            # 한다. 본 변환기는 핸들러는 무시하고 try.body 만 재귀 — 정상 흐름의
+            # navigate / verify step 추출은 그대로 유지.
+            for s in stmt.body:
+                self._handle_stmt(s)
+        # If/For 등은 codegen 이 만들지 않음 — 무시
 
     def _handle_assert(self, node: ast.Assert) -> None:
         """``assert ... `` 라인을 14-DSL ``verify`` step 으로 변환.
@@ -284,7 +290,7 @@ class _AstConverter(ast.NodeVisitor):
         # leaf 는 click 본체 — ancestor 후보는 그 외 segment.
         for i in range(len(segments) - 1):
             seg = segments[i]
-            if not _SEG_LOOKS_LIKE_HOVER_TRIGGER(seg):
+            if not _seg_looks_like_hover_trigger(seg):
                 continue
             # 해당 segment 까지의 chain 을 hover target 으로.
             hover_target = " >> ".join(segments[: i + 1])
@@ -708,7 +714,6 @@ class _AstConverter(ast.NodeVisitor):
                             return None
                         target = self._append_modifier(target, f"has_text={v}")
                         break
-                continue
 
             # 그 외 unknown — 무시 (line fallback 으로 가지 않게 부분 처리)
             # 예: .all() / .count() 같은 read-only 는 액션 본체에 없으므로 도달 불가
@@ -778,8 +783,11 @@ class _LocatorSegment:
 # 보수적: 명시적 신호만 매칭 → false-positive 최소화.
 import re as _re
 
+# nav 태그, GNB/LNB/navbar 클래스명, 드롭다운/메뉴 단어, ARIA 의 hover 신호 속성을
+# segment 문자열에서 보수적으로 식별. false-positive 시 hover 가 no-op 으로 끝나
+# click 부담은 0.
 _HOVER_TRIGGER_PATTERNS = [
-    _re.compile(r"\bnav\b"),                       # tag=nav
+    _re.compile(r"\bnav\b"),
     _re.compile(r"\b(?:gnb|lnb|navbar|nav-)\b", _re.I),
     _re.compile(r"\b(?:dropdown|drop-down)\b", _re.I),
     _re.compile(r"\b(?:menu|submenu|menubar)\b", _re.I),
@@ -789,7 +797,7 @@ _HOVER_TRIGGER_PATTERNS = [
 ]
 
 
-def _SEG_LOOKS_LIKE_HOVER_TRIGGER(seg: str) -> bool:
+def _seg_looks_like_hover_trigger(seg: str) -> bool:
     """segment 가 hover trigger 가능성이 있는 ancestor 인지 보수적 추정."""
     s = seg.strip()
     if not s:

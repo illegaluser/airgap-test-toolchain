@@ -1142,7 +1142,7 @@ def test_play_codegen_success(client, monkeypatch, temp_host_root, rplus_on):
     assert r.status_code == 201
     body = r.json()
     assert body["returncode"] == 0
-    assert body["elapsed_ms"] == 2345.0
+    assert abs(body["elapsed_ms"] - 2345.0) < 1e-6
     assert "ok" in body["stdout_tail"]
 
 
@@ -1906,7 +1906,7 @@ def test_import_script_estimates_step_count(client):
     files = {"file": ("multi.py", src, "text/x-python")}
     r = client.post("/recording/import-script", files=files)
     assert r.status_code == 201
-    # goto + click + fill + press + hover + check = 6
+    # 기대: navigate(goto) + click + fill + press + hover + check 으로 총 6 step.
     assert r.json()["step_count"] == 6
 
 
