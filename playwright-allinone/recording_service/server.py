@@ -21,7 +21,7 @@ from typing import Literal, Optional
 
 from pathlib import Path as _Path
 
-from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -298,7 +298,10 @@ def _estimate_import_step_count(text: str) -> int:
 
 
 @app.post("/recording/import-script", status_code=201)
-async def import_script(file: UploadFile = File(...)) -> dict:
+async def import_script(
+    file: UploadFile = File(...),
+    auth_profile: Optional[str] = Form(None),
+) -> dict:
     """Playwright Python 스크립트 업로드 → 새 세션 디렉토리 등록.
 
     이후 결과 화면의 ``▶ Codegen 녹화코드 실행`` 으로 host venv 에서 직접 실행.
@@ -310,9 +313,25 @@ async def import_script(file: UploadFile = File(...)) -> dict:
       - UTF-8 디코딩 + Python AST 파싱 통과
       - 본문에 ``playwright`` 토큰 존재 (오타 방지)
 
+    auth_profile (선택): 시드된 로그인 프로파일 이름. 지정 시 시작 흐름과 동일하게
+    ``verify_profile`` 통과 강제 — 통과 시 ``metadata.json`` 의 ``auth_profile`` 키로
+    저장되어 이후 Play 가 자동으로 storageState + fingerprint 를 사용한다. 비우면
+    metadata 에 키 자체를 박지 않으며, 인증 없는 재생이 기본이 된다.
+
     Raises:
         400: 검증 실패
+        404 / 409 / 503: auth_profile 검증 실패 (``_load_profile_for_browser`` 의
+            HTTPException 을 그대로 전파).
     """
+    # auth_profile 이 빈 문자열로 들어오면 None 으로 정규화 (FormData 빈 값).
+    if auth_profile is not None and not auth_profile.strip():
+        auth_profile = None
+
+    if auth_profile:
+        # verify 게이트 — 만료/미발견 등은 즉시 4xx 로 전파. metadata 에 더러운
+        # 프로파일을 박아 두면 이후 Play 마다 만료 모달이 떠 사용자 혼란만 키움.
+        _load_profile_for_browser(auth_profile)
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="filename 필수")
     safe_name = _IMPORT_FILENAME_SAFE_RE.sub("_", file.filename)
@@ -348,7 +367,7 @@ async def import_script(file: UploadFile = File(...)) -> dict:
 
     step_count = _estimate_import_step_count(text)
     import time as _time
-    storage.save_metadata(sid, {
+    meta: dict = {
         "id": sid,
         "target_url": sess.target_url,
         "created_at": storage.now_iso(),
@@ -356,12 +375,20 @@ async def import_script(file: UploadFile = File(...)) -> dict:
         "state": session.STATE_DONE,
         "step_count": step_count,
         "imported_filename": safe_name,
-    })
+    }
+    if auth_profile:
+        # 이미 검증된 프로파일 — Play 가 _resolve_auth_for_replay 에서 자동 사용.
+        meta["auth_profile"] = auth_profile
+    storage.save_metadata(sid, meta)
     _registry.update(
         sid,
         state=session.STATE_DONE,
         action_count=step_count,
     )
+    if auth_profile:
+        # SessionResp 가 ``extras['auth_profile']`` 를 top-level 로 lift 하므로
+        # 응답에도 자연스럽게 노출됨 (start 흐름과 동일).
+        sess.extras["auth_profile"] = auth_profile
 
     # 변환 시도 — codegen 세션과 동일하게 14-DSL scenario.json 생성. 실패는
     # silent (Play with LLM 만 미사용 — 테스트코드 원본 실행 은 그대로 가능).
