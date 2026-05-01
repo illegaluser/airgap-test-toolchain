@@ -1910,20 +1910,23 @@ def _format_urls_block(urls: list[str]) -> str:
 def _format_tour_steps_block(urls: list[str]) -> str:
     """URL 리스트를 ``def run(playwright):`` 본문에 들어갈 codegen-style 호출 시퀀스로 직렬화.
 
-    각 URL 당 3줄: navigate + URL 바운스 verify + 본문 길이 verify.
-    AST 변환기가 정확히 이 패턴을 인식해 14-DSL 시나리오로 자동 변환한다.
+    각 URL 블록: ``try:`` 안에서 navigate + URL 바운스 verify + 본문 길이 verify.
+    AssertionError 가 잡히면 다음 URL 로 진행 — 첫 URL fail 에서 전체 abort 방지.
+    AST 변환기는 ``ast.Try`` body 를 재귀해 정상 흐름의 step 을 그대로 추출.
     """
     if not urls:
         return "    pass"
-    indent = "    "
     parts: list[str] = []
     for url in urls:
         url_lit = repr(url)
-        parts.append(f"{indent}page.goto({url_lit})")
-        parts.append(f'{indent}assert "errorMsg" not in page.url')
-        parts.append(f'{indent}assert len(page.inner_text("body")) >= 50')
+        parts.append("    try:")
+        parts.append(f"        page.goto({url_lit})")
+        parts.append('        assert "errorMsg" not in page.url')
+        parts.append('        assert len(page.inner_text("body")) >= 50')
+        parts.append("    except AssertionError:")
+        parts.append("        # 검증 실패 — 다음 URL 로 진행 (전체 abort 방지)")
+        parts.append("        pass")
         parts.append("")  # 가독성 spacer
-    # 마지막 spacer 제거
     while parts and parts[-1] == "":
         parts.pop()
     return "\n".join(parts)

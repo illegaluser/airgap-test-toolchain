@@ -993,6 +993,120 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _storage_alive_cookie_count_for_host(
+    storage_path: Path,
+    host: str,
+) -> tuple[int, int]:
+    """storage_state JSON 의 ``host`` 도메인 매칭 쿠키 중 만료되지 않은 개수.
+
+    Returns:
+        ``(alive, total)`` — alive 는 ``expires`` 가 -1(=세션 쿠키) 이거나
+        현재 시각보다 미래인 쿠키. total 은 host 매칭된 모든 쿠키.
+
+    Playwright 가 컨텍스트 로드 시 만료 쿠키를 자동 폐기하므로, alive==0 이면
+    그 도메인의 인증 토큰이 모두 사라진 상태 — 사실상 만료된 storage.
+
+    파일이 없거나 JSON 깨졌으면 ``(0, 0)``.
+    """
+    if not host:
+        return 0, 0
+    try:
+        data = json.loads(storage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0
+    cookies = data.get("cookies") if isinstance(data, dict) else None
+    if not isinstance(cookies, list):
+        return 0, 0
+    now = time.time()
+    alive = 0
+    total = 0
+    for c in cookies:
+        if not isinstance(c, dict):
+            continue
+        dom = (c.get("domain") or "").lstrip(".").lower()
+        h = host.lstrip(".").lower()
+        # host 자체이거나 host 의 부모(suffix) 도메인이면 매칭.
+        if not (dom == h or h.endswith("." + dom)):
+            continue
+        total += 1
+        exp = c.get("expires", -1)
+        # -1 이거나 0 이하면 세션 쿠키 (브라우저 닫히면 사라지지만 storage_state
+        # 로드 시점엔 살아있음). expires 가 미래면 살아있음.
+        if not isinstance(exp, (int, float)) or exp <= 0 or exp > now:
+            alive += 1
+    return alive, total
+
+
+def _body_looks_unauthenticated(body_text: str) -> bool:
+    """페이지 본문이 비로그인 상태 신호를 보이는지 휴리스틱 검사.
+
+    "로그아웃" / "Logout" / "Sign out" 가 *없고*, "로그인" / "Login" / "Sign in"
+    이 *있으면* 비로그인으로 판정. 두 키워드 모두 있으면 (예: "최근 로그인"
+    안내 + 로그아웃 버튼) 로그인 상태로 간주 (보수적).
+    """
+    if not body_text:
+        return False
+    has_logout = any(k in body_text for k in ("로그아웃", "Logout", "Sign out", "Sign Out"))
+    if has_logout:
+        return False
+    has_login = any(k in body_text for k in ("로그인", "Login", "Sign in", "Sign In"))
+    return has_login
+
+
+def _check_status_and_host(
+    response: object,
+    page_url: str,
+    service_url: str,
+) -> tuple[bool, Optional[str]]:
+    """status < 400 + 최종 URL host 가 service_url host 계열인지 검사.
+
+    Returns:
+        (ok, fail_reason). ok=True 면 fail_reason=None.
+    """
+    status = getattr(response, "status", 200) if response is not None else 200
+    if status >= 400:
+        return False, "service_page_not_reachable"
+    expected_host = _domain_from_url(service_url)
+    final_host = _domain_from_url(page_url)
+    host_ok = (
+        not expected_host
+        or final_host == expected_host
+        or _domain_matches(final_host, expected_host)
+    )
+    if not host_ok:
+        return False, "service_url_redirected"
+    return True, None
+
+
+def _evaluate_service_response(page, response, service_url: str, service_text: str) -> tuple[bool, Optional[str]]:
+    """service-side 응답을 검사해 (ok, fail_reason) 반환.
+
+    - service_text 가 있으면 body 에 해당 문구 포함 검사 (authoritative).
+    - 비어 있으면 status+host 검사 + body unauth 휴리스틱 (보강).
+    """
+    if service_text:
+        try:
+            body_text = page.inner_text("body", timeout=5_000)
+        except Exception:
+            body_text = ""
+        if service_text in body_text:
+            return True, None
+        return False, "service_text_not_found"
+
+    ok, reason = _check_status_and_host(response, page.url, service_url)
+    if not ok:
+        return False, reason
+    # status+host 통과해도 body 가 비로그인 신호를 내면 뒤집음 (만료 storage 가
+    # 보호 페이지를 정상 응답으로 받지만 본문은 로그인 안내인 케이스).
+    try:
+        body_text = page.inner_text("body", timeout=5_000)
+    except Exception:
+        body_text = ""
+    if _body_looks_unauthenticated(body_text):
+        return False, "body_indicates_unauthenticated"
+    return True, None
+
+
 def _verify_service_side(
     storage_path: Path,
     fingerprint: "FingerprintProfile",
@@ -1037,26 +1151,9 @@ def _verify_service_side(
                         wait_until="load",
                         timeout=min(timeout_sec * 1000, _VERIFY_NAV_TIMEOUT_MS),
                     )
-                    if service_text:
-                        body_text = page.inner_text("body", timeout=5_000)
-                        ok = service_text in body_text
-                        if not ok:
-                            fail_reason = "service_text_not_found"
-                    else:
-                        status = response.status if response is not None else 200
-                        expected_host = _domain_from_url(service_url)
-                        final_host = _domain_from_url(page.url)
-                        ok = status < 400 and (
-                            not expected_host
-                            or final_host == expected_host
-                            or _domain_matches(final_host, expected_host)
-                        )
-                        if not ok:
-                            fail_reason = (
-                                "service_page_not_reachable"
-                                if status >= 400
-                                else "service_url_redirected"
-                            )
+                    ok, fail_reason = _evaluate_service_response(
+                        page, response, service_url, service_text,
+                    )
                     if visual_pause and not headless:
                         page.wait_for_timeout(_verify_hold_ms())
                 finally:
@@ -1191,6 +1288,19 @@ def verify_profile(
         "naver_probe_ms": None,
         "naver_ok": None,
     }
+
+    # 사전 검사 — service_url 도메인의 살아있는 쿠키가 0 개면 즉시 실패 처리.
+    # 사용자 보고: 핵심 인증 쿠키 (예: piolb) 가 어제 만료되어 Playwright 가
+    # storage_state 로드 시 자동 폐기 → 모든 페이지가 비로그인 진입했는데도
+    # _verify_service_side 가 status+host 만 보고 통과시켰던 회귀.
+    service_host = _domain_from_url(profile.verify.service_url)
+    alive, total = _storage_alive_cookie_count_for_host(profile.storage_path, service_host)
+    if total > 0 and alive == 0:
+        detail["fail_reason"] = "storage_cookies_expired"
+        detail["storage_alive_cookies"] = 0
+        detail["storage_total_cookies"] = total
+        _record_verify(profile, ok=False, detail=detail)
+        return (False, detail)
 
     svc_ok, svc_ms, svc_err = _verify_service_side(
         profile.storage_path,

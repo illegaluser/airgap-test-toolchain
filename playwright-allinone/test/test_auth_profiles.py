@@ -1554,3 +1554,111 @@ class TestSeedProfile:
         assert prof2.notes == "second"
         # 카탈로그에는 한 번만 등록되어야 함 (덮어쓰기).
         assert len(list_profiles()) == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# C.5 — verify_profile 강화: storage 쿠키 expiry + body 비로그인 휴리스틱
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestStorageAliveCookieCount:
+    """``_storage_alive_cookie_count_for_host`` 단위.
+
+    회귀 가드: dpg piolb 쿠키 어제 만료된 케이스가 verify 를 통과해 사용자가
+    비로그인 화면을 보던 사고 (2026-05-02). 사전 검사로 즉시 fail 시키는 헬퍼.
+    """
+
+    def _write_storage(self, path, cookies):
+        import json as _json
+        path.write_text(_json.dumps({"cookies": cookies, "origins": []}), encoding="utf-8")
+
+    def test_all_cookies_expired_returns_zero_alive(self, tmp_path):
+        from zero_touch_qa.auth_profiles import _storage_alive_cookie_count_for_host
+        # 어제 만료 시각 — datetime.now() 보다 과거.
+        import time as _time
+        expired = _time.time() - 86400
+        self._write_storage(tmp_path / "s.json", [
+            {"domain": "portal.koreaconnect.kr", "name": "piolb", "expires": expired},
+            {"domain": ".koreaconnect.kr", "name": "JSESSIONID", "expires": expired},
+        ])
+        alive, total = _storage_alive_cookie_count_for_host(
+            tmp_path / "s.json", "portal.koreaconnect.kr",
+        )
+        assert (alive, total) == (0, 2)
+
+    def test_session_cookies_count_as_alive(self, tmp_path):
+        from zero_touch_qa.auth_profiles import _storage_alive_cookie_count_for_host
+        # expires=-1 = 세션 쿠키 — storage_state 로드 시점엔 살아 있음.
+        self._write_storage(tmp_path / "s.json", [
+            {"domain": "portal.koreaconnect.kr", "name": "JSESSIONID", "expires": -1},
+        ])
+        alive, total = _storage_alive_cookie_count_for_host(
+            tmp_path / "s.json", "portal.koreaconnect.kr",
+        )
+        assert (alive, total) == (1, 1)
+
+    def test_future_expiry_counts_as_alive(self, tmp_path):
+        from zero_touch_qa.auth_profiles import _storage_alive_cookie_count_for_host
+        import time as _time
+        future = _time.time() + 86400
+        self._write_storage(tmp_path / "s.json", [
+            {"domain": "portal.koreaconnect.kr", "name": "piolb", "expires": future},
+        ])
+        alive, total = _storage_alive_cookie_count_for_host(
+            tmp_path / "s.json", "portal.koreaconnect.kr",
+        )
+        assert (alive, total) == (1, 1)
+
+    def test_parent_domain_cookie_matched_for_subdomain(self, tmp_path):
+        """``.koreaconnect.kr`` 쿠키도 portal.koreaconnect.kr 에 매칭되어야."""
+        from zero_touch_qa.auth_profiles import _storage_alive_cookie_count_for_host
+        import time as _time
+        future = _time.time() + 86400
+        self._write_storage(tmp_path / "s.json", [
+            {"domain": ".koreaconnect.kr", "name": "JSESSIONID", "expires": future},
+        ])
+        alive, total = _storage_alive_cookie_count_for_host(
+            tmp_path / "s.json", "portal.koreaconnect.kr",
+        )
+        assert (alive, total) == (1, 1)
+
+    def test_unrelated_domain_not_counted(self, tmp_path):
+        from zero_touch_qa.auth_profiles import _storage_alive_cookie_count_for_host
+        self._write_storage(tmp_path / "s.json", [
+            {"domain": ".naver.com", "name": "NID", "expires": -1},
+        ])
+        alive, total = _storage_alive_cookie_count_for_host(
+            tmp_path / "s.json", "portal.koreaconnect.kr",
+        )
+        assert (alive, total) == (0, 0)
+
+    def test_missing_file_returns_zero(self, tmp_path):
+        from zero_touch_qa.auth_profiles import _storage_alive_cookie_count_for_host
+        alive, total = _storage_alive_cookie_count_for_host(
+            tmp_path / "missing.json", "x.example",
+        )
+        assert (alive, total) == (0, 0)
+
+
+class TestBodyLooksUnauthenticated:
+    """``_body_looks_unauthenticated`` 단위 — 본문 비로그인 신호 휴리스틱."""
+
+    def test_logout_present_returns_false(self):
+        from zero_touch_qa.auth_profiles import _body_looks_unauthenticated
+        assert _body_looks_unauthenticated("로그아웃 마이페이지 로그인 기록") is False
+
+    def test_login_present_only_returns_true(self):
+        from zero_touch_qa.auth_profiles import _body_looks_unauthenticated
+        assert _body_looks_unauthenticated("로그인 회원가입 ID/PW") is True
+
+    def test_neither_returns_false(self):
+        from zero_touch_qa.auth_profiles import _body_looks_unauthenticated
+        assert _body_looks_unauthenticated("자유게시판 공지사항") is False
+
+    def test_english_login_only_returns_true(self):
+        from zero_touch_qa.auth_profiles import _body_looks_unauthenticated
+        assert _body_looks_unauthenticated("Welcome — please Sign In") is True
+
+    def test_english_logout_present_returns_false(self):
+        from zero_touch_qa.auth_profiles import _body_looks_unauthenticated
+        assert _body_looks_unauthenticated("Account / Logout / Settings") is False

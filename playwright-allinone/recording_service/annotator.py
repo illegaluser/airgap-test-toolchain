@@ -1,6 +1,6 @@
 """TR.7+ — Codegen 원본 ``.py`` 의 hover 자동 주입 (static annotate).
 
-(4) converter heuristic 과 동일 규칙(`_SEG_LOOKS_LIKE_HOVER_TRIGGER`) 을 codegen
+(4) converter heuristic 과 동일 규칙(`_seg_looks_like_hover_trigger`) 을 codegen
 원본 소스 자체에 적용한다. 동기 — codegen Output Replay 는 변환 없이 원본을
 그대로 호스트에서 돌리는 경로라 (1) executor healer / (4) converter 의 보호를
 받지 못한다. 이 모듈은 ``page.<chain>.click()`` 라인을 찾아 그 chain 안에
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # (4) 와 동일 패턴 재사용 — 정의 위치를 옮기지 않고 함수만 import.
-from zero_touch_qa.converter_ast import _SEG_LOOKS_LIKE_HOVER_TRIGGER
+from zero_touch_qa.converter_ast import _seg_looks_like_hover_trigger
 
 log = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ def _find_hover_trigger_in_chain(node: ast.expr) -> ast.expr | None:
             continue
         # 인자 텍스트로 trigger 휴리스틱 매칭.
         arg_text = _stringify_args(c)
-        if _SEG_LOOKS_LIKE_HOVER_TRIGGER(arg_text):
+        if _seg_looks_like_hover_trigger(arg_text):
             return c
     return None
 
