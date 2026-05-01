@@ -297,6 +297,55 @@ def _estimate_import_step_count(text: str) -> int:
     return len(_STEP_HINT_RE.findall(text))
 
 
+# tour 스크립트 인식 마커 — 임포트한 .py 가 우리 시스템의 tour 산출물인지
+# 식별하는 휴리스틱. 둘 다 매치돼야 '확실한 tour' 로 간주.
+_TOUR_MARKERS = ("test_url_renders_normally", "tour_results.jsonl")
+
+
+def _synthesize_tour_scenario(text: str) -> Optional[list[dict]]:
+    """tour 스크립트의 ``URLS = [...]`` 리터럴을 navigate step 시퀀스로 합성.
+
+    converter(docker) 가 빈 결과를 내놓는 케이스의 fallback. tour 스크립트는
+    pytest fixture / parametrize 패턴이라 일반 AST 변환기가 인식하지 못한다.
+    그러나 우리 시스템 자체가 만든 tour 의 구조(`URLS = [...]` 모듈 레벨 리터럴)
+    는 안정적이므로 결정론적 추출이 가능.
+
+    Returns:
+        합성된 14-DSL 시나리오 (각 URL 1 step navigate). tour 마커가 없거나
+        URLS 추출 실패 시 ``None``.
+    """
+    # 마커 확인 — 우리 tour 산출물이 아니면 시도조차 안 함 (오인 추출 방지).
+    if not all(m in text for m in _TOUR_MARKERS):
+        return None
+    import ast as _ast
+    try:
+        tree = _ast.parse(text)
+    except SyntaxError:
+        return None
+    urls: list[str] = []
+    for node in tree.body:
+        if isinstance(node, _ast.Assign) and len(node.targets) == 1:
+            tgt = node.targets[0]
+            if isinstance(tgt, _ast.Name) and tgt.id == "URLS":
+                if isinstance(node.value, _ast.List):
+                    for elt in node.value.elts:
+                        if isinstance(elt, _ast.Constant) and isinstance(elt.value, str):
+                            urls.append(elt.value)
+                break
+    if not urls:
+        return None
+    return [
+        {
+            "step": i + 1,
+            "action": "navigate",
+            "target": "",
+            "value": url,
+            "description": f"URL 진입 — {url}",
+        }
+        for i, url in enumerate(urls)
+    ]
+
+
 @app.post("/recording/import-script", status_code=201)
 async def import_script(
     file: UploadFile = File(...),
@@ -397,7 +446,17 @@ async def import_script(
 
     # 변환 시도 — codegen 세션과 동일하게 14-DSL scenario.json 생성. 실패는
     # silent (Play with LLM 만 미사용 — 테스트코드 원본 실행 은 그대로 가능).
+    # converter 가 빈 결과를 내놓으면 tour 패턴 합성 fallback (B) 이 자동 시도됨.
     convert_summary = _convert_imported_script(sid)
+
+    # metadata 에 scenario 상태 기록 → UI 가 Generate Doc / LLM 버튼 활성/비활성 분기 (A).
+    meta_extra: dict = {
+        "scenario_step_count": int(convert_summary.get("scenario_step_count") or 0),
+        "scenario_source": convert_summary.get("scenario_source"),  # 'converter'|'synthesized_tour'|None
+        "scenario_empty": not bool(convert_summary.get("scenario_step_count")),
+    }
+    meta.update(meta_extra)
+    storage.save_metadata(sid, meta)
 
     log.info(
         "[/recording/import-script] %s — '%s' 업로드 (%d bytes, ~%d step) convert=%s",
@@ -418,32 +477,96 @@ def _convert_imported_script(sid: str) -> dict:
     docker 미설치 / 컨테이너 미가동 / converter 실패 모두 silent — 사용자는
     여전히 ``테스트코드 원본 실행`` (host venv 직접) 으로 재생 가능. 결과
     summary 만 응답에 포함.
+
+    Fallback: converter 가 실패하거나 빈 scenario(``[]``) 를 만들면 tour 스크립트
+    패턴(`URLS = [...]`) 을 AST 로 추출해 navigate-only 시나리오를 합성 시도.
+    합성 성공 시 ``scenario_source="synthesized_tour"`` 표시.
     """
     container_dir = storage.container_path_for(sid)
     host_scenario = str(storage.scenario_path(sid))
+    convert_err: Optional[str] = None
+    convert_exception: Optional[str] = None  # ConverterProxyError 메시지 (호환 키 'error')
+    convert_rc: Optional[int] = None
+    convert_elapsed: Optional[float] = None
     try:
         result = _run_convert_impl(
             container_session_dir=container_dir,
             host_scenario_path=host_scenario,
         )
+        convert_rc = result.returncode
+        convert_elapsed = result.elapsed_ms
+        if result.returncode != 0 or not result.scenario_exists:
+            msg = (result.stderr or "").strip()[:500] or f"rc={result.returncode}"
+            log.warning("[/recording/import-script] %s — convert rc=%d, stderr=%s",
+                        sid, result.returncode, msg)
+            convert_err = msg
     except ConverterProxyError as e:
         log.warning("[/recording/import-script] %s — converter 실패: %s", sid, e)
-        return {"ok": False, "scenario_exists": False, "error": str(e)}
-    if result.returncode != 0 or not result.scenario_exists:
-        msg = (result.stderr or "").strip()[:500] or f"rc={result.returncode}"
-        log.warning("[/recording/import-script] %s — convert rc=%d, stderr=%s",
-                    sid, result.returncode, msg)
+        convert_exception = str(e)
+        convert_err = str(e)
+
+    # converter 결과를 읽어 비었는지 확인. 비었으면 tour 패턴 합성 시도.
+    scenario_path = storage.scenario_path(sid)
+    scenario_data: list = []
+    if scenario_path.is_file():
+        try:
+            scenario_data = json.loads(scenario_path.read_text(encoding="utf-8"))
+            if not isinstance(scenario_data, list):
+                scenario_data = []
+        except (json.JSONDecodeError, OSError):
+            scenario_data = []
+
+    if scenario_data:
         return {
-            "ok": False,
-            "scenario_exists": result.scenario_exists,
-            "returncode": result.returncode,
-            "stderr_tail": msg,
+            "ok": True,
+            "scenario_exists": True,
+            "scenario_step_count": len(scenario_data),
+            "scenario_source": "converter",
+            "elapsed_ms": convert_elapsed,
         }
-    return {
-        "ok": True,
-        "scenario_exists": True,
-        "elapsed_ms": result.elapsed_ms,
+
+    # ── Fallback: tour 패턴 합성 ───────────────────────────────────────
+    original_py = storage.original_py_path(sid)
+    if original_py.is_file():
+        try:
+            text = original_py.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        synthesized = _synthesize_tour_scenario(text) if text else None
+        if synthesized:
+            try:
+                scenario_path.write_text(
+                    json.dumps(synthesized, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                log.info(
+                    "[/recording/import-script] %s — tour 합성으로 %d step scenario 생성",
+                    sid, len(synthesized),
+                )
+                return {
+                    "ok": True,
+                    "scenario_exists": True,
+                    "scenario_step_count": len(synthesized),
+                    "scenario_source": "synthesized_tour",
+                    "elapsed_ms": convert_elapsed,
+                }
+            except OSError as e:
+                log.warning("[/recording/import-script] %s — 합성 scenario 쓰기 실패: %s", sid, e)
+
+    # 둘 다 실패 — 빈 시나리오 그대로. UI 가 Generate Doc / LLM 비활성 처리.
+    out: dict = {
+        "ok": False,
+        "scenario_exists": scenario_path.is_file(),
+        "scenario_step_count": 0,
+        "scenario_source": None,
+        "returncode": convert_rc,
+        "stderr_tail": convert_err,
     }
+    # ConverterProxyError 가 raise 됐던 경우만 'error' 호환 키 노출
+    # (구 응답 계약: convert.error 에 예외 메시지). subprocess rc 실패는 stderr_tail.
+    if convert_exception:
+        out["error"] = convert_exception
+    return out
 
 
 @app.post("/recording/start", response_model=RecordingStartResp, status_code=201)

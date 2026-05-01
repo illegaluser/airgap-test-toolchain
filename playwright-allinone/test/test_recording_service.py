@@ -2110,6 +2110,129 @@ def test_import_script_missing_auth_profile_returns_404(
     assert os.listdir(temp_host_root) == []
 
 
+# ── tour 스크립트 시나리오 합성 (B) — converter 빈 결과 fallback ──────────
+
+
+def test_synthesize_tour_scenario_extracts_urls_when_markers_present():
+    """tour 마커 + ``URLS = [...]`` 리터럴이 있으면 navigate step 시퀀스로 합성."""
+    from recording_service.server import _synthesize_tour_scenario
+    text = (
+        "URLS = [\n"
+        "  'https://a.test/1',\n"
+        "  'https://a.test/2',\n"
+        "  'https://a.test/3',\n"
+        "]\n"
+        "def test_url_renders_normally(url): pass\n"
+        "# tour_results.jsonl\n"
+    )
+    r = _synthesize_tour_scenario(text)
+    assert r is not None
+    assert len(r) == 3
+    assert r[0]["action"] == "navigate"
+    assert r[0]["value"] == "https://a.test/1"
+    assert r[0]["step"] == 1
+    assert r[2]["step"] == 3
+
+
+def test_synthesize_tour_scenario_returns_none_without_markers():
+    """tour 마커 없으면 시도조차 안 함 — 일반 .py 의 ``URLS`` 변수 오인 추출 방지."""
+    from recording_service.server import _synthesize_tour_scenario
+    text = "URLS = ['https://x']\n# 일반 사용자 변수\n"
+    assert _synthesize_tour_scenario(text) is None
+
+
+def test_synthesize_tour_scenario_returns_none_when_urls_empty():
+    """``URLS = []`` 면 합성 의미 없음 — None."""
+    from recording_service.server import _synthesize_tour_scenario
+    text = (
+        "URLS = []\n"
+        "def test_url_renders_normally(): pass\n"
+        "# tour_results.jsonl\n"
+    )
+    assert _synthesize_tour_scenario(text) is None
+
+
+def test_synthesize_tour_scenario_handles_syntax_error():
+    """Python AST 파싱 실패 시 None — converter fallback 흐름이 깨지지 않음."""
+    from recording_service.server import _synthesize_tour_scenario
+    text = "URLS = [\n# broken syntax\n# tour_results.jsonl test_url_renders_normally"
+    assert _synthesize_tour_scenario(text) is None
+
+
+def test_import_script_synthesizes_tour_scenario_when_converter_empty(
+    client, temp_host_root, monkeypatch,
+):
+    """tour 스크립트 업로드 시 converter 가 빈 결과여도 합성 fallback 으로 채워진다."""
+    from recording_service import server as srv, storage
+    from recording_service.converter_proxy import ConvertResult
+
+    # converter 가 빈 시나리오를 만들도록 stub.
+    def fake_convert(*, container_session_dir, host_scenario_path):
+        from pathlib import Path
+        Path(host_scenario_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(host_scenario_path).write_text("[]", encoding="utf-8")
+        return ConvertResult(
+            returncode=1, stdout="", stderr="empty",
+            scenario_path=host_scenario_path, scenario_exists=True, elapsed_ms=1.0,
+        )
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert)
+
+    src = (
+        b"from playwright.sync_api import sync_playwright\n"
+        b"URLS = [\n"
+        b"  'https://x.test/p1',\n"
+        b"  'https://x.test/p2',\n"
+        b"]\n"
+        b"def test_url_renders_normally(url): pass\n"
+        b"# tour_results.jsonl\n"
+    )
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("tour_selected.py", src, "text/x-python")},
+    )
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    meta = storage.load_metadata(sid)
+    assert meta.get("scenario_step_count") == 2
+    assert meta.get("scenario_source") == "synthesized_tour"
+    assert meta.get("scenario_empty") is False
+    # 실제 scenario.json 이 합성된 내용을 가지고 있어야.
+    import json as _json
+    data = _json.loads(storage.scenario_path(sid).read_text(encoding="utf-8"))
+    assert len(data) == 2
+    assert data[0]["action"] == "navigate"
+
+
+def test_import_script_marks_scenario_empty_when_neither_works(
+    client, temp_host_root, monkeypatch,
+):
+    """일반 .py (tour 마커 없음) 가 converter 도 실패하면 metadata 에 ``scenario_empty=True``."""
+    from recording_service import server as srv, storage
+    from recording_service.converter_proxy import ConvertResult
+
+    def fake_convert(*, container_session_dir, host_scenario_path):
+        from pathlib import Path
+        Path(host_scenario_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(host_scenario_path).write_text("[]", encoding="utf-8")
+        return ConvertResult(
+            returncode=1, stdout="", stderr="empty",
+            scenario_path=host_scenario_path, scenario_exists=True, elapsed_ms=1.0,
+        )
+    monkeypatch.setattr(srv, "_run_convert_impl", fake_convert)
+
+    src = "from playwright.sync_api import sync_playwright\n# 일반 사용자 스크립트\n".encode("utf-8")
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("user.py", src, "text/x-python")},
+    )
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    meta = storage.load_metadata(sid)
+    assert meta.get("scenario_step_count") == 0
+    assert meta.get("scenario_empty") is True
+    assert meta.get("scenario_source") is None
+
+
 def test_import_script_runs_converter_to_produce_scenario_json(
     client, temp_host_root, monkeypatch,
 ):

@@ -267,9 +267,11 @@ class TestSectionToggleStructure:
         assert fresh_page.locator("#login-profile-section").get_attribute("open") is None
 
     def test_new_recording_renamed_to_english(self, fresh_page: Page):
-        """제목이 'Recording' (영문) — 녹화 전용 섹션. 외부 .py 업로드는 'Play & more' 로 이전됨."""
+        """제목이 '🎬 Recording' (이모지+영문) — 4개 섹션 톤 통일."""
         text = fresh_page.locator("#new-recording-section > summary").inner_text()
         assert "Recording" in text
+        # 톤 통일 — 다른 섹션과 같은 emoji 스타일
+        assert "🎬" in text
         # 옛 명칭이 새지 않아야
         assert "새 녹화 시작" not in text
         assert "New Recording" not in text

@@ -335,11 +335,14 @@ async function openSession(sid) {
 
   // Scenario JSON 카드 — state=done 일 때만 노출 + 다운로드 링크 갱신 (TR.4+.2).
   const scenarioCard = $("#scenario-card");
+  // scenario 길이 capture — Generate Doc / Play with LLM 버튼 활성 결정에 사용.
+  let _scenarioStepCount = 0;
   if (s.state === "done") {
     scenarioCard.hidden = false;
     $("#dl-scenario").href = `/recording/sessions/${sid}/scenario?download=1`;
     try {
       const scenario = await getSessionScenario(sid);
+      _scenarioStepCount = Array.isArray(scenario) ? scenario.length : 0;
       $("#result-json").textContent = JSON.stringify(scenario, null, 2);
     } catch (err) {
       $("#result-json").textContent = `(scenario.json 로드 실패: ${err.message})`;
@@ -373,9 +376,35 @@ async function openSession(sid) {
   // Play & more 섹션은 항상 노출 (토글). 세션이 done 인 경우만 옵션/버튼을 활성화.
   if (s.state === "done") {
     _setRplusActive(sid);
+    // 빈 시나리오면 LLM 재생 / Generate Doc 비활성. 사유는 tooltip 으로.
+    _setLlmDocAvailability(_scenarioStepCount);
   } else {
     _setRplusInactive();
   }
+}
+
+// scenario.json 이 비면 (예: tour 가 아닌 일반 임포트가 변환 실패한 경우)
+// LLM-기반 재생/문서화 버튼만 별도로 비활성. 'codegen 원본 실행' 은 그대로 가능.
+function _setLlmDocAvailability(scenarioStepCount) {
+  const empty = !scenarioStepCount;
+  const btnLlm = document.getElementById("btn-play-llm");
+  const btnEnrich = document.getElementById("btn-enrich");
+  const btnCompare = document.getElementById("btn-compare-open");
+  const emptyMsg = (
+    "scenario.json 이 비어 있어 사용 불가 — 시나리오로 변환되지 않은 임포트 스크립트 " +
+    "(codegen 산출물도 tour 패턴도 아닌 경우). 테스트코드 원본 실행만 가능합니다."
+  );
+  [btnLlm, btnEnrich, btnCompare].forEach((b) => {
+    if (!b) return;
+    if (empty) {
+      b.dataset.origTitle = b.dataset.origTitle || (b.title || "");
+      b.disabled = true;
+      b.title = emptyMsg;
+    } else if (b.dataset.origTitle !== undefined) {
+      // 활성 복원 — _setRplusActive 가 disabled=false 처리하므로 title 만 복원.
+      b.title = b.dataset.origTitle;
+    }
+  });
 }
 
 // 세션 종속 영역(옵션·Play·Doc) 활성화 + sid 표시.
