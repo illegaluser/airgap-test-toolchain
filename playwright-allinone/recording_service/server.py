@@ -330,7 +330,12 @@ async def import_script(
     if auth_profile:
         # verify 게이트 — 만료/미발견 등은 즉시 4xx 로 전파. metadata 에 더러운
         # 프로파일을 박아 두면 이후 Play 마다 만료 모달이 떠 사용자 혼란만 키움.
-        _load_profile_for_browser(auth_profile)
+        # 본 핸들러는 ``async def`` — ``_load_profile_for_browser`` 내부의
+        # Playwright sync API (verify_profile) 가 asyncio loop 안에서 직접
+        # 돌면 'Sync API inside the asyncio loop' 로 거절된다. 별 스레드로
+        # 위임해 sync API 가 자기 루프에서 정상 동작하도록 한다.
+        import asyncio as _asyncio
+        await _asyncio.to_thread(_load_profile_for_browser, auth_profile)
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="filename 필수")

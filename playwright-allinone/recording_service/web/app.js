@@ -1024,8 +1024,17 @@ $("#import-file-input").addEventListener("change", async (e) => {
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
-      const detail = (data && data.detail) || `HTTP ${r.status}`;
-      alert("업로드 실패: " + detail);
+      // detail 은 문자열 또는 구조화된 객체({reason, message, fail_reason, ...}).
+      // 그대로 더하면 '[object Object]' 가 표시되므로 메시지를 추출.
+      const d = data && data.detail;
+      let msg;
+      if (typeof d === "string") msg = d;
+      else if (d && typeof d === "object") {
+        msg = d.fail_reason || d.message || d.reason || JSON.stringify(d);
+      } else {
+        msg = `HTTP ${r.status}`;
+      }
+      alert("업로드 실패: " + msg);
       return;
     }
     await loadSessions();
