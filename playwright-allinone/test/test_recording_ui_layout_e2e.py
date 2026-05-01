@@ -578,7 +578,8 @@ class TestRPlusClipboardCopy:
         _open_session(opened_page, SID_BOTH)
         rplus = opened_page.locator("#rplus-section")
         expect(rplus).to_be_visible()
-        # 헤더에 copy-btn 존재, target 이 rplus-output
+        # 실행 결과 영역에 copy-btn 존재, target 이 rplus-output
+        # (헤더에서 빠져 결과 박스 위로 이동 — UX 보강)
         btn = rplus.locator('.copy-btn[data-copy-target="rplus-output"]')
         expect(btn).to_have_count(1)
         # toast 도 같이

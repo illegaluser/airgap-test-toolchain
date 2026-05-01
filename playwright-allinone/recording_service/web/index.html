@@ -54,6 +54,22 @@
           <button type="submit" id="btn-start">▶ Start Recording</button>
         </div>
       </form>
+      <!-- 녹화 진행 중 — Recording 흐름의 다음 단계. 같은 카드 안에 인라인 -->
+      <div id="active-session" class="active-session-block" hidden
+           style="margin-top:14px;padding-top:14px;border-top:1px solid #eee;">
+        <h3 style="margin:0 0 8px 0;font-size:1rem;">녹화 진행 중</h3>
+        <dl class="kv">
+          <dt>세션 ID</dt><dd><code id="active-id">—</code></dd>
+          <dt>target_url</dt><dd id="active-url">—</dd>
+          <dt>state</dt><dd><span class="state-pill" id="active-state">—</span></dd>
+          <dt>경과 시간</dt><dd id="active-elapsed">0초</dd>
+        </dl>
+        <button id="btn-stop">■ Stop &amp; Convert</button>
+        <p class="muted">
+          Stop 클릭 시 codegen 이 정상 종료되고 컨테이너 측 변환이 실행됩니다.
+          시간이 약간 걸릴 수 있습니다.
+        </p>
+      </div>
       </details>
     </section>
 
@@ -271,21 +287,8 @@
       </details>
     </section>
 
-    <!-- 섹션 2: 활성 세션 -->
-    <section class="card" id="active-session" hidden>
-      <h2>녹화 진행 중</h2>
-      <dl class="kv">
-        <dt>세션 ID</dt><dd><code id="active-id">—</code></dd>
-        <dt>target_url</dt><dd id="active-url">—</dd>
-        <dt>state</dt><dd><span class="state-pill" id="active-state">—</span></dd>
-        <dt>경과 시간</dt><dd id="active-elapsed">0초</dd>
-      </dl>
-      <button id="btn-stop">■ Stop &amp; Convert</button>
-      <p class="muted">
-        Stop 클릭 시 codegen 이 정상 종료되고 컨테이너 측 변환이 실행됩니다.
-        시간이 약간 걸릴 수 있습니다.
-      </p>
-    </section>
+    <!-- 섹션 2 자리는 Recording details 안으로 이동됨 (active-session block).
+         녹화가 시작되면 form 아래에서 같은 카드 안에 인라인으로 표시. -->
 
     <!-- 섹션 3: 결과 메타 -->
     <section class="card" id="result-section" hidden>
@@ -411,11 +414,7 @@
          업로드 진입은 항상 가능, 옵션·Play·Doc 영역은 세션 선택 시 활성화. -->
     <section class="card r-plus" id="rplus-section">
       <details id="rplus-toggle">
-        <summary><h2 style="display:inline-block; margin:0;">▶ Play &amp; more
-          <button type="button" class="copy-btn" data-copy-target="rplus-output"
-                  title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
-          <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
-        </h2></summary>
+        <summary><h2 style="display:inline-block; margin:0;">▶ Play &amp; more</h2></summary>
       <!-- 업로드 진입 — 세션 유무와 무관하게 항상 노출 -->
       <div class="rplus-upload-block" style="margin-bottom:14px;padding:10px;border:1px dashed #ccc;border-radius:6px;">
         <strong>새 스크립트 업로드</strong>
@@ -483,6 +482,12 @@
             </button>
           </div>
         </div>
+      </div>
+      <div class="rplus-output-header" style="display:flex;align-items:center;gap:8px;margin:6px 0 4px 0;">
+        <strong>실행 결과</strong>
+        <button type="button" class="copy-btn" data-copy-target="rplus-output"
+                title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
+        <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
       </div>
       <pre id="rplus-output" class="json-preview" hidden>—</pre>
       <details id="play-progress-details" hidden>
