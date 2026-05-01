@@ -40,15 +40,29 @@ def authn_site():
 
 
 def _seed_storage(base_url: str, dump_path: Path) -> None:
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto(f"{base_url}/login?user=qa-tester", wait_until="load")
-        context.storage_state(path=str(dump_path))
-        browser.close()
+    # 별도 subprocess 로 sync_playwright 실행 — pytest-playwright 등이 같은
+    # 프로세스에 asyncio loop 를 만들어 두면 sync API 가 막히기 때문.
+    script = (
+        "import sys\n"
+        "from playwright.sync_api import sync_playwright\n"
+        "base, dump = sys.argv[1], sys.argv[2]\n"
+        "with sync_playwright() as p:\n"
+        "    b = p.chromium.launch(headless=True)\n"
+        "    ctx = b.new_context()\n"
+        "    pg = ctx.new_page()\n"
+        "    pg.goto(base + '/login?user=qa-tester', wait_until='load')\n"
+        "    ctx.storage_state(path=dump)\n"
+        "    b.close()\n"
+    )
+    proc = subprocess.run(
+        [VENV_PY, "-c", script, base_url, str(dump_path)],
+        capture_output=True, timeout=60,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "storage seed failed: "
+            + proc.stderr.decode("utf-8", "replace")[-400:]
+        )
 
 
 @pytest.mark.e2e

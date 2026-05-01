@@ -451,148 +451,269 @@ class QAExecutor:
     ) -> StepResult:
         """단일 스텝을 실행하고 결과를 반환한다.
 
-        3단계 자가 치유 순서: 1) fallback_targets → 2) LocalHealer DOM 유사도 → 3) Dify LLM.
+        흐름:
+          1. 메타 액션 (navigate / wait / mock / auth_login / reset_state) — 즉시 처리
+          2. 타겟 필요 액션 — 1차 시도 → 치유 1~4 → 휴리스틱 5~7 → FAIL
+        """
+        # ── 메타 액션 + LLM 보정 + 타겟-필요-액션 분기 ──
+        meta = self._handle_meta_action(page, step, artifacts)
+        if meta is not None:
+            return meta
+
+        # 타겟 필요 액션 — 1차 시도 + 다단계 자가 치유.
+        action = step["action"].lower()
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        original_target = step.get("target")
+        log.info("[Step %s] %s: %s", step_id, action, desc)
+
+        # 1차 시도 (closed shadow / visibility heal 포함).
+        result, verification_error = self._try_initial_target(
+            page, step, resolver, artifacts,
+        )
+        if result is not None:
+            return result
+
+        # ── [치유 1단계] fallback_targets ──
+        result, verr = self._try_fallback_targets(page, step, resolver, artifacts)
+        if result is not None:
+            return result
+        if verr is not None:
+            verification_error = verr
+
+        # ── [치유 2단계] DSL action_alternatives (C) ──
+        result, verr = self._try_action_alternatives(page, step, resolver, artifacts)
+        if result is not None:
+            return result
+        if verr is not None:
+            verification_error = verr
+
+        if verification_error:
+            ss = self._screenshot(page, artifacts, step_id, "fail")
+            log.error("[Step %s] FAIL — verify 조건 불일치", step_id)
+            return StepResult(
+                step_id, action, str(original_target or ""),
+                str(step.get("value", "")), desc,
+                "FAIL", screenshot_path=ss,
+            )
+
+        # ── [치유 3단계] 로컬 DOM 유사도 매칭 ──
+        result = self._try_local_healer(page, step, healer, resolver, artifacts)
+        if result is not None:
+            return result
+
+        # ── [치유 4단계] Dify LLM 치유 ──
+        result = self._try_dify_healer(page, step, resolver, artifacts)
+        if result is not None:
+            return result
+
+        # ── [치유 5~7] 의미적 휴리스틱 체인 ──
+        # 각 휴리스틱은 자기 의도(action+desc)에 맞을 때만 발동, 아니면 None 반환.
+        for heuristic in (
+            self._try_press_to_click_heuristic,
+            self._try_first_result_heuristic,
+            self._try_search_results_visible_heuristic,
+            self._try_search_input_heuristic,
+        ):
+            r = heuristic(page, step, resolver, artifacts)
+            if r is not None:
+                return r
+
+        # ── 모든 치유 실패 ──
+        log.error("[Step %s] FAIL — 모든 치유 실패", step_id)
+        return StepResult(
+            step_id, action, str(original_target or ""),
+            str(step.get("value", "")), desc,
+            "FAIL",
+        )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 메타 액션 + 1차 시도 helper — _execute_step 첫 부분 분리.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _handle_meta_action(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> Optional[StepResult]:
+        """타겟 불필요 / 별도 처리 액션을 즉시 실행해 StepResult 반환.
+
+        해당 액션이 아니면 None 반환 (호출자가 일반 흐름 계속). 처리 대상:
+            - navigate / maps          : page.goto + 다운로드 흡수
+            - wait                     : page.wait_for_timeout
+            - press (target 없음)      : page.keyboard.press
+            - mock_status / mock_data  : _execute_mock_step
+            - auth_login               : _execute_auth_login
+            - reset_state              : _execute_reset_state
         """
         action = step["action"].lower()
         step_id = step.get("step", "-")
         desc = step.get("description", "")
 
-        # ── 메타 액션 (타겟 불필요) ──
         if action in ("navigate", "maps"):
-            raw_url = step.get("value") or step.get("target", "")
-            url = self._normalize_url(str(raw_url))
-            if url != str(raw_url):
-                log.info("[Step %s] URL 자동 normalize: %r → %r", step_id, raw_url, url)
-            # wait_until="domcontentloaded": 광고/트래커 로딩까지 기다리지 않고
-            # DOM 만 준비되면 진행. yahoo.com 처럼 무거운 페이지의 'load'
-            # event 30초 timeout 회피. timeout 도 60초로 상향.
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            except Exception as e:
-                # 다운로드 응답(첨부) URL 은 page.goto 가 'Download is starting' 으로
-                # raise 한다. 페이지 진입은 안 됐지만 navigate 의도(=서버 자원에 도달)는
-                # 충족됐으므로 PASS + heal_stage="download_started" 로 표시하고 다음
-                # step 진행. 다른 navigate 예외는 기존대로 raise.
-                if "Download is starting" in str(e):
-                    log.info("[Step %s] navigate -> PASS (다운로드 응답 — page 미로드)", step_id)
-                    # 다운로드 응답이라 페이지가 안 떴으므로 스크린샷은 best-effort
-                    # (실패해도 무시).
-                    try:
-                        ss = self._screenshot(page, artifacts, step_id, "pass")
-                    except Exception:
-                        ss = None
-                    return StepResult(
-                        step_id, action, str(url), str(url), desc,
-                        "PASS", heal_stage="download_started", screenshot_path=ss,
-                    )
-                raise
-            ss = self._screenshot(page, artifacts, step_id, "pass")
-            log.info("[Step %s] navigate -> PASS", step_id)
-            return StepResult(
-                step_id, action, str(url), str(url), desc,
-                "PASS", screenshot_path=ss,
-            )
-
+            return self._execute_navigate(page, step, artifacts)
         if action == "wait":
             ms = int(step.get("value", 1000))
             page.wait_for_timeout(ms)
             log.info("[Step %s] wait %dms -> PASS", step_id, ms)
             return StepResult(step_id, action, "", str(ms), desc, "PASS")
 
-        # ── LLM 출력 보정 ──
+        # LLM 출력 보정 — normalize 후 다시 분기
         self._normalize_step(step)
         action = step["action"].lower()
 
-        # ── press + 타겟 없음: 페이지 전체에 키 입력 ──
         if action == "press" and not step.get("target"):
             key = step.get("value", "")
             page.keyboard.press(key)
             ss = self._screenshot(page, artifacts, step_id, "pass")
             log.info("[Step %s] press '%s' (keyboard) -> PASS", step_id, key)
-            return StepResult(
-                step_id, action, "", key, desc,
-                "PASS", screenshot_path=ss,
-            )
+            return StepResult(step_id, action, "", key, desc, "PASS", screenshot_path=ss)
 
         if action in ("mock_status", "mock_data"):
             return self._execute_mock_step(page, step, artifacts)
-
         if action == "auth_login":
             return self._execute_auth_login(page, step, artifacts)
-
         if action == "reset_state":
             return self._execute_reset_state(page, step, artifacts)
+        return None
 
-        # ── 타겟 필요 액션: 실행 + 다단계 자가 치유 ──
-        log.info("[Step %s] %s: %s", step_id, action, desc)
+    def _execute_navigate(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """navigate / maps 액션 실행. download 응답은 PASS+heal=download_started."""
+        action = step["action"].lower()
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        raw_url = step.get("value") or step.get("target", "")
+        url = self._normalize_url(str(raw_url))
+        if url != str(raw_url):
+            log.info("[Step %s] URL 자동 normalize: %r → %r", step_id, raw_url, url)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:  # noqa: BLE001
+            if "Download is starting" in str(e):
+                log.info("[Step %s] navigate -> PASS (다운로드 응답 — page 미로드)", step_id)
+                try:
+                    ss = self._screenshot(page, artifacts, step_id, "pass")
+                except Exception:  # noqa: BLE001
+                    ss = None
+                return StepResult(
+                    step_id, action, str(url), str(url), desc,
+                    "PASS", heal_stage="download_started", screenshot_path=ss,
+                )
+            raise
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        log.info("[Step %s] navigate -> PASS", step_id)
+        return StepResult(
+            step_id, action, str(url), str(url), desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    def _try_initial_target(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> tuple[Optional[StepResult], Optional[VerificationAssertionError]]:
+        """1차 시도 — original target 으로 locator 해석 + visibility heal + perform_action.
+
+        ``ShadowAccessError`` 는 자동치유 의미 없으므로 즉시 FAIL StepResult 반환.
+        verify 조건 실패는 caller 에 전달 (다음 단계가 끝까지 못 살리면 최종 FAIL 사유).
+        """
+        action = step["action"].lower()
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
         original_target = step.get("target")
-        verification_error: VerificationAssertionError | None = None
-
-        # 1차 시도: 기본 타겟 (Resolver 가 healed_aliases 를 자동 적용)
-        # T-C (P0.2) — closed shadow 만나면 자동치유 무의미 + 30s timeout 위험.
-        # ShadowAccessError 는 fallback / healer 진입 전에 즉시 FAIL escalate.
         try:
             locator = resolver.resolve(original_target)
         except ShadowAccessError as e:
             log.error("[Step %s] %s", step_id, e)
             ss = self._screenshot(page, artifacts, step_id, "fail")
-            return StepResult(
-                step_id, action, str(original_target or ""),
-                str(step.get("value", "")), f"{desc} [closed shadow]",
-                "FAIL", screenshot_path=ss,
+            return (
+                StepResult(
+                    step_id, action, str(original_target or ""),
+                    str(step.get("value", "")), f"{desc} [closed shadow]",
+                    "FAIL", screenshot_path=ss,
+                ),
+                None,
             )
-        if locator:
-            # T-H (Visibility Healer) — element 가 hidden 이면 ancestor hover
-            # 시도, 그래도 안 되면 visible 한 형제 매치로 swap. 드롭다운 메뉴 /
-            # 호버 메뉴 / 모바일 드로어 케이스에서 codegen 원본이 hover step 을
-            # 빠뜨리거나 selector 가 모바일/데스크탑 두 곳에 매치되어 hidden 쪽이
-            # 잡히는 것을 막는다. 매칭만 되고 안 보이는 케이스만 트리거.
-            swap = self._heal_visibility(page, locator, step_id)
-            if swap is not None:
-                locator = swap
-            try:
-                self._perform_action(page, locator, step, resolver)
-                ss = self._screenshot(page, artifacts, step_id, "pass")
-                return StepResult(
+        if not locator:
+            return None, None
+        # T-H — hidden element 면 ancestor hover / sibling swap 시도.
+        swap = self._heal_visibility(page, locator, step_id)
+        if swap is not None:
+            locator = swap
+        try:
+            self._perform_action(page, locator, step, resolver)
+            ss = self._screenshot(page, artifacts, step_id, "pass")
+            return (
+                StepResult(
                     step_id, action, str(original_target or ""),
                     str(step.get("value", "")), desc,
                     "PASS", screenshot_path=ss,
-                )
-            except VerificationAssertionError as e:
-                verification_error = e
-                log.warning("[Step %s] verify 조건 실패: %s", step_id, e)
-            except Exception as e:
-                log.warning("[Step %s] 기본 타겟 실패: %s", step_id, e)
+                ),
+                None,
+            )
+        except VerificationAssertionError as e:
+            log.warning("[Step %s] verify 조건 실패: %s", step_id, e)
+            return None, e
+        except Exception as e:  # noqa: BLE001
+            log.warning("[Step %s] 기본 타겟 실패: %s", step_id, e)
+            return None, None
 
-        # ── [치유 1단계] fallback_targets ──
+    # ─────────────────────────────────────────────────────────────────────
+    # 치유 단계 helper — _execute_step 의 fallback / alternatives / local /
+    # dify 단계를 단계별 메서드로 분리. 각 helper 는 성공 시 StepResult 반환,
+    # 실패/미발동 시 None. fallback / alternatives 는 verify 실패가 누적될 수
+    # 있어 (StepResult, VerificationAssertionError) 를 반환.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _try_fallback_targets(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> tuple[Optional[StepResult], Optional[VerificationAssertionError]]:
+        """``step['fallback_targets']`` 의 selector 들을 순서대로 시도한다.
+
+        성공 시 alias 등록 + step['target'] 갱신 (scenario.healed.json 기록 보존).
+        verify 조건 실패는 누적해 caller 에 반환 (마지막 단계까지 다 실패하면 그
+        verification_error 가 최종 FAIL 사유로 사용됨).
+        """
+        action = step["action"].lower()
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        original_target = step.get("target")
+        verification_error: Optional[VerificationAssertionError] = None
         for fb_target in step.get("fallback_targets", []):
             fb_loc = resolver.resolve(fb_target)
-            if fb_loc:
-                try:
-                    self._perform_action(page, fb_loc, step, resolver)
-                    # A: 후속 스텝이 같은 target 을 만나면 즉시 fb_target 사용
-                    resolver.record_alias(original_target, fb_target)
-                    # S2-12: scenario.healed.json 이 fallback 치유 결과까지
-                    # 기록하도록 step dict 자체를 갱신한다. step 은 scenario
-                    # 리스트 원소이므로 in-place 변경이 그대로 healed.json 으로
-                    # 직렬화된다.
-                    step["target"] = fb_target
-                    ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] fallback 복구 성공: %s", step_id, fb_target)
-                    return StepResult(
+            if not fb_loc:
+                continue
+            try:
+                self._perform_action(page, fb_loc, step, resolver)
+                resolver.record_alias(original_target, fb_target)
+                step["target"] = fb_target
+                ss = self._screenshot(page, artifacts, step_id, "healed")
+                log.info("[Step %s] fallback 복구 성공: %s", step_id, fb_target)
+                return (
+                    StepResult(
                         step_id, action, str(fb_target),
                         str(step.get("value", "")), desc,
                         "HEALED", heal_stage="fallback", screenshot_path=ss,
-                    )
-                except VerificationAssertionError as e:
-                    verification_error = e
-                    log.warning("[Step %s] fallback verify 조건 실패: %s", step_id, e)
-                except Exception:
-                    continue
+                    ),
+                    None,
+                )
+            except VerificationAssertionError as e:
+                verification_error = e
+                log.warning("[Step %s] fallback verify 조건 실패: %s", step_id, e)
+            except Exception:  # noqa: BLE001
+                continue
+        return None, verification_error
 
-        # ── [치유 2단계] DSL action_alternatives (C) ──
-        # Planner LLM 이 명시한 등가 액션 (예: press Enter → click 검색버튼).
-        # LocalHealer/Dify heal 보다 먼저 시도 — 명시 의도가 가장 신뢰도 높음.
+    def _try_action_alternatives(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> tuple[Optional[StepResult], Optional[VerificationAssertionError]]:
+        """``step['action_alternatives']`` 의 등가 액션을 순서대로 시도한다 (C).
+
+        Planner LLM 이 명시한 등가 액션 (예: press Enter → click 검색버튼).
+        LocalHealer/Dify 보다 먼저 시도 — 명시 의도가 가장 신뢰도 높음.
+        """
+        action = step["action"].lower()
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        verification_error: Optional[VerificationAssertionError] = None
         for alt in step.get("action_alternatives", []) or []:
             if not isinstance(alt, dict) or not alt.get("action"):
                 continue
@@ -608,51 +729,63 @@ class QAExecutor:
                     "[Step %s] action_alternatives 복구 성공: %s %s",
                     step_id, alt_step.get("action"), alt_step.get("target"),
                 )
-                return StepResult(
-                    step_id, alt_step.get("action", action),
-                    str(alt_step.get("target", "")),
-                    str(alt_step.get("value", "")), desc,
-                    "HEALED", heal_stage="alternative", screenshot_path=ss,
+                return (
+                    StepResult(
+                        step_id, alt_step.get("action", action),
+                        str(alt_step.get("target", "")),
+                        str(alt_step.get("value", "")), desc,
+                        "HEALED", heal_stage="alternative", screenshot_path=ss,
+                    ),
+                    None,
                 )
             except VerificationAssertionError as e:
                 verification_error = e
                 log.warning(
-                    "[Step %s] action_alternatives verify 조건 실패: %s", step_id, e
+                    "[Step %s] action_alternatives verify 조건 실패: %s", step_id, e,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 continue
+        return None, verification_error
 
-        if verification_error:
-            ss = self._screenshot(page, artifacts, step_id, "fail")
-            log.error("[Step %s] FAIL — verify 조건 불일치", step_id)
+    def _try_local_healer(
+        self, page: Page, step: dict, healer: LocalHealer,
+        resolver: LocatorResolver, artifacts: str,
+    ) -> Optional[StepResult]:
+        """LocalHealer DOM 유사도 매칭으로 healed locator 시도."""
+        action = step["action"].lower()
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        original_target = step.get("target")
+        healed_loc = healer.try_heal(step)
+        if not healed_loc:
+            return None
+        try:
+            self._perform_action(page, healed_loc, step, resolver)
+            ss = self._screenshot(page, artifacts, step_id, "healed")
+            log.info("[Step %s] LocalHealer DOM 유사도 복구 성공", step_id)
             return StepResult(
                 step_id, action, str(original_target or ""),
                 str(step.get("value", "")), desc,
-                "FAIL", screenshot_path=ss,
+                "HEALED", heal_stage="local", screenshot_path=ss,
             )
+        except Exception as e:  # noqa: BLE001
+            log.warning("[Step %s] 로컬 치유 실행 실패: %s", step_id, e)
+            return None
 
-        # ── [치유 3단계] 로컬 DOM 유사도 매칭 ──
-        healed_loc = healer.try_heal(step)
-        if healed_loc:
-            try:
-                self._perform_action(page, healed_loc, step, resolver)
-                ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] LocalHealer DOM 유사도 복구 성공", step_id)
-                return StepResult(
-                    step_id, action, str(original_target or ""),
-                    str(step.get("value", "")), desc,
-                    "HEALED", heal_stage="local", screenshot_path=ss,
-                )
-            except Exception as e:
-                log.warning("[Step %s] 로컬 치유 실행 실패: %s", step_id, e)
-
-        # ── [치유 4단계] Dify LLM 치유 (timeout 단축, retry 0) ──
-        log.info("[Step %s] Dify LLM 치유 요청 중 (timeout=%ds)...",
-                 step_id, self.config.heal_timeout_sec)
+    def _try_dify_healer(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> Optional[StepResult]:
+        """Dify LLM 치유 — 새 target/value/condition/action(whitelist) 받아 재시도."""
+        action = step["action"].lower()
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        original_target = step.get("target")
+        log.info(
+            "[Step %s] Dify LLM 치유 요청 중 (timeout=%ds)...",
+            step_id, self.config.heal_timeout_sec,
+        )
         try:
             dom_snapshot = page.content()[: self.config.dom_snapshot_limit]
-            # B: 직전 strategy chain 의 시도/실패 결과를 healer 프롬프트에 주입.
-            # "selector 만 바꿔도 같은 timeout 이었다" 정보를 LLM 에 전달한다.
             new_target_info = self.dify.request_healing(
                 error_msg=f"요소 탐색/실행 실패: {original_target}",
                 dom_snapshot=dom_snapshot,
@@ -661,176 +794,203 @@ class QAExecutor:
             )
         except DifyConnectionError as e:
             log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
-            new_target_info = None
-
-        if new_target_info:
-            # B: target / value / condition / fallback_targets 는 자유롭게 mutate 허용.
-            # action 변경은 _HEAL_ACTION_TRANSITIONS 화이트리스트 전이만 허용 (Sprint 6
-            # Option-2). 그 외 키는 무시. dify-chatflow.yaml Healer prompt 와 1:1 동기.
-            allowed_keys = {"target", "value", "condition", "fallback_targets"}
-            mutation = {k: v for k, v in new_target_info.items() if k in allowed_keys}
-            proposed_action = new_target_info.get("action")
-            if isinstance(proposed_action, str) and proposed_action.strip():
-                proposed_action = proposed_action.strip().lower()
-                old_action = str(step.get("action", "")).lower()
-                if _is_allowed_action_transition(old_action, proposed_action):
-                    if proposed_action != old_action:
-                        log.warning(
-                            "[Step %s] Healer action 전이 허용: %s → %s (whitelist)",
-                            step_id, old_action, proposed_action,
-                        )
-                    mutation["action"] = proposed_action
-                else:
+            return None
+        if not new_target_info:
+            return None
+        # target / value / condition / fallback_targets 는 자유롭게 mutate 허용.
+        # action 변경은 화이트리스트 전이만 허용 (false-PASS 위험 차단).
+        allowed_keys = {"target", "value", "condition", "fallback_targets"}
+        mutation = {k: v for k, v in new_target_info.items() if k in allowed_keys}
+        proposed_action = new_target_info.get("action")
+        if isinstance(proposed_action, str) and proposed_action.strip():
+            proposed_action = proposed_action.strip().lower()
+            old_action = str(step.get("action", "")).lower()
+            if _is_allowed_action_transition(old_action, proposed_action):
+                if proposed_action != old_action:
                     log.warning(
-                        "[Step %s] Healer action 전이 거절: %s → %s (whitelist 외, false-PASS 위험)",
+                        "[Step %s] Healer action 전이 허용: %s → %s (whitelist)",
                         step_id, old_action, proposed_action,
                     )
-            step.update(mutation)
-            healed_loc = resolver.resolve(step.get("target"))
-            if healed_loc:
-                try:
-                    # B3: post-condition 강제 — _perform_action 의 strategy chain 에
-                    # post-check 가 내장돼 있으므로, 이 호출이 성공하면 자동으로
-                    # 의미적 검증까지 통과한 것이다.
-                    self._perform_action(page, healed_loc, step, resolver)
-                    resolver.record_alias(original_target, step.get("target"))
-                    ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info(
-                        "[Step %s] LLM 치유 성공. 새 타겟: %s",
-                        step_id, step.get("target"),
-                    )
-                    return StepResult(
-                        step_id, str(step.get("action", action)),
-                        str(step.get("target", "")),
-                        str(step.get("value", "")), desc,
-                        "HEALED", heal_stage="dify", screenshot_path=ss,
-                    )
-                except Exception as e:
-                    log.error("[Step %s] LLM 치유 후 실행 실패: %s", step_id, e)
+                mutation["action"] = proposed_action
+            else:
+                log.warning(
+                    "[Step %s] Healer action 전이 거절: %s → %s (whitelist 외, false-PASS 위험)",
+                    step_id, old_action, proposed_action,
+                )
+        step.update(mutation)
+        healed_loc = resolver.resolve(step.get("target"))
+        if not healed_loc:
+            return None
+        try:
+            self._perform_action(page, healed_loc, step, resolver)
+            resolver.record_alias(original_target, step.get("target"))
+            ss = self._screenshot(page, artifacts, step_id, "healed")
+            log.info(
+                "[Step %s] LLM 치유 성공. 새 타겟: %s",
+                step_id, step.get("target"),
+            )
+            return StepResult(
+                step_id, str(step.get("action", action)),
+                str(step.get("target", "")),
+                str(step.get("value", "")), desc,
+                "HEALED", heal_stage="dify", screenshot_path=ss,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("[Step %s] LLM 치유 후 실행 실패: %s", step_id, e)
+            return None
 
-        # ── [치유 5단계] press(Enter/Return) 휴리스틱 — 검색버튼 click (B) ──
-        # 사람이라면 엔터 안 먹을 때 검색버튼을 누른다. 이 마지막 안전망이
-        # Naver/Google 류 검색 페이지에서 가장 자주 PASS 를 살린다.
-        #
-        # E-1: click 자체 성공만으로는 불충분. "검색/search" 의도 맥락이면
-        # click 후 navigation 효과(URL 변경 or 유효 새 탭) 까지 확인해서
-        # chrome-error 새 탭 같은 봇 차단 산물을 false PASS 로 흘려보내지 않는다.
-        if action == "press" and str(step.get("value", "")).lower() in ("enter", "return"):
-            needs_nav_check = bool(re.search(r"검색|search", desc, re.IGNORECASE))
-            for sel in self._SEARCH_BUTTON_CANDIDATES:
-                try:
-                    btn = page.locator(sel)
-                    if btn.count() == 0:
-                        continue
-                    before_url = page.url
-                    before_pages_count = len(page.context.pages)
-                    btn.first.click(timeout=3000)
-                    if needs_nav_check and not self._wait_for_navigation_effect(
-                        page, before_url, before_pages_count
-                    ):
-                        log.warning(
-                            "[Step %s] press→click 후 유효한 navigation 없음 — 다음 후보 시도 (sel=%s)",
-                            step_id, sel,
-                        )
-                        continue
-                    ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] press→click 휴리스틱 성공: %s", step_id, sel)
-                    return StepResult(
-                        step_id, "click", sel, "",
-                        desc, "HEALED",
-                        heal_stage="press_to_click", screenshot_path=ss,
-                    )
-                except Exception:
+    # ─────────────────────────────────────────────────────────────────────
+    # 휴리스틱 helper — _execute_step 끝부분 단계별 분리.
+    # 각 helper 는 발동 조건(action/desc 매칭) 만족 + 후보 selector 중 하나가
+    # 성공하면 StepResult 를 반환하고, 그렇지 않으면 None.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _try_press_to_click_heuristic(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> Optional[StepResult]:
+        """press(Enter/Return) 가 모두 실패했을 때 검색/제출 버튼 click 으로 시도 (B).
+
+        '검색/search' 의도 맥락이면 click 후 navigation 효과 (URL 변경 or 유효
+        새 탭) 까지 확인해서 chrome-error 새 탭 같은 봇 차단 산물을 false PASS 로
+        흘려보내지 않는다 (E-1).
+        """
+        del resolver  # 본 휴리스틱은 selector 재매핑 안 함.
+        action = step["action"].lower()
+        if action != "press" or str(step.get("value", "")).lower() not in ("enter", "return"):
+            return None
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        needs_nav_check = bool(re.search(r"검색|search", desc, re.IGNORECASE))
+        for sel in self._SEARCH_BUTTON_CANDIDATES:
+            try:
+                btn = page.locator(sel)
+                if btn.count() == 0:
                     continue
-
-        # ── [치유 6단계] click "첫 번째 결과/링크/항목" 의미적 휴리스틱 (E) ──
-        # LLM 의 site-specific selector 추측이 다 빗나가도, "첫 번째 검색결과 링크"
-        # 같은 의도가 description 에 있으면 main/article 영역의 첫 visible 링크 시도.
-        # Naver/Google/Yahoo 류 검색 결과에서 마지막 안전망 역할.
-        #
-        # E-4: click 자체 성공만으로는 불충분. "첫 결과" click 은 본질적으로
-        # 다른 페이지로의 이동이므로 URL 변경 or 유효 새 탭을 반드시 확인.
-        # Yahoo 홈에서 search form 내부 엉뚱한 링크 매치해 "HEALED" 로 끝나는
-        # false positive (build #21 trending 이동) 를 차단.
-        if action == "click" and self._matches_first_result_intent(desc):
-            for sel in self._FIRST_RESULT_CANDIDATES:
-                try:
-                    loc = page.locator(sel)
-                    if loc.count() == 0:
-                        continue
-                    before_url = page.url
-                    before_pages_count = len(page.context.pages)
-                    loc.first.click(timeout=3000)
-                    if not self._wait_for_navigation_effect(
-                        page, before_url, before_pages_count
-                    ):
-                        log.warning(
-                            "[Step %s] '첫 결과' 후보 click 후 navigation 없음 — 다음 후보 시도 (sel=%s)",
-                            step_id, sel,
-                        )
-                        continue
-                    ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] '첫 결과' 휴리스틱 성공: %s", step_id, sel)
-                    return StepResult(
-                        step_id, action, sel, "",
-                        desc, "HEALED",
-                        heal_stage="first_result", screenshot_path=ss,
+                before_url = page.url
+                before_pages_count = len(page.context.pages)
+                btn.first.click(timeout=3000)
+                if needs_nav_check and not self._wait_for_navigation_effect(
+                    page, before_url, before_pages_count,
+                ):
+                    log.warning(
+                        "[Step %s] press→click 후 유효한 navigation 없음 — 다음 후보 시도 (sel=%s)",
+                        step_id, sel,
                     )
-                except Exception:
                     continue
+                ss = self._screenshot(page, artifacts, step_id, "healed")
+                log.info("[Step %s] press→click 휴리스틱 성공: %s", step_id, sel)
+                return StepResult(
+                    step_id, "click", sel, "", desc, "HEALED",
+                    heal_stage="press_to_click", screenshot_path=ss,
+                )
+            except Exception:  # noqa: BLE001 — 후보 단순 skip
+                continue
+        return None
 
-        # ── [치유 ?단계] verify "검색결과 존재" 의미적 휴리스틱 (J) ──
-        # description 에 "검색 결과 (목록/존재/표시) 확인" 패턴 + verify 일 때,
-        # main/article/검색결과 컨테이너 중 하나라도 visible 이면 PASS 로 간주.
-        # LLM 의 잘못된 target/value 추측을 의미 기반으로 우회.
-        if action == "verify" and self._matches_search_results_intent(desc):
-            for sel in self._SEARCH_RESULTS_CANDIDATES:
-                try:
-                    loc = page.locator(sel)
-                    if loc.count() == 0:
-                        continue
-                    if loc.first.is_visible():
-                        ss = self._screenshot(page, artifacts, step_id, "healed")
-                        log.info("[Step %s] '검색결과 존재' 휴리스틱 성공: %s", step_id, sel)
-                        return StepResult(
-                            step_id, action, sel,
-                            str(step.get("value", "")), desc,
-                            "HEALED", heal_stage="search_results_visible",
-                            screenshot_path=ss,
-                        )
-                except Exception:
+    def _try_first_result_heuristic(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> Optional[StepResult]:
+        """click '첫 번째 결과/링크/항목' 의미적 휴리스틱 (E).
+
+        description 에 '첫 결과' 의도가 있으면 main/article 영역의 첫 visible
+        링크 시도. URL 변경 or 유효 새 탭을 반드시 확인해 false-PASS 차단 (E-4).
+        """
+        del resolver
+        action = step["action"].lower()
+        desc = step.get("description", "")
+        if action != "click" or not self._matches_first_result_intent(desc):
+            return None
+        step_id = step.get("step", "-")
+        for sel in self._FIRST_RESULT_CANDIDATES:
+            try:
+                loc = page.locator(sel)
+                if loc.count() == 0:
                     continue
+                before_url = page.url
+                before_pages_count = len(page.context.pages)
+                loc.first.click(timeout=3000)
+                if not self._wait_for_navigation_effect(
+                    page, before_url, before_pages_count,
+                ):
+                    log.warning(
+                        "[Step %s] '첫 결과' 후보 click 후 navigation 없음 — 다음 후보 시도 (sel=%s)",
+                        step_id, sel,
+                    )
+                    continue
+                ss = self._screenshot(page, artifacts, step_id, "healed")
+                log.info("[Step %s] '첫 결과' 휴리스틱 성공: %s", step_id, sel)
+                return StepResult(
+                    step_id, action, sel, "", desc, "HEALED",
+                    heal_stage="first_result", screenshot_path=ss,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+        return None
 
-        # ── [치유 7단계] fill "검색창" 의미적 휴리스틱 (H) ──
-        # LLM 이 사이트별 검색창 name/id 를 추측하다 빗나가도 (Yahoo 의 textarea[name=q] 등),
-        # description 에 "검색" 키워드가 있으면 일반 search input selector 들로 fallback.
-        # input[type=search] / [role=searchbox] / placeholder/aria-label 매치 / name 빈출값 순.
-        if action == "fill" and self._matches_search_input_intent(desc):
-            for sel in self._SEARCH_INPUT_CANDIDATES:
-                try:
-                    loc = page.locator(sel)
-                    if loc.count() == 0:
-                        continue
-                    loc.first.fill(str(step.get("value", "")))
-                    resolver.record_alias(original_target, sel)
+    def _try_search_results_visible_heuristic(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> Optional[StepResult]:
+        """verify '검색결과 존재' 의미적 휴리스틱 (J).
+
+        description 에 '검색 결과 (목록/존재/표시) 확인' + verify 일 때,
+        main/article/검색결과 컨테이너 중 하나라도 visible 이면 PASS.
+        """
+        del resolver
+        action = step["action"].lower()
+        desc = step.get("description", "")
+        if action != "verify" or not self._matches_search_results_intent(desc):
+            return None
+        step_id = step.get("step", "-")
+        for sel in self._SEARCH_RESULTS_CANDIDATES:
+            try:
+                loc = page.locator(sel)
+                if loc.count() == 0:
+                    continue
+                if loc.first.is_visible():
                     ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] '검색창' 휴리스틱 성공: %s", step_id, sel)
+                    log.info("[Step %s] '검색결과 존재' 휴리스틱 성공: %s", step_id, sel)
                     return StepResult(
                         step_id, action, sel,
                         str(step.get("value", "")), desc,
-                        "HEALED", heal_stage="search_input",
+                        "HEALED", heal_stage="search_results_visible",
                         screenshot_path=ss,
                     )
-                except Exception:
-                    continue
+            except Exception:  # noqa: BLE001
+                continue
+        return None
 
-        # ── 모든 치유 실패 ──
-        log.error("[Step %s] FAIL — 모든 치유 실패", step_id)
-        return StepResult(
-            step_id, action, str(original_target or ""),
-            str(step.get("value", "")), desc,
-            "FAIL",
-        )
+    def _try_search_input_heuristic(
+        self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
+    ) -> Optional[StepResult]:
+        """fill '검색창' 의미적 휴리스틱 (H).
+
+        description 에 '검색' 키워드가 있으면 일반 search input selector 들로
+        fallback — input[type=search] / [role=searchbox] / placeholder 매치 등.
+        """
+        action = step["action"].lower()
+        desc = step.get("description", "")
+        if action != "fill" or not self._matches_search_input_intent(desc):
+            return None
+        step_id = step.get("step", "-")
+        original_target = step.get("target")
+        for sel in self._SEARCH_INPUT_CANDIDATES:
+            try:
+                loc = page.locator(sel)
+                if loc.count() == 0:
+                    continue
+                loc.first.fill(str(step.get("value", "")))
+                resolver.record_alias(original_target, sel)
+                ss = self._screenshot(page, artifacts, step_id, "healed")
+                log.info("[Step %s] '검색창' 휴리스틱 성공: %s", step_id, sel)
+                return StepResult(
+                    step_id, action, sel,
+                    str(step.get("value", "")), desc,
+                    "HEALED", heal_stage="search_input",
+                    screenshot_path=ss,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+        return None
 
     # B: press(Enter) 가 모든 치유 다 실패했을 때 click 으로 시도해볼 검색/제출 버튼 후보.
     # 가시성 필터와 한/영 라벨을 함께 고려. 우선순위는 좁은 것 → 넓은 것 순.
