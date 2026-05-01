@@ -57,18 +57,33 @@ def test_user_journey_seed_to_play_with_real_subprocess(
       - executor 가 인자 / Config 충돌
       - storage_state 적용이 끊겨 보호 페이지가 비로그인 진입
     """
-    from playwright.sync_api import sync_playwright
     from recording_service.server import _generate_tour_script
 
     # ── (1) storage 시드 ──────────────────────────────────────────────
+    # sync_playwright 는 별도 subprocess 에서 — 같은 프로세스에 pytest-playwright
+    # 등이 asyncio loop 를 띄워 두면 sync API 호출이 막히기 때문.
     storage = tmp_path / "fresh.storage.json"
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto(f"{authn_site}/login?user=qa-tester", wait_until="load")
-        context.storage_state(path=str(storage))
-        browser.close()
+    seed_script = (
+        "import sys\n"
+        "from playwright.sync_api import sync_playwright\n"
+        "base, dump = sys.argv[1], sys.argv[2]\n"
+        "with sync_playwright() as p:\n"
+        "    b = p.chromium.launch(headless=True)\n"
+        "    ctx = b.new_context()\n"
+        "    pg = ctx.new_page()\n"
+        "    pg.goto(base + '/login?user=qa-tester', wait_until='load')\n"
+        "    ctx.storage_state(path=dump)\n"
+        "    b.close()\n"
+    )
+    seed_proc = subprocess.run(
+        [VENV_PY, "-c", seed_script, authn_site, str(storage)],
+        capture_output=True, timeout=60,
+    )
+    if seed_proc.returncode != 0:
+        pytest.fail(
+            "storage seed 실패: "
+            + seed_proc.stderr.decode("utf-8", "replace")[-400:]
+        )
     assert storage.is_file()
 
     # ── (2)+(3) 두 보호 URL 로 tour 생성 ──────────────────────────────
