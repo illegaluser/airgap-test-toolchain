@@ -199,10 +199,11 @@ async function addAssertion(sid, payload) {
 // R-Plus — 백엔드는 /experimental/* 로 분리. UI 는 메인 결과 화면에 함께 노출.
 // 만료/머신 등 에러 status/detail 을 보존해야 _runPlay 가 409 → 만료 모달 분기를
 // 칠 수 있어, api() 가 아니라 raw fetch 로 호출하고 err.status/err.detail 을 박는다.
-async function _playRawFetch(path) {
+async function _playRawFetch(path, body) {
   const r = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -218,12 +219,27 @@ async function _playRawFetch(path) {
   return data;
 }
 
+// R-Plus Play 의 옵션 패널(auth_profile select + headed checkbox) 값을 body 로 변환.
+// auth-profile select 의 sentinel "__default__" 는 body 에서 키를 빼서 서버가
+// metadata 의 프로파일을 그대로 쓰게 한다. 빈 문자열은 "인증 없이" 의미.
+function _rplusPlayBody() {
+  const sel = document.getElementById("rplus-auth-profile");
+  const headedEl = document.getElementById("rplus-headed");
+  const body = {};
+  if (sel) {
+    const v = sel.value;
+    if (v !== "__default__") body.auth_profile = v;
+  }
+  if (headedEl) body.headed = headedEl.checked;
+  return body;
+}
+
 async function playCodegen(sid) {
-  return _playRawFetch(`/experimental/sessions/${sid}/play-codegen`);
+  return _playRawFetch(`/experimental/sessions/${sid}/play-codegen`, _rplusPlayBody());
 }
 
 async function playLLM(sid) {
-  return _playRawFetch(`/experimental/sessions/${sid}/play-llm`);
+  return _playRawFetch(`/experimental/sessions/${sid}/play-llm`, _rplusPlayBody());
 }
 
 async function enrichSession(sid) {
@@ -1142,6 +1158,25 @@ async function loadAuthProfiles() {
     recSel.innerHTML = optionsHtml;
     if (prevRec && profiles.some((p) => p.name === prevRec)) {
       recSel.value = prevRec;
+    }
+  }
+
+  // R-Plus Play 영역의 셀렉터 — 추가 sentinel "(세션 기본값 사용)" 을 맨 위에.
+  // 기본값은 항상 sentinel — 사용자가 직접 다른 값으로 바꿀 때만 override 된다.
+  const rplusSel = $("#rplus-auth-profile");
+  if (rplusSel) {
+    const prev = rplusSel.value || "__default__";
+    rplusSel.innerHTML =
+      `<option value="__default__">(세션 기본값 사용)</option>` +
+      `<option value="">(인증 없이 실행)</option>` +
+      profiles.map((p) => {
+        const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
+        return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
+      }).join("");
+    if (prev === "" || prev === "__default__" || profiles.some((p) => p.name === prev)) {
+      rplusSel.value = prev;
+    } else {
+      rplusSel.value = "__default__";
     }
   }
 }

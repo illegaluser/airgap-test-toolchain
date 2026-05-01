@@ -54,16 +54,33 @@ def _run_diff_analysis_impl(
     )
 
 
-def _run_codegen_replay_impl(*, host_session_dir: str):
+def _run_codegen_replay_impl(
+    *,
+    host_session_dir: str,
+    auth_profile_override: Optional[str] = None,
+    headed: bool = True,
+):
     """codegen 원본 ``original.py`` 호스트 실행 hook (monkeypatch 대상)."""
-    return replay_proxy.run_codegen_replay(host_session_dir=host_session_dir)
+    return replay_proxy.run_codegen_replay(
+        host_session_dir=host_session_dir,
+        auth_profile_override=auth_profile_override,
+        headed=headed,
+    )
 
 
-def _run_llm_play_impl(*, host_session_dir: str, project_root: str):
+def _run_llm_play_impl(
+    *,
+    host_session_dir: str,
+    project_root: str,
+    auth_profile_override: Optional[str] = None,
+    headed: bool = True,
+):
     """14-DSL ``scenario.json`` 의 zero_touch_qa executor 실행 hook."""
     return replay_proxy.run_llm_play(
         host_session_dir=host_session_dir,
         project_root=project_root,
+        auth_profile_override=auth_profile_override,
+        headed=headed,
     )
 
 
@@ -91,6 +108,21 @@ class EnrichReq(BaseModel):
         None,
         description="Phase 1 grounding 인벤토리 마커 블록 (선택). srs_text prepend 패턴과 동일.",
     )
+
+
+class PlayReq(BaseModel):
+    """R-Plus Play 요청 옵션 (선택). body 가 없으면 모두 기본값.
+
+    - ``auth_profile``: ``None`` 이면 세션 metadata 의 프로파일 사용. 빈 문자열
+      이면 인증 없이 재생. 이름이면 그 프로파일로 override.
+    - ``headed``: False 면 헤드리스 실행 (codegen 은 wrapper monkey-patch,
+      LLM 은 ``--headless`` 플래그).
+    """
+    auth_profile: Optional[str] = Field(
+        None,
+        description="auth-profile override. None=세션 metadata 사용, ''=인증 없이, '<name>'=override.",
+    )
+    headed: bool = Field(True, description="False 면 헤드리스 실행.")
 
 
 class CompareReq(BaseModel):
@@ -178,12 +210,14 @@ def _annotate_for_session(sid: str) -> dict:
 
 
 @router.post("/sessions/{sid}/play-codegen", status_code=201)
-def play_codegen(sid: str) -> dict:
-    """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (TR.7, headed).
+def play_codegen(sid: str, req: Optional[PlayReq] = None) -> dict:
+    """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (TR.7).
 
     실행 직전 자동으로 annotate 를 수행해 hover-needing click 앞에 hover 라인을
     주입한 ``original_annotated.py`` 를 만들고 그것을 우선 실행 (prefer_annotated).
     Annotate 결과 (injected 수 + trigger 목록) 도 응답에 함께 노출.
+
+    Body (선택): :class:`PlayReq` — auth_profile override, headed 토글.
     """
     _ensure_session_not_recording(sid, "play-codegen")
     host_dir = str(storage.session_dir(sid))
@@ -191,8 +225,13 @@ def play_codegen(sid: str) -> dict:
     # (β) annotate 자동 — 정적 휴리스틱으로 hover 주입.
     annotate_summary = _annotate_for_session(sid)
 
+    opts = req or PlayReq()
     try:
-        result = _run_codegen_replay_impl(host_session_dir=host_dir)
+        result = _run_codegen_replay_impl(
+            host_session_dir=host_dir,
+            auth_profile_override=opts.auth_profile,
+            headed=opts.headed,
+        )
     except ReplayAuthExpiredError as e:
         # post-review fix — auth-profile 만료/미존재는 502 가 아니라 409 +
         # 구조화된 detail 로 반환. UI 가 만료 모달 + [재시드] 분기로 가도록.
@@ -221,13 +260,15 @@ def play_codegen(sid: str) -> dict:
 
 
 @router.post("/sessions/{sid}/play-llm", status_code=201)
-def play_llm(sid: str) -> dict:
-    """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행 (headed).
+def play_llm(sid: str, req: Optional[PlayReq] = None) -> dict:
+    """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행.
 
     healing 3-stage / fallback_targets / verify / mock_status / mock_data 등
     14-DSL 의 풀 기능 동작 + 화면에 재생. codegen 원본보다 selector 변동에
     강함 (LocalHealer + Dify LLM 치유) — 단, scenario.json 이 변환된 상태여야
     하므로 state=done 필수.
+
+    Body (선택): :class:`PlayReq` — auth_profile override, headed 토글.
     """
     _ensure_session_not_recording(sid, "play-llm")
     sess = _registry_lookup(sid)
@@ -240,10 +281,13 @@ def play_llm(sid: str) -> dict:
             ),
         )
     host_dir = str(storage.session_dir(sid))
+    opts = req or PlayReq()
     try:
         result = _run_llm_play_impl(
             host_session_dir=host_dir,
             project_root=_project_root(),
+            auth_profile_override=opts.auth_profile,
+            headed=opts.headed,
         )
     except ReplayAuthExpiredError as e:
         # post-review fix — auth-profile 만료/미존재 → 409 + 구조화 detail.
