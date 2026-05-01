@@ -69,14 +69,26 @@ def _load_session_metadata(host_session_dir: str) -> dict:
 
 def _resolve_auth_for_replay(
     host_session_dir: str,
+    override: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
     """metadata.json 의 ``auth_profile`` → (storage_path, fingerprint_env, profile_name).
 
     - 메타에 auth_profile 키가 없으면 ``(None, None, None)`` — 인증 없는 재생.
     - 프로파일 lookup / verify 실패 시 ``ReplayAuthExpiredError`` (P4.4).
+
+    Args:
+        override: R-Plus Play 호출 시 사용자가 명시한 auth_profile.
+            - ``None`` (기본): metadata 값을 그대로 사용.
+            - ``""`` (빈 문자열): 인증 없이 재생 — metadata 값 무시.
+            - ``"<name>"``: metadata 값을 무시하고 그 프로파일로 재생.
     """
-    meta = _load_session_metadata(host_session_dir)
-    profile_name = meta.get("auth_profile")
+    if override is not None:
+        if override == "":
+            return None, None, None
+        profile_name = override
+    else:
+        meta = _load_session_metadata(host_session_dir)
+        profile_name = meta.get("auth_profile")
     if not profile_name:
         return None, None, None
 
@@ -202,8 +214,10 @@ def run_codegen_replay(
     timeout_sec: int = DEFAULT_REPLAY_TIMEOUT_SEC,
     venv_py: str | None = None,
     prefer_annotated: bool = True,
+    auth_profile_override: Optional[str] = None,
+    headed: bool = True,
 ) -> PlayResult:
-    """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (headed).
+    """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (기본 headed).
 
     내부적으로는 ``recording_service.codegen_trace_wrapper`` 를 통해 실행하여
     Playwright tracing 을 자동 주입한다. subprocess 종료 후 ``trace.zip`` 을
@@ -217,6 +231,10 @@ def run_codegen_replay(
         venv_py: 인터프리터 경로 override.
         prefer_annotated: True 이고 ``original_annotated.py`` 가 있으면 그걸 우선
             실행 (T-H 정적 hover 주입본). 기본 True.
+        auth_profile_override: R-Plus Play 호출 시 사용자가 명시한 프로파일.
+            ``None`` 이면 metadata 사용, ``""`` 이면 인증 없이, 이름이면 override.
+        headed: False 면 codegen 스크립트의 ``launch()`` headless 인자를 강제로
+            True 로 patch (CODEGEN_HEADLESS=1 env 로 wrapper 에 전달).
     """
     sess_dir = Path(host_session_dir)
     annotated = sess_dir / "original_annotated.py"
@@ -233,7 +251,9 @@ def run_codegen_replay(
 
     # 래퍼는 CODEGEN_SESSION_DIR / CODEGEN_SCRIPT env 로 실행 대상을 받는다.
     # auth-profile env (P4.3) 도 동일하게 전달.
-    storage_path, fingerprint_env, profile_name = _resolve_auth_for_replay(host_session_dir)
+    storage_path, fingerprint_env, profile_name = _resolve_auth_for_replay(
+        host_session_dir, override=auth_profile_override,
+    )
     env = os.environ.copy()
     env["CODEGEN_SESSION_DIR"] = str(sess_dir)
     env["CODEGEN_SCRIPT"] = script_name
@@ -250,6 +270,9 @@ def run_codegen_replay(
             "[play-codegen] auth-profile=%s storage=%s",
             profile_name, storage_path,
         )
+    if not headed:
+        # codegen wrapper 가 BrowserType.launch() 의 headless 인자를 강제 True 로 monkey-patch.
+        env["CODEGEN_HEADLESS"] = "1"
 
     log.info(
         "[play-codegen] %s (script=%s, traced)", " ".join(cmd), script_name
@@ -286,8 +309,10 @@ def run_llm_play(
     project_root: str,
     timeout_sec: int = DEFAULT_REPLAY_TIMEOUT_SEC,
     venv_py: str | None = None,
+    auth_profile_override: Optional[str] = None,
+    headed: bool = True,
 ) -> PlayResult:
-    """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행 (headed).
+    """변환된 14-DSL ``scenario.json`` 을 zero_touch_qa executor 로 실행 (기본 headed).
 
     Args:
         host_session_dir: 호스트 측 세션 디렉토리 — ``scenario.json`` 위치 +
@@ -295,6 +320,9 @@ def run_llm_play(
         project_root: zero_touch_qa 패키지가 있는 프로젝트 루트 — PYTHONPATH 주입.
         timeout_sec: subprocess timeout (기본 300s).
         venv_py: 인터프리터 경로 override.
+        auth_profile_override: R-Plus Play 호출 시 사용자가 명시한 프로파일.
+            ``None`` 이면 metadata 사용, ``""`` 이면 인증 없이, 이름이면 override.
+        headed: False 면 ``--headless`` 플래그를 executor 에 전달.
     """
     scenario = Path(host_session_dir) / "scenario.json"
     if not scenario.is_file():
@@ -306,10 +334,14 @@ def run_llm_play(
         "--mode", "execute",
         "--scenario", str(scenario),
     ]
+    if not headed:
+        cmd.append("--headless")
 
     # P4.2 — auth-profile 자동 매칭. 메타에 auth_profile 이 있으면 verify 통과 후
     # ``--storage-state-in <path>`` 인자 + fingerprint env 주입.
-    storage_path, fingerprint_env, profile_name = _resolve_auth_for_replay(host_session_dir)
+    storage_path, fingerprint_env, profile_name = _resolve_auth_for_replay(
+        host_session_dir, override=auth_profile_override,
+    )
     if storage_path:
         cmd += ["--storage-state-in", storage_path]
         log.info(

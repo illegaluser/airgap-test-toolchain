@@ -31,7 +31,7 @@ import runpy
 import sys
 from pathlib import Path
 
-from playwright.sync_api import Browser, BrowserContext
+from playwright.sync_api import Browser, BrowserContext, BrowserType
 
 
 def _resolve_paths() -> tuple[Path, Path]:
@@ -111,8 +111,25 @@ def _install_tracing_patches(session_dir: Path) -> None:
     atexit.register(_flush_remaining)
 
 
+def _install_headless_patch() -> None:
+    """CODEGEN_HEADLESS=1 일 때 ``BrowserType.launch()`` 의 ``headless`` 인자를
+    강제 True 로 덮어쓴다. codegen 이 만든 스크립트는 보통 ``headless=False`` 가
+    하드코딩되어 있어, 호출자가 따로 헤드리스를 지정할 방법이 없다.
+    """
+    if os.environ.get("CODEGEN_HEADLESS") != "1":
+        return
+    real_launch = BrowserType.launch
+
+    def patched_launch(self, **kwargs):
+        kwargs["headless"] = True
+        return real_launch(self, **kwargs)
+
+    BrowserType.launch = patched_launch  # type: ignore[assignment]
+
+
 def main() -> None:
     sess, script = _resolve_paths()
+    _install_headless_patch()
     _install_tracing_patches(sess)
     # 사용자 스크립트 실행 — 자체 종료 코드를 그대로 전파.
     # runpy.run_path 는 module __main__ 으로 실행하므로 `if __name__ == "__main__"`

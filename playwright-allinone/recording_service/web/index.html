@@ -412,6 +412,19 @@
         <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
       </h2>
       <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.</p>
+      <div class="plus-options" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="display:flex;gap:6px;align-items:center;">
+          <span class="muted">로그인 프로파일</span>
+          <select id="rplus-auth-profile">
+            <option value="__default__">(세션 기본값 사용)</option>
+            <option value="">(인증 없이 실행)</option>
+          </select>
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;">
+          <input type="checkbox" id="rplus-headed" checked>
+          <span>화면 표시 (headed)</span>
+        </label>
+      </div>
       <div class="plus-buttons">
         <div class="dropdown-group" data-group="play">
           <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
