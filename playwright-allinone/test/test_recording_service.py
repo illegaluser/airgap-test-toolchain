@@ -2045,6 +2045,55 @@ def test_import_script_expired_auth_profile_returns_409_no_metadata(
     assert os.listdir(temp_host_root) == []
 
 
+def test_import_script_runs_profile_verify_off_event_loop(
+    client, temp_host_root, monkeypatch,
+):
+    """회귀 가드: ``_load_profile_for_browser`` 는 asyncio 이벤트 루프 *바깥*에서 호출돼야 한다.
+
+    현 ``import_script`` 핸들러는 ``async def`` 이고, 내부에서 호출하는
+    ``verify_profile`` 은 Playwright **sync** API 를 쓴다. 이 둘을 같은
+    스레드(=async 이벤트 루프 내부)에서 돌리면 Playwright 가
+    "Sync API inside the asyncio loop" 로 거절해 모든 업로드가 409 로 떨어진다.
+    실제 사용자 보고로 잡힌 회귀 — 동일 사고 재발 방지 목적.
+
+    구현이 ``asyncio.to_thread`` (또는 동등한 위임) 으로 별 스레드에서
+    돌리면 그 스레드엔 running loop 이 없으므로 ``get_running_loop()`` 이
+    RuntimeError. 이 차이로 fix 유지 여부를 결정론적으로 검증.
+    """
+    import asyncio as _asyncio
+    from pathlib import Path
+    from recording_service import server as srv
+
+    captured: dict = {}
+
+    class _StubFP:
+        def to_playwright_open_args(self):
+            return []
+
+    def fake_load(name):
+        try:
+            _asyncio.get_running_loop()
+            captured["on_event_loop"] = True
+        except RuntimeError:
+            captured["on_event_loop"] = False
+        return Path("/tmp/stub-storage.json"), _StubFP(), False
+
+    monkeypatch.setattr(srv, "_load_profile_for_browser", fake_load)
+    src = b"from playwright.sync_api import sync_playwright\npass\n"
+    r = client.post(
+        "/recording/import-script",
+        files={"file": ("guard.py", src, "text/x-python")},
+        data={"auth_profile": "any-prof"},
+    )
+    assert r.status_code == 201, r.text
+    assert "on_event_loop" in captured, "fake_load 미호출 — 검증 게이트가 사라졌을 수 있음"
+    assert captured["on_event_loop"] is False, (
+        "_load_profile_for_browser 가 async 이벤트 루프 위에서 직접 호출됨 — "
+        "sync Playwright API 가 거절돼 업로드가 모두 409 로 떨어진다. "
+        "asyncio.to_thread 로 별 스레드 위임이 필요."
+    )
+
+
 def test_import_script_missing_auth_profile_returns_404(
     client, temp_host_root, monkeypatch,
 ):
