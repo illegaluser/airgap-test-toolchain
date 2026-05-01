@@ -236,6 +236,9 @@ _VALID_ACTIONS = frozenset(
 
 # verify.condition 화이트리스트 — executor._perform_action 의 분기와 1:1 동기.
 # "" (빈 문자열) 은 "값이 들어 있으면 contains, 아니면 visible" 로 해석됨 → 허용.
+# 양쪽이 동기되지 않으면 _validate_scenario 가 condition 을 "" 로 강등 → executor 의
+# 신규 분기(url_*, min_text_length) 가 default fallback 으로 떨어져 verify 가 잘못된
+# 의미로 실행됨 (사용자 골드 시나리오 회귀로 잡힌 사고).
 _VALID_VERIFY_CONDITIONS = frozenset(
     {
         "",
@@ -248,6 +251,9 @@ _VALID_VERIFY_CONDITIONS = frozenset(
         "text",
         "contains_text",
         "contains",
+        "url_contains",
+        "url_not_contains",
+        "min_text_length",
     }
 )
 

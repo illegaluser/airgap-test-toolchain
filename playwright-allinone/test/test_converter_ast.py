@@ -415,7 +415,9 @@ def test_assert_url_not_contains_maps_to_verify_step(tmp_path: Path) -> None:
     actions = [s["action"] for s in steps]
     assert actions == ["navigate", "verify"], actions
     assert steps[1]["condition"] == "url_not_contains"
-    assert steps[1]["target"] == "page.url"
+    # target 은 placeholder('body') — executor 의 url_* 분기는 locator 안 쓰지만
+    # main step flow 의 resolve 단계가 valid selector 를 요구.
+    assert steps[1]["target"] == "body"
     assert steps[1]["value"] == "errorMsg"
 
 

@@ -164,9 +164,13 @@ class _AstConverter(ast.NodeVisitor):
         ):
             return None
         condition = "url_not_contains" if isinstance(op, ast.NotIn) else "url_contains"
+        # target 은 ``body`` 로 고정 — executor 의 url_* 분기는 locator 를 쓰지
+        # 않지만 main step flow 가 locator resolve 단계를 거쳐야 하므로 항상
+        # 매칭 가능한 placeholder 가 필요. 'page.url' 같은 비-selector 를 두면
+        # resolve 실패 → healing → FAIL 로 떨어짐 (회귀).
         return {
             "action": "verify",
-            "target": "page.url",
+            "target": "body",
             "value": needle,
             "condition": condition,
             "description": f"URL {'미포함' if isinstance(op, ast.NotIn) else '포함'} 검증 — '{needle}'",
