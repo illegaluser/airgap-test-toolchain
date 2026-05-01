@@ -746,29 +746,58 @@ def get_session_original(sid: str, download: int = 0):
 # ── P1 (항목 5) — Step 결과 시각화: run_log + 스크린샷 ─────────────────────
 
 # 스크린샷 파일명 화이트리스트 — path traversal 방지 + executor 가 만드는 형식만.
-# 예: step_1_pass.png / step_2_healed.png / step_3_fail.png / final_state.png
-_SCREENSHOT_NAME_RE = re.compile(r"^(step_\d+_[a-z_]+|final_state)\.png$")
+# 예: step_1_pass.png / step_2_healed.png / step_3_fail.png / final_state.png /
+#     step_4_pass.jpeg (codegen trace 파서가 Pillow 미설치 시 JPEG 로 저장).
+_SCREENSHOT_NAME_RE = re.compile(
+    r"^(step_\d+_[a-z_]+|final_state)\.(png|jpe?g)$"
+)
+
+
+def _resolve_run_log(sid: str, mode: str) -> tuple[Path, Path, str]:
+    """``mode`` ∈ {auto, llm, codegen} → (run_log_path, screenshots_dir, resolved_mode).
+
+    auto: llm 우선, 없으면 codegen, 둘 다 없으면 llm 경로 반환 (404 처리는 호출자).
+    """
+    sess_dir = storage.session_dir(sid)
+    llm_log = sess_dir / "run_log.jsonl"
+    cg_log = sess_dir / "codegen_run_log.jsonl"
+    cg_shots = sess_dir / "codegen_screenshots"
+    if mode == "llm":
+        return llm_log, sess_dir, "llm"
+    if mode == "codegen":
+        return cg_log, cg_shots, "codegen"
+    # auto
+    if llm_log.is_file():
+        return llm_log, sess_dir, "llm"
+    if cg_log.is_file():
+        return cg_log, cg_shots, "codegen"
+    return llm_log, sess_dir, "llm"
 
 
 @app.get("/recording/sessions/{sid}/run-log", include_in_schema=False)
-def get_session_run_log(sid: str) -> list:
-    """Play 실행 후 ``run_log.jsonl`` 을 파싱해 step 별 결과 list 반환.
+def get_session_run_log(
+    sid: str,
+    mode: str = Query("auto", pattern="^(auto|llm|codegen)$"),
+) -> dict:
+    """Play 실행 후 run-log 를 파싱해 ``{mode, records}`` 반환.
 
-    각 step 에 ``screenshot`` 필드를 채움 — ``step_<n>_<status>.png`` 이
-    디스크에 있을 때만. 모달 확대용 endpoint 는 ``/screenshot/{name}``.
+    Args:
+        mode: ``auto`` (default — llm 우선), ``llm``, ``codegen``.
 
-    Run-log 가 없는 세션 (Play 미실행) 은 404.
+    각 record 에 ``screenshot`` 필드를 채움 — 디스크에 매칭 파일이 있을 때만.
+    모달 확대용 endpoint 는 ``/screenshot/{name}?mode=``.
+
+    Run-log 가 없는 세션 (해당 모드 Play 미실행) 은 404.
     """
     sess = _registry.get(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    p = storage.run_log_path(sid)
+    p, shots_dir, resolved_mode = _resolve_run_log(sid, mode)
     if not p.is_file():
         raise HTTPException(
             status_code=404,
-            detail="run_log.jsonl 없음 — Play with LLM 미실행",
+            detail=f"run-log 없음 (mode={resolved_mode}) — Play 미실행",
         )
-    sess_dir = storage.session_dir(sid)
     out: list = []
     try:
         with p.open("r", encoding="utf-8") as f:
@@ -784,20 +813,27 @@ def get_session_run_log(sid: str) -> list:
                     continue
                 step_no = rec.get("step")
                 status = (rec.get("status") or "").lower()
-                # screenshot 매칭 — executor 의 _screenshot 명명 규칙
-                # (step_<n>_pass.png / step_<n>_fail.png / step_<n>_healed.png 등).
-                shot_name = None
-                if step_no is not None and status:
-                    candidate = f"step_{step_no}_{status}.png"
-                    if (sess_dir / candidate).is_file():
-                        shot_name = candidate
-                rec["screenshot"] = shot_name
+                # codegen 모드: trace_parser 가 이미 record["screenshot"] 에
+                # 저장 파일명을 박아둠 — 그대로 사용.
+                # llm 모드: executor 의 명명 규칙(step_<n>_<status>.png) 으로 추론.
+                if "screenshot" not in rec:
+                    shot_name = None
+                    if step_no is not None and status:
+                        candidate = f"step_{step_no}_{status}.png"
+                        if (shots_dir / candidate).is_file():
+                            shot_name = candidate
+                    rec["screenshot"] = shot_name
+                else:
+                    # codegen: 디스크 존재 검증 (parser 가 저장에 실패했을 수 있음)
+                    name = rec["screenshot"]
+                    if not isinstance(name, str) or not (shots_dir / name).is_file():
+                        rec["screenshot"] = None
                 out.append(rec)
     except OSError as e:
         raise HTTPException(
-            status_code=500, detail=f"run_log 읽기 실패: {e}"
+            status_code=500, detail=f"run-log 읽기 실패: {e}"
         ) from e
-    return out
+    return {"mode": resolved_mode, "records": out}
 
 
 @app.get("/recording/sessions/{sid}/play-log/tail", include_in_schema=False)
@@ -846,11 +882,19 @@ def get_play_log_tail(
 
 
 @app.get("/recording/sessions/{sid}/screenshot/{name}", include_in_schema=False)
-def get_session_screenshot(sid: str, name: str):
-    """세션 디렉토리의 스크린샷 PNG 를 직접 반환.
+def get_session_screenshot(
+    sid: str,
+    name: str,
+    mode: str = Query("llm", pattern="^(llm|codegen)$"),
+):
+    """세션 디렉토리의 스크린샷 PNG/JPEG 을 직접 반환.
 
-    Path traversal 방지 — ``name`` 은 ``step_<digit>_<word>.png`` 또는
-    ``final_state.png`` 정규식 화이트리스트로 강제. 그 외 400.
+    Args:
+        mode: ``llm`` (default, 기존 동작 — 세션 루트의 step PNG) 또는
+            ``codegen`` (codegen_screenshots/ 아래에서 검색).
+
+    Path traversal 방지 — ``name`` 은 ``step_<digit>_<word>.(png|jpe?g)`` 또는
+    ``final_state.(png|jpe?g)`` 정규식 화이트리스트로 강제. 그 외 400.
     """
     if not _SCREENSHOT_NAME_RE.match(name):
         raise HTTPException(
@@ -860,10 +904,12 @@ def get_session_screenshot(sid: str, name: str):
     sess = _registry.get(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    p = storage.session_dir(sid) / name
+    sess_dir = storage.session_dir(sid)
+    p = (sess_dir / "codegen_screenshots" / name) if mode == "codegen" else (sess_dir / name)
     if not p.is_file():
         raise HTTPException(status_code=404, detail=f"스크린샷 없음: {name}")
-    return FileResponse(str(p), media_type="image/png")
+    media = "image/jpeg" if name.lower().endswith((".jpeg", ".jpg")) else "image/png"
+    return FileResponse(str(p), media_type=media)
 
 
 # ── 항목 4 — LLM healed regression .py 다운로드 ───────────────────────────

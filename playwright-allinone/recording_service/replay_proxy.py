@@ -205,6 +205,12 @@ def run_codegen_replay(
 ) -> PlayResult:
     """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (headed).
 
+    내부적으로는 ``recording_service.codegen_trace_wrapper`` 를 통해 실행하여
+    Playwright tracing 을 자동 주입한다. subprocess 종료 후 ``trace.zip`` 을
+    파싱해 LLM 모드와 같은 형식의 ``codegen_run_log.jsonl`` +
+    ``codegen_screenshots/`` 를 생성 — Run Log 카드가 두 모드를 동등하게
+    노출할 수 있게 한다.
+
     Args:
         host_session_dir: 호스트 측 세션 디렉토리 — ``original.py`` 위치.
         timeout_sec: subprocess timeout (기본 300s).
@@ -212,24 +218,31 @@ def run_codegen_replay(
         prefer_annotated: True 이고 ``original_annotated.py`` 가 있으면 그걸 우선
             실행 (T-H 정적 hover 주입본). 기본 True.
     """
-    annotated = Path(host_session_dir) / "original_annotated.py"
+    sess_dir = Path(host_session_dir)
+    annotated = sess_dir / "original_annotated.py"
     if prefer_annotated and annotated.is_file():
-        script = annotated
+        script_name = "original_annotated.py"
     else:
-        script = Path(host_session_dir) / "original.py"
+        script_name = "original.py"
+    script = sess_dir / script_name
     if not script.is_file():
         raise ReplayProxyError(f"실행 대상 .py 없음: {script}")
 
     py = _resolve_venv_py(venv_py)
-    cmd = [py, str(script)]
+    cmd = [py, "-m", "recording_service.codegen_trace_wrapper"]
 
-    # P4.3 — auth-profile 자동 매칭. 메타에 auth_profile 이 있으면 verify 통과 후
-    # AUTH_STORAGE_STATE_IN env 주입 (portabilize 된 original.py 가 읽음).
-    # fingerprint env 도 함께 주입해 executor 가 동일 fingerprint 로 컨텍스트 생성.
+    # 래퍼는 CODEGEN_SESSION_DIR / CODEGEN_SCRIPT env 로 실행 대상을 받는다.
+    # auth-profile env (P4.3) 도 동일하게 전달.
     storage_path, fingerprint_env, profile_name = _resolve_auth_for_replay(host_session_dir)
-    env: Optional[dict]
+    env = os.environ.copy()
+    env["CODEGEN_SESSION_DIR"] = str(sess_dir)
+    env["CODEGEN_SCRIPT"] = script_name
+    # PYTHONPATH 주입 — 래퍼는 recording_service 패키지에 속하므로 import 가능 보장.
+    project_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = (
+        project_root + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
+    )
     if storage_path:
-        env = os.environ.copy()
         env["AUTH_STORAGE_STATE_IN"] = storage_path
         if fingerprint_env:
             env.update(fingerprint_env)
@@ -237,15 +250,34 @@ def run_codegen_replay(
             "[play-codegen] auth-profile=%s storage=%s",
             profile_name, storage_path,
         )
-    else:
-        env = None
 
-    log.info("[play-codegen] %s (script=%s)", " ".join(cmd), script.name)
-    return _run_subprocess(
+    log.info(
+        "[play-codegen] %s (script=%s, traced)", " ".join(cmd), script_name
+    )
+    result = _run_subprocess(
         cmd, cwd=host_session_dir, env=env,
         timeout_sec=timeout_sec, started=time.time(),
         log_name="play-codegen.log",
     )
+
+    # subprocess 종료 후 trace.zip → codegen_run_log.jsonl + 스크린샷 변환.
+    # 파싱 실패는 silent — codegen 재생 자체 결과(returncode/stdout)에 영향 없음.
+    try:
+        from recording_service import trace_parser
+        trace_zip = sess_dir / "trace.zip"
+        if trace_zip.is_file():
+            n = trace_parser.parse_trace(
+                trace_zip,
+                out_run_log=sess_dir / "codegen_run_log.jsonl",
+                out_screenshots_dir=sess_dir / "codegen_screenshots",
+            )
+            log.info("[play-codegen] trace 파싱 완료: %d step", n)
+        else:
+            log.info("[play-codegen] trace.zip 없음 — 파싱 스킵")
+    except Exception as e:  # noqa: BLE001
+        log.warning("[play-codegen] trace 파싱 실패 (무시하고 계속): %s", e)
+
+    return result
 
 
 def run_llm_play(

@@ -1226,6 +1226,8 @@ def test_play_llm_proxy_raises_when_scenario_missing(tmp_path):
 
 
 def test_play_codegen_invokes_python_on_original(monkeypatch, tmp_path):
+    """codegen 재생은 codegen_trace_wrapper 모듈을 통해 실행되며, 실제 스크립트
+    경로는 ``CODEGEN_SCRIPT`` env 로 전달된다 (Playwright tracing 자동 주입)."""
     from recording_service import replay_proxy
     from types import SimpleNamespace
 
@@ -1236,6 +1238,7 @@ def test_play_codegen_invokes_python_on_original(monkeypatch, tmp_path):
     def fake_run(cmd, **kw):
         captured["cmd"] = cmd
         captured["cwd"] = kw.get("cwd")
+        captured["env"] = kw.get("env") or {}
         return SimpleNamespace(returncode=0, stdout=b"hi\n", stderr=b"")
 
     monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
@@ -1245,8 +1248,11 @@ def test_play_codegen_invokes_python_on_original(monkeypatch, tmp_path):
     )
     assert res.returncode == 0
     assert captured["cmd"][0] == "/fake/python"
-    assert captured["cmd"][1].endswith("original.py")
+    assert captured["cmd"][1] == "-m"
+    assert captured["cmd"][2] == "recording_service.codegen_trace_wrapper"
     assert captured["cwd"] == str(tmp_path)
+    assert captured["env"]["CODEGEN_SESSION_DIR"] == str(tmp_path)
+    assert captured["env"]["CODEGEN_SCRIPT"] == "original.py"
 
 
 def test_play_llm_invokes_zero_touch_qa_with_scenario(monkeypatch, tmp_path):
@@ -1513,13 +1519,16 @@ def test_get_run_log_404_when_no_log_file(client, patched_codegen):
     sid = _create_done_session(client, patched_codegen)
     r = client.get(f"/recording/sessions/{sid}/run-log")
     assert r.status_code == 404
-    assert "run_log" in r.json()["detail"]
+    assert "run-log" in r.json()["detail"] or "run_log" in r.json()["detail"]
 
 
 def test_get_run_log_returns_parsed_steps_with_screenshot_field(
     client, patched_codegen, temp_host_root,
 ):
-    """run_log.jsonl + step_*.png 가 있으면 screenshot 필드 자동 채움."""
+    """run_log.jsonl + step_*.png 가 있으면 screenshot 필드 자동 채움.
+
+    응답 스키마: {mode: "llm", records: [...]} (codegen 모드 추가에 따른 wrap).
+    """
     from pathlib import Path
 
     sid = _create_done_session(client, patched_codegen)
@@ -1533,12 +1542,77 @@ def test_get_run_log_returns_parsed_steps_with_screenshot_field(
     (sess_dir / "step_1_pass.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # 헤더만 — 충분
     r = client.get(f"/recording/sessions/{sid}/run-log")
     assert r.status_code == 200
-    data = r.json()
+    payload = r.json()
+    assert payload["mode"] == "llm"
+    data = payload["records"]
     assert len(data) == 2
     assert data[0]["status"] == "PASS"
     assert data[0]["screenshot"] == "step_1_pass.png"
     assert data[1]["heal_stage"] == "local"
     assert data[1]["screenshot"] is None  # step_2_healed.png 없음
+
+
+def test_get_run_log_codegen_mode_reads_codegen_run_log(
+    client, patched_codegen, temp_host_root,
+):
+    """mode=codegen → codegen_run_log.jsonl + codegen_screenshots/ 사용."""
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    (sess_dir / "codegen_run_log.jsonl").write_text(
+        '{"step": 1, "action": "goto", "target": "https://x", "status": "PASS",'
+        ' "screenshot": "step_1_pass.jpeg"}\n'
+        '{"step": 2, "action": "click", "target": "#missing", "status": "FAIL",'
+        ' "error": "Timeout 30000ms exceeded"}\n',
+        encoding="utf-8",
+    )
+    cg_shots = sess_dir / "codegen_screenshots"
+    cg_shots.mkdir()
+    (cg_shots / "step_1_pass.jpeg").write_bytes(b"\xff\xd8\xff")  # JPEG 헤더만
+    r = client.get(f"/recording/sessions/{sid}/run-log?mode=codegen")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["mode"] == "codegen"
+    data = payload["records"]
+    assert len(data) == 2
+    assert data[0]["screenshot"] == "step_1_pass.jpeg"
+    # parser 가 박은 screenshot 필드의 디스크 부재 시 None 정정
+    assert data[1].get("screenshot") is None
+    assert data[1]["status"] == "FAIL"
+
+
+def test_get_run_log_auto_prefers_llm_when_both_present(
+    client, patched_codegen, temp_host_root,
+):
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    (sess_dir / "run_log.jsonl").write_text(
+        '{"step": 1, "action": "click", "status": "PASS"}\n', encoding="utf-8",
+    )
+    (sess_dir / "codegen_run_log.jsonl").write_text(
+        '{"step": 1, "action": "goto", "status": "PASS"}\n', encoding="utf-8",
+    )
+    r = client.get(f"/recording/sessions/{sid}/run-log")
+    assert r.status_code == 200
+    assert r.json()["mode"] == "llm"
+
+
+def test_get_run_log_auto_falls_back_to_codegen_when_only_codegen(
+    client, patched_codegen, temp_host_root,
+):
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    sess_dir = Path(temp_host_root) / sid
+    (sess_dir / "codegen_run_log.jsonl").write_text(
+        '{"step": 1, "action": "goto", "status": "PASS"}\n', encoding="utf-8",
+    )
+    r = client.get(f"/recording/sessions/{sid}/run-log")
+    assert r.status_code == 200
+    assert r.json()["mode"] == "codegen"
 
 
 def test_screenshot_endpoint_serves_png(client, patched_codegen, temp_host_root):
@@ -1549,6 +1623,23 @@ def test_screenshot_endpoint_serves_png(client, patched_codegen, temp_host_root)
     r = client.get(f"/recording/sessions/{sid}/screenshot/step_1_pass.png")
     assert r.status_code == 200
     assert r.headers["content-type"] == "image/png"
+
+
+def test_screenshot_endpoint_codegen_mode_uses_subdir(
+    client, patched_codegen, temp_host_root,
+):
+    """mode=codegen → codegen_screenshots/<name> 에서 검색."""
+    from pathlib import Path
+
+    sid = _create_done_session(client, patched_codegen)
+    cg_dir = Path(temp_host_root) / sid / "codegen_screenshots"
+    cg_dir.mkdir()
+    (cg_dir / "step_1_pass.jpeg").write_bytes(b"\xff\xd8\xff")
+    r = client.get(
+        f"/recording/sessions/{sid}/screenshot/step_1_pass.jpeg?mode=codegen"
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
 
 
 def test_screenshot_endpoint_rejects_path_traversal(client, patched_codegen):

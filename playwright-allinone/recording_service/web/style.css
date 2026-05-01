@@ -469,6 +469,44 @@ dialog textarea {
 .dl-link:hover { text-decoration: underline; }
 
 /* ── P1 (항목 5) — Run-log 시각화 ─────────────────────────────────────── */
+.run-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.run-log-header h2 { margin: 0; }
+.run-log-mode-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.run-log-mode-tab {
+  padding: 4px 14px;
+  background: #fff;
+  color: var(--text);
+  border: none;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 0.88rem;
+  align-self: stretch;
+}
+.run-log-mode-tab:last-child { border-right: none; }
+.run-log-mode-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+.run-log-mode-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.run-log-mode-tab:hover:not(:disabled):not(.active) {
+  background: #f0f0f5;
+}
 .run-log-table {
   width: 100%;
   border-collapse: collapse;
@@ -516,9 +554,11 @@ dialog textarea {
 
 /* 스크린샷 모달 (P1) */
 .shot-dialog {
+  position: relative;        /* shot-close 의 absolute 기준점 */
   border: none;
   border-radius: 8px;
   padding: 16px;
+  padding-top: 44px;         /* 우상단 닫기 버튼 자리 확보 */
   max-width: min(90vw, 1200px);
   max-height: 90vh;
 }
@@ -536,13 +576,31 @@ dialog textarea {
   color: var(--muted);
 }
 .shot-close {
-  float: right;
-  background: none;
-  border: 1px solid #d2d2d7;
-  border-radius: 4px;
-  padding: 2px 8px;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: #fff;
+  color: var(--text);        /* 전역 button { color: #fff } cascade 차단 */
+  border: 1px solid #c7c7cc;
+  border-radius: 50%;
+  font-size: 1.1rem;
+  line-height: 1;
   cursor: pointer;
-  margin-bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.shot-close:hover {
+  background: #f0f0f5;
+  border-color: var(--err);
+  color: var(--err);
+}
+.shot-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
@@ -712,10 +770,11 @@ dialog textarea {
   filter: brightness(0.95);
 }
 
-/* ── Section toggles (New Recording / Discover URLs / Login Profile) ── */
+/* ── Section toggles (New Recording / Discover URLs / Login Profile / Step 추가) */
 #new-recording-section > summary,
 #discover-section > summary,
-#login-profile-section > summary {
+#login-profile-section > summary,
+#assertion-toggle > summary {
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -725,10 +784,12 @@ dialog textarea {
 }
 #new-recording-section > summary::-webkit-details-marker,
 #discover-section > summary::-webkit-details-marker,
-#login-profile-section > summary::-webkit-details-marker { display: none; }
+#login-profile-section > summary::-webkit-details-marker,
+#assertion-toggle > summary::-webkit-details-marker { display: none; }
 #new-recording-section > summary::before,
 #discover-section > summary::before,
-#login-profile-section > summary::before {
+#login-profile-section > summary::before,
+#assertion-toggle > summary::before {
   content: "▸";
   display: inline-block;
   font-size: 0.85em;
@@ -737,7 +798,8 @@ dialog textarea {
 }
 #new-recording-section[open] > summary::before,
 #discover-section[open] > summary::before,
-#login-profile-section[open] > summary::before {
+#login-profile-section[open] > summary::before,
+#assertion-toggle[open] > summary::before {
   transform: rotate(90deg);
 }
 

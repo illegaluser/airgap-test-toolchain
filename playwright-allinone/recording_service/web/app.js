@@ -489,8 +489,8 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
       _annotateLine(data.annotate) +
       (data.stdout_tail ? `\n\n--- stdout (tail) ---\n${data.stdout_tail}` : "") +
       (data.stderr_tail ? `\n\n--- stderr (tail) ---\n${data.stderr_tail}` : "");
-    // 실행 끝 — Run-log 새로고침 (PASS/FAIL/HEALED 표 갱신).
-    await _renderRunLog(sid);
+    // 실행 끝 — Run-log 새로고침 + 방금 실행한 모드 탭으로 자동 전환.
+    await _renderRunLog(sid, { mode: kind || "llm" });
     // 진행 박스는 자동 collapse — 사용자가 펼쳐 보고 싶으면 수동으로.
     details.open = false;
   } catch (err) {
@@ -502,6 +502,11 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
       const reason = err.detail.fail_reason || err.detail.reason || "verify failed";
       _rplusOutputBox().textContent =
         `⚠ ${label} 중단 — 인증 세션 '${profName}' 만료 (${reason}). 재시드 후 다시 실행하세요.`;
+      // 만료된 프로파일 이름을 관리 상태에도 반영 — 재시드 다이얼로그가
+      // detail fetch / prefill 을 정상 수행하도록.
+      if (profName && profName !== "—") {
+        _authState.selected = profName;
+      }
       _showExpiredDialog(profName, reason);
     } else {
       _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
@@ -673,22 +678,58 @@ function formatIso(iso) {
 }
 
 // ── P1 (항목 5) — Run-log 시각화 + P4 (항목 8) step JSON 복사 ──────────────
-async function _renderRunLog(sid) {
+// run-log 카드 상태: 어떤 모드 탭이 현재 선택돼있는지, 두 모드의 데이터 가용성.
+const _runLogState = { sid: null, selectedMode: "llm", available: { llm: false, codegen: false } };
+
+function _setRunLogTabUI(mode) {
+  document.querySelectorAll("#run-log-mode-tabs .run-log-mode-tab").forEach((btn) => {
+    const isActive = btn.dataset.mode === mode;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    // 데이터 없는 탭은 disabled (단, 선택된 탭은 항상 표시)
+    const has = _runLogState.available[btn.dataset.mode] === true;
+    btn.disabled = !has && !isActive;
+  });
+}
+
+/**
+ * Run Log 카드 렌더. mode 미지정 시 가장 최근 호출의 selectedMode (없으면 'auto').
+ */
+async function _renderRunLog(sid, opts = {}) {
   const card = $("#run-log-card");
   const container = $("#run-log-container");
-  let records;
-  try {
-    records = await api(`/recording/sessions/${sid}/run-log`);
-  } catch (err) {
-    // 404 = run_log 없음 (Play 미실행) — 카드 숨김.
+  _runLogState.sid = sid;
+  const requestedMode = opts.mode || _runLogState.selectedMode || "auto";
+
+  // 두 모드의 가용성 동시 체크 — 카드 노출 / 탭 활성 기준.
+  const [llmRes, cgRes] = await Promise.all([
+    api(`/recording/sessions/${sid}/run-log?mode=llm`).then((r) => r).catch(() => null),
+    api(`/recording/sessions/${sid}/run-log?mode=codegen`).then((r) => r).catch(() => null),
+  ]);
+  _runLogState.available.llm = !!llmRes;
+  _runLogState.available.codegen = !!cgRes;
+
+  if (!llmRes && !cgRes) {
     card.hidden = true;
     return;
   }
   card.hidden = false;
-  if (!Array.isArray(records) || records.length === 0) {
+
+  // 실제 표시할 모드 결정 — 요청한 mode 가 가용하면 그것, 아니면 가용한 첫 번째.
+  let resolved = requestedMode;
+  if (resolved === "auto" || !_runLogState.available[resolved]) {
+    resolved = _runLogState.available.llm ? "llm" : "codegen";
+  }
+  _runLogState.selectedMode = resolved;
+  _setRunLogTabUI(resolved);
+
+  const payload = resolved === "llm" ? llmRes : cgRes;
+  const records = (payload && Array.isArray(payload.records)) ? payload.records : [];
+  if (records.length === 0) {
     container.innerHTML = '<p class="muted">— 빈 run-log —</p>';
     return;
   }
+
   let firstFailIdx = -1;
   const rows = records.map((rec, i) => {
     const status = (rec.status || "").toUpperCase();
@@ -697,6 +738,7 @@ async function _renderRunLog(sid) {
     const shotCell = rec.screenshot
       ? `<button class="shot-link" data-shot="${escapeHtml(rec.screenshot)}"
                   data-shot-sid="${escapeHtml(sid)}"
+                  data-shot-mode="${escapeHtml(resolved)}"
                   data-shot-step="${escapeHtml(String(rec.step))}"
                   title="스크린샷 확대">📷</button>`
       : "—";
@@ -729,6 +771,19 @@ async function _renderRunLog(sid) {
     if (failRow) failRow.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 }
+
+// 모드 탭 클릭 → 현재 sid 로 다시 렌더.
+document.addEventListener("DOMContentLoaded", () => {
+  const tabs = $("#run-log-mode-tabs");
+  if (!tabs) return;
+  tabs.addEventListener("click", (e) => {
+    const btn = e.target.closest(".run-log-mode-tab");
+    if (!btn || btn.disabled) return;
+    const mode = btn.dataset.mode;
+    if (!mode || !_runLogState.sid) return;
+    _renderRunLog(_runLogState.sid, { mode });
+  });
+});
 
 // ── 항목 4 — codegen 원본 ↔ LLM healed regression 비교 ────────────────────
 function _renderUnifiedDiff(text) {
@@ -846,8 +901,10 @@ document.addEventListener("click", (e) => {
   const sid = btn.dataset.shotSid;
   const name = btn.dataset.shot;
   const step = btn.dataset.shotStep;
+  const mode = btn.dataset.shotMode || "llm";
   if (!sid || !name) return;
-  $("#shot-img").src = `/recording/sessions/${sid}/screenshot/${encodeURIComponent(name)}`;
+  const q = mode === "codegen" ? "?mode=codegen" : "";
+  $("#shot-img").src = `/recording/sessions/${sid}/screenshot/${encodeURIComponent(name)}${q}`;
   $("#shot-caption").textContent = `Step ${step} — ${name}`;
   const dlg = $("#shot-dialog");
   if (typeof dlg.showModal === "function") dlg.showModal();
@@ -1452,6 +1509,11 @@ $("#start-form").addEventListener("submit", async (e) => {
   } catch (err) {
     if (err.status === 409 && err.detail?.reason === "profile_expired") {
       const reason = err.detail.fail_reason || err.detail.reason;
+      // 녹화 selector 에서 고른 프로파일이 만료됐을 때, 관리 상태에도 반영해
+      // 재시드 다이얼로그가 detail fetch / prefill 을 정상 수행하도록 한다.
+      if (authProfile) {
+        _authState.selected = authProfile;
+      }
       _showExpiredDialog(authProfile, reason);
     } else if (err.status === 404 && err.detail?.reason === "profile_not_found") {
       alert(`인증 프로파일 '${authProfile}' 를 찾을 수 없습니다 — 새로 시드하세요.`);
