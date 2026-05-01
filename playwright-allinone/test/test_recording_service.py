@@ -1229,19 +1229,24 @@ def test_play_codegen_invokes_python_on_original(monkeypatch, tmp_path):
     """codegen 재생은 codegen_trace_wrapper 모듈을 통해 실행되며, 실제 스크립트
     경로는 ``CODEGEN_SCRIPT`` env 로 전달된다 (Playwright tracing 자동 주입)."""
     from recording_service import replay_proxy
-    from types import SimpleNamespace
 
     (tmp_path / "original.py").write_text("print('hi')", encoding="utf-8")
 
     captured = {}
 
-    def fake_run(cmd, **kw):
-        captured["cmd"] = cmd
-        captured["cwd"] = kw.get("cwd")
-        captured["env"] = kw.get("env") or {}
-        return SimpleNamespace(returncode=0, stdout=b"hi\n", stderr=b"")
+    class FakePopen:
+        def __init__(self, cmd, *, cwd=None, env=None, stdout=None, stderr=None):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            captured["env"] = env or {}
+            if stdout is not None:
+                stdout.write(b"hi\n"); stdout.flush()
+        def wait(self, timeout=None): return 0
+        def kill(self):
+            # mock — 실 subprocess 가 아니라 종료 시그널이 의미 없음.
+            return None
 
-    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
+    monkeypatch.setattr(replay_proxy.subprocess, "Popen", FakePopen)
 
     res = replay_proxy.run_codegen_replay(
         host_session_dir=str(tmp_path), venv_py="/fake/python",
@@ -1257,19 +1262,22 @@ def test_play_codegen_invokes_python_on_original(monkeypatch, tmp_path):
 
 def test_play_llm_invokes_zero_touch_qa_with_scenario(monkeypatch, tmp_path):
     from recording_service import replay_proxy
-    from types import SimpleNamespace
 
     (tmp_path / "scenario.json").write_text("[]", encoding="utf-8")
 
     captured = {}
 
-    def fake_run(cmd, **kw):
-        captured["cmd"] = cmd
-        captured["cwd"] = kw.get("cwd")
-        captured["env"] = kw.get("env")
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+    class FakePopen:
+        def __init__(self, cmd, *, cwd=None, env=None, stdout=None, stderr=None):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            captured["env"] = env
+        def wait(self, timeout=None): return 0
+        def kill(self):
+            # mock — 실 subprocess 아님.
+            return None
 
-    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
+    monkeypatch.setattr(replay_proxy.subprocess, "Popen", FakePopen)
 
     res = replay_proxy.run_llm_play(
         host_session_dir=str(tmp_path),
@@ -1296,17 +1304,24 @@ def test_play_llm_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
     hover 로그 추적 불가) 를 보강.
     """
     from recording_service import replay_proxy
-    from types import SimpleNamespace
 
     (tmp_path / "scenario.json").write_text("[]", encoding="utf-8")
 
-    fake_stdout = b"[Step 2] visibility-healer cascade hover\n"
-    fake_stderr = b"INFO:zero_touch_qa.executor:done\n"
+    fake_output = (
+        b"[Step 2] visibility-healer cascade hover\n"
+        b"INFO:zero_touch_qa.executor:done\n"
+    )
 
-    def fake_run(cmd, **kw):
-        return SimpleNamespace(returncode=0, stdout=fake_stdout, stderr=fake_stderr)
+    class FakePopen:
+        def __init__(self, cmd, *, cwd=None, env=None, stdout=None, stderr=None):
+            if stdout is not None:
+                stdout.write(fake_output); stdout.flush()
+        def wait(self, timeout=None): return 0
+        def kill(self):
+            # mock — 실 subprocess 아님.
+            return None
 
-    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
+    monkeypatch.setattr(replay_proxy.subprocess, "Popen", FakePopen)
 
     replay_proxy.run_llm_play(
         host_session_dir=str(tmp_path),
@@ -1325,14 +1340,19 @@ def test_play_llm_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
 def test_play_codegen_dumps_subprocess_log_to_session_dir(monkeypatch, tmp_path):
     """play-codegen 도 동일 정책 — original.py 실행 출력을 별도 파일로 보존."""
     from recording_service import replay_proxy
-    from types import SimpleNamespace
 
     (tmp_path / "original.py").write_text("print('hi')", encoding="utf-8")
 
-    def fake_run(cmd, **kw):
-        return SimpleNamespace(returncode=0, stdout=b"hi\n", stderr=b"")
+    class FakePopen:
+        def __init__(self, cmd, *, cwd=None, env=None, stdout=None, stderr=None):
+            if stdout is not None:
+                stdout.write(b"hi\n"); stdout.flush()
+        def wait(self, timeout=None): return 0
+        def kill(self):
+            # mock — 실 subprocess 아님.
+            return None
 
-    monkeypatch.setattr(replay_proxy.subprocess, "run", fake_run)
+    monkeypatch.setattr(replay_proxy.subprocess, "Popen", FakePopen)
 
     replay_proxy.run_codegen_replay(
         host_session_dir=str(tmp_path), venv_py="/fake/python",
