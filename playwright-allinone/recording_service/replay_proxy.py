@@ -175,35 +175,73 @@ def _run_subprocess(
     started: float,
     log_name: str = "play.log",
 ) -> PlayResult:
-    """공용 subprocess 실행 + PlayResult 변환."""
+    """공용 subprocess 실행 + PlayResult 변환.
+
+    실시간 진행 로그 (P2) 를 위해 ``subprocess.Popen`` 으로 실행하며
+    stdout/stderr 를 ``log_name`` 파일에 *직접* append 한다. UI 의 1초 폴링
+    (``/recording/sessions/{sid}/play-log/tail``) 이 그 파일을 tail 해 실시간
+    표시. ``capture_output=True`` 로 모았다 종료 후 dump 하던 옛 흐름은 사용자에게
+    실행 중 빈 화면을 보였음 (사용자 보고).
+
+    PYTHONUNBUFFERED=1 을 env 에 강제 — Python subprocess 가 줄 단위 flush 해야
+    파일에 즉시 쓰임. 미설정 시 4KB 블록 단위 버퍼링으로 폴링이 늦게 잡힘.
+    """
+    log_path = Path(cwd) / log_name
+    # 기존 dump 와 동일한 헤더 + 라이브 로그 placeholder. 종료 후 footer 는 추가 append.
     try:
-        proc = subprocess.run(
-            cmd, cwd=cwd, env=env, capture_output=True, timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired as e:
-        elapsed = (time.time() - started) * 1000
-        # timeout 케이스도 그동안 누적된 출력을 dump — 어디서 멈췄는지 추적용
-        partial_stdout = ""
-        partial_stderr = ""
-        if e.stdout:
-            partial_stdout = e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else str(e.stdout)
-        if e.stderr:
-            partial_stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
-        _dump_play_log(cwd, log_name, cmd, partial_stdout, partial_stderr, -1, elapsed)
-        raise ReplayProxyError(
-            f"play 가 {timeout_sec}s 안에 끝나지 않았습니다 (elapsed={elapsed:.0f}ms). "
-            f"부분 출력은 {log_name} 참조."
-        ) from e
+        with log_path.open("w", encoding="utf-8") as f:
+            f.write(f"# cmd: {' '.join(cmd)}\n")
+            f.write("# ── stdout/stderr (live) ──────────────────────\n")
+    except OSError as e:
+        log.warning("[play-log] 헤더 작성 실패 (%s): %s", cwd, e)
+
+    # PYTHONUNBUFFERED — child Python 의 줄 버퍼 flush 보장.
+    sub_env = dict(env) if env is not None else os.environ.copy()
+    sub_env.setdefault("PYTHONUNBUFFERED", "1")
+
+    returncode = -1
+    timed_out = False
+    try:
+        with log_path.open("ab") as logf:
+            proc = subprocess.Popen(
+                cmd, cwd=cwd, env=sub_env,
+                stdout=logf, stderr=subprocess.STDOUT,
+            )
+            try:
+                returncode = proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.kill()
+                proc.wait(timeout=10)
+                returncode = -1
     except FileNotFoundError as e:
         raise ReplayProxyError(f"python 호출 실패: {e}") from e
 
     elapsed_ms = (time.time() - started) * 1000
-    stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
-    stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
-    _dump_play_log(cwd, log_name, cmd, stdout, stderr, proc.returncode, elapsed_ms)
+    # Footer — returncode/elapsed.
+    try:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"\n# returncode: {returncode}\n")
+            f.write(f"# elapsed_ms: {elapsed_ms:.0f}\n")
+    except OSError as e:
+        log.warning("[play-log] footer 작성 실패 (%s): %s", cwd, e)
+
+    # 호환 — 기존 호출자가 PlayResult.stdout 를 참조하므로 파일 전체를 채워둔다.
+    try:
+        full_log = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        full_log = ""
+
+    if timed_out:
+        raise ReplayProxyError(
+            f"play 가 {timeout_sec}s 안에 끝나지 않았습니다 "
+            f"(elapsed={elapsed_ms:.0f}ms). 부분 출력은 {log_name} 참조."
+        )
+
     return PlayResult(
-        returncode=proc.returncode,
-        stdout=stdout, stderr=stderr,
+        returncode=returncode,
+        stdout=full_log,
+        stderr="",  # stderr 는 stdout 으로 합쳐짐 (subprocess.STDOUT)
         elapsed_ms=elapsed_ms,
     )
 

@@ -108,3 +108,89 @@ def test_slow_mo_override_uses_dataclass_replace_not_direct_assign():
     assert new_cfg.slow_mo == 2500
     # 원본은 불변.
     assert base.slow_mo != 2500
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# navigate 액션이 다운로드 응답 URL 을 만났을 때 PASS+heal_stage='download_started' 처리
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_navigate_absorbs_download_response_as_pass(tmp_path):
+    """``Page.goto: Download is starting`` 예외를 PASS 로 흡수하고 다음 step 진행.
+
+    회귀 가드 (사용자 보고 2026-05-02): tour 가 다운로드 트리거 URL 을 만나면
+    LLM 모드(executor) 가 raise → 1로 종료. navigate 의도(=서버 자원 도달) 는
+    충족됐으므로 PASS+heal_stage='download_started'.
+    """
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+    import http.server
+    import socketserver
+    import threading
+
+    # 작은 fixture HTTP server — /dl 은 Content-Disposition: attachment 로 응답.
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw): pass
+        def do_GET(self):
+            if self.path == "/dl":
+                body = b"binary content"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", 'attachment; filename="x.bin"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/ok":
+                body = b"<html><body>ok</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404); self.end_headers()
+
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), _Handler)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        scenario = [
+            {"step": 1, "action": "navigate", "target": "", "value": f"http://127.0.0.1:{port}/dl",
+             "description": "다운로드 URL"},
+            {"step": 2, "action": "navigate", "target": "", "value": f"http://127.0.0.1:{port}/ok",
+             "description": "정상 페이지"},
+        ]
+        scenario_path = tmp_path / "scenario.json"
+        scenario_path.write_text(json.dumps(scenario, ensure_ascii=False), encoding="utf-8")
+        artifacts = tmp_path / "artifacts"
+        artifacts.mkdir()
+
+        import os
+        env = os.environ.copy()
+        env["PYTHONPATH"] = (
+            str(Path(__file__).resolve().parent.parent)
+            + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
+        )
+        env["ARTIFACTS_DIR"] = str(artifacts)
+        proc = subprocess.run(
+            [sys.executable, "-m", "zero_touch_qa", "--mode", "execute",
+             "--scenario", str(scenario_path), "--headless"],
+            env=env, capture_output=True, timeout=60,
+        )
+        # rc=0 — 두 step 모두 PASS (다운로드도 PASS+heal=download_started)
+        assert proc.returncode == 0, (
+            f"download 흡수 실패. rc={proc.returncode} "
+            f"stderr={proc.stderr.decode('utf-8','replace')[-400:]}"
+        )
+        run_log = artifacts / "run_log.jsonl"
+        lines = [json.loads(l) for l in run_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+        assert len(lines) == 2
+        assert lines[0]["status"] == "PASS"
+        assert lines[0]["heal_stage"] == "download_started"
+        assert lines[1]["status"] == "PASS"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

@@ -466,7 +466,26 @@ class QAExecutor:
             # wait_until="domcontentloaded": 광고/트래커 로딩까지 기다리지 않고
             # DOM 만 준비되면 진행. yahoo.com 처럼 무거운 페이지의 'load'
             # event 30초 timeout 회피. timeout 도 60초로 상향.
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                # 다운로드 응답(첨부) URL 은 page.goto 가 'Download is starting' 으로
+                # raise 한다. 페이지 진입은 안 됐지만 navigate 의도(=서버 자원에 도달)는
+                # 충족됐으므로 PASS + heal_stage="download_started" 로 표시하고 다음
+                # step 진행. 다른 navigate 예외는 기존대로 raise.
+                if "Download is starting" in str(e):
+                    log.info("[Step %s] navigate -> PASS (다운로드 응답 — page 미로드)", step_id)
+                    # 다운로드 응답이라 페이지가 안 떴으므로 스크린샷은 best-effort
+                    # (실패해도 무시).
+                    try:
+                        ss = self._screenshot(page, artifacts, step_id, "pass")
+                    except Exception:
+                        ss = None
+                    return StepResult(
+                        step_id, action, str(url), str(url), desc,
+                        "PASS", heal_stage="download_started", screenshot_path=ss,
+                    )
+                raise
             ss = self._screenshot(page, artifacts, step_id, "pass")
             log.info("[Step %s] navigate -> PASS", step_id)
             return StepResult(
