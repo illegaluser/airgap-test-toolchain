@@ -19,10 +19,10 @@
   </header>
 
   <main>
-    <!-- 섹션 1: Recording & Play (녹화 시작 + 외부 .py 업로드 재생) -->
+    <!-- 섹션 1: Recording (codegen 으로 새 시나리오 녹화). 외부 .py 업로드는 Play & more 섹션에서 처리. -->
     <section class="card">
       <details id="new-recording-section">
-        <summary><h2 style="display:inline-block; margin:0;">▶ Recording & Play</h2></summary>
+        <summary><h2 style="display:inline-block; margin:0;">▶ Recording</h2></summary>
       <p class="muted hover-hint">
         💡 <strong>호버 메뉴 (드롭다운/GNB) 녹화 팁</strong> — codegen 은
         <em>클릭만</em> 기록하고 마우스 hover 는 기록하지 않습니다.
@@ -52,13 +52,8 @@
         </label>
         <div class="form-actions">
           <button type="submit" id="btn-start">▶ Start Recording</button>
-          <button type="button" id="btn-import-script"
-                  title="이미 작성된 Playwright .py 스크립트를 업로드해 바로 재생 (Codegen 녹화 우회)">
-            📁 Play Script from File
-          </button>
         </div>
       </form>
-      <input type="file" id="import-file-input" accept=".py" hidden>
       </details>
     </section>
 
@@ -147,7 +142,7 @@
         <summary><h2 style="display:inline-block; margin:0;">🔐 Login Profile Registration</h2></summary>
         <p class="muted">
           테스트 대상 서비스의 로그인 세션을 시드/검증/삭제합니다. 시드된 프로파일은
-          Recording & Play 와 Discover URLs 섹션에서 선택해 재사용할 수 있습니다.
+          Recording 과 Discover URLs 섹션에서 선택해 재사용할 수 있습니다.
         </p>
         <fieldset class="auth-block">
           <legend>인증 프로파일 — 시드된 storageState 재사용</legend>
@@ -412,14 +407,34 @@
       </details>
     </section>
 
-    <!-- 섹션 5: R-Plus (Play / Generate Doc / Compare) — state=done 일 때 노출 -->
-    <section class="card r-plus" id="rplus-section" hidden>
-      <h2>결합 시나리오 <span class="badge ok">R-Plus</span>
-        <button type="button" class="copy-btn" data-copy-target="rplus-output"
-                title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
-      </h2>
-      <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.</p>
+    <!-- 섹션 5: Play & more — 스크립트 실행 + 문서화의 통합 진입점.
+         업로드 진입은 항상 가능, 옵션·Play·Doc 영역은 세션 선택 시 활성화. -->
+    <section class="card r-plus" id="rplus-section">
+      <details id="rplus-toggle">
+        <summary><h2 style="display:inline-block; margin:0;">▶ Play &amp; more
+          <button type="button" class="copy-btn" data-copy-target="rplus-output"
+                  title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
+          <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
+        </h2></summary>
+      <!-- 업로드 진입 — 세션 유무와 무관하게 항상 노출 -->
+      <div class="rplus-upload-block" style="margin-bottom:14px;padding:10px;border:1px dashed #ccc;border-radius:6px;">
+        <strong>새 스크립트 업로드</strong>
+        <p class="muted" style="margin:4px 0 8px 0;">
+          이미 작성된 Playwright .py 를 업로드해 새 세션으로 등록 + 즉시 재생합니다.
+        </p>
+        <button type="button" id="btn-import-script"
+                title="이미 작성된 Playwright .py 스크립트를 업로드해 바로 재생 (Codegen 녹화 우회)">
+          📁 Play Script from File
+        </button>
+        <input type="file" id="import-file-input" accept=".py" hidden>
+      </div>
+      <!-- 세션 종속 영역 — sid 미선택 시 비활성. 헤더 + 옵션 + 버튼 전부 포함. -->
+      <div id="rplus-session-area" aria-disabled="true">
+      <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.
+        <span id="rplus-empty-hint" class="muted" style="margin-left:6px;">
+          — 선택된 세션 없음. 위에서 .py 를 업로드하거나 '최근 세션' 에서 선택하세요.
+        </span>
+      </p>
       <div class="plus-options" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
         <label style="display:flex;gap:6px;align-items:center;">
           <span class="muted">로그인 프로파일</span>
@@ -474,6 +489,8 @@
         <summary>실시간 진행 로그</summary>
         <pre id="play-progress" class="play-progress"></pre>
       </details>
+      </div><!-- /#rplus-session-area -->
+      </details><!-- /#rplus-toggle -->
     </section>
 
     <!-- 섹션 5-A: Run Log (P1 — Play 실행 후 step 별 결과) — R-Plus 직후 위치 -->

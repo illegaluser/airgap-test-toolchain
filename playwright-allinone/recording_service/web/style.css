@@ -73,6 +73,12 @@ main {
 .card h2 { margin: 0 0 12px; font-size: 1.15rem; }
 .card.r-plus { background: #fafafa; border-style: dashed; }
 
+/* Play & more — 세션 종속 영역. aria-disabled=true 일 때 시각적 톤다운. */
+#rplus-session-area[aria-disabled="true"] { opacity: 0.55; }
+#rplus-session-area[aria-disabled="true"] button:not(.copy-btn),
+#rplus-session-area[aria-disabled="true"] select,
+#rplus-session-area[aria-disabled="true"] input { cursor: not-allowed; }
+
 form { display: flex; flex-direction: column; gap: 10px; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 0.92rem; }
 label > span { color: var(--muted); }

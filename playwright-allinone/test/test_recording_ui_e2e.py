@@ -337,7 +337,11 @@ def _open_full_session(page: Page, daemon_url: str):
     page.evaluate(f"window.openSession && window.openSession('{SID_FULL}')")
     # 글로벌 노출이 안 됐으면 직접 행 클릭으로
     page.click(f"button[data-act='open'][data-sid='{SID_FULL}']")
-    page.wait_for_selector("#rplus-section:not([hidden])", timeout=5000)
+    # Play & more 카드 자체는 항상 노출이라 hidden 검사 의미 없음 — 세션 활성
+    # 신호인 ``aria-disabled=false`` 로 대체 (세션 종속 영역 활성).
+    page.wait_for_selector(
+        "#rplus-session-area[aria-disabled='false']", timeout=5000,
+    )
 
 
 def test_rplus_dropdown_expands_on_click(e2e_page: Page, e2e_daemon):
