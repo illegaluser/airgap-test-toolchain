@@ -312,6 +312,11 @@ def run_codegen_replay(
     if not headed:
         # codegen wrapper 가 BrowserType.launch() 의 headless 인자를 강제 True 로 monkey-patch.
         env["CODEGEN_HEADLESS"] = "1"
+    else:
+        # Playwright 기본값이 headless=True 라, 사용자 스크립트가 launch() 인자를
+        # 안 주면 headed 체크박스에도 화면이 안 뜬다. wrapper 가 headless=False 를
+        # 강제 주입하도록 별도 env 로 신호.
+        env["CODEGEN_HEADED"] = "1"
     if slow_mo_ms and slow_mo_ms > 0:
         # wrapper 가 BrowserType.launch() kwargs 에 slow_mo 를 주입한다.
         env["CODEGEN_SLOW_MO_MS"] = str(int(slow_mo_ms))
