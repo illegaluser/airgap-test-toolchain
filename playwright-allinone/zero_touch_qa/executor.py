@@ -6,7 +6,27 @@ import time
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
+
+
+# 사이트가 인증 필요 페이지에 대해 native alert 대신 URL 쿼리 파라미터로 메시지를
+# 전달하는 한국형 엔터프라이즈 패턴. `errorMsg` / `error_msg` / `msg` 가 있으면
+# decode 해 사용자에게 보여줄 텍스트로 반환. 없으면 None.
+_REDIRECT_MSG_KEYS = ("errorMsg", "error_msg", "msg")
+
+
+def _extract_redirect_msg(url: str) -> "str | None":
+    if not url:
+        return None
+    try:
+        qs = parse_qs(urlparse(url).query, keep_blank_values=False)
+    except Exception:  # noqa: BLE001
+        return None
+    for key in _REDIRECT_MSG_KEYS:
+        vals = qs.get(key)
+        if vals and vals[0]:
+            return f"[redirect:{key}] {vals[0]}"
+    return None
 
 from playwright.sync_api import sync_playwright, Page, Locator, expect
 
@@ -362,6 +382,12 @@ class QAExecutor:
                     result = self._execute_step(
                         page, step, resolver, healer, artifacts
                     )
+                    # 사이트가 인증 없는 접근에 native alert 대신 URL 쿼리 redirect
+                    # (`?errorMsg=...`) 로 메시지를 전달하는 패턴 감지. dialog 와
+                    # 같은 자리(노란 카드)에 합쳐 표시.
+                    redirect_msg = _extract_redirect_msg(page.url or "")
+                    if redirect_msg:
+                        dialog_buffer.append(redirect_msg)
                     if dialog_buffer:
                         result.dialog_text = "\n".join(dialog_buffer)
                     results.append(result)

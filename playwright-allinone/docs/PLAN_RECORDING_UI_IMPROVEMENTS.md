@@ -16,6 +16,7 @@
 
 | 라운드 | 일자 | 핵심 |
 | --- | --- | --- |
+| R10 | 2026-05-02 | URL 쿼리 redirect 메시지 캡처 — 인증 없는 접근에 사이트가 native alert 대신 `?errorMsg=...` 로 redirect 하는 한국형 패턴을 두 모드 모두에서 감지해 run_log 에 dialog_text 로 저장. 리포트의 노란 카드 그대로 재사용 |
 | R9 | 2026-05-02 | Discover 사이트 스캔 통계 노출 — max_pages 캡 도달 경고 + sitemap.xml 명시 URL 대비 발견 커버리지 + depth/source/status 분포. 결과 패널 카드 + 트리 HTML 헤더에 함께 표시 |
 | R8 | 2026-05-02 | Discover 결과를 사이트 계층 트리(2종 — 크롤 토폴로지 + URL 경로) 로 출력 — 결과 패널 안 트리 뷰 + self-contained HTML 다운로드. BFS 가 parent_url 을 추적해 실제 링크 그래프 그대로 재구성 |
 | R7 | 2026-05-02 | 실행 결과를 self-contained HTML 리포트로 export — 한 파일에 LLM/원본 모드 step + 스크린샷 base64 임베드. 네이티브 alert/confirm 도 텍스트로 보존해 "어디서 팝업이 떴는지" 리포트로 추적 가능 |
@@ -1052,6 +1053,81 @@ R8 후에도 운영자가 결과 패널 상태 라인 (`[done] N건`) 만 보고
 
 ---
 
+## Round 10 — URL 쿼리 redirect 메시지 캡처 (2026-05-02)
+
+### 배경 (R10)
+
+R7 에서 native dialog (alert/confirm) 캡처를 LLM 모드에 추가했지만 — 한국형
+엔터프라이즈 사이트들은 종종 native alert 대신 **HTTP 302 + `?errorMsg=...`
+URL 쿼리** 로 인증 필요 메시지를 전달한다 (예: koreaconnect.kr →
+`/main?errorMsg=로그인이+필요한+메뉴입니다.`). 이 흐름에서는:
+
+- native alert 가 발화하지 않으므로 R7 의 dialog 핸들러는 영원히 발화 안 됨
+- 서버가 redirect 한 홈페이지가 메시지를 가시적으로 그리지 않으면 스크린샷도 깨끗
+- 운영자는 "이 step 에서 로그인 필요였구나" 흔적을 어디서도 볼 수 없음
+
+### 설계 결정 (R10)
+
+- **URL 쿼리 패턴 감지로 보완** — `errorMsg` / `error_msg` / `msg` 키 화이트
+  리스트. 디코드된 텍스트를 기존 R7 의 `dialog_text` 필드에 합성. 리포트 카드
+  컴포넌트 그대로 재사용 (UI / 사용자 시각 변화 0).
+- **두 모드 각각 다른 후킹 지점**:
+  - LLM 모드 (executor): `_execute_step` 직후 `page.url` 검사. 즉시 동기 처리.
+  - codegen 모드 (wrapper): `Page.goto` 를 monkey-patch — 사용자 스크립트의
+    매 goto 호출 직후 `page.url` 검사, sidecar (`codegen_redirects.jsonl`) 에
+    `(requested_url, final_url, msg)` 누적. 종료 시 atexit 으로 flush.
+- **trace_parser 에서 사후 병합** — codegen 의 sidecar 를 읽어 goto-typed step
+  의 `target` URL 과 `requested` 매칭, `dialog_text` 부착. trace 의 timestamp
+  기반 매칭 회피 (Playwright trace 와 wall clock 시간 base 다름).
+
+### 변경 묶음 (R10)
+
+#### 1. LLM 모드 — `zero_touch_qa/executor.py`
+
+- 모듈 헬퍼 `_extract_redirect_msg(url) -> Optional[str]` — `errorMsg` 등 키
+  매칭. 매치 시 `[redirect:errorMsg] {decoded}` 형태 반환.
+- main 루프 안에서 `_execute_step` 직후 호출, `dialog_buffer` 에 추가. 기존
+  native dialog 와 합쳐져 한 카드에 표시 가능.
+
+#### 2. codegen 모드 — `recording_service/codegen_trace_wrapper.py`
+
+- `_install_page_goto_redirect_capture()` — `Page.goto` monkey-patch. 사용자
+  스크립트가 호출하는 모든 goto 가 redirect 끝에 errorMsg URL 로 도달했는지
+  검사 + `_redirect_log` 리스트에 누적.
+- `atexit.register(_flush_redirects)` — 종료 시 `codegen_redirects.jsonl`
+  로 직렬화.
+
+#### 3. 사후 병합 — `recording_service/trace_parser.py`
+
+- `_read_redirects_sidecar(session_dir) -> dict[requested_url, msg]`.
+- `parse_trace` 가 각 goto step 작성 시 `redirects.get(act.target)` 매칭이
+  있으면 `rec["dialog_text"]` 에 합성 — `[redirect:errorMsg] {msg}`.
+
+### 변경 파일 (R10)
+
+| 파일 | 변경 |
+| --- | --- |
+| `zero_touch_qa/executor.py` | `_extract_redirect_msg` 헬퍼, main 루프에서 호출 |
+| `recording_service/codegen_trace_wrapper.py` | `_install_page_goto_redirect_capture`, sidecar flush 로직 |
+| `recording_service/trace_parser.py` | `_read_redirects_sidecar`, parse_trace 에서 goto step 에 병합 |
+
+### 회귀 (R10)
+
+- 단위/통합 39개 (url_discovery 24 + codegen_trace_wrapper 8 + trace_parser 7) 모두 통과
+- `_extract_redirect_msg` 격리 테스트 — `?errorMsg=...` / 쿼리 없음 / `msg=` 키 모두 정상
+- `_read_redirects_sidecar` 격리 테스트 — JSONL 파싱 + dict 변환 정상
+
+### 위험과 회피 (R10 추가분)
+
+| 위험 | 회피 |
+| --- | --- |
+| `Page.goto` monkey-patch 가 사용자 스크립트의 다른 동작 깸 | real_goto 결과를 그대로 반환 — 사용자 관점 동작 동일. errorMsg 검사는 try/except 로 best-effort |
+| 같은 URL 이 여러 번 goto 됐을 때 sidecar 매핑 충돌 | 마지막 항목 우선 (보수적). 같은 URL 의 첫 redirect 가 누락될 수 있으나 일반적으로 같은 결과 |
+| `errorMsg` 외의 다른 메시지 키 사용하는 사이트 | `errorMsg` / `error_msg` / `msg` 화이트리스트. 추가 사이트 발견 시 1줄 추가 |
+| URL 인코딩이 deep-nested 인 경우 | `parse_qs` 가 표준 URL decode 수행 — 한글은 정상 디코드 |
+
+---
+
 ## 위험과 회피 (라운드 누적)
 
 | 위험 | 회피 | 도입 라운드 |
@@ -1091,3 +1167,4 @@ R8 후에도 운영자가 결과 패널 상태 라인 (`[done] N건`) 만 보고
 | 2026-05-02 | Claude | R7 완료 | 실행 결과 self-contained HTML 리포트 export — 한 파일에 LLM/원본 두 모드의 step 표 + 스크린샷 base64 임베드. metadata 화이트리스트로 외부 공유 시 민감 정보 노출 차단. 네이티브 alert/confirm 텍스트를 run_log 에 보존해 "어디서 팝업이 떴는지" 리포트로 추적 가능 (LLM 경로). codegen 경로는 trace timestamp 매칭이 필요해 별도 트랙으로 분리 |
 | 2026-05-02 | Claude | R8 완료 | Discover 결과를 사이트 계층 트리로 export — BFS 에 parent_url 추적 추가, 두 트리 빌더(크롤 토폴로지 + URL 경로) + 결과 패널 트리 뷰 + self-contained HTML 다운로드. 신규 endpoint 2개. parent_url 없는 옛 산출물도 graceful 동작 (orphans 그룹) |
 | 2026-05-02 | Claude | R9 완료 | Discover 사이트 스캔 통계 노출 — max_pages 캡 도달 경고 + sitemap.xml 명시 URL 대비 발견 커버리지 + depth/source/status 분포. discover_urls 반환을 DiscoverResult 데이터클래스로 wrap (`__iter__` 가 기존 2-tuple unpacking 호환). 결과 패널 카드 + 트리 HTML 헤더 한 줄 요약 |
+| 2026-05-02 | Claude | R10 완료 | URL 쿼리 redirect 메시지 캡처 — 사이트가 native alert 대신 `?errorMsg=...` 로 인증 필요 메시지를 전달하는 패턴 감지. LLM 모드는 executor 가 _execute_step 후 page.url 검사, codegen 모드는 wrapper 가 Page.goto 를 monkey-patch 해 codegen_redirects.jsonl sidecar 작성, trace_parser 가 매칭 goto step 에 dialog_text 병합. R7 의 노란 카드 컴포넌트 재사용 — 사용자/리포트 변경 0 |

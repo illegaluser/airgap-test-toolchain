@@ -227,6 +227,36 @@ def _read_resource(zf: zipfile.ZipFile, sha1: str) -> Optional[bytes]:
     return None
 
 
+def _read_redirects_sidecar(session_dir: Path) -> dict[str, str]:
+    """codegen wrapper 가 남긴 ``codegen_redirects.jsonl`` 을 (requested_url → msg)
+    dict 로 로드. 파일이 없거나 비어 있으면 빈 dict.
+
+    같은 requested URL 이 여러 번 redirect 된 경우 마지막 항목을 우선 (보수적).
+    """
+    p = session_dir / "codegen_redirects.jsonl"
+    if not p.is_file():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            req = obj.get("requested")
+            msg = obj.get("msg")
+            if isinstance(req, str) and isinstance(msg, str) and req and msg:
+                out[req] = msg
+    except OSError:
+        return {}
+    return out
+
+
 def _save_screenshot(
     img_bytes: bytes, dst: Path, *, prefer_png: bool
 ) -> Optional[Path]:
@@ -272,6 +302,10 @@ def parse_trace(
                 return 0
             actions = _collect_actions(events)
             frames = _collect_screencast_frames(events)
+            # codegen wrapper 가 남긴 redirect sidecar — 사이트가 인증 없는
+            # 접근에 대해 native alert 대신 ?errorMsg=... URL 로 redirect 한 경우
+            # 의 (requested_url, msg) 매핑. goto step 에 dialog_text 로 병합한다.
+            redirects_by_requested = _read_redirects_sidecar(out_run_log.parent)
             written = 0
             with out_run_log.open("w", encoding="utf-8") as f_out:
                 for idx, act in enumerate(actions, start=1):
@@ -299,6 +333,12 @@ def parse_trace(
                         rec["error"] = act.error
                     if shot_field:
                         rec["screenshot"] = shot_field
+                    # goto 액션의 target URL 이 redirect sidecar 에 매칭되면
+                    # 합성 dialog_text 부착 (LLM 모드 R7 캡처와 같은 필드).
+                    if act.method.lower() == "goto":
+                        msg = redirects_by_requested.get(act.target)
+                        if msg:
+                            rec["dialog_text"] = f"[redirect:errorMsg] {msg}"
                     f_out.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     written += 1
             return written
