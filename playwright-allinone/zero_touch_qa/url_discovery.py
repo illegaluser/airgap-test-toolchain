@@ -51,6 +51,29 @@ class DiscoveredUrl:
 
 
 @dataclass
+class DiscoverResult:
+    """``discover_urls()`` 반환 — records + abort_reason + stats.
+
+    기존 호출자들이 ``results, abort = discover_urls(cfg)`` 로 2-tuple
+    unpack 하는 패턴을 깨지 않기 위해 ``__iter__`` 를 노출. 새 호출자는
+    ``result.stats`` 로 통계 dict 에 접근 가능.
+
+    stats 스키마 (R9):
+        - sitemap_total: int | None
+        - cap_reached: bool                # max_pages 캡 도달
+        - abort_reason: str | None         # max_pages | max_depth_exhausted | auth_drift | None
+        - distribution: { by_depth, by_source, by_status }
+    """
+    records: list
+    abort_reason: Optional[str] = None
+    stats: dict = field(default_factory=dict)
+
+    def __iter__(self):
+        # 기존 2-tuple unpacking 호환 — `results, abort = discover_urls(cfg)`.
+        return iter((self.records, self.abort_reason))
+
+
+@dataclass
 class DiscoverConfig:
     seed_url: str
     storage_state_path: Optional[Path]
@@ -307,12 +330,16 @@ def discover_urls(
     *,
     on_progress: Optional[Callable[[int, str], None]] = None,
     cancel_event: Optional[threading.Event] = None,
-) -> tuple[list[DiscoveredUrl], Optional[str]]:
+) -> DiscoverResult:
     """BFS 로 같은 호스트의 anchor 링크를 따라가며 URL 을 수집.
 
     Returns:
-        (results, abort_reason). abort_reason 은 정상 종료/사용자 취소 시 None,
-        세션 만료 휴리스틱 발동 시 "auth_drift".
+        :class:`DiscoverResult` — ``records`` / ``abort_reason`` / ``stats`` 노출.
+        ``__iter__`` 가 ``(records, abort_reason)`` 2-tuple unpacking 을 지원해
+        기존 호출자 코드(``results, abort = discover_urls(cfg)``) 와 호환.
+
+        ``abort_reason`` 은 정상 종료/사용자 취소 시 None, 세션 만료 휴리스틱
+        발동 시 ``"auth_drift"``, max_pages 캡 도달 시 ``"max_pages"`` (R9).
 
         사용자 취소(cancel_event.set())는 abort_reason 이 아니라 호출자가
         cancel_event.is_set() 으로 별도 식별한다.
@@ -353,6 +380,8 @@ def discover_urls(
     ))
     abort_reason: Optional[str] = None
     drift_streak: list[str] = []
+    # R9 — sitemap 이 명시한 정규화 가능한 URL 총 수. None 이면 sitemap 미존재.
+    sitemap_total: Optional[int] = None
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=cfg.headless)
@@ -374,6 +403,10 @@ def discover_urls(
                 )
             except Exception:
                 sitemap_urls = []
+            # R9 — sitemap 명시 URL 총 수 (필터/캡 적용 전). 사용자에게 전체
+            # 대비 발견 커버리지를 보여주는 데 사용. 빈 리스트면 sitemap 미존재로 간주.
+            if sitemap_urls:
+                sitemap_total = len(sitemap_urls)
             for u in sitemap_urls:
                 if not u or _matches_excluded_pattern(u, cfg.exclude_patterns):
                     continue
@@ -543,4 +576,46 @@ def discover_urls(
             finally:
                 browser.close()
 
-    return results, abort_reason
+    # R9 — 캡 도달 / 분포 후처리. while 조건이 `len(results) < cfg.max_pages` 라
+    # max_pages 도달 시 abort_reason 설정 없이 자연 종료된다 — 여기서 보강.
+    cap_reached = len(results) >= cfg.max_pages and bool(queue)
+    if cap_reached and abort_reason is None:
+        abort_reason = "max_pages"
+    stats = {
+        "sitemap_total": sitemap_total,
+        "cap_reached": cap_reached,
+        "abort_reason": abort_reason,
+        "distribution": _compute_distribution(results),
+    }
+    return DiscoverResult(records=results, abort_reason=abort_reason, stats=stats)
+
+
+def _compute_distribution(records: list[DiscoveredUrl]) -> dict:
+    """results 리스트에서 by_depth / by_source / by_status 카운터를 한 번에 산출.
+
+    by_status 는 HTTP status 를 2xx/3xx/4xx/5xx/none 의 5 버킷으로 묶어
+    UI 가 차트 그릴 때 카테고리 갯수가 폭주하지 않게 한다.
+    """
+    by_depth: dict = {}
+    by_source: dict = {}
+    by_status: dict = {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, "none": 0}
+    for r in records:
+        by_depth[r.depth] = by_depth.get(r.depth, 0) + 1
+        by_source[r.source] = by_source.get(r.source, 0) + 1
+        if r.status is None:
+            by_status["none"] += 1
+        elif 200 <= r.status < 300:
+            by_status["2xx"] += 1
+        elif 300 <= r.status < 400:
+            by_status["3xx"] += 1
+        elif 400 <= r.status < 500:
+            by_status["4xx"] += 1
+        elif 500 <= r.status < 600:
+            by_status["5xx"] += 1
+        else:
+            by_status["none"] += 1
+    return {
+        "by_depth": by_depth,
+        "by_source": by_source,
+        "by_status": by_status,
+    }

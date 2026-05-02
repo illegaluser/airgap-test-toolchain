@@ -186,12 +186,36 @@ def render_self_contained_tree_html(
     meta = meta or {}
     seed = html_escape(str(meta.get("seed_url", "")))
     job = html_escape(str(meta.get("job_id", "")))
+    stats_line = _render_stats_line(meta.get("stats"))
     crawl_html = _render_tree_section(crawl, mode="crawl")
     path_html = _render_tree_section(path, mode="path")
 
     return _PAGE_TEMPLATE.format(
-        seed=seed, job=job, crawl=crawl_html, path=path_html,
+        seed=seed, job=job, stats_line=stats_line,
+        crawl=crawl_html, path=path_html,
     )
+
+
+def _render_stats_line(stats: Optional[dict]) -> str:
+    """R9 — stats dict 가 있으면 헤더에 한 줄 요약 (cap 경고 + sitemap 커버리지)."""
+    if not stats:
+        return ""
+    parts: list[str] = []
+    dist = stats.get("distribution") or {}
+    by_status = dist.get("by_status") or {}
+    total = sum(by_status.values()) if by_status else 0
+    if total:
+        parts.append(f"발견 {total}")
+    if stats.get("cap_reached"):
+        reason = stats.get("abort_reason") or "max_pages"
+        parts.append(f'<span class="cap-warn">⚠ {html_escape(str(reason))} 도달 — 잘렸을 수 있음</span>')
+    sitemap_total = stats.get("sitemap_total")
+    if sitemap_total:
+        pct = round((total / sitemap_total) * 100) if sitemap_total > 0 else 0
+        parts.append(f"sitemap {sitemap_total} → 발견 {total} ({pct}%)")
+    if not parts:
+        return ""
+    return f'<div class="stats-line">{" · ".join(parts)}</div>'
 
 
 def _render_tree_section(tree: dict, mode: str) -> str:
@@ -310,11 +334,15 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
              border-radius: 8px; padding: 16px 20px; }}
     .pane.active {{ display: block; }}
     .muted {{ color: #6e6e73; }}
+    .stats-line {{ font-size: 0.9em; color: #1d1d1f; margin: 6px 0 4px; }}
+    .stats-line .cap-warn {{ display: inline-block; padding: 1px 8px;
+      border-radius: 8px; background: #fde4c2; color: #7a3e00; font-weight: 500; }}
   </style>
 </head>
 <body>
   <h1>Site Hierarchy</h1>
   <div class="meta">seed: {seed} · job: {job}</div>
+  {stats_line}
   <div class="tabs">
     <button class="tab active" data-pane="crawl">크롤 토폴로지</button>
     <button class="tab" data-pane="path">URL 경로</button>
