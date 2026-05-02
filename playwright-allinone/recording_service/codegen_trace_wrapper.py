@@ -194,6 +194,7 @@ def _install_launch_overrides() -> None:
     둘 중 어느 env 도 없으면 patch 자체를 설치하지 않음 (정상 케이스 비용 0).
     """
     force_headless = os.environ.get("CODEGEN_HEADLESS") == "1"
+    force_headed = os.environ.get("CODEGEN_HEADED") == "1"
     slow_mo_raw = os.environ.get("CODEGEN_SLOW_MO_MS", "")
     slow_mo_ms = 0
     if slow_mo_raw:
@@ -204,7 +205,7 @@ def _install_launch_overrides() -> None:
                 f"[codegen-trace] CODEGEN_SLOW_MO_MS 형식 오류 (무시) — {slow_mo_raw!r}",
                 file=sys.stderr,
             )
-    if not force_headless and slow_mo_ms <= 0:
+    if not force_headless and not force_headed and slow_mo_ms <= 0:
         return
 
     real_launch = BrowserType.launch
@@ -212,6 +213,10 @@ def _install_launch_overrides() -> None:
     def patched_launch(self, **kwargs):
         if force_headless:
             kwargs["headless"] = True
+        elif force_headed:
+            # Playwright 기본 headless=True 라, 사용자 스크립트가 launch() 인자를
+            # 안 주면 화면이 안 뜬다. headed 체크박스 ON 시 명시적 False 주입.
+            kwargs["headless"] = False
         if slow_mo_ms > 0 and "slow_mo" not in kwargs:
             kwargs["slow_mo"] = slow_mo_ms
         return real_launch(self, **kwargs)
