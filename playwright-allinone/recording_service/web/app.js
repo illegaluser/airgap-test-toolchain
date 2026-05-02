@@ -1773,6 +1773,26 @@ function _setDiscoverStatus(text) {
   if (el) el.textContent = text;
 }
 
+// 서버 에러 메시지(문자열)에 JSON 이 박혀 있으면 줄바꿈된 key: value 형태로 풀어준다.
+// 예: '시작 실패: {"reason":"profile_expired","fail_reason":"..."}' →
+//     '시작 실패:\n  reason: profile_expired\n  fail_reason: ...'
+function _prettifyErrorMessage(msg) {
+  if (msg == null) return "";
+  const s = String(msg);
+  const i = s.indexOf("{");
+  if (i < 0) return s;
+  const head = s.slice(0, i);
+  const tail = s.slice(i);
+  let obj;
+  try { obj = JSON.parse(tail); } catch (_) { return s; }
+  if (!obj || typeof obj !== "object") return s;
+  const lines = Object.entries(obj).map(([k, v]) => {
+    const vs = (v === null || v === undefined) ? "—" : (typeof v === "object" ? JSON.stringify(v) : String(v));
+    return `  ${k}: ${vs}`;
+  });
+  return `${head.trimEnd()}\n${lines.join("\n")}`;
+}
+
 function _isHttpUrl(u) {
   try {
     const p = new URL(u);
@@ -1893,7 +1913,7 @@ async function _pollDiscoverOnce(jobId) {
   try {
     s = await api(`/discover/${jobId}`);
   } catch (e) {
-    _setDiscoverStatus(`조회 실패: ${e.message || e}`);
+    _setDiscoverStatus(_prettifyErrorMessage(`조회 실패: ${e.message || e}`));
     _stopDiscoverPolling();
     return;
   }
@@ -1919,7 +1939,7 @@ async function _pollDiscoverOnce(jobId) {
   }
   if (s.state === "failed") {
     _stopDiscoverPolling();
-    _setDiscoverStatus(`실패: ${s.error || "알 수 없는 오류"}`);
+    _setDiscoverStatus(_prettifyErrorMessage(`실패: ${s.error || "알 수 없는 오류"}`));
     _toggleDiscoverButtons({ running: false });
     return;
   }
@@ -1982,7 +2002,7 @@ async function _onDiscoverSubmit(ev) {
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    _setDiscoverStatus(`시작 실패: ${e.message || e}`);
+    _setDiscoverStatus(_prettifyErrorMessage(`시작 실패: ${e.message || e}`));
     _toggleDiscoverButtons({ running: false });
     return;
   }
