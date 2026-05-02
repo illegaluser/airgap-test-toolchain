@@ -83,6 +83,14 @@ label > span { color: var(--muted); }
 label > span em { color: #999; font-style: italic; font-size: 0.85em; }
 label.optional > span { color: #999; }
 
+/* 체크박스 라벨은 가로 정렬 — 전역 column flex 의 부작용으로 체크박스가 텍스트
+   위 별도 라인에 잘못 배치되던 문제 회피. 현재/미래의 모든 체크박스 라벨에 일괄 적용. */
+label:has(> input[type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
 input[type="text"], select {
   padding: 8px 10px;
   border: 1px solid var(--border);
