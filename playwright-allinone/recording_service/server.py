@@ -1774,6 +1774,9 @@ class DiscoverJob(BaseModel):
     result_dir: Optional[str] = None
     error: Optional[str] = None
     aborted_reason: Optional[str] = None  # "auth_drift" 등
+    # R9 — 사이트 스캔 통계 (sitemap_total / cap_reached / distribution).
+    # 완료(done/cancelled) 상태에서만 채워짐. 실행 중 폴링에는 None.
+    stats: Optional[dict] = None
 
 
 _discover_jobs: dict[str, DiscoverJob] = {}
@@ -1828,9 +1831,12 @@ def _discover_worker(
                     j.count = count
                     j.last_url = last_url
 
-        results, abort_reason = discover_urls(
+        discover_result = discover_urls(
             cfg, on_progress=_progress, cancel_event=cancel_event
         )
+        results = discover_result.records
+        abort_reason = discover_result.abort_reason
+        stats = discover_result.stats
 
         finished_at = _now_iso_utc()
         cancelled_by_user = cancel_event.is_set()
@@ -1852,6 +1858,8 @@ def _discover_worker(
                 "ignore_query": ignore_query,
                 "include_subdomains": include_subdomains,
             },
+            # R9 — 사이트 스캔 통계. 폴링 응답 + tree.html 헤더 + UI 카드에서 사용.
+            "stats": stats,
         }
         (out_dir / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1878,6 +1886,7 @@ def _discover_worker(
                 j.finished_at = finished_at
                 j.count = len(results)
                 j.result_dir = str(out_dir)
+                j.stats = stats
     except Exception as e:  # noqa: BLE001 — worker 최상위 가드
         log.exception("[discover] job=%s 워커 실패", job_id)
         with _discover_lock:

@@ -1926,6 +1926,56 @@ function _statePillHtml(status) {
   return `<span class="state-pill state-ok">${status}</span>`;
 }
 
+// Discover 사이트 스캔 통계 카드 렌더 (R9) — cap 도달 / sitemap 커버리지 / 분포 mini-grid.
+function _renderDiscoverStats(stats) {
+  const card = document.getElementById("discover-stats");
+  if (!card) return;
+  if (!stats) {
+    card.hidden = true;
+    card.replaceChildren();
+    return;
+  }
+  const dist = stats.distribution || {};
+  const lines = [];
+  // 핵심 라인 — 발견 N개 + cap 도달 시 노란 배지.
+  const total = (dist.by_status && Object.values(dist.by_status).reduce((a, b) => a + b, 0)) || 0;
+  const capWarn = stats.cap_reached
+    ? ` <span class="stats-cap-warn">⚠ ${_escapeHtml(String(stats.abort_reason || "max_pages"))} 도달 — 잘렸을 수 있음</span>`
+    : "";
+  lines.push(`<div class="stats-row"><strong>발견 ${total}건</strong>${capWarn}</div>`);
+  // sitemap 라인 — sitemap_total 있을 때만.
+  if (stats.sitemap_total != null) {
+    const total_st = Number(stats.sitemap_total);
+    const pct = total_st > 0 ? Math.round((total / total_st) * 100) : 0;
+    lines.push(
+      `<div class="stats-row"><span class="stats-label">sitemap</span>` +
+      `명시 ${total_st.toLocaleString()} → 발견 ${total.toLocaleString()} (${pct}%)</div>`
+    );
+  }
+  // 분포 mini-grid.
+  const buckets = (obj, order) => {
+    if (!obj) return "";
+    const keys = order ? order.filter((k) => k in obj) : Object.keys(obj).sort();
+    return keys.map((k) =>
+      `<span class="stats-bucket">${_escapeHtml(String(k))} <strong>${obj[k]}</strong></span>`
+    ).join(" · ");
+  };
+  const depthHtml = buckets(dist.by_depth, Object.keys(dist.by_depth || {}).map(Number).sort((a, b) => a - b).map(String));
+  const sourceHtml = buckets(dist.by_source);
+  const statusHtml = buckets(dist.by_status, ["2xx", "3xx", "4xx", "5xx", "none"]);
+  if (depthHtml || sourceHtml || statusHtml) {
+    lines.push(
+      '<div class="stats-mini-grid">' +
+      (depthHtml ? `<div><span class="stats-label">depth</span>${depthHtml}</div>` : "") +
+      (sourceHtml ? `<div><span class="stats-label">source</span>${sourceHtml}</div>` : "") +
+      (statusHtml ? `<div><span class="stats-label">status</span>${statusHtml}</div>` : "") +
+      '</div>'
+    );
+  }
+  card.innerHTML = lines.join("");
+  card.hidden = false;
+}
+
 // Discover 결과를 사이트 계층 트리로 렌더 — 두 탭 (크롤 / 경로) 동시 fetch.
 // 결과 토글은 hidden=false 로 노출, 다운로드 anchor 도 wire.
 async function _renderDiscoverTrees(jobId) {
@@ -2170,6 +2220,7 @@ async function _pollDiscoverOnce(jobId) {
     if (s.aborted_reason === "auth_drift") suffix += " · 세션 만료 자동 중단";
     if (suffix) _setDiscoverStatus(line + suffix);
     _renderDiscoverTable($("#discover-result"), list);
+    _renderDiscoverStats(s.stats || null);
     await _renderDiscoverTrees(jobId);
     return;
   }
@@ -2230,6 +2281,8 @@ async function _onDiscoverSubmit(ev) {
   $("#discover-result").replaceChildren();
   const treeToggle = document.getElementById("discover-tree-toggle");
   if (treeToggle) treeToggle.hidden = true;
+  const statsCard = document.getElementById("discover-stats");
+  if (statsCard) { statsCard.hidden = true; statsCard.replaceChildren(); }
   _setDiscoverStatus("시작 중...");
   _toggleDiscoverButtons({ running: true });
 

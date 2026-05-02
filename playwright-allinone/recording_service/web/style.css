@@ -290,6 +290,52 @@ ul.tree a:hover { text-decoration: underline; }
   font-size: 0.95em;
 }
 
+/* ── Discover 사이트 스캔 통계 카드 (R9) ──────────────────────────────────── */
+.stats-card {
+  background: #f5f5f7;
+  border: 1px solid #e5e5e7;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  font-size: 0.88em;
+}
+.stats-card .stats-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 2px 0;
+}
+.stats-card .stats-cap-warn {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: #fde4c2;
+  color: #7a3e00;
+  font-weight: 500;
+}
+.stats-card .stats-mini-grid {
+  display: flex;
+  gap: 14px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.stats-card .stats-mini-grid > div {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.stats-card .stats-label {
+  color: var(--muted);
+  font-size: 0.85em;
+  min-width: 48px;
+}
+.stats-card .stats-bucket {
+  display: inline-block;
+  padding: 0 4px;
+  margin-right: 2px;
+}
+
 code {
   background: var(--code-bg);
   padding: 1px 6px;
