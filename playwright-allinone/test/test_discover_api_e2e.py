@@ -108,6 +108,7 @@ def daemon(tmp_path_factory):
     env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env["RECORDING_HOST_ROOT"] = str(rec_root)
     env["DISCOVERY_HOST_ROOT"] = str(disc_root)
+    env["RECORDING_FORCE_HEADLESS"] = "1"  # E2E 는 headless 강제 (UI default 무관)
 
     cmd = [
         VENV_PY, "-m", "uvicorn",

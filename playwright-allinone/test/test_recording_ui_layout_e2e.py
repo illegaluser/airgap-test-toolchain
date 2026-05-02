@@ -160,7 +160,8 @@ def daemon(daemon_root):
     env["RECORDING_HOST_ROOT"] = str(daemon_root)
     env["DISCOVERY_HOST_ROOT"] = str(daemon_root.parent / "layout-disc")
     env["RECORDING_DIFF_ANALYSIS_STUB"] = "1"
-    env["AUTH_PROFILE_VERIFY_HEADLESS"] = "1"  # E2E 는 headless 강제
+    env["AUTH_PROFILE_VERIFY_HEADLESS"] = "1"  # auth_profile verify 단계 headless
+    env["RECORDING_FORCE_HEADLESS"] = "1"      # Play / Discover 요청 override
 
     cmd = [
         VENV_PY, "-m", "uvicorn",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import re
 import threading
 import uuid
@@ -1709,6 +1710,8 @@ class DiscoverReq(BaseModel):
     # UI 의 '헤드리스(백그라운드) 실행' 체크박스 — 기본 False (브라우저 창 뜸).
     # 이 필드가 없으면 worker 가 DiscoverConfig 기본값(True) 으로 떨어져 사용자가
     # 체크박스를 풀어놨음에도 백그라운드로 도는 사고가 났었음.
+    # E2E 가 의도치 않게 headed 로 도는 것은 데몬 환경의 RECORDING_FORCE_HEADLESS=1
+    # override 로 처리 (UI 기본값을 건드리지 않는다).
     headless: bool = False
 
 
@@ -2066,6 +2069,12 @@ def discover_start(req: DiscoverReq, response: Response) -> dict:
         )
 
     storage_path, fingerprint, machine_mismatch = _load_profile_for_browser(req.auth_profile)
+
+    # E2E 슈트가 spawn 한 데몬에서 RECORDING_FORCE_HEADLESS=1 이 셋이면
+    # 사용자 UI 체크박스 상태와 무관하게 백그라운드(headless) 강제. 운영용
+    # run-recording-ui.sh 는 이 env 를 셋하지 않으므로 일반 사용자 UX 영향 없음.
+    if os.environ.get("RECORDING_FORCE_HEADLESS") == "1":
+        req.headless = True
 
     job_id = uuid.uuid4().hex[:12]
     job = DiscoverJob(
