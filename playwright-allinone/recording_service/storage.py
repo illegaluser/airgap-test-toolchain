@@ -87,6 +87,16 @@ def original_py_path(session_id: str) -> Path:
     return session_dir(session_id) / "original.py"
 
 
+def scenario_healed_path(session_id: str) -> Path:
+    """Play with LLM 실행 후 self-healing 적용된 scenario.json (selector 치환 등)."""
+    return session_dir(session_id) / "scenario.healed.json"
+
+
+def play_llm_log_path(session_id: str) -> Path:
+    """Play with LLM 실행 로그 (전체 본문 — 미리보기/다운로드용)."""
+    return session_dir(session_id) / "play-llm.log"
+
+
 def regression_py_path(session_id: str) -> Path:
     """executor 가 scenario.healed.json 으로부터 자동 생성한 회귀 테스트 .py."""
     return session_dir(session_id) / "regression_test.py"
