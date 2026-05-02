@@ -865,6 +865,9 @@ async function _renderRunLog(sid, opts = {}) {
   card.hidden = false;
   // 산출물이 있을 때 카드 토글 펼침 (R6).
   if (det) det.open = true;
+  // self-contained 리포트 다운로드 링크 — endpoint 가 둘 중 하나라도 있으면 200.
+  const dlReport = $("#dl-report");
+  if (dlReport) dlReport.href = `/recording/sessions/${sid}/report`;
 
   // 실제 표시할 모드 결정 — 요청한 mode 가 가용하면 그것, 아니면 가용한 첫 번째.
   let resolved = requestedMode;

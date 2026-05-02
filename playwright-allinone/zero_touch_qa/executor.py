@@ -91,6 +91,10 @@ class StepResult:
     heal_stage: str = "none"  # "none" | "fallback" | "local" | "dify"
     timestamp: float = field(default_factory=time.time)
     screenshot_path: str | None = None
+    # 스텝 실행 중 발생한 네이티브 dialog (alert/confirm/prompt/beforeunload) 의
+    # message 본문. Playwright 가 자동 dismiss 해 스크린샷에는 절대 안 잡히므로
+    # 텍스트만 보존해 리포트가 "여기서 alert 떴음" 을 명시. None 이면 발생 안 함.
+    dialog_text: str | None = None
 
 
 # Visibility Healer (T-H) JS — element 의 ancestor chain 에서 hoverable 후보 추출.
@@ -331,11 +335,35 @@ class QAExecutor:
             resolver = LocatorResolver(page)
             healer = LocalHealer(page, self.config.heal_threshold)
 
+            # 네이티브 dialog 캡처 — 스텝 단위로 채우고 비우는 버퍼.
+            # Playwright 는 dialog 핸들러가 없으면 자동 dismiss 하지만 그 전에
+            # 스크린샷이 떠도 alert 는 OS chrome 레이어라 viewport 에 안 잡힘.
+            # 따라서 텍스트만 보존해 리포트에서 표시 (운영자 인지 목적).
+            dialog_buffer: list[str] = []
+            def _on_dialog(dlg):
+                try:
+                    dialog_buffer.append(f"[{dlg.type}] {dlg.message}")
+                    # accept 가 아닌 dismiss — confirm/beforeunload 의 OK 폭주 방지.
+                    dlg.dismiss()
+                except Exception:  # noqa: BLE001
+                    pass
+            def _hook_dialog(p):
+                try:
+                    p.on("dialog", _on_dialog)
+                except Exception:  # noqa: BLE001
+                    pass
+            context.on("page", _hook_dialog)
+            for _p in context.pages:
+                _hook_dialog(_p)
+
             try:
                 for idx, step in enumerate(scenario):
+                    dialog_buffer.clear()
                     result = self._execute_step(
                         page, step, resolver, healer, artifacts
                     )
+                    if dialog_buffer:
+                        result.dialog_text = "\n".join(dialog_buffer)
                     results.append(result)
                     if headed and self.config.headed_step_pause_ms > 0:
                         try:
