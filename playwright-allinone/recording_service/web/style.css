@@ -180,7 +180,7 @@ details > summary {
 }
 details > summary::-webkit-details-marker { display: none; }
 details > summary::before {
-  content: "▸";
+  content: "▶︎";
   display: inline-block;
   width: 1em;
   margin-right: 4px;
