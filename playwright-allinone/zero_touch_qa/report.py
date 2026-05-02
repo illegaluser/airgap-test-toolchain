@@ -33,6 +33,9 @@ def save_run_log(results: list[StepResult], output_dir: str) -> str:
                 "heal_stage": r.heal_stage,
                 "ts": r.timestamp,
             }
+            # 스텝 실행 중 발생한 네이티브 dialog 텍스트 (있을 때만 키 추가).
+            if getattr(r, "dialog_text", None):
+                entry["dialog_text"] = r.dialog_text
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     log.info("[Log] run_log.jsonl 생성 완료: %s", path)
     return path

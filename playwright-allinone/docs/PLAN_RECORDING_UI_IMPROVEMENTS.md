@@ -16,6 +16,7 @@
 
 | 라운드 | 일자 | 핵심 |
 | --- | --- | --- |
+| R7 | 2026-05-02 | 실행 결과를 self-contained HTML 리포트로 export — 한 파일에 LLM/원본 모드 step + 스크린샷 base64 임베드. 네이티브 alert/confirm 도 텍스트로 보존해 "어디서 팝업이 떴는지" 리포트로 추적 가능 |
 | R6 | 2026-05-02 | 결과 패널을 4개 토글 카드로 재편 (Scenario / Script / run_log / LLM 로그) — 원본·셀프힐링 후 두 산출물을 한 카드 안 sub-block 으로 묶음. 버튼 라벨에 맞춰 "Play with LLM" → "LLM 적용 코드 실행" 통일. Play 후 결과 카드 자동 갱신 누락 버그 수정 |
 | R5 | 2026-05-02 | Discover 실패 메시지 줄바꿈 + 결과 패널에 LLM 산출물 카드 2개 추가 + 미리보기 박스 펼치기 토글 |
 | R4 | 2026-04-30 | codegen 원본 재생의 액션별 결과 시각화 — Playwright tracing → run-log + 스크린샷, 모드 탭 추가 |
@@ -38,7 +39,7 @@
 **범위 외**: 다크 모드 · 모바일 레이아웃 · 세션 메타데이터 마이그레이션 ·
 인증/권한 (recording-service 는 localhost-only daemon).
 
-## 현재 UI 구조 스냅샷 (Round 6 기준)
+## 현재 UI 구조 스냅샷 (Round 7 기준)
 
 페이지는 위에서 아래로 다음 순서:
 
@@ -54,7 +55,8 @@
 5. **결과 패널 군** — *(R6 재편)* 4개 토글 카드:
    1. **Scenario JSON** — 원본 + (있으면) "셀프힐링 후 (scenario.healed.json)" sub-block
    2. **Original Script (.py)** — 원본 + (있으면) "셀프힐링 후 (regression_test.py)" sub-block
-   3. **실행 결과 (run_log)** — LLM / 원본 모드 탭
+   3. **실행 결과 (run_log)** — LLM / 원본 모드 탭. *(R7)* `📤 리포트 다운로드`
+      링크로 self-contained HTML export.
    4. **LLM 실행 로그 (play-llm.log)**
    - 그 외: R-Plus 그룹(Play / Generate Doc) / Compare / 원본↔Regression 변경 분석.
    - 모든 코드/JSON 미리보기 박스에 *(R5)* "▾ 전체 펼치기 / ▴ 접기" 토글 적용.
@@ -72,6 +74,7 @@ GET  /recording/sessions/{sid}/play-log/tail        (R1 — P2, ?from=&kind=)
 GET  /recording/sessions/{sid}/regression           (R1 — 항목 4, ?download=1)
 GET  /recording/sessions/{sid}/scenario_healed      (R5, ?download=1)
 GET  /recording/sessions/{sid}/play_llm_log         (R5, ?download=1)
+GET  /recording/sessions/{sid}/report               (R7 — self-contained HTML)
 GET  /experimental/sessions/{sid}/diff-codegen-vs-llm  (R1 — 항목 4)
 POST /experimental/sessions/{sid}/diff-analysis     (R2 — F3, LLM 의미 분석)
 POST /discover                                      (Discover plan — 별도 문서)
@@ -779,6 +782,107 @@ placeholder 도 "LLM 적용 코드 실행 후 표시됩니다" 로 변경.
 
 ---
 
+## Round 7 — 실행 결과 self-contained HTML 리포트 + 네이티브 dialog 캡처 (2026-05-02)
+
+### 배경 (R7)
+
+운영자가 검수자/제3자에게 실행 결과를 공유할 때, 세션 디렉터리의 `index.html`
+은 같은 폴더의 `step_N_*.png` 를 상대경로로 참조하기 때문에 그 파일 하나만
+떼서 메일/Slack 으로 보내면 이미지가 깨졌다. 또한 로그인 필요 페이지에 접근
+시 사이트가 띄우는 네이티브 alert("로그인이 필요합니다") 가 Playwright 의
+기본 dismiss 동작 때문에 스크린샷에 절대 안 잡혀 — 결과를 봐도 "왜 이 step 이
+실패했는지" 알 수 없는 케이스가 있었음.
+
+### 설계 결정 (R7)
+
+- **단일 HTML 형식 우선** — 받는 쪽이 더블클릭 한 번으로 끝. zip 압축 풀기 /
+  PDF 뷰어 / 외부 호스팅 모두 불필요.
+  - 22 step ≈ 3 MB, 150 step ≈ 12 MB. Slack/메일/Notion 첨부 가능 범위.
+  - 100 step 이상의 비대 세션은 후속에서 zip fallback 또는 PNG 압축 옵션으로 분기 예정.
+- **두 모드(LLM / 원본) 한 파일에** — 같은 세션을 두 모드로 실행한 경우 차이를
+  같은 리포트 안에서 비교 가능. 한 모드만 실행했으면 해당 섹션만 렌더, 둘 다
+  미실행이면 endpoint 가 404.
+- **민감 정보 화이트리스트** — `metadata.json` 의 모든 키가 아니라 명시적 5개
+  (target_url / auth_profile / created_at / state / action_count /
+  planning_doc_ref) 만 노출. 외부 공유 시 의도치 않은 토큰/경로 노출 방지.
+- **네이티브 dialog 는 캡처 불가 → 텍스트 보존**. Playwright 스크린샷이 OS
+  chrome 레이어를 못 찍는 한계는 변경 불가 — 그 대신 dialog 메시지 텍스트를
+  run_log 에 저장해 리포트에서 노란 카드 형태로 표시.
+
+### 변경 묶음 (R7)
+
+#### 1. self-contained HTML 리포트 생성기
+
+- 신규 모듈 `recording_service/report_export.py`
+  - `build_self_contained_report(session_dir) -> str | None`
+  - `run_log.jsonl` (LLM) + `codegen_run_log.jsonl` (원본) 둘 중 하나라도
+    있으면 본문 반환, 둘 다 없으면 `None` (호출자가 404 처리).
+  - 스크린샷은 `<img src="data:image/png;base64,...">` 로 임베드 — 외부
+    파일/디렉터리 의존성 0.
+  - 인라인 CSS — 받는 사람의 환경(에디터/메일/Notion) 에 무관하게 동일 외관.
+
+#### 2. 신규 endpoint
+
+- `GET /recording/sessions/{sid}/report` — `Content-Disposition: attachment`
+  로 다운로드. 산출물 부재 시 404.
+
+#### 3. UI 버튼
+
+- "실행 결과 (run_log)" 카드 헤더 행에 `📤 리포트 다운로드` anchor.
+  세션 열릴 때 `_renderRunLog` 가 href 를 endpoint 로 wire.
+
+#### 4. 네이티브 dialog 캡처 (executor 경로)
+
+- `StepResult.dialog_text: str | None` 필드 추가.
+- Executor 의 main 루프에서 `BrowserContext.on("page", ...)` + `page.on("dialog", ...)`
+  로 모든 page 의 dialog 이벤트를 list 버퍼에 모으고, 스텝 시작마다 비우고,
+  스텝 종료 후 비어있지 않으면 `result.dialog_text` 에 대입 후 `dismiss()`.
+- `save_run_log` 가 `dialog_text` 가 있을 때만 jsonl entry 에 키 추가
+  (회귀 0 — 기존 reader 들이 키 부재 시 무시).
+- `report_export.py` 가 `dialog_text` 가 있는 row 에서 노란 카드 (`💬 dialog`)
+  를 스크린샷 셀 안에 렌더.
+
+> **codegen 모드 dialog 캡처는 후속**. trace.zip 의 timestamp 와 매칭하는
+> 파서 로직이 추가로 필요해 R8 으로 분리.
+
+### 신규 backend endpoint (R7 추가분)
+
+```text
+GET /recording/sessions/{sid}/report                # self-contained HTML (다운로드)
+```
+
+### 변경 파일 (R7)
+
+| 파일 | 변경 |
+| --- | --- |
+| `recording_service/report_export.py` | (신규) self-contained HTML 생성기 |
+| `recording_service/server.py` | `/report` endpoint 추가 |
+| `recording_service/web/index.html` | 결과 카드 헤더에 `📤 리포트 다운로드` 추가 |
+| `recording_service/web/app.js` | `_renderRunLog` 가 `#dl-report` href wire |
+| `zero_touch_qa/executor.py` | `StepResult.dialog_text`, `page.on("dialog")` 훅 |
+| `zero_touch_qa/report.py` | `save_run_log` 가 `dialog_text` 있을 때 jsonl 에 포함 |
+
+### 회귀 (R7)
+
+- `node --check` (app.js) / `ast.parse` (server.py / executor.py / report_export.py) 통과
+- 격리 검증
+  - LLM-only 세션 (b4b4361b4c02) — 200 OK, 3 MB, 22 임베디드 PNG
+  - 원본 모드 포함 세션 (c8b04593e2bd) — 200 OK, 12.7 MB, 두 섹션 모두 렌더
+  - 부재 세션 — 404
+- 신규 endpoint + 정적 자산 + StepResult 필드 추가 → 통합 회귀 0 예상
+
+### 위험과 회피 (R7 추가분)
+
+| 위험 | 회피 |
+| --- | --- |
+| 100+ step 세션의 단일 HTML 사이즈 폭증 (50 MB+) | 1차에서는 단순화 (그대로 다운로드). 200+ 또는 50 MB 이상이면 zip fallback 도입은 R8 후보 |
+| `metadata.json` 의 민감 키가 의도치 않게 외부 공유 | 화이트리스트 — 명시 키 5개만 노출. 새 키 추가 시 리포트에는 자동 반영 안 됨 (의도) |
+| dialog 핸들러가 dismiss 만 함 → confirm 의 OK 가 필요한 흐름은 깨질 가능성 | 현재 사용 케이스(주로 alert) 는 영향 없음. confirm 자동 OK 가 필요하면 step 액션 단위 옵션으로 추후 |
+| 네이티브 dialog 가 step 경계 사이 (idle 시점) 에서 발생하면 누락 | 드문 케이스 — 대부분 navigate/click 직후 즉시 발생. 누락분은 다음 step 의 buffer 에 들어가 표시는 됨 |
+| codegen 모드는 dialog 캡처 미적용 | 후속 R8 — trace.zip timestamp 매칭 로직 추가 |
+
+---
+
 ## 위험과 회피 (라운드 누적)
 
 | 위험 | 회피 | 도입 라운드 |
@@ -815,3 +919,4 @@ placeholder 도 "LLM 적용 코드 실행 후 표시됩니다" 로 변경.
 | 2026-04-30 | Claude | R4 완료 | codegen 원본 재생에 Playwright tracing 자동 주입 (`codegen_trace_wrapper.py`) → `trace.zip` 파싱 (`trace_parser.py`) → `codegen_run_log.jsonl` + `codegen_screenshots/` 산출. Run-log 카드에 `[LLM] [원본]` 모드 탭. `/run-log` 응답 스키마 wrap (Breaking) + `/screenshot` 에 mode 쿼리. 단위/통합 +13 (107 → 120). 문서 스냅샷 갱신 |
 | 2026-05-02 | Claude | R5 완료 | Discover 시작/조회 실패 메시지를 줄바꿈 + key:value 항목 목록으로 가독성 개선 (commit `93e396e`). 결과 패널에 **Healed Scenario JSON** / **LLM 실행 로그 (play-llm.log)** 카드 신규 추가 — Play with LLM 산출물을 파일시스템에서 뒤지지 않고 바로 검토 가능. 모든 코드/JSON 미리보기 박스에 "▾ 전체 펼치기 / ▴ 접기" 토글 일관 적용 — 클립 시에만 버튼 노출, 복사/다운로드는 항상 전체 본문. 신규 endpoint 2개. 정적 자산 + 신규 endpoint 만 → 회귀 0 예상 |
 | 2026-05-02 | Claude | R6 완료 | 결과 패널을 4개 토글 카드로 재편 — Healed Scenario / Regression 을 각각 부모 카드(Scenario / Original) 안 sub-block 으로 흡수. 카드 토글 기본 상태는 산출물 유무로 결정 (있으면 펼침, 없으면 접힘). UI 의 사용자 노출 "Play with LLM" 문구를 실제 버튼 라벨인 "LLM 적용 코드 실행" 으로 통일. Play 완료 시 결과 카드 자동 갱신이 누락되어 사용자가 세션을 다시 클릭해야 보이던 버그 수정 (Run-log 외 4개 카드 + diff 자동 재렌더). 정적 자산 변경만 → 회귀 0 예상 |
+| 2026-05-02 | Claude | R7 완료 | 실행 결과 self-contained HTML 리포트 export — 한 파일에 LLM/원본 두 모드의 step 표 + 스크린샷 base64 임베드. metadata 화이트리스트로 외부 공유 시 민감 정보 노출 차단. 네이티브 alert/confirm 텍스트를 run_log 에 보존해 "어디서 팝업이 떴는지" 리포트로 추적 가능 (LLM 경로). codegen 경로는 trace timestamp 매칭이 필요해 R8 으로 분리 |

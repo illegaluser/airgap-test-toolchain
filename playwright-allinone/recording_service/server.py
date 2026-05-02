@@ -1120,6 +1120,32 @@ def get_session_play_llm_log(sid: str, download: int = 0):
     return FileResponse(str(p), media_type="text/plain")
 
 
+@app.get("/recording/sessions/{sid}/report", include_in_schema=False)
+def get_session_report(sid: str):
+    """세션의 실행 결과(run_log) 를 self-contained HTML 리포트로 반환.
+
+    LLM / 원본 모드 산출물(``run_log.jsonl`` / ``codegen_run_log.jsonl``) 둘 중
+    하나라도 있으면 두 섹션을 모두 포함한 단일 HTML 본문 + 스크린샷 base64
+    임베드. 받는 쪽은 단일 파일만 더블클릭하면 됨. 둘 다 없으면 404.
+    """
+    from recording_service import report_export
+
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    sess_dir = storage.session_dir(sid)
+    html = report_export.build_self_contained_report(sess_dir)
+    if html is None:
+        raise HTTPException(
+            status_code=404,
+            detail="run_log 산출물 없음 — Play 미실행",
+        )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{sid}-report.html"',
+    }
+    return Response(content=html, media_type="text/html; charset=utf-8", headers=headers)
+
+
 @app.get("/recording/sessions/{sid}/regression", include_in_schema=False)
 def get_session_regression(sid: str, download: int = 0):
     """executor 가 자동 생성한 ``regression_test.py`` 본문 또는 첨부 다운로드.
