@@ -26,12 +26,81 @@
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import runpy
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import Browser, BrowserContext, BrowserType
+from playwright.sync_api import Browser, BrowserContext, BrowserType, Page
+
+
+# URL 쿼리에 인증 필요 메시지가 박혀 redirect 되는 한국형 엔터프라이즈 패턴.
+# `errorMsg` / `error_msg` / `msg` 가 있으면 decode 해 사용자에게 보여줄 텍스트.
+_REDIRECT_MSG_KEYS = ("errorMsg", "error_msg", "msg")
+
+
+def _extract_redirect_msg(url: str) -> "str | None":
+    if not url:
+        return None
+    try:
+        qs = parse_qs(urlparse(url).query, keep_blank_values=False)
+    except Exception:  # noqa: BLE001
+        return None
+    for key in _REDIRECT_MSG_KEYS:
+        vals = qs.get(key)
+        if vals and vals[0]:
+            return vals[0]
+    return None
+
+
+# 세션 디렉터리 경로 — main() 에서 셋. patched_page_goto 가 종료 시 sidecar 작성에 사용.
+_session_dir_global: "Path | None" = None
+# Page.goto() 호출이 redirect 끝에 errorMsg URL 로 도달했을 때 모은 기록.
+# 각 항목: {"requested": str, "final": str, "msg": str}
+_redirect_log: list[dict] = []
+
+
+def _install_page_goto_redirect_capture() -> None:
+    """``Page.goto()`` 를 monkey-patch — 사용자 스크립트의 각 goto 가 redirect
+    끝에 errorMsg URL 로 도달했는지 검사. 도달했다면 (requested, final, msg) 를
+    ``_redirect_log`` 에 누적. 종료 시 ``codegen_redirects.jsonl`` 로 저장.
+
+    Native alert 가 발화하지 않는 — 서버 redirect 만 하는 — 사이트에서 "이 step
+    은 로그인 필요" 흔적을 회수하는 유일한 신호. trace_parser 가 사후에 run_log
+    의 매칭 goto step 에 ``dialog_text`` 로 병합한다.
+    """
+    real_goto = Page.goto
+
+    def patched_goto(self, url, **kwargs):
+        response = real_goto(self, url, **kwargs)
+        try:
+            final_url = self.url or ""
+        except Exception:  # noqa: BLE001
+            final_url = ""
+        msg = _extract_redirect_msg(final_url)
+        if msg:
+            _redirect_log.append({
+                "requested": url,
+                "final": final_url,
+                "msg": msg,
+            })
+        return response
+
+    Page.goto = patched_goto  # type: ignore[assignment]
+
+
+def _flush_redirects() -> None:
+    if _session_dir_global is None or not _redirect_log:
+        return
+    try:
+        out = _session_dir_global / "codegen_redirects.jsonl"
+        with out.open("w", encoding="utf-8") as f:
+            for r in _redirect_log:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[codegen-trace] redirects sidecar 저장 실패: {e}", file=sys.stderr)
 
 
 def _resolve_paths() -> tuple[Path, Path]:
@@ -226,8 +295,12 @@ def _install_launch_overrides() -> None:
 
 def main() -> None:
     sess, script = _resolve_paths()
+    global _session_dir_global
+    _session_dir_global = sess
     _install_launch_overrides()
     _install_tracing_patches(sess)
+    _install_page_goto_redirect_capture()
+    atexit.register(_flush_redirects)
     # 사용자 스크립트 실행 — 자체 종료 코드를 그대로 전파.
     # runpy.run_path 는 module __main__ 으로 실행하므로 `if __name__ == "__main__"`
     # 가드 안의 코드도 정상 실행됨.
