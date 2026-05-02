@@ -348,6 +348,9 @@ async function openSession(sid) {
       $("#result-json").textContent = `(scenario.json 로드 실패: ${err.message})`;
     }
     _refreshPreviewToggle("result-json");
+    // 산출물이 있는 카드는 토글 펼침 (R6).
+    const det = $("#scenario-details");
+    if (det) det.open = true;
   } else {
     scenarioCard.hidden = true;
   }
@@ -361,6 +364,8 @@ async function openSession(sid) {
     originalCard.hidden = false;
     $("#result-original").textContent = original || "(empty)";
     _refreshPreviewToggle("result-original");
+    const det = $("#original-details");
+    if (det) det.open = true;
   } catch (err) {
     originalCard.hidden = true;
   }
@@ -486,7 +491,6 @@ $("#start-form").addEventListener("submit", async (e) => {
     showActivePanel(data);
     $("#result-section").hidden = true;
     $("#scenario-card").hidden = true;
-    $("#scenario-healed-card").hidden = true;
     $("#original-card").hidden = true;
     $("#play-llm-log-card").hidden = true;
     $("#assertion-section").hidden = true;
@@ -625,6 +629,15 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
       (data.stderr_tail ? `\n\n--- stderr (tail) ---\n${data.stderr_tail}` : "");
     // 실행 끝 — Run-log 새로고침 + 방금 실행한 모드 탭으로 자동 전환.
     await _renderRunLog(sid, { mode: kind || "llm" });
+    // Play with LLM 실행 후 새로 생성/갱신되는 결과 카드들을 함께 다시 그린다.
+    // openSession 에서만 채우면 사용자가 세션을 다시 클릭해야 보이는 문제가 있었음.
+    await _renderRegression(sid);
+    await _renderHealedScenario(sid);
+    await _renderPlayLlmLog(sid);
+    await _renderDiff(sid);
+    // 결과 영역 토글이 닫혀 있으면 자동 펼침 — 새로 생긴 카드를 사용자가 즉시 볼 수 있게.
+    const resultToggle = document.getElementById("result-area-toggle");
+    if (resultToggle) resultToggle.open = true;
     // 진행 박스는 자동 collapse — 사용자가 펼쳐 보고 싶으면 수동으로.
     details.open = false;
   } catch (err) {
@@ -843,11 +856,15 @@ async function _renderRunLog(sid, opts = {}) {
   _runLogState.available.llm = !!llmRes;
   _runLogState.available.codegen = !!cgRes;
 
+  const det = $("#run-log-details");
   if (!llmRes && !cgRes) {
     card.hidden = true;
+    if (det) det.open = false;
     return;
   }
   card.hidden = false;
+  // 산출물이 있을 때 카드 토글 펼침 (R6).
+  if (det) det.open = true;
 
   // 실제 표시할 모드 결정 — 요청한 mode 가 가용하면 그것, 아니면 가용한 첫 번째.
   let resolved = requestedMode;
@@ -1011,61 +1028,67 @@ $("#btn-analyze-diff").addEventListener("click", async () => {
   }
 });
 
-// Regression Test Script (.py) 카드 렌더 — 항목 #2 (UI 개선)
+// Regression Test Script (.py) — Original Script 카드 안의 sub-block 으로 흡수 (R6).
+// 파일 존재 시 sub-block 노출 + 카드 details 자동 펼침.
 async function _renderRegression(sid) {
-  const card = $("#regression-card");
+  const block = $("#regression-block");
   let body;
   try {
     const r = await fetch(`/recording/sessions/${sid}/regression`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     body = await r.text();
   } catch (err) {
-    card.hidden = true;
+    block.hidden = true;
     return;
   }
-  card.hidden = false;
+  block.hidden = false;
   $("#dl-regression").href = `/recording/sessions/${sid}/regression?download=1`;
   $("#result-regression").textContent = body || "(empty)";
   _refreshPreviewToggle("result-regression");
+  // 산출물이 새로 생겼으니 부모 details 를 펼쳐서 사용자가 즉시 볼 수 있게.
+  const det = $("#original-details");
+  if (det) det.open = true;
 }
 
-// Healed Scenario JSON 카드 — Play with LLM 후 self-healing 결과가 원본과 다를 때만 노출.
+// Healed Scenario — Scenario JSON 카드 안의 sub-block 으로 흡수 (R6).
+// 원본과 다를 때만 sub-block 노출.
 async function _renderHealedScenario(sid) {
-  const card = $("#scenario-healed-card");
+  const block = $("#scenario-healed-block");
   let healedText;
   try {
     const r = await fetch(`/recording/sessions/${sid}/scenario_healed`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     healedText = await r.text();
   } catch (_) {
-    card.hidden = true;
+    block.hidden = true;
     return;
   }
   // 원본 scenario.json 과 동일하면 굳이 표시할 가치가 없음 — 셀프힐링이 아무것도 바꾸지 않은 경우.
   let same = false;
   try {
     const origText = await (await fetch(`/recording/sessions/${sid}/scenario`)).text();
-    // JSON 파싱해 정규화 후 비교 (들여쓰기 차이 무시).
     const a = JSON.stringify(JSON.parse(origText));
     const b = JSON.stringify(JSON.parse(healedText));
     same = a === b;
   } catch (_) { /* 비교 실패 시 그냥 노출 */ }
   if (same) {
-    card.hidden = true;
+    block.hidden = true;
     return;
   }
-  card.hidden = false;
+  block.hidden = false;
   $("#dl-scenario-healed").href = `/recording/sessions/${sid}/scenario_healed?download=1`;
-  // 들여쓰기로 예쁘게 표시.
   let pretty = healedText;
   try { pretty = JSON.stringify(JSON.parse(healedText), null, 2); } catch (_) { /* 그대로 */ }
   $("#result-json-healed").textContent = pretty;
   _refreshPreviewToggle("result-json-healed");
+  const det = $("#scenario-details");
+  if (det) det.open = true;
 }
 
-// LLM 실행 로그 카드 — play-llm.log 가 존재할 때만 노출.
+// LLM 실행 로그 카드 — play-llm.log 가 존재할 때만 노출 + 토글 자동 펼침.
 async function _renderPlayLlmLog(sid) {
   const card = $("#play-llm-log-card");
+  const det = $("#play-llm-log-details");
   let body;
   try {
     const r = await fetch(`/recording/sessions/${sid}/play_llm_log`);
@@ -1073,12 +1096,14 @@ async function _renderPlayLlmLog(sid) {
     body = await r.text();
   } catch (_) {
     card.hidden = true;
+    if (det) det.open = false;
     return;
   }
   card.hidden = false;
   $("#dl-play-llm-log").href = `/recording/sessions/${sid}/play_llm_log?download=1`;
   $("#result-play-llm-log").textContent = body || "(empty)";
   _refreshPreviewToggle("result-play-llm-log");
+  if (det) det.open = true;
 }
 
 // 스크린샷 모달 — 클릭 위임.
@@ -1772,7 +1797,6 @@ $("#start-form").addEventListener("submit", async (e) => {
     showActivePanel(data);
     $("#result-section").hidden = true;
     $("#scenario-card").hidden = true;
-    $("#scenario-healed-card").hidden = true;
     $("#original-card").hidden = true;
     $("#play-llm-log-card").hidden = true;
     $("#assertion-section").hidden = true;

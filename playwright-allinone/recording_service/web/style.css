@@ -171,6 +171,54 @@ button[data-act="open"] { background: #fff; color: var(--accent); }
 }
 .preview-toggle:hover { background: #e6e6ea; }
 
+/* ── 토글 아이콘 통일 (R6) ───────────────────────────────────────────────── */
+/* 페이지 내 모든 <details> 의 마커를 동일한 회전 ▸ 로 통일 — 브라우저 기본
+   마커(▶/▼) 와 카드 토글이 섞여 보이던 문제 해소. */
+details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  margin-right: 4px;
+  transition: transform 0.15s ease;
+}
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.card-toggle > details > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+}
+.card-toggle > details > summary > h2 {
+  display: inline-block;
+  margin: 0;
+}
+
+/* 카드 액션 행 — copy/download 버튼 묶음을 헤더 다음 줄에 노출 */
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+/* sub-block — 한 카드 안에 "원본 / 셀프힐링 후" 두 섹션을 둘 때 사용 */
+.sub-block {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--muted);
+}
+.sub-block h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
 code {
   background: var(--code-bg);
   padding: 1px 6px;

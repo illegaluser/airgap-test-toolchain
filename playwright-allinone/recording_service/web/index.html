@@ -396,96 +396,107 @@
       </dl>
     </section>
 
-    <!-- 섹션 3-A: Scenario JSON (변환된 14-DSL) -->
-    <section class="card" id="scenario-card" hidden>
-      <h2>Scenario JSON
-        <button type="button" class="copy-btn" data-copy-target="result-json"
-                title="클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="result-json" hidden>✓ 복사됨</span>
-        <a id="dl-scenario" class="dl-link" href="#" download>⬇ 다운로드</a>
-      </h2>
-      <pre id="result-json" class="json-preview collapsible">— scenario.json 미로드 —</pre>
-      <button type="button" class="preview-toggle" data-toggle-target="result-json" hidden>▾ 전체 펼치기</button>
+    <!-- 섹션 3-A: Scenario JSON (변환된 14-DSL) — 셀프힐링 결과를 sub-block 으로 흡수 -->
+    <section class="card card-toggle" id="scenario-card" hidden>
+      <details id="scenario-details">
+        <summary><h2>Scenario JSON</h2></summary>
+        <div class="card-actions">
+          <button type="button" class="copy-btn" data-copy-target="result-json"
+                  title="클립보드에 복사">📋 복사</button>
+          <span class="copy-toast" data-toast-for="result-json" hidden>✓ 복사됨</span>
+          <a id="dl-scenario" class="dl-link" href="#" download>⬇ 다운로드</a>
+        </div>
+        <pre id="result-json" class="json-preview collapsible">— scenario.json 미로드 —</pre>
+        <button type="button" class="preview-toggle" data-toggle-target="result-json" hidden>▾ 전체 펼치기</button>
+
+        <!-- 셀프힐링 후 — 원본과 다를 때만 노출되는 sub-block -->
+        <div id="scenario-healed-block" class="sub-block" hidden>
+          <h3>셀프힐링 후 (scenario.healed.json)</h3>
+          <div class="card-actions">
+            <button type="button" class="copy-btn" data-copy-target="result-json-healed"
+                    title="클립보드에 복사">📋 복사</button>
+            <span class="copy-toast" data-toast-for="result-json-healed" hidden>✓ 복사됨</span>
+            <a id="dl-scenario-healed" class="dl-link" href="#" download>⬇ 다운로드</a>
+          </div>
+          <p class="muted">
+            ▶ <strong>LLM 적용 코드 실행</strong> 중 셀프힐링으로 보정된 시나리오 —
+            selector 치환·단계 추가 등이 반영. 원본과 다를 때만 표시됩니다.
+          </p>
+          <pre id="result-json-healed" class="json-preview collapsible">— scenario.healed.json 미로드 —</pre>
+          <button type="button" class="preview-toggle" data-toggle-target="result-json-healed" hidden>▾ 전체 펼치기</button>
+        </div>
+      </details>
     </section>
 
-    <!-- 섹션 3-A2: Healed Scenario JSON (Play with LLM 후 self-healing 결과) -->
-    <section class="card" id="scenario-healed-card" hidden>
-      <h2>Healed Scenario JSON
-        <button type="button" class="copy-btn" data-copy-target="result-json-healed"
-                title="클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="result-json-healed" hidden>✓ 복사됨</span>
-        <a id="dl-scenario-healed" class="dl-link" href="#" download>⬇ 다운로드</a>
-      </h2>
-      <p class="muted">
-        ▶ <strong>Play with LLM</strong> 실행 중 셀프힐링으로 보정된 시나리오 —
-        selector 치환·단계 추가 등이 반영된 결과. 원본과 다를 때만 표시.
-      </p>
-      <pre id="result-json-healed" class="json-preview collapsible">— scenario.healed.json 미로드 —</pre>
-      <button type="button" class="preview-toggle" data-toggle-target="result-json-healed" hidden>▾ 전체 펼치기</button>
+    <!-- 섹션 3-B: Script (.py) — codegen 원본 + LLM 셀프힐링 후 (Regression) sub-block -->
+    <section class="card card-toggle" id="original-card" hidden>
+      <details id="original-details">
+        <summary><h2>Original Script (.py)</h2></summary>
+        <div class="card-actions">
+          <button type="button" class="copy-btn" data-copy-target="result-original"
+                  title="클립보드에 복사">📋 복사</button>
+          <span class="copy-toast" data-toast-for="result-original" hidden>✓ 복사됨</span>
+          <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
+        </div>
+        <pre id="result-original" class="json-preview collapsible">— original.py 미로드 —</pre>
+        <button type="button" class="preview-toggle" data-toggle-target="result-original" hidden>▾ 전체 펼치기</button>
+
+        <!-- 셀프힐링 후 — LLM 적용 코드 실행 후 자동 생성된 회귀 테스트 -->
+        <div id="regression-block" class="sub-block" hidden>
+          <h3>셀프힐링 후 (regression_test.py)</h3>
+          <div class="card-actions">
+            <button type="button" class="copy-btn" data-copy-target="result-regression"
+                    title="클립보드에 복사">📋 복사</button>
+            <span class="copy-toast" data-toast-for="result-regression" hidden>✓ 복사됨</span>
+            <a id="dl-regression" class="dl-link" href="#" download>⬇ 다운로드</a>
+          </div>
+          <p class="muted">
+            ▶ <strong>LLM 적용 코드 실행</strong> 후 healed selector 와 함께 자동
+            생성된 회귀 테스트. 검증 후 회귀 슈트로 채택.
+          </p>
+          <pre id="result-regression" class="json-preview collapsible">— regression_test.py 미로드 —</pre>
+          <button type="button" class="preview-toggle" data-toggle-target="result-regression" hidden>▾ 전체 펼치기</button>
+        </div>
+      </details>
     </section>
 
-    <!-- 섹션 3-B: Original .py (codegen 원본) -->
-    <section class="card" id="original-card" hidden>
-      <h2>Original Script (.py)
-        <button type="button" class="copy-btn" data-copy-target="result-original"
-                title="클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="result-original" hidden>✓ 복사됨</span>
-        <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
-      </h2>
-      <pre id="result-original" class="json-preview collapsible">— original.py 미로드 —</pre>
-      <button type="button" class="preview-toggle" data-toggle-target="result-original" hidden>▾ 전체 펼치기</button>
-    </section>
-
-    <!-- 섹션 3-C: Run Log (P1 — Play 실행 후 step 별 결과). result-area-toggle 그룹 안. -->
-    <section class="card" id="run-log-card" hidden>
-      <div class="run-log-header">
-        <h2>실행 결과 (run_log)</h2>
+    <!-- 섹션 3-D: Run Log (Play 실행 후 step 별 결과). result-area-toggle 그룹 안. -->
+    <section class="card card-toggle" id="run-log-card" hidden>
+      <details id="run-log-details">
+        <summary><h2>실행 결과 (run_log)</h2></summary>
         <div class="run-log-mode-tabs" id="run-log-mode-tabs" role="tablist">
           <button type="button" class="run-log-mode-tab" data-mode="llm"
                   role="tab" aria-selected="true">LLM</button>
           <button type="button" class="run-log-mode-tab" data-mode="codegen"
                   role="tab" aria-selected="false">원본</button>
         </div>
-      </div>
-      <p class="muted">
-        가장 최근 ▶ Play 실행의 step 별 결과 + 스크린샷. <strong>LLM</strong> 탭은
-        시나리오 executor 의 PASS / HEALED / FAIL 과 <code>heal_stage</code> 까지
-        보여주고, <strong>원본</strong> 탭은 codegen <code>original.py</code> 를
-        Playwright tracing 으로 캡처한 액션별 결과입니다.
-      </p>
-      <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
+        <p class="muted">
+          가장 최근 ▶ Play 실행의 step 별 결과 + 스크린샷. <strong>LLM</strong> 탭은
+          시나리오 executor 의 PASS / HEALED / FAIL 과 <code>heal_stage</code> 까지
+          보여주고, <strong>원본</strong> 탭은 codegen <code>original.py</code> 를
+          Playwright tracing 으로 캡처한 액션별 결과입니다.
+        </p>
+        <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
+      </details>
     </section>
 
-    <!-- 섹션 3-D: Regression Test Script (.py) — Play with LLM 실행 후 자동 생성 -->
-    <section class="card" id="regression-card" hidden>
-      <h2>Regression Test Script (.py)
-        <button type="button" class="copy-btn" data-copy-target="result-regression"
-                title="클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="result-regression" hidden>✓ 복사됨</span>
-        <a id="dl-regression" class="dl-link" href="#" download>⬇ 다운로드</a>
-      </h2>
-      <p class="muted">
-        ▶ <strong>Play with LLM</strong> 실행 후 healed selector 와 함께 자동
-        생성된 회귀 테스트. 검증 후 회귀 슈트로 채택.
-      </p>
-      <pre id="result-regression" class="json-preview collapsible">— regression_test.py 미로드 —</pre>
-      <button type="button" class="preview-toggle" data-toggle-target="result-regression" hidden>▾ 전체 펼치기</button>
-    </section>
-
-    <!-- 섹션 3-D2: Play with LLM 실행 로그 (play-llm.log) -->
-    <section class="card" id="play-llm-log-card" hidden>
-      <h2>LLM 실행 로그 (play-llm.log)
-        <button type="button" class="copy-btn" data-copy-target="result-play-llm-log"
-                title="클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="result-play-llm-log" hidden>✓ 복사됨</span>
-        <a id="dl-play-llm-log" class="dl-link" href="#" download>⬇ 다운로드</a>
-      </h2>
-      <p class="muted">
-        ▶ <strong>Play with LLM</strong> 실행의 전체 로그 — 단계별 PASS/HEALED/FAIL,
-        LLM 프롬프트/응답, selector 치환 결정 근거 등.
-      </p>
-      <pre id="result-play-llm-log" class="json-preview collapsible">— play-llm.log 미로드 —</pre>
-      <button type="button" class="preview-toggle" data-toggle-target="result-play-llm-log" hidden>▾ 전체 펼치기</button>
+    <!-- 섹션 3-E: LLM 실행 로그 (play-llm.log) -->
+    <section class="card card-toggle" id="play-llm-log-card" hidden>
+      <details id="play-llm-log-details">
+        <summary><h2>LLM 실행 로그 (play-llm.log)</h2></summary>
+        <div class="card-actions">
+          <button type="button" class="copy-btn" data-copy-target="result-play-llm-log"
+                  title="클립보드에 복사">📋 복사</button>
+          <span class="copy-toast" data-toast-for="result-play-llm-log" hidden>✓ 복사됨</span>
+          <a id="dl-play-llm-log" class="dl-link" href="#" download>⬇ 다운로드</a>
+        </div>
+        <p class="muted">
+          ▶ <strong>LLM 적용 코드 실행</strong> 의 전체 로그 — 단계별 PASS/HEALED/FAIL,
+          LLM 프롬프트/응답, selector 치환 결정 근거 등.
+        </p>
+        <pre id="result-play-llm-log" class="json-preview collapsible">— play-llm.log 미로드 —</pre>
+        <button type="button" class="preview-toggle" data-toggle-target="result-play-llm-log" hidden>▾ 전체 펼치기</button>
+      </details>
     </section>
 
     <!-- 섹션 3-E: codegen 원본 ↔ LLM healed regression 변경 분석 (항목 4) -->
@@ -503,7 +514,7 @@
       </div>
       <details id="diff-raw-details">
         <summary class="muted">원시 unified diff 보기</summary>
-        <pre id="diff-output" class="diff-pre">— Play with LLM 실행 후 표시됩니다 —</pre>
+        <pre id="diff-output" class="diff-pre">— LLM 적용 코드 실행 후 표시됩니다 —</pre>
       </details>
     </section>
 

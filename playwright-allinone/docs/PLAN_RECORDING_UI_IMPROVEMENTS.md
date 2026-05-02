@@ -16,6 +16,7 @@
 
 | 라운드 | 일자 | 핵심 |
 | --- | --- | --- |
+| R6 | 2026-05-02 | 결과 패널을 4개 토글 카드로 재편 (Scenario / Script / run_log / LLM 로그) — 원본·셀프힐링 후 두 산출물을 한 카드 안 sub-block 으로 묶음. 버튼 라벨에 맞춰 "Play with LLM" → "LLM 적용 코드 실행" 통일. Play 후 결과 카드 자동 갱신 누락 버그 수정 |
 | R5 | 2026-05-02 | Discover 실패 메시지 줄바꿈 + 결과 패널에 LLM 산출물 카드 2개 추가 + 미리보기 박스 펼치기 토글 |
 | R4 | 2026-04-30 | codegen 원본 재생의 액션별 결과 시각화 — Playwright tracing → run-log + 스크린샷, 모드 탭 추가 |
 | R3 | 2026-04-30 | 상단 3 토글 통일 / Login Profile 분리 / 최근 세션 일괄 선택 |
@@ -37,7 +38,7 @@
 **범위 외**: 다크 모드 · 모바일 레이아웃 · 세션 메타데이터 마이그레이션 ·
 인증/권한 (recording-service 는 localhost-only daemon).
 
-## 현재 UI 구조 스냅샷 (Round 5 기준)
+## 현재 UI 구조 스냅샷 (Round 6 기준)
 
 페이지는 위에서 아래로 다음 순서:
 
@@ -50,11 +51,14 @@
 3. **🔐 Login Profile Registration** — 토글 *(default 닫힘)* — 인증 프로파일의
    *시드 / 검증 / 삭제* 만 담당. 시드 다이얼로그 4종 포함.
 4. **활성 세션** — 녹화 진행 중에만 노출.
-5. **결과 패널 군** — Scenario JSON / *(R5)* **Healed Scenario JSON** /
-   Original Script / Run-log + Screenshots (모드 탭: LLM / 원본) /
-   R-Plus 그룹(Play / Generate Doc) / Compare / Regression Test Script /
-   *(R5)* **LLM 실행 로그 (play-llm.log)**.
+5. **결과 패널 군** — *(R6 재편)* 4개 토글 카드:
+   1. **Scenario JSON** — 원본 + (있으면) "셀프힐링 후 (scenario.healed.json)" sub-block
+   2. **Original Script (.py)** — 원본 + (있으면) "셀프힐링 후 (regression_test.py)" sub-block
+   3. **실행 결과 (run_log)** — LLM / 원본 모드 탭
+   4. **LLM 실행 로그 (play-llm.log)**
+   - 그 외: R-Plus 그룹(Play / Generate Doc) / Compare / 원본↔Regression 변경 분석.
    - 모든 코드/JSON 미리보기 박스에 *(R5)* "▾ 전체 펼치기 / ▴ 접기" 토글 적용.
+   - *(R6)* 카드 토글 기본 상태 — 산출물이 있으면 펼침, 없으면 접힘.
 6. **최근 세션** — 필터(text / state) + 일괄 선택 (체크박스 + 전체선택 /
    선택해제 / 선택삭제) + 행 단위 열기/삭제.
 
@@ -688,6 +692,93 @@ GET /recording/sessions/{sid}/play_llm_log      (?download=1)
 
 ---
 
+## Round 6 — 결과 패널 토글 카드 재편 + Play 후 자동 갱신 버그 수정 (2026-05-02)
+
+### 배경 (R6)
+
+R5 로 결과 패널의 카드 수가 5~7개로 늘어 페이지가 길어지고, 운영자가 "방금
+실행한 결과는 어디 있지" 를 한눈에 파악하기 어려워졌음. 또한 Play with LLM
+완료 후 결과 카드가 자동 갱신되지 않아, 사용자가 같은 세션을 다시 클릭해야
+새 산출물이 보이는 문제가 발견됨.
+
+추가로 UI 의 anchor 라벨(녹색 ▶ 버튼) 은 *"LLM 적용 코드 실행"* 이지만 결과
+카드의 muted 설명문에는 *"Play with LLM"* 이 박혀 있어 같은 동작을 두 이름으로
+부르고 있었음.
+
+### 설계 결정 (R6)
+
+- **카드 통합 — "원본 / 셀프힐링 후" 두 산출물을 한 카드 안 sub-block 으로
+  묶는다**.
+  - `Scenario JSON` 카드 = 원본 `scenario.json` + (있으면) `scenario.healed.json` sub-block
+  - `Original Script (.py)` 카드 = 원본 `original.py` + (있으면) `regression_test.py` sub-block
+  - 사용자가 "셀프힐링이 무엇을 바꿨는지" 를 같은 카드 안에서 비교 가능 →
+    문맥 점프가 줄어듦.
+- **결과 패널 최상위 토글은 4개로 고정** — Scenario / Script / run_log / LLM 로그.
+  Healed Scenario / Regression 은 더 이상 별도 카드가 아님.
+- **카드 토글 기본 상태**: 산출물이 존재하면 *펼침*, 없으면 *접힘*. 사용자는
+  "이 세션이 무엇을 만들었나" 를 토글 상태만으로 즉시 파악 가능.
+- **사용자 노출 라벨 통일** — 모든 muted 설명문/placeholder 의 "Play with LLM"
+  → "LLM 적용 코드 실행" (실제 버튼 라벨 일치). 코드 주석에는 일부 남김 —
+  내부 컨벤션 변경은 별도 리팩터.
+- **Play 후 자동 갱신** — `_runPlay` 가 완료 시 Run-log 외에 Regression /
+  Healed Scenario / LLM 로그 / Diff 도 함께 다시 그리고, 결과 영역 토글이
+  닫혀있으면 자동 펼침.
+
+### 변경 묶음 (R6)
+
+#### 1. 카드 구조 재편
+
+- 신규 클래스 `.card-toggle` — 카드 전체를 `<details>` 로 감싸고 `<summary>` 에
+  헤더 (`<h2>` + 회전 ▸ 마커) 배치.
+- `.card-actions` 행 — 복사/다운로드 버튼 묶음을 헤더 다음 줄로 이동. 버튼이
+  `<summary>` 안에 있어 토글이 함께 발동되던 문제를 구조적으로 회피.
+- 신규 sub-block `.sub-block` — dashed border-top + h3 로 구분. 한 카드 안에
+  두 섹션을 둘 때 사용.
+
+#### 2. Play 완료 자동 갱신
+
+`_runPlay` 의 try 블록 내 `_renderRunLog` 호출 직후에 다음을 추가:
+
+```js
+await _renderRegression(sid);
+await _renderHealedScenario(sid);
+await _renderPlayLlmLog(sid);
+await _renderDiff(sid);
+const resultToggle = document.getElementById("result-area-toggle");
+if (resultToggle) resultToggle.open = true;
+```
+
+#### 3. 라벨 통일
+
+`index.html` 의 4곳 + `app.js` 의 0곳 (코드 주석은 컨벤션 유지). diff-card 의
+placeholder 도 "LLM 적용 코드 실행 후 표시됩니다" 로 변경.
+
+### 변경 파일 (R6)
+
+| 파일 | 변경 |
+| --- | --- |
+| `recording_service/web/index.html` | 5개 → 4개 토글 카드 재편, sub-block 도입, "Play with LLM" → "LLM 적용 코드 실행" |
+| `recording_service/web/app.js` | `_renderHealedScenario` / `_renderRegression` 을 sub-block 대상으로 조정, `_runPlay` 완료 시 4개 카드 + diff 자동 재렌더, 카드 details 자동 open/close 로직 |
+| `recording_service/web/style.css` | `.card-toggle > details > summary`, `.card-actions`, `.sub-block` |
+
+### 회귀 (R6)
+
+- `node --check` JS 파싱 통과.
+- 정적 자산 변경 + 기존 핸들러 미수정 → 통합 회귀 0 예상 (e2e 슈트는
+  pre-commit 훅에서 자동 실행).
+- 수동 확인: 산출물이 있는 세션에서 4개 토글 모두 펼침, sub-block 노출, 라벨
+  변경 확인.
+
+### 위험과 회피 (R6 추가분)
+
+| 위험 | 회피 |
+| --- | --- |
+| `<summary>` 안의 버튼 클릭이 토글까지 발동 | 버튼/링크를 summary 밖 `.card-actions` 행으로 분리 — 구조적 회피 |
+| Healed Scenario / Regression 별도 다운로드 anchor ID 가 sub-block 안으로 이동 | ID(`#dl-scenario-healed`, `#dl-regression`) 자체는 유지 — 외부 참조/북마크/스크립트 호환 |
+| 카드 4개가 모두 펼쳐 있을 때 페이지 길이 증가 | 산출물이 없으면 자동 접힘 + 미리보기 박스 자체에도 max-height + 펼치기 토글(R5) — 누적 효과로 첫 화면 길이 제어 |
+
+---
+
 ## 위험과 회피 (라운드 누적)
 
 | 위험 | 회피 | 도입 라운드 |
@@ -723,3 +814,4 @@ GET /recording/sessions/{sid}/play_llm_log      (?download=1)
 | 2026-04-30 | Claude | R3 완료 | 상단 3 토글 통일 ("새 녹화시작" → "New Recording"), Login Profile Registration 분리, 최근 세션 일괄 선택/삭제, `.auth-btn` 가시성 수정. UI 정적 변경 — 백엔드 회귀 0. 문서를 라운드 일지 형태로 재구성 |
 | 2026-04-30 | Claude | R4 완료 | codegen 원본 재생에 Playwright tracing 자동 주입 (`codegen_trace_wrapper.py`) → `trace.zip` 파싱 (`trace_parser.py`) → `codegen_run_log.jsonl` + `codegen_screenshots/` 산출. Run-log 카드에 `[LLM] [원본]` 모드 탭. `/run-log` 응답 스키마 wrap (Breaking) + `/screenshot` 에 mode 쿼리. 단위/통합 +13 (107 → 120). 문서 스냅샷 갱신 |
 | 2026-05-02 | Claude | R5 완료 | Discover 시작/조회 실패 메시지를 줄바꿈 + key:value 항목 목록으로 가독성 개선 (commit `93e396e`). 결과 패널에 **Healed Scenario JSON** / **LLM 실행 로그 (play-llm.log)** 카드 신규 추가 — Play with LLM 산출물을 파일시스템에서 뒤지지 않고 바로 검토 가능. 모든 코드/JSON 미리보기 박스에 "▾ 전체 펼치기 / ▴ 접기" 토글 일관 적용 — 클립 시에만 버튼 노출, 복사/다운로드는 항상 전체 본문. 신규 endpoint 2개. 정적 자산 + 신규 endpoint 만 → 회귀 0 예상 |
+| 2026-05-02 | Claude | R6 완료 | 결과 패널을 4개 토글 카드로 재편 — Healed Scenario / Regression 을 각각 부모 카드(Scenario / Original) 안 sub-block 으로 흡수. 카드 토글 기본 상태는 산출물 유무로 결정 (있으면 펼침, 없으면 접힘). UI 의 사용자 노출 "Play with LLM" 문구를 실제 버튼 라벨인 "LLM 적용 코드 실행" 으로 통일. Play 완료 시 결과 카드 자동 갱신이 누락되어 사용자가 세션을 다시 클릭해야 보이던 버그 수정 (Run-log 외 4개 카드 + diff 자동 재렌더). 정적 자산 변경만 → 회귀 0 예상 |

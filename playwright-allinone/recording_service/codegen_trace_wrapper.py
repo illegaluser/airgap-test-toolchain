@@ -57,6 +57,29 @@ def _resolve_paths() -> tuple[Path, Path]:
     return sess, script
 
 
+def _attach_progress_logging(ctx: BrowserContext) -> None:
+    """``BrowserContext`` 의 모든 page 에 ``framenavigated`` 훅을 달아
+    main frame URL 변경마다 한 줄을 stderr 로 흘려보낸다.
+
+    play-codegen.log 가 즉시 갱신되어 UI 의 "실시간 진행 로그" 박스에
+    단계별 진행이 보인다. 사용자 스크립트가 stdout 을 안 쓸 때도 운영자가
+    실행이 살아있음을 확인 가능.
+    """
+    def _attach(page):
+        def _on_navigated(frame):
+            if frame.parent_frame is None:
+                print(f"[codegen-trace] → {frame.url}",
+                      file=sys.stderr, flush=True)
+        page.on("framenavigated", _on_navigated)
+    try:
+        ctx.on("page", _attach)
+        for p in ctx.pages:
+            _attach(p)
+    except Exception as e:  # noqa: BLE001
+        print(f"[codegen-trace] 진행 훅 부착 실패 — 계속 진행: {e}",
+              file=sys.stderr)
+
+
 def _install_tracing_patches(session_dir: Path) -> None:
     """Browser.new_context / BrowserContext.close 에 tracing hook 주입."""
     trace_path = session_dir / "trace.zip"
@@ -85,6 +108,7 @@ def _install_tracing_patches(session_dir: Path) -> None:
         except Exception as e:  # noqa: BLE001 — best-effort
             print(f"[codegen-trace] tracing.start 실패 — 계속 진행: {e}",
                   file=sys.stderr)
+        _attach_progress_logging(ctx)
         return ctx
 
     def patched_close(self, *args, **kwargs):
