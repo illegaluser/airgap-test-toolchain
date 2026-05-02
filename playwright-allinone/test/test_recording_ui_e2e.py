@@ -181,6 +181,10 @@ def e2e_daemon(e2e_root):
     # Discover URLs 결과 디렉토리도 격리 — 사용자 홈 오염 방지.
     env["DISCOVERY_HOST_ROOT"] = str(e2e_root.parent / "e2e-discoveries")
     env["RECORDING_DIFF_ANALYSIS_STUB"] = "1"
+    # E2E 는 항상 headless — 테스트 실행 중 브라우저 창이 떠 사용자 작업을
+    # 가로채지 않도록 강제. (auth_profile verify / play 단계가 의도치 않게
+    # 트리거되어도 보호.)
+    env["AUTH_PROFILE_VERIFY_HEADLESS"] = "1"
 
     cmd = [
         VENV_PY, "-m", "uvicorn",

@@ -160,6 +160,7 @@ def daemon(daemon_root):
     env["RECORDING_HOST_ROOT"] = str(daemon_root)
     env["DISCOVERY_HOST_ROOT"] = str(daemon_root.parent / "layout-disc")
     env["RECORDING_DIFF_ANALYSIS_STUB"] = "1"
+    env["AUTH_PROFILE_VERIFY_HEADLESS"] = "1"  # E2E 는 headless 강제
 
     cmd = [
         VENV_PY, "-m", "uvicorn",
