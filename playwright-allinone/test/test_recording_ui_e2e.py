@@ -490,8 +490,11 @@ def test_copy_regression_py_to_clipboard(e2e_page: Page, e2e_daemon):
 
 
 def test_regression_card_visible_and_shows_code(e2e_page: Page, e2e_daemon):
+    """R6 — Regression 은 Original Script 카드 안의 sub-block 으로 흡수.
+    block 자체는 visible 이고 code 에 healed 결과가 박혀 있으면 OK.
+    """
     _open_full_session(e2e_page, e2e_daemon)
-    expect(e2e_page.locator("#regression-card")).to_be_visible()
+    expect(e2e_page.locator("#regression-block")).to_be_visible()
     code = e2e_page.locator("#result-regression").inner_text()
     assert "regression_test.py" not in code  # 안 보이는 placeholder
     assert "회사연혁" in code
@@ -549,7 +552,7 @@ def test_play_log_tail_endpoint_returns_seeded_log(e2e_page: Page, e2e_daemon):
 
 CRITICAL_IDS = [
     "back-btn", "start-form", "active-session", "result-section",
-    "scenario-card", "original-card", "regression-card", "diff-card",
+    "scenario-card", "original-card", "regression-block", "diff-card",
     "run-log-card", "rplus-section", "assertion-form", "assertion-section",
     "session-filter", "session-state-filter", "btn-play-codegen", "btn-play-llm",
     "btn-enrich", "btn-compare-open", "btn-analyze-diff",
