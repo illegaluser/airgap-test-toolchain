@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -237,6 +238,10 @@ def play_codegen(sid: str, req: Optional[PlayReq] = None) -> dict:
     annotate_summary = _annotate_for_session(sid)
 
     opts = req or PlayReq()
+    # E2E 슈트가 spawn 한 데몬에서 RECORDING_FORCE_HEADLESS=1 셋이면 headless 강제.
+    # 운영 데몬은 이 env 를 셋하지 않아 사용자 UI 체크박스 동작 영향 없음.
+    if os.environ.get("RECORDING_FORCE_HEADLESS") == "1":
+        opts.headed = False
     try:
         result = _run_codegen_replay_impl(
             host_session_dir=host_dir,
@@ -294,6 +299,10 @@ def play_llm(sid: str, req: Optional[PlayReq] = None) -> dict:
         )
     host_dir = str(storage.session_dir(sid))
     opts = req or PlayReq()
+    # E2E 슈트가 spawn 한 데몬에서 RECORDING_FORCE_HEADLESS=1 셋이면 headless 강제.
+    # 운영 데몬은 이 env 를 셋하지 않아 사용자 UI 체크박스 동작 영향 없음.
+    if os.environ.get("RECORDING_FORCE_HEADLESS") == "1":
+        opts.headed = False
     try:
         result = _run_llm_play_impl(
             host_session_dir=host_dir,
