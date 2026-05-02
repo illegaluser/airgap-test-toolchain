@@ -347,6 +347,7 @@ async function openSession(sid) {
     } catch (err) {
       $("#result-json").textContent = `(scenario.json 로드 실패: ${err.message})`;
     }
+    _refreshPreviewToggle("result-json");
   } else {
     scenarioCard.hidden = true;
   }
@@ -359,6 +360,7 @@ async function openSession(sid) {
     const original = await getSessionOriginal(sid);
     originalCard.hidden = false;
     $("#result-original").textContent = original || "(empty)";
+    _refreshPreviewToggle("result-original");
   } catch (err) {
     originalCard.hidden = true;
   }
@@ -367,6 +369,8 @@ async function openSession(sid) {
   await _renderRunLog(sid);
   // 항목 4 — Regression .py 별도 카드 + 비교 분석 카드.
   await _renderRegression(sid);
+  await _renderHealedScenario(sid);
+  await _renderPlayLlmLog(sid);
   await _renderDiff(sid);
 
   // Assertion 추가 영역은 state=done 일 때만 노출.
@@ -482,7 +486,9 @@ $("#start-form").addEventListener("submit", async (e) => {
     showActivePanel(data);
     $("#result-section").hidden = true;
     $("#scenario-card").hidden = true;
+    $("#scenario-healed-card").hidden = true;
     $("#original-card").hidden = true;
+    $("#play-llm-log-card").hidden = true;
     $("#assertion-section").hidden = true;
     // Play & more 카드 자체는 항상 노출 (토글) — 세션 종속 영역만 비활성.
     _setRplusInactive();
@@ -1020,6 +1026,59 @@ async function _renderRegression(sid) {
   card.hidden = false;
   $("#dl-regression").href = `/recording/sessions/${sid}/regression?download=1`;
   $("#result-regression").textContent = body || "(empty)";
+  _refreshPreviewToggle("result-regression");
+}
+
+// Healed Scenario JSON 카드 — Play with LLM 후 self-healing 결과가 원본과 다를 때만 노출.
+async function _renderHealedScenario(sid) {
+  const card = $("#scenario-healed-card");
+  let healedText;
+  try {
+    const r = await fetch(`/recording/sessions/${sid}/scenario_healed`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    healedText = await r.text();
+  } catch (_) {
+    card.hidden = true;
+    return;
+  }
+  // 원본 scenario.json 과 동일하면 굳이 표시할 가치가 없음 — 셀프힐링이 아무것도 바꾸지 않은 경우.
+  let same = false;
+  try {
+    const origText = await (await fetch(`/recording/sessions/${sid}/scenario`)).text();
+    // JSON 파싱해 정규화 후 비교 (들여쓰기 차이 무시).
+    const a = JSON.stringify(JSON.parse(origText));
+    const b = JSON.stringify(JSON.parse(healedText));
+    same = a === b;
+  } catch (_) { /* 비교 실패 시 그냥 노출 */ }
+  if (same) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  $("#dl-scenario-healed").href = `/recording/sessions/${sid}/scenario_healed?download=1`;
+  // 들여쓰기로 예쁘게 표시.
+  let pretty = healedText;
+  try { pretty = JSON.stringify(JSON.parse(healedText), null, 2); } catch (_) { /* 그대로 */ }
+  $("#result-json-healed").textContent = pretty;
+  _refreshPreviewToggle("result-json-healed");
+}
+
+// LLM 실행 로그 카드 — play-llm.log 가 존재할 때만 노출.
+async function _renderPlayLlmLog(sid) {
+  const card = $("#play-llm-log-card");
+  let body;
+  try {
+    const r = await fetch(`/recording/sessions/${sid}/play_llm_log`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    body = await r.text();
+  } catch (_) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  $("#dl-play-llm-log").href = `/recording/sessions/${sid}/play_llm_log?download=1`;
+  $("#result-play-llm-log").textContent = body || "(empty)";
+  _refreshPreviewToggle("result-play-llm-log");
 }
 
 // 스크린샷 모달 — 클릭 위임.
@@ -1137,6 +1196,35 @@ document.addEventListener("click", async (e) => {
     alert("복사 실패: " + err.message);
   }
 });
+
+// 미리보기 토글 — pre.collapsible 의 max-height 제약을 걸고/풀어서 전체 표시 여부 제어.
+// textContent 는 항상 전체이므로 복사/다운로드는 토글 상태와 무관하게 정상 동작.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".preview-toggle");
+  if (!btn) return;
+  const targetId = btn.dataset.toggleTarget;
+  if (!targetId) return;
+  const pre = document.getElementById(targetId);
+  if (!pre) return;
+  const willExpand = !pre.classList.contains("expanded");
+  pre.classList.toggle("expanded", willExpand);
+  btn.textContent = willExpand ? "▴ 접기" : "▾ 전체 펼치기";
+});
+
+// 길이가 임계 이상일 때만 토글 버튼 노출. 짧으면 어차피 전체 보이므로 UI 군더더기.
+// pre 의 실제 scrollHeight > clientHeight (즉, max-height 에 의해 잘렸음) 일 때 노출.
+function _refreshPreviewToggle(targetId) {
+  const pre = document.getElementById(targetId);
+  if (!pre) return;
+  const btn = document.querySelector(`.preview-toggle[data-toggle-target='${targetId}']`);
+  if (!btn) return;
+  // 펼친 상태였으면 측정 위해 잠깐 접고 비교 — 그러나 일반적으로 텍스트 갱신 시점에는
+  // 닫힘 상태이므로 그대로 측정.
+  pre.classList.remove("expanded");
+  btn.textContent = "▾ 전체 펼치기";
+  const clipped = pre.scrollHeight > pre.clientHeight + 1;
+  btn.hidden = !clipped;
+}
 
 // ── 항목 (import-script) — 사용자 .py 업로드 + 결과 화면 자동 진입 ──────
 $("#btn-import-script").addEventListener("click", () => {
@@ -1684,7 +1772,9 @@ $("#start-form").addEventListener("submit", async (e) => {
     showActivePanel(data);
     $("#result-section").hidden = true;
     $("#scenario-card").hidden = true;
+    $("#scenario-healed-card").hidden = true;
     $("#original-card").hidden = true;
+    $("#play-llm-log-card").hidden = true;
     $("#assertion-section").hidden = true;
     // Play & more 카드 자체는 항상 노출 (토글) — 세션 종속 영역만 비활성.
     _setRplusInactive();

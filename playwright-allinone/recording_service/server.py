@@ -1069,6 +1069,56 @@ def get_session_screenshot(
 
 # ── 항목 4 — LLM healed regression .py 다운로드 ───────────────────────────
 
+@app.get("/recording/sessions/{sid}/scenario_healed", include_in_schema=False)
+def get_session_scenario_healed(sid: str, download: int = 0):
+    """Play with LLM 실행 후 self-healing 적용된 ``scenario.healed.json`` 반환.
+
+    원본 ``scenario.json`` 과 비교해 selector 치환/단계 추가 등이 들어간 결과.
+    Play with LLM 실행 전이면 404. 사용자가 결과 패널에서 직접 검토 가능하게 함.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    p = storage.scenario_healed_path(sid)
+    if not p.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="scenario.healed.json 없음 — Play with LLM 미실행",
+        )
+    if download:
+        return FileResponse(
+            str(p),
+            media_type="application/json",
+            filename=f"{sid}-scenario.healed.json",
+        )
+    return FileResponse(str(p), media_type="application/json")
+
+
+@app.get("/recording/sessions/{sid}/play_llm_log", include_in_schema=False)
+def get_session_play_llm_log(sid: str, download: int = 0):
+    """Play with LLM 실행 로그 (``play-llm.log``) 전체 본문 또는 다운로드.
+
+    실시간 스트리밍은 ``/recording/sessions/{sid}/play_log_tail`` 이 담당하고,
+    이 엔드포인트는 결과 패널의 정적 미리보기/다운로드용 — 실행 종료 후 호출.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    p = storage.play_llm_log_path(sid)
+    if not p.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="play-llm.log 없음 — Play with LLM 미실행",
+        )
+    if download:
+        return FileResponse(
+            str(p),
+            media_type="text/plain",
+            filename=f"{sid}-play-llm.log",
+        )
+    return FileResponse(str(p), media_type="text/plain")
+
+
 @app.get("/recording/sessions/{sid}/regression", include_in_schema=False)
 def get_session_regression(sid: str, download: int = 0):
     """executor 가 자동 생성한 ``regression_test.py`` 본문 또는 첨부 다운로드.

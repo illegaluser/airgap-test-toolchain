@@ -152,6 +152,25 @@ button[data-act="open"] { background: #fff; color: var(--accent); }
   word-break: break-all;
 }
 
+/* 토글 가능한 미리보기 — 기본은 max-height 로 잘려보이고,
+   .expanded 가 붙으면 전체 표시. textContent 는 항상 전체이므로 복사는 정상. */
+.json-preview.collapsible.expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.preview-toggle {
+  margin-top: 6px;
+  font-size: 0.85em;
+  padding: 3px 10px;
+  background: #f0f0f2;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.preview-toggle:hover { background: #e6e6ea; }
+
 code {
   background: var(--code-bg);
   padding: 1px 6px;
