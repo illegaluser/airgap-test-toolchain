@@ -230,6 +230,28 @@
           <span class="muted" id="discover-selected-count">0개 선택</span>
         </div>
         <div id="discover-result"></div>
+
+        <!-- 사이트 계층 트리 — Discover 완료 후 노출. 두 탭 (크롤 토폴로지 / URL 경로). -->
+        <details id="discover-tree-toggle" class="card-toggle" hidden>
+          <summary><h3 style="display:inline-block; margin:0;">사이트 계층 트리</h3></summary>
+          <div class="card-actions">
+            <a id="dl-tree-html" class="dl-link" href="#" download
+               title="크롤 토폴로지 + URL 경로 두 트리를 단일 HTML 로 외부 공유용 다운로드">📤 트리 다운로드 (HTML)</a>
+          </div>
+          <div class="tree-tabs" role="tablist">
+            <button type="button" class="tree-tab active" data-tree="crawl"
+                    role="tab" aria-selected="true">크롤 토폴로지</button>
+            <button type="button" class="tree-tab" data-tree="path"
+                    role="tab" aria-selected="false">URL 경로</button>
+          </div>
+          <p class="muted">
+            <strong>크롤 토폴로지</strong> — BFS 가 어느 페이지에서 어떤 링크를
+            발견했는지 그대로. <strong>URL 경로</strong> — <code>/a/b/c</code>
+            식 path segment 로 묶은 IA. SPA / 쿼리 식별자는 부정확할 수 있음.
+          </p>
+          <div id="tree-pane-crawl" class="tree-pane">— 로드 중 —</div>
+          <div id="tree-pane-path" class="tree-pane" hidden>— 로드 중 —</div>
+        </details>
       </details>
     </section>
 

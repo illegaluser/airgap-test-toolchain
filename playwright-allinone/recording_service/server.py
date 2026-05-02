@@ -1864,7 +1864,7 @@ def _discover_worker(
         with (out_dir / "urls.csv").open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=["url", "status", "title", "depth", "source", "found_at"],
+                fieldnames=["url", "status", "title", "depth", "source", "found_at", "parent_url"],
             )
             writer.writeheader()
             for r in results:
@@ -2207,6 +2207,78 @@ def discover_json(job_id: str):
         media_type="application/json; charset=utf-8",
         filename=f"discover-{job_id}.json",
     )
+
+
+@app.get("/discover/{job_id}/tree")
+def discover_tree(job_id: str, type: str = "crawl"):
+    """Discover 결과를 사이트 계층 트리(JSON) 로 반환.
+
+    Args:
+        type: ``crawl`` (default, parent_url 기반 토폴로지) 또는 ``path``
+              (URL 경로 segment 기반).
+
+    parent_url 필드가 없는 옛 산출물(R7 이전) 도 정상 동작 — crawl 트리는
+    seed 외 모두 orphans 로 떨어지고, path 트리는 영향 없음.
+    """
+    if type not in ("crawl", "path"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"type 은 crawl/path — received {type!r}",
+        )
+    from recording_service import tree_builder
+
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+    json_path = _Path(job.result_dir) / "urls.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "json_not_found"})
+    try:
+        records = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=500, detail=f"urls.json 읽기 실패: {e}") from e
+    if not isinstance(records, list):
+        raise HTTPException(status_code=500, detail="urls.json 형식 오류")
+
+    if type == "crawl":
+        tree = tree_builder.build_crawl_tree(records, job.seed_url)
+    else:
+        tree = tree_builder.build_path_tree(records, job.seed_url)
+    return tree
+
+
+@app.get("/discover/{job_id}/tree.html")
+def discover_tree_html(job_id: str):
+    """크롤 토폴로지 + URL 경로 트리를 한 self-contained HTML 로 반환.
+
+    탭 전환으로 두 트리를 같은 파일에서 비교 가능. 외부 자산 의존성 0 —
+    받는 사람이 더블클릭만 하면 끝.
+    """
+    from recording_service import tree_builder
+
+    job = _require_finished_job(job_id)
+    if not job.result_dir:
+        raise HTTPException(status_code=409, detail={"reason": "job_not_finished"})
+    json_path = _Path(job.result_dir) / "urls.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail={"reason": "json_not_found"})
+    try:
+        records = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=500, detail=f"urls.json 읽기 실패: {e}") from e
+    if not isinstance(records, list):
+        raise HTTPException(status_code=500, detail="urls.json 형식 오류")
+
+    crawl = tree_builder.build_crawl_tree(records, job.seed_url)
+    path = tree_builder.build_path_tree(records, job.seed_url)
+    html = tree_builder.render_self_contained_tree_html(
+        crawl, path,
+        meta={"seed_url": job.seed_url, "job_id": job_id},
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="discover-{job_id}-tree.html"',
+    }
+    return Response(content=html, media_type="text/html; charset=utf-8", headers=headers)
 
 
 @app.post("/discover/{job_id}/tour-script")

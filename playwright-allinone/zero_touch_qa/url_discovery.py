@@ -44,6 +44,10 @@ class DiscoveredUrl:
     depth: int
     found_at: str       # ISO 8601 UTC
     source: str = "anchor"  # seed | anchor | sitemap | request | spa_selector
+    # 사후 계층 트리 재구성용 — 이 URL 을 발견한 페이지의 URL.
+    # seed 와 sitemap 출처는 None (root 또는 root 인접). anchor / request /
+    # spa_selector 는 발견된 page URL.
+    parent_url: Optional[str] = None
 
 
 @dataclass
@@ -337,7 +341,11 @@ def discover_urls(
 
     results: list[DiscoveredUrl] = []
     visited: set[str] = set()
-    queue: list[tuple[str, int, str]] = [(cfg.seed_url, 0, "seed")]
+    # (url, depth, source, parent_url) — parent_url 은 사후 트리 재구성용.
+    # seed 는 None.
+    queue: list[tuple[str, int, str, Optional[str]]] = [
+        (cfg.seed_url, 0, "seed", None),
+    ]
     visited.add(normalize_url(
         cfg.seed_url,
         trash_query_params=cfg.trash_query_params,
@@ -384,7 +392,7 @@ def discover_urls(
                 if key in visited:
                     continue
                 visited.add(key)
-                queue.append((u, 1, "sitemap"))
+                queue.append((u, 1, "sitemap", None))
 
         try:
             is_first = True
@@ -392,7 +400,7 @@ def discover_urls(
                 if cancel_event is not None and cancel_event.is_set():
                     break
 
-                url, depth, source = queue.pop(0)
+                url, depth, source, parent_url = queue.pop(0)
                 if depth > cfg.max_depth:
                     continue
 
@@ -463,6 +471,7 @@ def discover_urls(
                     depth=depth,
                     found_at=_now_iso(),
                     source=source,
+                    parent_url=parent_url,
                 ))
                 if on_progress is not None:
                     try:
@@ -525,7 +534,9 @@ def discover_urls(
                     if key in visited:
                         continue
                     visited.add(key)
-                    queue.append((href, depth + 1, src))
+                    # parent 는 현재 처리 중인 페이지의 *최종* URL (리다이렉트 후) —
+                    # 사후 트리 재구성 시 운영자가 실제 본 페이지를 부모로 인식.
+                    queue.append((href, depth + 1, src, final_url or url))
         finally:
             try:
                 context.close()
