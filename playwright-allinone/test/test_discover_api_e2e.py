@@ -507,7 +507,9 @@ class TestCoverageOptions:
         }
 
     def test_csv_includes_source_column(self, daemon, fixture_site):
-        """urls.csv 에 source 컬럼이 포함되고 seed 행은 source=seed."""
+        """urls.csv 에 source 컬럼이 포함되고 seed 행은 source=seed.
+        R8 — fieldnames 끝에 parent_url 컬럼 append (기존 인덱스 보존).
+        """
         base = daemon["base"]
         seed = f"{fixture_site['base']}/index.html"
         r = httpx.post(
@@ -522,7 +524,7 @@ class TestCoverageOptions:
         assert rc.status_code == 200
         text = rc.content.decode("utf-8-sig")
         header = text.splitlines()[0]
-        assert header == "url,status,title,depth,source,found_at"
+        assert header == "url,status,title,depth,source,found_at,parent_url"
         # seed 행
         seed_lines = [ln for ln in text.splitlines()[1:] if ln.startswith(seed + ",")]
         assert seed_lines, "seed row not in CSV"

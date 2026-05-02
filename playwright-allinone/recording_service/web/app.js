@@ -1926,6 +1926,124 @@ function _statePillHtml(status) {
   return `<span class="state-pill state-ok">${status}</span>`;
 }
 
+// Discover 결과를 사이트 계층 트리로 렌더 — 두 탭 (크롤 / 경로) 동시 fetch.
+// 결과 토글은 hidden=false 로 노출, 다운로드 anchor 도 wire.
+async function _renderDiscoverTrees(jobId) {
+  const toggle = document.getElementById("discover-tree-toggle");
+  const dl = document.getElementById("dl-tree-html");
+  const paneCrawl = document.getElementById("tree-pane-crawl");
+  const panePath = document.getElementById("tree-pane-path");
+  if (!toggle || !paneCrawl || !panePath) return;
+  if (dl) dl.href = `/discover/${jobId}/tree.html`;
+  toggle.hidden = false;
+  paneCrawl.textContent = "— 로드 중 —";
+  panePath.textContent = "— 로드 중 —";
+  let crawl = null;
+  let path = null;
+  try { crawl = await api(`/discover/${jobId}/tree?type=crawl`); } catch (_) { /* 무시 */ }
+  try { path  = await api(`/discover/${jobId}/tree?type=path`); } catch (_) { /* 무시 */ }
+  paneCrawl.replaceChildren();
+  panePath.replaceChildren();
+  paneCrawl.appendChild(_renderTreeRoot(crawl, "crawl"));
+  panePath.appendChild(_renderTreeRoot(path, "path"));
+}
+
+function _renderTreeRoot(tree, mode) {
+  const wrap = document.createElement("div");
+  if (!tree || !tree.root) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "— 트리 없음 —";
+    wrap.appendChild(p);
+    return wrap;
+  }
+  const ul = document.createElement("ul");
+  ul.className = "tree";
+  ul.appendChild(_renderTreeNode(tree.root));
+  wrap.appendChild(ul);
+  const extras = (mode === "crawl" ? tree.orphans : tree.external) || [];
+  if (extras.length > 0) {
+    const h = document.createElement("h4");
+    h.className = "tree-extras-title muted";
+    h.textContent = (mode === "crawl" ? "Orphans (sitemap 등)" : "외부 host")
+                    + ` (${extras.length})`;
+    wrap.appendChild(h);
+    const eul = document.createElement("ul");
+    eul.className = "tree";
+    extras.forEach((n) => eul.appendChild(_renderTreeNode(n)));
+    wrap.appendChild(eul);
+  }
+  return wrap;
+}
+
+function _renderTreeNode(node) {
+  const li = document.createElement("li");
+  const children = Array.isArray(node.children) ? node.children : [];
+  const labelHtml = _treeNodeLabel(node);
+  if (children.length === 0) {
+    li.innerHTML = labelHtml;
+    return li;
+  }
+  const det = document.createElement("details");
+  if ((node.depth || 0) <= 1) det.open = true;
+  const summary = document.createElement("summary");
+  summary.innerHTML = labelHtml + ` <span class="tree-count muted">(${_treeCount(node)})</span>`;
+  det.appendChild(summary);
+  const ul = document.createElement("ul");
+  ul.className = "tree";
+  children.forEach((c) => ul.appendChild(_renderTreeNode(c)));
+  det.appendChild(ul);
+  li.appendChild(det);
+  return li;
+}
+
+function _treeNodeLabel(node) {
+  const url = node.url || "";
+  const safeUrl = _escapeHtml(url);
+  const title = node.title ? ` — ${_escapeHtml(node.title)}` : "";
+  const status = (node.status === null || node.status === undefined) ? "" :
+    ` <span class="tree-badge st-${_treeStatusClass(node.status)}">${_escapeHtml(String(node.status))}</span>`;
+  const src = (node.source && node.source !== "(path)") ?
+    ` <span class="tree-badge src">${_escapeHtml(node.source)}</span>` : "";
+  return `<a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a>${title}${status}${src}`;
+}
+
+function _treeCount(node) {
+  const c = Array.isArray(node.children) ? node.children : [];
+  let n = c.length;
+  for (const ch of c) n += _treeCount(ch);
+  return n;
+}
+
+function _treeStatusClass(s) {
+  const n = Number(s);
+  if (!Number.isFinite(n)) return "unknown";
+  if (n >= 200 && n < 300) return "ok";
+  if (n >= 300 && n < 400) return "warn";
+  return "fail";
+}
+
+function _escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+// 트리 탭 전환 — 클릭 시 active 토글 + pane hidden 전환.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".tree-tab");
+  if (!btn) return;
+  const which = btn.dataset.tree;
+  document.querySelectorAll(".tree-tab").forEach((b) => {
+    b.classList.toggle("active", b === btn);
+    b.setAttribute("aria-selected", b === btn ? "true" : "false");
+  });
+  const paneCrawl = document.getElementById("tree-pane-crawl");
+  const panePath = document.getElementById("tree-pane-path");
+  if (paneCrawl) paneCrawl.hidden = which !== "crawl";
+  if (panePath)  panePath.hidden  = which !== "path";
+});
+
 function _renderDiscoverTable(rootEl, list) {
   rootEl.replaceChildren();
   if (!Array.isArray(list) || list.length === 0) {
@@ -2052,6 +2170,7 @@ async function _pollDiscoverOnce(jobId) {
     if (s.aborted_reason === "auth_drift") suffix += " · 세션 만료 자동 중단";
     if (suffix) _setDiscoverStatus(line + suffix);
     _renderDiscoverTable($("#discover-result"), list);
+    await _renderDiscoverTrees(jobId);
     return;
   }
   if (s.state === "failed") {
@@ -2109,6 +2228,8 @@ async function _onDiscoverSubmit(ev) {
   // 새 작업 시작: 기존 결과 영역 초기화
   $("#discover-actions").hidden = true;
   $("#discover-result").replaceChildren();
+  const treeToggle = document.getElementById("discover-tree-toggle");
+  if (treeToggle) treeToggle.hidden = true;
   _setDiscoverStatus("시작 중...");
   _toggleDiscoverButtons({ running: true });
 
