@@ -95,7 +95,6 @@ Log "  $pyVersion"
 # ── 4. venv 생성 + 패키지 설치 ──────────────────────────────────────────────
 Log "[4/7] venv 준비"
 $VenvPy = "$VenvDir\Scripts\python.exe"
-$VenvPlaywright = "$VenvDir\Scripts\playwright.exe"
 
 if (-not (Test-Path $VenvPy)) {
     Log "  venv 생성: $VenvDir"
@@ -123,39 +122,43 @@ Log "[5/7] Playwright Chromium 설치 (이미 있으면 스킵)"
 if ($LASTEXITCODE -ne 0) { throw "playwright install chromium 실패" }
 
 # ── 6. 데몬 기동 ────────────────────────────────────────────────────────────
-Log "[6/7] uvicorn 백그라운드 기동"
-
-# 환경변수 — recording_service 가 ROOT_DIR 의 모듈을 import 하려면 PYTHONPATH 필수
-$env:PYTHONPATH = $RootDir
-$env:RECORDING_HOST_ROOT = $RecordingsDir
-$env:PYTHONUNBUFFERED = "1"
-# venv\Scripts 를 PATH 앞에 — codegen_runner.is_codegen_available() 의
-# shutil.which("playwright") 가 venv 의 playwright.exe 를 찾을 수 있도록
-$env:PATH = "$VenvDir\Scripts;$env:PATH"
+Log "[6/7] uvicorn 기동 (별도 콘솔 창)"
 
 # 기존 로그 백업 (디버깅용 마지막 1회분 보존)
 if (Test-Path $LogFile) { Move-Item $LogFile "$LogFile.prev" -Force }
 if (Test-Path $ErrLogFile) { Move-Item $ErrLogFile "$ErrLogFile.prev" -Force }
 
-# Start-Process 로 detached background 기동.
-# -WindowStyle Hidden + RedirectStandardOutput/Error → 콘솔 없이 백그라운드 동작
-$proc = Start-Process -FilePath $VenvPy `
-    -ArgumentList @(
-        "-m", "uvicorn",
-        "recording_service.server:app",
-        "--host", "127.0.0.1",
-        "--port", "$Port",
-        "--workers", "1",
-        "--log-level", "info"
-    ) `
+# .bat wrapper 로 별도 콘솔 창에서 uvicorn 기동.
+# 핵심: -WindowStyle Hidden 미사용 — 자식 chromium 이 부모의 interactive console /
+# window station 을 상속받아야 sandbox / GPU init 가 정상 동작. 백그라운드 hidden
+# 컨텍스트에선 fallback path 로 가서 BSOD / 즉시 종료 위험.
+# .bat 안에서 환경변수 set + stdio 파일 redirect → 콘솔 창에 진행 표시 + 로그 파일도 보존.
+$RunBat = "$AgentDir\run-recording-service.bat"
+@"
+@echo off
+title recording_service :$Port
+set PYTHONPATH=$RootDir
+set RECORDING_HOST_ROOT=$RecordingsDir
+set PYTHONUNBUFFERED=1
+set PATH=$VenvDir\Scripts;%PATH%
+echo ============================================================
+echo recording_service — port $Port
+echo 이 창이 닫히면 데몬 종료됨. 자식 chromium 도 이 창의 컨텍스트 상속.
+echo ============================================================
+echo.
+"$VenvPy" -m uvicorn recording_service.server:app --host 127.0.0.1 --port $Port --workers 1 --log-level info
+echo.
+echo [run-recording-service] 종료. 아무 키나 눌러 창 닫기...
+pause > nul
+"@ | Set-Content -Path $RunBat -Encoding ASCII
+
+$proc = Start-Process -FilePath $RunBat `
     -WorkingDirectory $RootDir `
-    -RedirectStandardOutput $LogFile `
-    -RedirectStandardError $ErrLogFile `
-    -WindowStyle Hidden `
     -PassThru
 
 $proc.Id | Out-File -FilePath $PidFile -Encoding ascii -NoNewline
-Log "  PID=$($proc.Id) → $PidFile"
+Log "  cmd.exe wrapper PID=$($proc.Id) → $PidFile"
+Log "  (별도 콘솔 창이 떴을 거 — 그 창이 곧 recording_service. 닫으면 데몬 종료)"
 
 # ── 7. 헬스체크 ─────────────────────────────────────────────────────────────
 Log "[7/7] 헬스체크 (최대 15초)"
@@ -190,5 +193,5 @@ if (-not $healthOK) {
 Write-Host ""
 Log "완료. http://localhost:$Port/ 접속 가능."
 Log "녹화 클릭 시 Windows 네이티브 Chromium 창이 뜸 — 한글 IME 정상 동작."
-Log "데몬 정지: Stop-Process -Id (Get-Content '$PidFile')"
-Log "로그: Get-Content '$LogFile' -Tail 50 -Wait"
+Log "데몬 정지: 떠있는 'recording_service :$Port' 콘솔 창을 닫거나, 본 setup 을 다시 실행."
+Log "로그는 콘솔 창에 실시간 표시 (파일 저장 안 함 — 영구 보존하려면 콘솔에서 복사)."

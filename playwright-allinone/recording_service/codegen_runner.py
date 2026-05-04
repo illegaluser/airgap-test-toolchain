@@ -19,6 +19,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +117,14 @@ def start_codegen(
 
 def _signal_group(proc: subprocess.Popen, sig: int) -> None:
     """Process group 에 신호. group 권한 없거나 이미 죽었으면 단일 PID fallback."""
+    # [Mac->Windows 포팅] Windows 는 os.killpg/getpgid 자체가 없음 → 단일 PID
+    # send_signal 로 fallback. SIGTERM 은 Windows 에서 TerminateProcess 로 매핑.
+    if sys.platform == "win32":
+        try:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+        return
     try:
         os.killpg(os.getpgid(proc.pid), sig)
     except (ProcessLookupError, PermissionError):
