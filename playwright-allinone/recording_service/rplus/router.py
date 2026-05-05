@@ -124,10 +124,12 @@ class PlayReq(BaseModel):
       LLM 은 ``--headless`` 플래그).
     - ``slow_mo_ms``: 0/None 이면 꺼짐. >0 이면 Playwright ``slow_mo`` 로 각
       액션 후 N 밀리초 지연 — 사람이 눈으로 따라가며 디버깅할 때 사용.
-    - ``annotate_dynamic``: True 면 play-codegen 직전 annotate 단계가 정적
-      휴리스틱 대신 실 페이지 visibility probe 로 ancestor hover trigger 를
-      식별. dropdown / 메뉴 (single segment selector) 에서 정적이 못 잡는
-      케이스 보강. False (기본) 면 기존 정적 annotate 만 수행.
+    - ``annotate_dynamic``: True (기본) 면 play-codegen 직전 annotate 단계가
+      실 페이지 visibility probe 로 ancestor hover trigger 식별. dropdown /
+      메뉴 (single segment selector) 에서 정적 휴리스틱이 못 잡는 케이스
+      보강. sandbox replay 가 30s 내외 추가되지만 정확도 우선 — sandbox 실패
+      / 후보 0 시 정적 annotate 로 graceful fallback (회귀 0). False 로 명시
+      해 정적만 사용 가능.
     """
     auth_profile: Optional[str] = Field(
         None,
@@ -140,8 +142,8 @@ class PlayReq(BaseModel):
         description="각 액션 후 지연 (ms). 0/None 이면 끔.",
     )
     annotate_dynamic: bool = Field(
-        False,
-        description="True 면 dynamic annotate (실 페이지 visibility probe). 기본은 정적.",
+        True,
+        description="True (기본) 면 dynamic annotate. False 면 정적 annotate 만.",
     )
 
 
