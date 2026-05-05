@@ -198,24 +198,46 @@ class _HoverTrigger:
     reason: str
 
 
-# 비어 있지 않은 quoted string 인자를 가진 ``.fill("값")`` 호출 매칭.
-# 빈 문자열 ``.fill("")`` 은 매칭 안 됨 (입력 비우는 의도라 typing 불필요).
-_FILL_LITERAL_RE = re.compile(r"\.fill\((['\"])((?:\\\1|(?!\1).)+)\1\)")
+# typing 끝에 명시 dispatch 할 keyup 이벤트 — 일부 자동완성 사이트가
+# Playwright native keystroke 만으로는 ajax listener 가 트리거되지 않는
+# 케이스 보강 (한글 IME 영향 등).
+_KEYUP_DISPATCH = (
+    ".evaluate(\"el => el.dispatchEvent(new "
+    "KeyboardEvent('keyup', {bubbles: true}))\")"
+)
+
+# 한 라인 전체에서 ``<chain>.fill("값")`` 매칭. 빈 문자열은 매칭 X (1+ char).
+_FILL_LINE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<chain>.+)\.fill\("
+    r"(?P<q>['\"])(?P<value>(?:\\(?P=q)|(?!(?P=q)).)+)(?P=q)\)[ \t]*$",
+    re.MULTILINE,
+)
 
 
 def _rewrite_fill_to_typing(text: str) -> str:
-    """codegen 산출물의 ``.fill("값")`` 호출을 ``.press_sequentially("값", delay=80)``
-    으로 일괄 변환.
+    """codegen 산출물의 ``<chain>.fill("값")`` 라인을 typing + keyup dispatch
+    두 라인으로 변환.
+
+    변환 결과::
+
+        loc.press_sequentially("값", delay=80)
+        loc.evaluate("el => el.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}))")
 
     이유: Playwright ``Locator.fill()`` 은 한 번에 value 만 set + ``input``
-    이벤트만 발사 → ``keydown/keyup`` 미발사. 매 keystroke 마다 ajax 자동완성
-    호출하는 사이트에서 dropdown 이 트리거되지 않아 후속 click 이 추천 항목을
-    찾지 못하고 timeout. ``press_sequentially`` 는 한 글자씩 정상 keystroke
-    이벤트를 발사 — 인간 typing 과 동일한 시퀀스라 자동완성 호환.
+    이벤트만 발사 → ``keydown/keyup`` 미발사. 또한 ``press_sequentially`` 도
+    한글 IME 등 일부 케이스에서 사이트의 ajax 자동완성 listener 와 매치
+    안 되는 경우가 있음. 따라서 typing 끝에 명시적으로 ``keyup`` 이벤트를
+    한 번 더 dispatch — 인간 typing 의 마지막 keyup 시뮬레이션.
 
-    빈 문자열 fill 은 변환 대상 아님 (value clear 의도).
+    빈 문자열 ``fill("")`` 는 변환 대상 아님 (value clear 의도, typing 불필요).
     """
-    return _FILL_LITERAL_RE.sub(r".press_sequentially(\1\2\1, delay=80)", text)
+    def replace(m: re.Match) -> str:
+        return (
+            f"{m['indent']}{m['chain']}"
+            f".press_sequentially({m['q']}{m['value']}{m['q']}, delay=80)\n"
+            f"{m['indent']}{m['chain']}{_KEYUP_DISPATCH}"
+        )
+    return _FILL_LINE_RE.sub(replace, text)
 
 
 @dataclass
