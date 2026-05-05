@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Dropdown menu fixture</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; }
+  nav#gnb { display: flex; gap: 16px; }
+  nav#gnb > li { list-style: none; position: relative; padding: 8px 12px; cursor: pointer; }
+  /* submenu 는 평소 hidden, GNB 항목 hover 시 visible. */
+  nav#gnb > li > ul.submenu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 160px;
+    background: #fff;
+    border: 1px solid #ccc;
+    padding: 8px 0;
+    list-style: none;
+    margin: 0;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.05s;
+  }
+  nav#gnb > li:hover > ul.submenu {
+    visibility: visible;
+    opacity: 1;
+  }
+  nav#gnb > li > ul.submenu li button {
+    display: block;
+    width: 100%;
+    padding: 8px 16px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  /* aria-haspopup 트리거 (구조적 hover) — 다른 패턴 검증용.
+     visibility 토글로 button 이 attached 상태를 유지하게 한다 (Playwright
+     element_handle 추출 + ancestor JS 평가 가능). */
+  div#aria-trigger { padding: 8px 12px; cursor: pointer; }
+  div#aria-trigger > div.aria-popup {
+    border: 1px solid #999;
+    padding: 8px;
+    margin-top: 4px;
+    visibility: hidden;
+  }
+  div#aria-trigger:hover > div.aria-popup { visibility: visible; }
+</style>
+</head>
+<body>
+<h1>Dropdown menu fixture</h1>
+
+<!-- 케이스 1: nav > li:hover > ul.submenu > li > button — :hover-css 트리거 -->
+<nav id="gnb">
+  <li id="menu-user">
+    사용자 메뉴
+    <ul class="submenu">
+      <li><button id="apply-mgr-btn">사용신청 관리</button></li>
+      <li><button>마이페이지</button></li>
+    </ul>
+  </li>
+  <li id="menu-svc">
+    서비스
+    <ul class="submenu">
+      <li><button id="svc-inquiry-btn">서비스 문의</button></li>
+    </ul>
+  </li>
+</nav>
+
+<!-- 케이스 2: aria-haspopup 트리거 + 자식이 visibility:hidden.
+     div 자체에 role 부여하지 않음 → button "로그아웃" 매칭이 ambiguous 하지 않게. -->
+<div id="aria-trigger" aria-haspopup="true">
+  설정
+  <div class="aria-popup">
+    <button id="logout-btn">로그아웃</button>
+  </div>
+</div>
+
+<!-- 케이스 3: 항상 visible 인 평범한 버튼 — hover 불필요 (false-positive 방지). -->
+<button id="always-visible">바로 클릭</button>
+</body>
+</html>

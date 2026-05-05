@@ -124,6 +124,10 @@ class PlayReq(BaseModel):
       LLM 은 ``--headless`` 플래그).
     - ``slow_mo_ms``: 0/None 이면 꺼짐. >0 이면 Playwright ``slow_mo`` 로 각
       액션 후 N 밀리초 지연 — 사람이 눈으로 따라가며 디버깅할 때 사용.
+    - ``annotate_dynamic``: True 면 play-codegen 직전 annotate 단계가 정적
+      휴리스틱 대신 실 페이지 visibility probe 로 ancestor hover trigger 를
+      식별. dropdown / 메뉴 (single segment selector) 에서 정적이 못 잡는
+      케이스 보강. False (기본) 면 기존 정적 annotate 만 수행.
     """
     auth_profile: Optional[str] = Field(
         None,
@@ -134,6 +138,10 @@ class PlayReq(BaseModel):
         None,
         ge=0,
         description="각 액션 후 지연 (ms). 0/None 이면 끔.",
+    )
+    annotate_dynamic: bool = Field(
+        False,
+        description="True 면 dynamic annotate (실 페이지 visibility probe). 기본은 정적.",
     )
 
 
@@ -180,7 +188,28 @@ def _is_imported_session(sid: str) -> bool:
     return bool(meta.get("imported_filename"))
 
 
-def _annotate_for_session(sid: str) -> dict:
+def _resolve_storage_state(sid: str, override: Optional[str]) -> Optional[str]:
+    """auth-profile 의 storage_state 경로를 best-effort 로 반환.
+
+    play-codegen 의 정식 verify 흐름은 ``_run_codegen_replay_impl`` 안에서
+    다시 일어나므로, annotate 단계에선 verify 실패 / 프로파일 미존재 등을
+    silent 로 swallow → None 반환 (dynamic annotate 가 정적 fallback 으로 회귀).
+
+    Args:
+        sid: 세션 ID.
+        override: PlayReq.auth_profile — None=metadata, ""=비인증, "<name>"=강제.
+    """
+    try:
+        from ..replay_proxy import _resolve_auth_for_replay
+
+        host_dir = str(storage.session_dir(sid))
+        storage_path, _, _ = _resolve_auth_for_replay(host_dir, override)
+        return storage_path
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _annotate_for_session(sid: str, *, dynamic: bool = False, storage_state_in: Optional[str] = None) -> dict:
     """play-codegen 진입 직전 자동 호출용 — annotate 결과 dict 반환.
 
     실패는 silent (annotation 없이도 codegen 원본 그대로 실행 가능). 호출자가
@@ -189,6 +218,13 @@ def _annotate_for_session(sid: str) -> dict:
     **Imported 세션 (사용자 .py 업로드) 은 annotate 스킵** — 사용자의 의도된
     스크립트를 휴리스틱이 변형하는 부수 효과 차단. stale `original_annotated.py`
     존재 시 제거.
+
+    Args:
+        sid: 세션 ID.
+        dynamic: True 면 정적 휴리스틱 대신 실 페이지 visibility probe 로
+            ancestor hover trigger 식별 (annotate_script_dynamic). 기본 False.
+        storage_state_in: dynamic=True 시 인증 storage_state JSON 경로. 비공개
+            페이지의 메뉴/dropdown 보려면 필요. None 이면 인증 없이 sandbox 기동.
     """
     from .. import annotator
     host_dir = storage.session_dir(sid)
@@ -210,11 +246,17 @@ def _annotate_for_session(sid: str) -> dict:
             "skipped": "imported script — annotator 우회 (사용자 의도 보존)",
         }
     try:
-        r = annotator.annotate_script(str(src), str(dst))
+        if dynamic:
+            r = annotator.annotate_script_dynamic(
+                str(src), str(dst), storage_state_in=storage_state_in,
+            )
+        else:
+            r = annotator.annotate_script(str(src), str(dst))
         return {
             "injected": r.injected,
             "examined_clicks": r.examined_clicks,
             "triggers": r.triggers,
+            "mode": "dynamic" if dynamic else "static",
         }
     except Exception as e:  # noqa: BLE001
         log.warning("[annotate auto] %s — %s", sid, e)
@@ -234,10 +276,15 @@ def play_codegen(sid: str, req: Optional[PlayReq] = None) -> dict:
     _ensure_session_not_recording(sid, "play-codegen")
     host_dir = str(storage.session_dir(sid))
 
-    # (β) annotate 자동 — 정적 휴리스틱으로 hover 주입.
-    annotate_summary = _annotate_for_session(sid)
-
     opts = req or PlayReq()
+    # (β) annotate 자동 — 정적 (default) 또는 dynamic (opts.annotate_dynamic).
+    # dynamic 면 auth-profile 의 storage_state 를 sandbox 에 그대로 주입해
+    # 인증 필요 페이지의 메뉴 / dropdown 도 식별 가능.
+    annotate_summary = _annotate_for_session(
+        sid,
+        dynamic=opts.annotate_dynamic,
+        storage_state_in=_resolve_storage_state(sid, opts.auth_profile),
+    )
     # E2E 슈트가 spawn 한 데몬에서 RECORDING_FORCE_HEADLESS=1 셋이면 headless 강제.
     # 운영 데몬은 이 env 를 셋하지 않아 사용자 UI 체크박스 동작 영향 없음.
     if os.environ.get("RECORDING_FORCE_HEADLESS") == "1":
