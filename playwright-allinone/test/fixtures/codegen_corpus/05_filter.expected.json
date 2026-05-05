@@ -1,5 +1,29 @@
 [
-  {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/products", "description": "https://example.com/products로 이동", "fallback_targets": []},
-  {"step": 2, "action": "click", "target": "role=listitem, has_text=Premium", "value": "", "description": "클릭", "fallback_targets": []},
-  {"step": 3, "action": "click", "target": "a, has_text=구매하기, nth=0", "value": "", "description": "클릭", "fallback_targets": []}
+  {
+    "action": "navigate",
+    "target": "",
+    "value": "https://example.com/products",
+    "description": "https://example.com/products로 이동",
+    "page": "page",
+    "step": 1,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "role=listitem, has_text=Premium",
+    "value": "",
+    "description": "클릭",
+    "page": "page",
+    "step": 2,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "a, has_text=구매하기, nth=0",
+    "value": "",
+    "description": "클릭",
+    "page": "page",
+    "step": 3,
+    "fallback_targets": []
+  }
 ]

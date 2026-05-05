@@ -37,6 +37,8 @@ CORPUS_PATTERNS = [
     "07_frame_locator",
     "08_expect_and_specials",
     "09_title_alt",
+    "10_popup_then_back_to_main",
+    "11_exact_match",
 ]
 
 
@@ -83,6 +85,66 @@ def test_popup_chain_preserves_6_steps(tmp_path: Path) -> None:
     targets = [s["target"] for s in actual]
     assert "role=link, name=엔터" in targets
     assert "role=link, name=기사 헤드라인" in targets
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Page identity 메타 — popup chain 의 page var 가 step 메타로 전달
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_popup_chain_page_identity_metadata(tmp_path: Path) -> None:
+    """02_popup_chain — 각 step 의 page 메타 + popup 트리거의 popup_to 정확."""
+    src = CORPUS_DIR / "02_popup_chain.py"
+    actual = convert_via_ast(str(src), str(tmp_path))
+    # page 변천: page → page → page → (popup trigger) → page1 → (popup trigger)
+    assert [s.get("page") for s in actual] == [
+        "page", "page", "page", "page", "page1", "page1",
+    ]
+    # popup 트리거 step (step 4: page→page1, step 6: page1→page2) 만 popup_to 보유
+    assert actual[3].get("popup_to") == "page1"
+    assert actual[5].get("popup_to") == "page2"
+    # 그 외 step 은 popup_to 없음
+    for i in (0, 1, 2, 4):
+        assert "popup_to" not in actual[i], f"step {i+1} 에 popup_to 가 없어야 함"
+
+
+def test_popup_then_back_to_main_keeps_original_page(tmp_path: Path) -> None:
+    """10_popup_then_back_to_main — popup 떴어도 후속 액션은 원본 page 유지.
+
+    5e1e5a6f141a 케이스 재현. step 2 가 popup 트리거 (popup_to=page1) 지만
+    step 3-5 는 page="page" — executor 가 자동전환 안 하고 원본 유지해야 함.
+    """
+    src = CORPUS_DIR / "10_popup_then_back_to_main.py"
+    actual = convert_via_ast(str(src), str(tmp_path))
+    assert [s.get("page") for s in actual] == ["page"] * 5
+    assert actual[1].get("popup_to") == "page1"
+    for i in (0, 2, 3, 4):
+        assert "popup_to" not in actual[i]
+
+
+def test_exact_kwarg_preserved_in_target(tmp_path: Path) -> None:
+    """``get_by_role(..., exact=True)`` 가 target 에 ``, exact=true`` 로 보존.
+
+    5e1e5a6f1 케이스 — substring 매칭으로 ``"API"`` 가 ``"오픈API"`` 에 잘못
+    잡히던 회귀를 막기 위함.
+    """
+    src = CORPUS_DIR / "11_exact_match.py"
+    actual = convert_via_ast(str(src), str(tmp_path))
+    # exact=True click → target 끝에 exact=true
+    assert actual[1]["target"] == "role=button, name=API, exact=true"
+    # exact 미사용 click → target 에 exact 없음
+    assert actual[2]["target"] == "role=link, name=제출"
+
+
+def test_internal_popup_marker_stripped(tmp_path: Path) -> None:
+    """``_pending_popup_info`` internal marker 는 scenario.json 에 절대 노출 안 됨."""
+    src = CORPUS_DIR / "02_popup_chain.py"
+    actual = convert_via_ast(str(src), str(tmp_path))
+    # 직렬화된 scenario.json 도 동일
+    written = json.loads((tmp_path / "scenario.json").read_text(encoding="utf-8"))
+    for s in actual + written:
+        for k in s.keys():
+            assert not k.startswith("_"), f"internal key '{k}' leaked: {s}"
 
 
 # ─────────────────────────────────────────────────────────────────────────

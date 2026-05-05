@@ -63,6 +63,12 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
     converter.visit(tree)
 
     scenario = converter.steps
+    # 임시 마커 제거 — 직렬화 전 cleanup. _pending_popup_info 같은 internal 키는
+    # popup 트리거 ↔ promoted page var 매칭에만 쓰이고 scenario.json 으로 흘러
+    # 나가면 안 된다. assign 으로 resolve 못 한 marker 도 안전 폐기.
+    for s in scenario:
+        for k in [k for k in s if k.startswith("_")]:
+            del s[k]
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "scenario.json")
     with open(output_path, "w", encoding="utf-8") as f:
@@ -174,6 +180,7 @@ class _AstConverter(ast.NodeVisitor):
             "value": needle,
             "condition": condition,
             "description": f"URL {'미포함' if isinstance(op, ast.NotIn) else '포함'} 검증 — '{needle}'",
+            "page": right.value.id,
         }
 
     def _assert_to_min_text_length(self, test: ast.expr) -> Optional[dict]:
@@ -217,6 +224,7 @@ class _AstConverter(ast.NodeVisitor):
             "value": str(threshold),
             "condition": "min_text_length",
             "description": f"본문 텍스트 길이 ≥ {threshold} 검증",
+            "page": inner.func.value.id,
         }
 
     def _handle_with(self, node: ast.With) -> None:
@@ -224,23 +232,49 @@ class _AstConverter(ast.NodeVisitor):
 
         body 의 마지막 stmt 가 popup 을 트리거하는 액션 (보통 click) 이라
         body 도 정상 순회한다.
+
+        body 처리 후 trigger receiver 와 같은 ``page`` 값을 가진 마지막 click
+        step 에 ``_pending_popup_info`` 임시 마커를 부착. 이후
+        ``_handle_assign`` 에서 ``pageX = pX_info.value`` 발견 시 해당 마커를
+        ``popup_to=pageX`` 로 resolve. (직렬화 직전 internal 키 cleanup.)
         """
+        pending_info_var = None
+        trigger_receiver = None
         for item in node.items:
             ctx = item.context_expr
-            # page.expect_popup() 패턴
+            # page.expect_popup() 패턴 — receiver(page var) 도 함께 추출
             if (
                 isinstance(ctx, ast.Call)
                 and isinstance(ctx.func, ast.Attribute)
                 and ctx.func.attr == "expect_popup"
+                and isinstance(ctx.func.value, ast.Name)
                 and item.optional_vars is not None
                 and isinstance(item.optional_vars, ast.Name)
             ):
                 self.popup_info_vars.add(item.optional_vars.id)
+                pending_info_var = item.optional_vars.id
+                trigger_receiver = ctx.func.value.id
+
+        steps_before = len(self.steps)
         for stmt in node.body:
             self._handle_stmt(stmt)
+        steps_after = len(self.steps)
+
+        if pending_info_var is None or trigger_receiver is None:
+            return
+        # body 안에 누적된 step 들 중 trigger receiver 와 같은 page 의 마지막
+        # click 을 popup 트리거로 본다 (codegen 관례 — popup-여는 액션은 click).
+        for i in range(steps_after - 1, steps_before - 1, -1):
+            s = self.steps[i]
+            if s.get("page") == trigger_receiver and s.get("action") == "click":
+                s["_pending_popup_info"] = pending_info_var
+                return
 
     def _handle_assign(self, node: ast.Assign) -> None:
         """``page1 = page1_info.value`` 패턴 인식 → page1 을 page var 로 등록.
+
+        ``_pending_popup_info`` 마커가 부착된 step 이 있으면 promoted page var
+        를 ``popup_to`` 로 resolve (executor 가 이 alias 로 신규 page 를 등록).
 
         그 외 assign 은 무시. ``browser =`` / ``context =`` / ``page =`` 같은
         codegen 의 공통 prelude 도 본 변환기는 page 변수만 다루므로 영향 없음.
@@ -253,9 +287,20 @@ class _AstConverter(ast.NodeVisitor):
             and isinstance(v.value, ast.Name)
             and v.value.id in self.popup_info_vars
         ):
+            info_var = v.value.id
             for tgt in node.targets:
                 if isinstance(tgt, ast.Name):
-                    self.page_vars.add(tgt.id)
+                    page_var = tgt.id
+                    self.page_vars.add(page_var)
+                    self._resolve_popup_trigger(info_var, page_var)
+
+    def _resolve_popup_trigger(self, info_var: str, page_var: str) -> None:
+        """``_pending_popup_info == info_var`` 마커를 ``popup_to=page_var`` 로 resolve."""
+        for s in self.steps:
+            if s.get("_pending_popup_info") == info_var:
+                s["popup_to"] = page_var
+                del s["_pending_popup_info"]
+                return  # 1 popup-info ↔ 1 trigger
 
     def _handle_expr(self, expr: ast.expr) -> None:
         """statement 의 expression 본체를 액션으로 시도."""
@@ -305,6 +350,7 @@ class _AstConverter(ast.NodeVisitor):
                 "value": "",
                 "description": f"메뉴 펼치기 (heuristic, {seg})",
                 "fallback_targets": [],
+                "page": step.get("page", "page"),
             }
             self.steps.append(hover_step)
             return  # 여러 후보 중 가장 바깥 ancestor 1개만
@@ -341,6 +387,7 @@ class _AstConverter(ast.NodeVisitor):
             return {
                 "action": "navigate", "target": "", "value": url,
                 "description": f"{url}로 이동",
+                "page": receiver_root,
             }
 
         # 4) page.wait_for_timeout(ms)
@@ -351,11 +398,15 @@ class _AstConverter(ast.NodeVisitor):
             return {
                 "action": "wait", "target": "", "value": str(ms),
                 "description": f"{ms}ms 대기",
+                "page": receiver_root,
             }
 
         # 5) page.route(PATTERN, lambda r: r.fulfill(...)) — mock_*
         if final_method == "route" and not segments:
-            return self._parse_mock_route(call)
+            step = self._parse_mock_route(call)
+            if step is not None:
+                step["page"] = receiver_root
+            return step
 
         # 6) target 이 필요한 액션 — segments 로부터 target 문자열 합성
         target = self._segments_to_target(segments)
@@ -363,7 +414,10 @@ class _AstConverter(ast.NodeVisitor):
             # target 추출 실패 — AST 가 다루지 못하는 패턴 → 호출자가 fallback
             return None
 
-        return self._dispatch_action(final_method, target or "", final_args, final_kwargs)
+        step = self._dispatch_action(final_method, target or "", final_args, final_kwargs)
+        if step is not None:
+            step["page"] = receiver_root
+        return step
 
     def _try_parse_expect(self, call: ast.Call) -> Optional[dict]:
         """``expect(<locator-expr>).to_have_text("X")`` / ``.to_be_visible()`` 변환."""
@@ -403,11 +457,13 @@ class _AstConverter(ast.NodeVisitor):
             return {
                 "action": "verify", "target": target, "value": text,
                 "description": f"텍스트 '{text}' 확인",
+                "page": root,
             }
         # to_be_visible
         return {
             "action": "verify", "target": target, "value": "",
             "description": "요소 표시 확인",
+            "page": root,
         }
 
     # ─────────────────────────────────────────────────────────────────────
@@ -650,11 +706,19 @@ class _AstConverter(ast.NodeVisitor):
                 if role is None:
                     return None
                 name = None
+                exact = False
                 for kw in seg.kwargs:
                     if kw.arg == "name":
                         name = self._literal_str(kw.value)
-                        break
+                    elif kw.arg == "exact":
+                        # exact=True 보존 — substring 매칭으로 인해 의도와 다른
+                        # element ("API" → "오픈API") 가 잡히는 케이스 방지.
+                        # exact=False 는 default 라 굳이 emit 안 함.
+                        if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                            exact = True
                 base = f"role={role}, name={name}" if name is not None else f"role={role}"
+                if exact and name is not None:
+                    base = f"{base}, exact=true"
                 target = self._append_to_target(target, base)
                 continue
 

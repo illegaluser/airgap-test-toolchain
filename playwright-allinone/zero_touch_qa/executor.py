@@ -28,7 +28,10 @@ def _extract_redirect_msg(url: str) -> "str | None":
             return f"[redirect:{key}] {vals[0]}"
     return None
 
-from playwright.sync_api import sync_playwright, Page, Locator, expect
+from playwright.sync_api import (
+    sync_playwright, Page, Locator, expect,
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from .auth import (
     AuthOptions,
@@ -61,6 +64,12 @@ _HEAL_ACTION_TRANSITIONS = frozenset({
     ("click", "press"), ("press", "click"),
     ("upload", "click"), ("click", "upload"),
 })
+
+# 최종 실패 스크린샷 파일명 — artifacts 디렉토리 내.
+_ERROR_FINAL_PNG = "error_final.png"
+
+# 새 탭/popup 이 빈/에러 페이지로 떠 등록 가치가 없는 URL prefix.
+_EMPTY_PAGE_URL_PREFIXES = ("chrome-error://", "about:blank", "data:text/html")
 
 
 def _is_allowed_action_transition(old_action: str, new_action: str) -> bool:
@@ -376,16 +385,33 @@ class QAExecutor:
             for _p in context.pages:
                 _hook_dialog(_p)
 
+            # P-POPUP — codegen 의 `page` / `page1` / `page2` 식별을 보존.
+            # converter 가 step["page"] (실행할 page var) + step["popup_to"]
+            # (이 step 이 트리거할 새 page 의 alias) 를 emit 한다. 본 dict 가
+            # 그 alias → live Page 매핑.
+            #
+            # 하위호환: scenario 에 page 키가 하나도 없으면 legacy 모드 (자동
+            # 새 탭 전환). 신/구 시나리오 모두 동작.
+            pages: dict[str, Page] = {"page": page}
+            new_format = any("page" in s for s in scenario)
+            last_active_page: Page = page
+
             try:
                 for idx, step in enumerate(scenario):
                     dialog_buffer.clear()
-                    result = self._execute_step(
-                        page, step, resolver, healer, artifacts
+                    # 신 포맷: step["page"] 로 active page 결정. legacy 는 page 유지.
+                    active_page = self._resolve_active_page(pages, step, fallback=page)
+                    last_active_page = active_page
+                    resolver.page = active_page
+                    healer.page = active_page
+
+                    result = self._run_step_maybe_capture_popup(
+                        active_page, pages, step, resolver, healer, artifacts,
                     )
                     # 사이트가 인증 없는 접근에 native alert 대신 URL 쿼리 redirect
                     # (`?errorMsg=...`) 로 메시지를 전달하는 패턴 감지. dialog 와
                     # 같은 자리(노란 카드)에 합쳐 표시.
-                    redirect_msg = _extract_redirect_msg(page.url or "")
+                    redirect_msg = _extract_redirect_msg(active_page.url or "")
                     if redirect_msg:
                         dialog_buffer.append(redirect_msg)
                     if dialog_buffer:
@@ -393,71 +419,41 @@ class QAExecutor:
                     results.append(result)
                     if headed and self.config.headed_step_pause_ms > 0:
                         try:
-                            page.bring_to_front()
+                            active_page.bring_to_front()
                         except Exception:
                             pass
                         time.sleep(self.config.headed_step_pause_ms / 1000.0)
                     if result.status == "FAIL":
                         # 최종 실패 스크린샷
-                        fail_path = os.path.join(artifacts, "error_final.png")
-                        self._safe_screenshot(page, fail_path)
+                        fail_path = os.path.join(artifacts, _ERROR_FINAL_PNG)
+                        self._safe_screenshot(active_page, fail_path)
                         break
                     # G-3: 스텝이 PASS/HEALED 로 판정됐어도 현재 page.url 이 봇 차단
                     # 페이지(/sorry/, captcha challenge 등) 면 마지막 레이어로 FAIL 처리.
                     # verify 가 없는 시나리오에서도 false positive 성공을 차단한다.
-                    current_url = page.url or ""
+                    current_url = active_page.url or ""
                     if self._is_blocked_url(current_url):
                         log.error(
                             "[Step %s] 스텝은 %s 로 판정됐지만 현재 URL 이 봇 차단 페이지: %s",
                             step.get("step", "-"), result.status, current_url,
                         )
                         result.status = "FAIL"
-                        fail_path = os.path.join(artifacts, "error_final.png")
-                        self._safe_screenshot(page, fail_path)
+                        fail_path = os.path.join(artifacts, _ERROR_FINAL_PNG)
+                        self._safe_screenshot(active_page, fail_path)
                         break
-                    # N. 새 탭 감지 — 검색 폼이 target=_blank 이거나 JS window.open
-                    # 으로 새 탭/창에 결과를 열면 원래 page 는 변동 없음. 후속 스텝을
-                    # 새 페이지에 적용하려면 여기서 전환해야 한다.
-                    #
-                    # O. chrome-error/about:blank 필터 — 네트워크 실패나 봇 차단으로
-                    # 새 탭이 에러 페이지인 경우 전환하지 않고 무시 (유효 콘텐츠 없음).
-                    # G-3 연장: 새 탭 URL 이 봇 차단 페이지여도 전환 안 함.
-                    if len(context.pages) > 1 and context.pages[-1] is not page:
-                        new_page = context.pages[-1]
-                        try:
-                            new_page.wait_for_load_state("domcontentloaded", timeout=5000)
-                        except Exception:
-                            pass
-                        new_url = new_page.url
-                        if new_url.startswith(("chrome-error://", "about:blank", "data:text/html")):
-                            log.warning(
-                                "[Step %s] 새 탭이 에러/빈 페이지 (%s) — 전환 안 함. "
-                                "사이트가 Playwright 봇 차단 또는 네트워크 문제.",
-                                step.get("step", "-"), new_url,
-                            )
-                        elif self._is_blocked_url(new_url):
-                            log.error(
-                                "[Step %s] 새 탭이 봇 차단 페이지 (%s) — 전환 안 함 + 스텝 FAIL 처리.",
-                                step.get("step", "-"), new_url,
-                            )
-                            result.status = "FAIL"
-                            fail_path = os.path.join(artifacts, "error_final.png")
-                            self._safe_screenshot(page, fail_path)
-                            break
-                        else:
-                            log.info(
-                                "[Step %s] 새 탭 감지 → 활성 페이지 전환 (%s → %s)",
-                                step.get("step", "-"),
-                                page.url, new_url,
-                            )
-                            page = new_page
-                            try:
-                                page.bring_to_front()
-                            except Exception:
-                                pass
-                            # resolver/healer 의 내부 page 참조 rebind.
+                    # N (legacy). 새 탭 자동전환 — 신 포맷은 명시적 popup_to 로
+                    # 처리하므로 skip. 신 포맷 도입 전 시나리오 호환만 유지.
+                    if not new_format:
+                        legacy_switch = self._legacy_auto_switch(
+                            context, active_page, step, artifacts, result,
+                        )
+                        if legacy_switch is not None:
+                            page = legacy_switch
                             resolver.page = page
                             healer.page = page
+                            last_active_page = page
+                            if result.status == "FAIL":
+                                break
                     # 스텝 간 random jitter — 봇 패턴(즉시 연속 액션) 회피.
                     # reCAPTCHA 등이 fill→press 100ms 이내 시퀀스를 트리거.
                     # 마지막 스텝 또는 max==0 이면 sleep 생략.
@@ -471,18 +467,18 @@ class QAExecutor:
                         ) / 1000.0
                         time.sleep(jitter_s)
 
-                # P-1. 모든 스텝 종료 후 final_state.png — 마지막 click 이 새 탭을
-                # 열어 page 가 전환된 경우, 기존 step_N_*.png 는 전환 직전 화면만
-                # 담는다. 여기서 최종 활성 페이지의 상태를 별도 캡처해 '실제로
-                # 어디로 이동했는지' 시각 증거로 남긴다.
+                # P-1. 모든 스텝 종료 후 final_state.png — 마지막 step 의 active
+                # page 기준 (popup_to 로 발생한 새 page 든, 원본 page 든).
+                # 기존 step_N_*.png 는 액션 직후 화면만 담으므로 종료 시 화면을
+                # 별도로 보존한다.
                 try:
-                    page.bring_to_front()
-                    page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    last_active_page.bring_to_front()
+                    last_active_page.wait_for_load_state("domcontentloaded", timeout=5000)
                 except Exception:
                     pass
                 final_path = os.path.join(artifacts, "final_state.png")
-                self._safe_screenshot(page, final_path)
-                log.info("[Final] 최종 활성 페이지: %s → %s", page.url, final_path)
+                self._safe_screenshot(last_active_page, final_path)
+                log.info("[Final] 최종 활성 페이지: %s → %s", last_active_page.url, final_path)
 
                 # P-2. headed 모드에선 browser.close() 전에 짧게 대기 (사용자 시각 확인).
                 if headed:
@@ -494,6 +490,125 @@ class QAExecutor:
                 browser.close()
 
         return results
+
+    def _resolve_active_page(
+        self, pages: dict, step: dict, fallback: Page,
+    ) -> Page:
+        """step["page"] alias 로 매핑된 live Page 반환. 미등록 시 fallback + 경고."""
+        var = step.get("page", "page")
+        p = pages.get(var)
+        if p is None:
+            log.warning(
+                "[Step %s] page alias '%s' 미등록 — fallback 사용. "
+                "popup_to 로 등록되지 않은 var 입니다.",
+                step.get("step", "-"), var,
+            )
+            return fallback
+        return p
+
+    def _run_step_maybe_capture_popup(
+        self,
+        active_page: Page,
+        pages: dict,
+        step: dict,
+        resolver: LocatorResolver,
+        healer: LocalHealer,
+        artifacts: str,
+    ) -> StepResult:
+        """step["popup_to"] 가 있으면 expect_popup 으로 wrap, 새 page 를 alias 등록.
+
+        popup 발생 안 했거나 popup URL 이 봇 차단/에러 페이지면 등록 안 함.
+        봇 차단이면 result.status = FAIL.
+        """
+        popup_to = step.get("popup_to")
+        if not popup_to:
+            return self._execute_step(active_page, step, resolver, healer, artifacts)
+        try:
+            with active_page.expect_popup(timeout=10000) as popup_info:
+                result = self._execute_step(
+                    active_page, step, resolver, healer, artifacts,
+                )
+        except PlaywrightTimeoutError:
+            log.warning(
+                "[Step %s] popup_to=%s 마킹됐으나 popup 발생 안 함 — alias 등록 skip.",
+                step.get("step", "-"), popup_to,
+            )
+            return self._execute_step(active_page, step, resolver, healer, artifacts)
+        # popup 캡처 성공 — 신규 page 검사 후 등록
+        try:
+            new_page = popup_info.value
+        except Exception as e:  # noqa: BLE001
+            log.warning("[Step %s] popup value 접근 실패: %s", step.get("step", "-"), e)
+            return result
+        try:
+            new_page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        new_url = new_page.url
+        if new_url.startswith(_EMPTY_PAGE_URL_PREFIXES):
+            log.warning(
+                "[Step %s] popup 신규 페이지 에러/빈 (%s) — alias '%s' 등록 안 함.",
+                step.get("step", "-"), new_url, popup_to,
+            )
+        elif self._is_blocked_url(new_url):
+            log.error(
+                "[Step %s] popup 새 탭이 봇 차단 페이지 (%s) — alias 등록 안 함 + FAIL.",
+                step.get("step", "-"), new_url,
+            )
+            result.status = "FAIL"
+            self._safe_screenshot(active_page, os.path.join(artifacts, _ERROR_FINAL_PNG))
+        else:
+            pages[popup_to] = new_page
+            log.info(
+                "[Step %s] popup 등록 (%s = %s)",
+                step.get("step", "-"), popup_to, new_url,
+            )
+        return result
+
+    def _legacy_auto_switch(
+        self,
+        context,
+        page: Page,
+        step: dict,
+        artifacts: str,
+        result: StepResult,
+    ) -> Optional[Page]:
+        """legacy 시나리오 (page 메타 없음) 의 자동 새 탭 전환. 신 포맷에선 호출 안 됨.
+
+        새 탭 발견 시 active page 를 새 탭으로 전환해 Page 반환. 차단/에러
+        페이지면 None (전환 안 함). 봇 차단이면 result.status=FAIL.
+        """
+        if not (len(context.pages) > 1 and context.pages[-1] is not page):
+            return None
+        new_page = context.pages[-1]
+        try:
+            new_page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        new_url = new_page.url
+        if new_url.startswith(_EMPTY_PAGE_URL_PREFIXES):
+            log.warning(
+                "[Step %s] 새 탭이 에러/빈 페이지 (%s) — 전환 안 함.",
+                step.get("step", "-"), new_url,
+            )
+            return None
+        if self._is_blocked_url(new_url):
+            log.error(
+                "[Step %s] 새 탭이 봇 차단 페이지 (%s) — 전환 안 함 + FAIL.",
+                step.get("step", "-"), new_url,
+            )
+            result.status = "FAIL"
+            self._safe_screenshot(page, os.path.join(artifacts, _ERROR_FINAL_PNG))
+            return None
+        log.info(
+            "[Step %s] 새 탭 감지 → 활성 페이지 전환 (%s → %s) [legacy]",
+            step.get("step", "-"), page.url, new_url,
+        )
+        try:
+            new_page.bring_to_front()
+        except Exception:
+            pass
+        return new_page
 
     def _execute_step(
         self,
@@ -1178,7 +1293,7 @@ class QAExecutor:
             return False
         for pg in pages[before_pages_count:]:
             url = pg.url or ""
-            if url.startswith(("chrome-error://", "about:blank", "data:text/html")):
+            if url.startswith(_EMPTY_PAGE_URL_PREFIXES):
                 continue
             if QAExecutor._is_blocked_url(url):
                 continue
@@ -2185,7 +2300,7 @@ class QAExecutor:
                     new_pages = context.pages[before_pages:]
                     valid_new_tab = any(
                         not (pg.url or "").startswith(
-                            ("chrome-error://", "about:blank", "data:text/html")
+                            _EMPTY_PAGE_URL_PREFIXES
                         )
                         for pg in new_pages
                     )
