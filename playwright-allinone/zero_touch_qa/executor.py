@@ -2300,6 +2300,17 @@ class QAExecutor:
         def type_keystroke():
             locator.fill("")
             locator.type(value, delay=80)
+            # typing 끝에 keyup 이벤트 명시 dispatch — 한글 IME / Playwright
+            # native keystroke 가 일부 사이트의 자동완성 listener 와 매치 안
+            # 되는 케이스 보강. listener 가 keyup 의존이면 이걸로 ajax 트리거.
+            # 검사 실패는 swallow (정상 흐름 영향 0).
+            try:
+                locator.evaluate(
+                    "el => el.dispatchEvent("
+                    "new KeyboardEvent('keyup', {bubbles: true}))"
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         def clear_then_fill():
             locator.fill("")

@@ -115,7 +115,8 @@ def test_annotate_returns_existing_path_when_no_clicks(tmp_path: Path) -> None:
 
 
 def test_annotate_rewrites_fill_to_press_sequentially(tmp_path: Path) -> None:
-    """codegen 의 ``.fill("값")`` 호출이 ``.press_sequentially("값", delay=80)`` 로 변환."""
+    """codegen 의 ``.fill("값")`` 호출이 ``.press_sequentially("값", delay=80)`` +
+    ``.evaluate(... keyup dispatch)`` 두 라인으로 변환."""
     src = _make_script(
         tmp_path,
         "page.get_by_role('textbox', name='키워드 입력').fill('요기요')",
@@ -129,9 +130,35 @@ def test_annotate_rewrites_fill_to_press_sequentially(tmp_path: Path) -> None:
     assert ".press_sequentially('요기요', delay=80)" in out, (
         f"press_sequentially 로 변환 안 됨\n{out}"
     )
+    # typing 직후 keyup dispatch 라인이 같은 chain 으로 prepend
+    assert "KeyboardEvent('keyup'" in out, (
+        f"keyup dispatch 라인이 추가 안 됨\n{out}"
+    )
     # 결과 파일이 valid python 이어야 함
     import ast as _ast
     _ast.parse(out)
+
+
+def test_annotate_keyup_dispatch_uses_same_chain(tmp_path: Path) -> None:
+    """keyup dispatch 라인이 fill 의 chain 을 그대로 사용한다 (다른 element 에 발사 X)."""
+    src = _make_script(
+        tmp_path,
+        "page.locator('#search-input').fill('hello')",
+    )
+    dst = tmp_path / "original_annotated.py"
+
+    annotate_script(str(src), str(dst))
+    out = dst.read_text(encoding="utf-8")
+    lines = out.splitlines()
+
+    typing_idx = next(i for i, l in enumerate(lines) if "press_sequentially" in l)
+    keyup_idx = next(i for i, l in enumerate(lines) if "KeyboardEvent('keyup'" in l)
+    assert keyup_idx == typing_idx + 1, (
+        f"keyup dispatch 가 typing 직후가 아님: typing={typing_idx} keyup={keyup_idx}"
+    )
+    # 둘 다 같은 chain (#search-input) 사용
+    assert "page.locator('#search-input')" in lines[typing_idx]
+    assert "page.locator('#search-input')" in lines[keyup_idx]
 
 
 def test_annotate_keeps_empty_fill_as_is(tmp_path: Path) -> None:
