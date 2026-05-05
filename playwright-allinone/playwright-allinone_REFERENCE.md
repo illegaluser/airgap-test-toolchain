@@ -1,6 +1,6 @@
 # playwright-allinone_REFERENCE
 
-이 문서는 운영 중 정확한 값을 확인하기 위한 참조 문서다. 처음부터 따라 하는 문서가 아니다. 설치 절차는 [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md), 반복 운영 절차는 [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md)를 본다.
+이 문서는 운영 중 정확한 값을 확인하기 위한 참조 문서다. 처음부터 따라 하는 문서가 아니다. 설치 절차는 [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md), 반복 운영 절차는 [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md), Recording UI 카드별 사용법은 [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md) 를 본다.
 
 ## 1. 현재 구현 상태
 

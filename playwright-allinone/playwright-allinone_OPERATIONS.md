@@ -1,6 +1,6 @@
 # playwright-allinone_OPERATIONS
 
-이 문서는 이미 한 번 실행에 성공한 운영자가 반복적으로 수행하는 절차를 정리한다. 처음 설치하는 사람은 먼저 [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md)를 본다. 포트, 파일, 환경변수의 정확한 목록은 [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md)를 본다.
+이 문서는 이미 한 번 실행에 성공한 운영자가 반복적으로 수행하는 절차를 정리한다. 처음 설치하는 사람은 먼저 [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) 를 본다. Recording UI 카드별 사용법은 [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md), 포트·파일·환경변수의 정확한 목록은 [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) 를 본다.
 
 ## 1. 표준 실행 방식
 
