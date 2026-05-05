@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from zero_touch_qa.dify_token import fetch_token_from_container as _fetch_dify_token_from_container  # noqa: E501
+
 log = logging.getLogger(__name__)
 
 
@@ -136,43 +138,6 @@ class PlayResult:
     stdout: str
     stderr: str
     elapsed_ms: float
-
-
-def _fetch_dify_token_from_container(
-    container_name: str = "dscore.ttc.playwright",
-    app_name: str = "ZeroTouch QA Brain",
-    timeout_sec: float = 5.0,
-) -> Optional[str]:
-    """컨테이너의 Dify DB 에서 chatflow API token 을 조회해 반환.
-
-    매 호출마다 fresh — provision 단계에서 chatflow 가 재 import 되어
-    token 이 재발급되어도 자동 동기화된다. host shell env / .env 파일
-    의존 없이 Recording UI 호출 경로가 항상 최신 token 을 사용 (portability).
-
-    실패 (컨테이너 미실행 / docker CLI 부재 / DB 응답 비정상) 는 None
-    반환. 호출 측은 기존 env (사용자가 export 했을 수도 있는 값) 그대로
-    사용하도록 graceful degrade.
-    """
-    sql = (
-        "SELECT t.token FROM api_tokens t "
-        "JOIN apps a ON t.app_id = a.id "
-        f"WHERE a.name = '{app_name}' "
-        "ORDER BY t.created_at DESC LIMIT 1"
-    )
-    cmd = [
-        "docker", "exec", container_name,
-        "bash", "-lc",
-        f"PGPASSWORD=difyai123456 psql -h 127.0.0.1 -U postgres -d dify "
-        f"-t -A -c \"{sql}\"",
-    ]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_sec,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    token = (result.stdout or "").strip()
-    return token if token.startswith("app-") else None
 
 
 def _resolve_venv_py(venv_py: str | None) -> str:

@@ -219,12 +219,16 @@ class LocatorResolver:
             return None
         m = _ROLE_NAME_RE.match(target_str)
         if m:
+            role = m.group(1).strip()
             name, exact = _split_name_exact(m.group(2))
-            loc = self.page.get_by_role(
-                m.group(1).strip(), name=name, exact=exact,
-            )
+            loc = self.page.get_by_role(role, name=name, exact=exact)
             if self._safe_count(loc) == 0:
-                return None
+                # codegen 의 role 오라벨링 보정 — `<a role="button">` / tab vs button
+                # 같이 의미적으로 동일한 클릭 대상이 다른 role 로 잡히는 경우.
+                # 다중 role 에서 동시에 매칭되면 ambiguous → 기존대로 None
+                # (false-PASS 차단; healer chain 이 처리).
+                fb = self._fallback_role_match(role, name, exact)
+                return fb  # None 또는 unambiguous 매치
             return _prefer_visible(loc)
         # role만 있고 name이 없는 경우
         role_only = target_str.replace(_ROLE_PREFIX, "", 1).strip()
@@ -242,6 +246,42 @@ class LocatorResolver:
             return None
         loc = self.page.get_by_role(role_only)
         return loc.first if self._safe_count(loc) > 0 else None
+
+    # codegen 이 자주 혼동하는 클릭 가능 role 묶음. _resolve_role 의 fallback 후보.
+    # checkbox/radio 등 상태성 role 은 제외 — 의도 변질 위험.
+    # tab 포함 — codegen 이 tab/button 을 혼동하는 케이스 실측됨. unambiguous
+    # (정확히 1개 role 만 매치) 조건이 false-PASS 의 1차 가드.
+    _CLICKABLE_ROLE_FALLBACKS = ("link", "button", "tab", "menuitem")
+
+    def _fallback_role_match(
+        self, original_role: str, name: str, exact: bool,
+    ) -> Locator | None:
+        """원래 role 이 0건일 때 등가 role 들에서 unambiguous 매치를 찾는다.
+
+        codegen 이 ``<a role="button">`` 을 단순히 link 로 라벨링하거나, 탭을
+        button 으로 잡는 등 role 오라벨링이 흔하다. 동일한 name 으로 다른
+        클릭-가능 role 들을 sweep 하되, **정확히 한 role 만 매치할 때만**
+        그 결과를 반환한다 (다중 매치는 ambiguous → None, healer chain 위임).
+        """
+        original = original_role.lower()
+        hits: list[tuple[str, Locator]] = []
+        for role in self._CLICKABLE_ROLE_FALLBACKS:
+            if role == original:
+                continue
+            try:
+                loc = self.page.get_by_role(role, name=name, exact=exact)
+                if self._safe_count(loc) > 0:
+                    hits.append((role, loc))
+            except Exception:  # noqa: BLE001
+                continue
+        if len(hits) != 1:
+            return None
+        role, loc = hits[0]
+        log.warning(
+            "[Resolver] role 오라벨링 보정 — role=%r 0건 → role=%r 1건 채택 (name=%r)",
+            original, role, name,
+        )
+        return _prefer_visible(loc)
 
     def _resolve_semantic_prefix(self, target_str: str) -> Locator | None:
         """text=/label=/placeholder=/testid= 접두사를 매칭하여 해당 메서드를 호출한다.
