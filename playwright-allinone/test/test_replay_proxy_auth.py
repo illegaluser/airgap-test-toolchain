@@ -92,22 +92,17 @@ def _seed_profile_in_catalog(name: str, isolated_root: Path) -> Path:
 
 
 def _stub_subprocess_capture(monkeypatch):
-    """subprocess.run 을 가로채 cmd/env 를 캡처. 정상 종료 시뮬레이션."""
+    """subprocess 실행 경계를 가로채 cmd/env 를 캡처. 정상 종료 시뮬레이션."""
     captured = {"cmd": None, "env": None, "cwd": None}
 
-    class _FakeProc:
-        returncode = 0
-        stdout = b""
-        stderr = b""
-
-    def _stub(*a, **kw):
-        cmd = a[0] if a else kw.get("args", [])
+    def _stub(cmd, *, cwd, env, timeout_sec, started, log_name="play.log"):
         captured["cmd"] = list(cmd)
-        captured["env"] = kw.get("env")
-        captured["cwd"] = kw.get("cwd")
-        return _FakeProc()
+        captured["env"] = env
+        captured["cwd"] = cwd
+        return PlayResult(returncode=0, stdout="", stderr="", elapsed_ms=1.0)
 
-    monkeypatch.setattr(replay_proxy.subprocess, "run", _stub)
+    monkeypatch.setattr(replay_proxy, "_fetch_dify_token_from_container", lambda: None)
+    monkeypatch.setattr(replay_proxy, "_run_subprocess", _stub)
     return captured
 
 
@@ -193,8 +188,11 @@ class TestRunCodegenReplayAuth:
     def test_no_metadata_no_env_injection(self, session_dir: Path, monkeypatch):
         captured = _stub_subprocess_capture(monkeypatch)
         run_codegen_replay(host_session_dir=str(session_dir))
-        # codegen replay 는 env=None 이 기본 — auth 없으면 그대로.
-        assert captured["env"] is None
+        # codegen replay 는 wrapper 실행을 위해 기본 env 는 넘기지만,
+        # auth metadata 가 없으면 auth-profile 관련 env 는 주입하지 않는다.
+        env = captured["env"] or {}
+        assert "AUTH_STORAGE_STATE_IN" not in env
+        assert "PLAYWRIGHT_VIEWPORT" not in env
 
     def test_auth_profile_injects_env(
         self, session_dir: Path, isolated_root: Path, monkeypatch,
