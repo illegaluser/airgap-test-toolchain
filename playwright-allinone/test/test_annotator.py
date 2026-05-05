@@ -107,3 +107,62 @@ def test_annotate_returns_existing_path_when_no_clicks(tmp_path: Path) -> None:
     assert res.injected == 0
     assert res.examined_clicks == 0
     assert src.read_text() == dst.read_text()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# fill → press_sequentially 자동 변환 (자동완성 사이트 호환)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_annotate_rewrites_fill_to_press_sequentially(tmp_path: Path) -> None:
+    """codegen 의 ``.fill("값")`` 호출이 ``.press_sequentially("값", delay=80)`` 로 변환."""
+    src = _make_script(
+        tmp_path,
+        "page.get_by_role('textbox', name='키워드 입력').fill('요기요')",
+    )
+    dst = tmp_path / "original_annotated.py"
+
+    annotate_script(str(src), str(dst))
+    out = dst.read_text(encoding="utf-8")
+
+    assert ".fill('요기요')" not in out, "fill 호출이 그대로 남아있음"
+    assert ".press_sequentially('요기요', delay=80)" in out, (
+        f"press_sequentially 로 변환 안 됨\n{out}"
+    )
+    # 결과 파일이 valid python 이어야 함
+    import ast as _ast
+    _ast.parse(out)
+
+
+def test_annotate_keeps_empty_fill_as_is(tmp_path: Path) -> None:
+    """``fill('')`` 은 입력 비우는 의도라 typing 변환 대상 아님."""
+    src = _make_script(
+        tmp_path,
+        "page.get_by_role('textbox', name='Q').fill('')",
+    )
+    dst = tmp_path / "original_annotated.py"
+
+    annotate_script(str(src), str(dst))
+    out = dst.read_text(encoding="utf-8")
+
+    assert ".fill('')" in out, "빈 fill 까지 변환되어 의미 손상"
+    assert "press_sequentially" not in out
+
+
+def test_annotate_rewrites_multiple_fills(tmp_path: Path) -> None:
+    """여러 fill 이 모두 변환되고 라인 매핑이 보존."""
+    src = _make_script(
+        tmp_path,
+        "page.locator('#search').fill(\"요기요\")\n"
+        "page.locator('#dept').fill(\"테스트부서\")",
+    )
+    dst = tmp_path / "original_annotated.py"
+
+    annotate_script(str(src), str(dst))
+    out = dst.read_text(encoding="utf-8")
+
+    assert out.count("press_sequentially") == 2
+    assert "요기요" in out and "테스트부서" in out
+    # fill 호출은 모두 사라져야
+    assert ".fill(\"요기요\")" not in out
+    assert ".fill(\"테스트부서\")" not in out

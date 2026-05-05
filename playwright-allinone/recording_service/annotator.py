@@ -92,7 +92,7 @@ def annotate_script(src_path: str, dst_path: str) -> AnnotateResult:
     else:
         new_source = source
 
-    Path(dst_path).write_text(new_source, encoding="utf-8")
+    Path(dst_path).write_text(_rewrite_fill_to_typing(new_source), encoding="utf-8")
     log.info(
         "[annotate] %s → %s — examined=%d injected=%d",
         src_path, dst_path, examined, sum(len(v) for v in insertions.values()),
@@ -196,6 +196,26 @@ class _ReplayAction:
 class _HoverTrigger:
     css_path: str
     reason: str
+
+
+# 비어 있지 않은 quoted string 인자를 가진 ``.fill("값")`` 호출 매칭.
+# 빈 문자열 ``.fill("")`` 은 매칭 안 됨 (입력 비우는 의도라 typing 불필요).
+_FILL_LITERAL_RE = re.compile(r"\.fill\((['\"])((?:\\\1|(?!\1).)+)\1\)")
+
+
+def _rewrite_fill_to_typing(text: str) -> str:
+    """codegen 산출물의 ``.fill("값")`` 호출을 ``.press_sequentially("값", delay=80)``
+    으로 일괄 변환.
+
+    이유: Playwright ``Locator.fill()`` 은 한 번에 value 만 set + ``input``
+    이벤트만 발사 → ``keydown/keyup`` 미발사. 매 keystroke 마다 ajax 자동완성
+    호출하는 사이트에서 dropdown 이 트리거되지 않아 후속 click 이 추천 항목을
+    찾지 못하고 timeout. ``press_sequentially`` 는 한 글자씩 정상 keystroke
+    이벤트를 발사 — 인간 typing 과 동일한 시퀀스라 자동완성 호환.
+
+    빈 문자열 fill 은 변환 대상 아님 (value clear 의도).
+    """
+    return _FILL_LITERAL_RE.sub(r".press_sequentially(\1\2\1, delay=80)", text)
 
 
 @dataclass
@@ -488,8 +508,8 @@ def annotate_script_dynamic(
 
     actions = _extract_replay_actions(tree)
     if not actions:
-        # navigate / click 둘 다 없으면 그대로 복사.
-        Path(dst_path).write_text(source, encoding="utf-8")
+        # navigate / click 둘 다 없으면 그대로 복사 (단 fill→typing 변환은 적용).
+        Path(dst_path).write_text(_rewrite_fill_to_typing(source), encoding="utf-8")
         log.info("[annotate dynamic] %s → %s — 액션 없음 (그대로 복사)", src_path, dst_path)
         return AnnotateResult(src_path, dst_path, 0, 0, [])
 
@@ -728,7 +748,7 @@ def _write_annotated_with_triggers(
         new_line = _format_prepend_line(marker, line, indent)
         if new_line:
             lines.insert(idx, new_line)
-    Path(dst_path).write_text("".join(lines), encoding="utf-8")
+    Path(dst_path).write_text(_rewrite_fill_to_typing("".join(lines)), encoding="utf-8")
 
 
 def _format_prepend_line(marker, click_line: str, indent: str) -> str:
