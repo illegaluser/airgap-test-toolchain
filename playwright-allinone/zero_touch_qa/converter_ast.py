@@ -27,6 +27,8 @@ import logging
 import os
 from typing import Optional
 
+from .step_kind import classify_step_kind
+
 log = logging.getLogger(__name__)
 
 
@@ -69,6 +71,14 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
     for s in scenario:
         for k in [k for k in s if k.startswith("_")]:
             del s[k]
+    # 의도 분류 — auxiliary 로 식별된 step 에만 ``kind`` 를 명시. terminal 은
+    # default 라 누락 (executor 가 기본값으로 처리, scenario.json 군더더기 방지).
+    for s in scenario:
+        if "kind" in s:
+            continue
+        kind = classify_step_kind(s.get("action", ""), s.get("target", ""))
+        if kind != "terminal":
+            s["kind"] = kind
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "scenario.json")
     with open(output_path, "w", encoding="utf-8") as f:

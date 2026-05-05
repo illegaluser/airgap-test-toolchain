@@ -408,6 +408,8 @@ class QAExecutor:
                     result = self._run_step_maybe_capture_popup(
                         active_page, pages, step, resolver, healer, artifacts,
                     )
+                    # AUX 백스톱 — 보조 step 의 healing 후 실패는 graceful skip.
+                    self._maybe_apply_aux_skip(step, result)
                     # 사이트가 인증 없는 접근에 native alert 대신 URL 쿼리 redirect
                     # (`?errorMsg=...`) 로 메시지를 전달하는 패턴 감지. dialog 와
                     # 같은 자리(노란 카드)에 합쳐 표시.
@@ -636,6 +638,15 @@ class QAExecutor:
         original_target = step.get("target")
         log.info("[Step %s] %s: %s", step_id, action, desc)
 
+        # AUX FAST-PATH — 보조 이동 step 의 target 이 이미 비활성 상태(carousel 끝
+        # 도달 등)면 healing 호출 없이 즉시 graceful skip. 무의미한 30~60초 timeout
+        # 절약. 의도(이동) 자체가 "더 이동 불가" 로 충족.
+        aux_skip = self._maybe_aux_fast_skip(
+            page, step, resolver, step_id, action, original_target, desc,
+        )
+        if aux_skip is not None:
+            return aux_skip
+
         # 1차 시도 (closed shadow / visibility heal 포함).
         result, verification_error = self._try_initial_target(
             page, step, resolver, artifacts,
@@ -695,6 +706,94 @@ class QAExecutor:
             str(step.get("value", "")), desc,
             "FAIL",
         )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # AUX (보조 이동) helper — carousel navigation 등의 graceful skip 처리.
+    # 분류 자체는 converter (녹화 시점) 에서 step["kind"] 로 박힘.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _maybe_apply_aux_skip(self, step: dict, result: StepResult) -> None:
+        """보조 step 이 healing 후에도 실패하면 graceful skip 으로 변환 (백스톱).
+
+        목적: carousel 의 "다음 슬라이드" 같은 보조 이동이 끝 도달 등으로 실패해도
+        후속 의도 step 까지 도달은 막지 않는다.
+        """
+        if step.get("kind") != "auxiliary" or result.status != "FAIL":
+            return
+        log.info(
+            "[Step %s] 보조 이동 실패(%s) → graceful skip, 다음 step 진행",
+            step.get("step", "-"),
+            step.get("description", "") or step.get("target", ""),
+        )
+        result.status = "PASS"
+        result.heal_stage = "aux_skip"
+
+    def _maybe_aux_fast_skip(
+        self,
+        page: Page,
+        step: dict,
+        resolver: LocatorResolver,
+        step_id,
+        action: str,
+        original_target,
+        desc: str,
+    ) -> Optional[StepResult]:
+        """보조 step + target 이 이미 비활성이면 healing 시도 없이 즉시 skip 결과 반환.
+
+        해당 조건이 아니면 None — 호출자(_execute_step)는 정상 흐름 계속.
+        """
+        if step.get("kind") != "auxiliary":
+            return None
+        if not self._aux_target_blocked(page, step, resolver):
+            return None
+        log.info(
+            "[Step %s] 보조 이동 — target 비활성, 즉시 skip (다음 step 진행)",
+            step_id,
+        )
+        return StepResult(
+            step_id, action, str(original_target or ""),
+            str(step.get("value", "")), desc,
+            "PASS", heal_stage="aux_skip",
+        )
+
+    @staticmethod
+    def _aux_target_blocked(
+        page: Page, step: dict, resolver: LocatorResolver,
+    ) -> bool:
+        """auxiliary step 의 target 이 disabled 상태인지 빠르게 검사.
+
+        검사 대상: ``el.disabled === true`` / ``aria-disabled="true"`` / class 에
+        ``-disabled`` 또는 ``disabled`` 토큰. 이 중 하나면 True. 모호하거나 검사 자체
+        가 실패하면 False (정상 healing 흐름 유지 — 보수적).
+        """
+        target = step.get("target") or ""
+        if not target:
+            return False
+        try:
+            loc = resolver.resolve(target)
+        except Exception:  # noqa: BLE001
+            return False
+        if loc is None:
+            return False
+        try:
+            first = loc.first
+            try:
+                first.wait_for(state="attached", timeout=200)
+            except Exception:  # noqa: BLE001
+                return False
+            flag = first.evaluate(
+                """(el) => {
+                    if (!el) return false;
+                    if (el.disabled === true) return true;
+                    if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') return true;
+                    const cls = el.className || '';
+                    const s = typeof cls === 'string' ? cls : (cls.baseVal || '');
+                    return /(?:^|\\s)\\S*-disabled(?:\\s|$)|(?:^|\\s)disabled(?:\\s|$)/.test(s);
+                }"""
+            )
+            return bool(flag)
+        except Exception:  # noqa: BLE001
+            return False
 
     # ─────────────────────────────────────────────────────────────────────
     # 메타 액션 + 1차 시도 helper — _execute_step 첫 부분 분리.

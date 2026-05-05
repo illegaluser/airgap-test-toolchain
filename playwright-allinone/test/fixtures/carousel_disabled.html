@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>[fixture] carousel_disabled</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    [aria-disabled="true"] { opacity: 0.4; pointer-events: none; }
+    button { padding: 8px 16px; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <h1>carousel_disabled fixture — 보조 이동 step soft-skip 검증</h1>
+
+  <!-- 보조 이동: aria-disabled + swiper-button-disabled 클래스 (실 사이트 패턴) -->
+  <div role="button" aria-label="다음 슬라이드"
+       aria-disabled="true"
+       class="swiper-button-next swiper-button-disabled"
+       tabindex="0">다음 슬라이드</div>
+
+  <!-- 의도 클릭: 정상 활성 버튼 -->
+  <button id="apply-btn" type="button"
+          aria-label="사용신청"
+          onclick="document.getElementById('status').textContent='applied'"
+          >사용신청</button>
+
+  <span id="status">idle</span>
+</body>
+</html>
