@@ -69,6 +69,14 @@ def test_classify_alarm_carousel_named_button_is_terminal():
     ) == KIND_AUXILIARY
 
 
+def test_classify_role_alert_click_is_auxiliary():
+    assert classify_step_kind("click", "role=alert") == KIND_AUXILIARY
+
+
+def test_classify_role_alert_with_modifier_is_auxiliary():
+    assert classify_step_kind("click", "role=alert, nth=0") == KIND_AUXILIARY
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Integration — aux disabled fast-path 후 terminal 도달
 # ─────────────────────────────────────────────────────────────────────
@@ -107,6 +115,26 @@ def test_aux_disabled_skip_then_terminal_passes(
     terminal_result = next(r for r in results if r.step_id == 4)
     assert terminal_result.status == "PASS"
     assert terminal_result.heal_stage == "none"
+
+
+def test_absent_transient_alert_skip_then_terminal_passes(
+    make_executor, run_scenario, fixture_url,
+):
+    """녹화 시점의 일회성 alert click 이 재생 시 없으면 즉시 skip."""
+    executor = make_executor()
+    page = fixture_url("carousel_disabled.html")
+    scenario = [
+        navigate(page, step=1),
+        click("role=alert", step=2, description="일회성 안내 닫기", kind="auxiliary"),
+        click("role=button, name=사용신청", step=3, description="사용신청"),
+        verify("#status", step=4, condition="contains_text", value="applied"),
+    ]
+    results, _, _ = run_scenario(executor, scenario)
+
+    statuses = [r.status for r in results]
+    assert all(s == "PASS" for s in statuses), f"실패한 step: {statuses}"
+    alert_result = next(r for r in results if r.step_id == 2)
+    assert alert_result.heal_stage == "aux_skip"
 
 
 def test_legacy_scenario_without_kind_field_unchanged_behavior(
