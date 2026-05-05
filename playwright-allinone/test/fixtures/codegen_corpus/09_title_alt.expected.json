@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://example.com/menu", "description": "https://example.com/menu로 이동", "fallback_targets": []},
+  {"step": 2, "action": "click", "target": "title=개인정보처리방침", "value": "", "description": "클릭", "fallback_targets": []},
+  {"step": 3, "action": "click", "target": "alt=회사 로고", "value": "", "description": "클릭", "fallback_targets": []},
+  {"step": 4, "action": "click", "target": "#content >> title=툴팁", "value": "", "description": "클릭", "fallback_targets": []}
+]

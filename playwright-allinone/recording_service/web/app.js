@@ -543,6 +543,17 @@ $("#assertion-form").addEventListener("submit", async (e) => {
   };
   const cond = (fd.get("condition") || "").trim();
   if (cond) payload.condition = cond;
+  // position 미입력 (빈 문자열) ⇒ 백엔드 기본 = 끝에 append.
+  // 정수면 1-base step 번호로 전달.
+  const posRaw = (fd.get("position") || "").trim();
+  if (posRaw) {
+    const pos = parseInt(posRaw, 10);
+    if (Number.isNaN(pos) || pos < 1) {
+      alert("position 은 1 이상의 정수여야 합니다.");
+      return;
+    }
+    payload.position = pos;
+  }
 
   try {
     const data = await addAssertion(sid, payload);

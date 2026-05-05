@@ -1217,6 +1217,14 @@ class AssertionAddReq(BaseModel):
     condition: Optional[str] = Field(
         None, description="verify 의 조건 (예: text / visible / url)",
     )
+    position: Optional[int] = Field(
+        None,
+        description=(
+            "1-base step 번호. 지정 시 해당 위치에 insert 하고 후속 step 들의 "
+            "step 번호를 +1 재할당. 미지정(None) 이면 끝에 append (기존 동작). "
+            "유효 범위: [1, len(scenario)+1]."
+        ),
+    )
 
 
 @app.post("/recording/sessions/{sid}/assertion", status_code=201)
@@ -1268,9 +1276,10 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
             detail=f"세션 {sid} 의 scenario.json 이 없습니다. 먼저 변환을 완료하세요.",
         )
 
-    next_step = max((s.get("step", 0) for s in scenario), default=0) + 1
+    insert_at = _resolve_insert_index(scenario, req.position)
+    new_step_number = insert_at + 1
     new_step: dict = {
-        "step": next_step,
+        "step": new_step_number,
         "action": req.action,
         "target": req.target,
         "value": req.value,
@@ -1279,7 +1288,10 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
     if req.action == "verify" and req.condition:
         new_step["condition"] = req.condition
 
-    scenario.append(new_step)
+    scenario.insert(insert_at, new_step)
+    # insert 위치 이후 step 들의 번호 재할당.
+    for idx in range(insert_at + 1, len(scenario)):
+        scenario[idx]["step"] = idx + 1
 
     # 호스트 측 가벼운 sanity 만 — 깊은 _validate_scenario 는 다음 변환/실행 시점에.
     import json as _json
@@ -1290,15 +1302,35 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
     _registry.update(sid, action_count=len(scenario))
 
     log.info(
-        "[/assertion] %s — step %d 추가 (action=%s target=%s)",
-        sid, next_step, req.action, req.target,
+        "[/assertion] %s — step %d 추가 (action=%s target=%s position=%s)",
+        sid, new_step_number, req.action, req.target,
+        "end" if req.position is None else req.position,
     )
     return {
         "id": sid,
-        "step_added": next_step,
+        "step_added": new_step_number,
         "step_count": len(scenario),
         "added_step": new_step,
     }
+
+
+def _resolve_insert_index(scenario: list, position: Optional[int]) -> int:
+    """position 검증 + 0-base insert index 반환.
+
+    None ⇒ 끝에 append (기존 동작). 정수면 1-base step 번호로 해석해
+    [1, len+1] 범위 검증 후 0-base 로 변환.
+    """
+    if position is None:
+        return len(scenario)
+    if position < 1 or position > len(scenario) + 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"position 은 [1, {len(scenario) + 1}] 범위여야 합니다. "
+                f"받은 값: {position}"
+            ),
+        )
+    return position - 1
 
 
 def _default_description(action: str, target: str, value: str) -> str:

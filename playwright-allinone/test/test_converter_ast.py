@@ -36,6 +36,7 @@ CORPUS_PATTERNS = [
     "06_nested_locator",
     "07_frame_locator",
     "08_expect_and_specials",
+    "09_title_alt",
 ]
 
 

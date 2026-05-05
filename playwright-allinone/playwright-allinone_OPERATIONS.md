@@ -277,7 +277,9 @@ python3 -m pytest --collect-only -q test
 | --- | --- | --- |
 | Jenkins Pipeline이 agent offline에서 대기 | `NODE=... curl .../computer/$NODE/api/json` | `mac-agent-setup.sh` 또는 `wsl-agent-setup.sh` 재실행 |
 | Dify 호출 timeout | `ollama list`, `docker exec ... curl host.docker.internal:11434/api/tags` | 호스트 Ollama 기동, `--add-host` 포함 여부 확인 |
+| `Dify API 연결 실패 — 컨테이너가 떠 있는지 ...` healing 에러 | `curl -s ${DIFY_BASE_URL:-http://localhost/v1}/health` | dscore.ttc.playwright 컨테이너 기동 또는 `DIFY_BASE_URL` env 교정 |
 | Recording UI Stop & Convert 실패 | session log와 docker mount 확인 | 수동 run에 `/recordings` bind mount 추가 |
+| codegen 이 wheel/scroll 을 안 잡음 | UI Step 추가 폼에서 직접 추가 | action=`scroll`, value=`into_view`, `position` 으로 중간 삽입 (자동 캡처는 R-Phase 진행 중) |
 | WSL에서 브라우저 창이 안 뜸 | `echo $DISPLAY $WAYLAND_DISPLAY` | `wsl --update`, `wsl --shutdown`, WSLg 확인 |
 | Dify share URL에 포트가 빠짐 | `APP_WEB_URL`/`DIFY_PUBLIC_URL` | 표준 `18081:18081` 매핑 사용 또는 `DIFY_PUBLIC_URL` 지정 |
 | 빌드 디스크 부족 | Docker disk usage 확인 | `docker builder prune -a -f` |
