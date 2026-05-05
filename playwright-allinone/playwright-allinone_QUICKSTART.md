@@ -216,56 +216,130 @@ admin / password
 - `regression_test.py`
 - `llm_calls.jsonl` / `llm_sla.json`
 
-## 7. Recording UI 확인
+## 7. Recording UI — 첫 녹화·재생 한 번 성공시키기
 
-Recording UI는 호스트에서 도는 서비스다. 컨테이너 포트가 아니다.
+Recording UI 는 호스트에서 도는 별도 서비스다 (포트 18092). 컨테이너가 아닌 호스트의 brewser 창을 띄워 사용자가 직접 조작한 결과를 시나리오로 바꾸는 도구.
+
+### 7.1 서비스 상태 확인
 
 ```bash
 ./run-recording-ui.sh status
 ```
 
-정상이라면:
+정상 출력:
 
 ```text
 url: http://127.0.0.1:18092/
 health: ok
 ```
 
-실행 중이 아니라고 나오면 아래처럼 시작한다.
+실행 중이 아니면:
 
 ```bash
 ./run-recording-ui.sh start
 ```
 
-브라우저에서 접속:
+브라우저로 접속:
 
 ```text
 http://localhost:18092
 ```
 
-처음 녹화:
+화면에 6개 카드가 보인다. 펼쳐서 쓰면 된다.
 
-1. `target_url` 입력
-2. **Start Recording** 클릭
-3. 열린 Chromium에서 사용자가 직접 조작
-4. **Stop & Convert** 클릭
-5. `scenario.json` 확인
+| 카드 | 용도 |
+| --- | --- |
+| 🔐 Login Profile Registration | 테스트 대상의 로그인 세션 시드 |
+| 🔍 Discover URLs | 사이트 URL 후보 자동 수집 |
+| 🎬 Recording | 브라우저 조작 녹화 |
+| ▶️ Play & more | 시나리오 재생 (codegen / LLM) |
+| 📊 결과 확인 및 스텝 추가 | scenario / run_log / regression diff |
+| 최근 세션 | 세션 목록 + 일괄 삭제 |
 
-Start Recording을 누르면 별도 Chromium 창이 열린다. 그 창에서 한 조작이 녹화 대상이다.
+각 카드의 자세한 동작은 [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md) 에서 다룬다. 여기서는 첫 한 사이클을 성공시키는 데 필요한 최소 절차만 본다.
 
-녹화 결과는 기본적으로 아래에 저장된다.
+### 7.2 (선택) 로그인 세션 시드
+
+테스트 대상이 로그인 후에만 보이는 화면이면, 매번 로그인을 다시 하지 않도록 storageState 를 한 번 시드한다.
+
+1. `🔐 Login Profile Registration` 카드 펼치기.
+2. `[+ 새 프로파일]` 클릭.
+3. 모달에 입력:
+   - **이름** — 식별자 (예 `myapp`)
+   - **seed_url** — 테스트 *서비스* 진입 URL
+   - **verify_service_url / verify_service_text** — 로그인 후 도달 검증용
+4. 새 Chromium 창에서 직접 로그인.
+5. verify URL 까지 도달하면 storageState 자동 저장.
+
+시드된 프로파일은 이후 Recording / Discover 카드의 드롭다운에서 선택해 재사용한다.
+
+> 비로그인 사이트면 이 단계는 건너뛴다.
+
+### 7.3 첫 녹화
+
+1. `🎬 Recording` 카드.
+2. **target_url** 입력 (예 `http://localhost:18081/fixtures/full_dsl.html`).
+3. **로그인 프로파일** — 7.2 에서 시드했으면 선택.
+4. **▶ Start Recording** 클릭.
+5. 새 Chromium 창이 뜬다. 그 창에서 사용자가 자유롭게 조작.
+6. **Stop & Convert** 클릭.
+
+자동으로 다음이 일어난다:
+
+- codegen 출력 (`original.py`) 가 14대 DSL 시나리오로 변환됨.
+- 자동 정리 적용 — 중복 click 압축, IME 노이즈 키 제거, 빈 fill 정리.
+- 검증 통과 시 `state=done`, 실패 시 `state=error` + `error_final.png`.
+
+저장 위치:
 
 ```text
-~/.dscore.ttc.playwright-agent/recordings/<session-id>/
+~/.dscore.ttc.playwright-agent/recordings/<세션ID>/
+├── original.py             ← codegen 원본
+├── scenario.json           ← 14-DSL (자동 정리 적용됨)
+├── metadata.json           ← state, error, auth_profile
+└── …
 ```
+
+> **녹화 팁** — 호버 메뉴는 마우스만 올리고 클릭 금지 (codegen 은 hover 를 기록 안 함, leaf 만 클릭하면 재생 시 자동 cascade hover). 답변 생성 중 로딩 텍스트 클릭 금지.
+
+### 7.4 첫 재생
+
+1. `▶️ Play & more` 카드 펼치기.
+2. 옵션 — `로그인 프로파일`, `화면 표시 (headed)`, `액션 사이 지연 (slow-mo)` 1000ms 권장.
+3. **▶ Play** 클릭 (codegen 모드).
+4. 라이브 로그가 흘러간다. 끝나면:
+   - `📊 결과 확인 및 스텝 추가` 카드에 step 별 PASS / HEALED / FAIL 노출.
+   - `index.html` 리포트 다운로드 가능.
+
+### 7.5 실패한 step 의 LLM 치유 (선택)
+
+codegen 모드에서 일부 step 이 FAIL 했고 사이트 구조 변경이 의심되면:
+
+- `▶ Play ▾` → **Play with LLM** — Dify LLM 이 selector 후보를 다시 짜 준다 (timeout 60s, 시도 1회, 비용 발생).
+
+### 7.6 녹화·재생이 자동 정리하는 것들
+
+녹화 직후 또는 재생 도중 다음을 자동으로 처리한다 (사용자 개입 불필요):
+
+| 정리 | 어떤 케이스 |
+| --- | --- |
+| 중복 click 압축 | 같은 카드의 wrapper button + inner link 가 둘 다 기록된 경우 |
+| IME 노이즈 키 제거 | 한글 입력 시 codegen 이 끼워 넣은 `CapsLock`, `Unidentified`, 빈 fill |
+| popup pages-diff fallback | 새 탭이 늦게 떠 `expect_popup` 이 timeout 났어도 alias 등록 |
+| transient alert skip | 잠깐 떴다 사라지는 alert 클릭 자동 skip |
+| 자동완성 typing fallback | fill 이 dropdown 못 띄우면 한 글자씩 typing 으로 전환 |
+
+자세한 결정 배경은 [docs/PLAN_RECORDING_DEDUPE_AND_POPUP_RACE.md](docs/PLAN_RECORDING_DEDUPE_AND_POPUP_RACE.md).
 
 ## 8. 다음 문서
 
-상황별로 다음 문서를 보면 된다.
+상황별로 다음 문서를 본다.
 
 | 해야 할 일 | 문서 |
 | --- | --- |
+| Recording UI 카드별 상세 사용법 | [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md) |
 | 수동 `docker run`으로 운영 머신에 배포 | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) |
-| 백업/복원/업그레이드 | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) |
-| Recording UI 재기동/로그 확인 | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) |
-| 포트, 볼륨, env, 파일 구조 확인 | [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) |
+| 백업 / 복원 / 업그레이드 | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) |
+| Recording UI 서비스 재기동 / 로그 | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) |
+| 포트 / 볼륨 / 환경변수 / 파일 구조 | [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) |
+| 자주 발생하는 녹화·재생 에러 모음 | [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md) |
