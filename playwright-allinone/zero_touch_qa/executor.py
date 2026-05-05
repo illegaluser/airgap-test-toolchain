@@ -313,7 +313,48 @@ class QAExecutor:
         storage_state_in: Optional[str] = None,
         storage_state_out: Optional[str] = None,
     ) -> list[StepResult]:
+        """본체 (`_execute_inproc`) 를 별 thread 에서 실행해 main thread 의
+        asyncio loop 와 격리.
+
+        ``sync_playwright()`` 는 ``asyncio.get_running_loop()`` 로 현재 thread 의
+        running loop 를 검사해 거부한다. 외부 환경(pytest-playwright 등)이 main
+        thread 에 loop 를 활성화한 상태여도 worker thread 에는 loop 가 없어 통과.
+
+        docs/PLAN_EXECUTOR_LOOP_ISOLATION.md 참고.
+        """
+        import queue as _queue
+        import threading
+
+        result_q: "_queue.Queue[tuple[str, object]]" = _queue.Queue(maxsize=1)
+
+        def _worker() -> None:
+            try:
+                payload = self._execute_inproc(
+                    scenario, headed, storage_state_in, storage_state_out,
+                )
+                result_q.put(("ok", payload))
+            except Exception as e:  # noqa: BLE001
+                result_q.put(("err", e))
+
+        t = threading.Thread(target=_worker, name="qa-executor", daemon=True)
+        t.start()
+        t.join()  # timeout 은 _execute_inproc 안의 시나리오 timeout 이 처리.
+        kind, payload = result_q.get_nowait()
+        if kind == "err":
+            assert isinstance(payload, Exception)
+            raise payload
+        return payload  # type: ignore[return-value]
+
+    def _execute_inproc(
+        self,
+        scenario: list[dict],
+        headed: bool = True,
+        storage_state_in: Optional[str] = None,
+        storage_state_out: Optional[str] = None,
+    ) -> list[StepResult]:
         """Playwright 브라우저를 실행하고 DSL 시나리오를 순차 실행한다.
+
+        *현재 thread* 에서 동작 — 외부에서 ``execute`` 가 thread 격리로 호출.
 
         Args:
             scenario: DSL 스텝 dict 의 리스트.
