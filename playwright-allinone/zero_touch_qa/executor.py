@@ -50,6 +50,7 @@ from .config import Config
 from .dify_client import DifyClient, DifyConnectionError
 from .locator_resolver import LocatorResolver, ShadowAccessError
 from .local_healer import LocalHealer
+from .step_kind import is_transient_auxiliary_target
 
 log = logging.getLogger(__name__)
 
@@ -785,6 +786,16 @@ class QAExecutor:
         """
         if step.get("kind") != "auxiliary":
             return None
+        if self._transient_aux_target_absent(step, resolver):
+            log.info(
+                "[Step %s] 일회성 보조 UI 부재 — 즉시 skip (다음 step 진행)",
+                step_id,
+            )
+            return StepResult(
+                step_id, action, str(original_target or ""),
+                str(step.get("value", "")), desc,
+                "PASS", heal_stage="aux_skip",
+            )
         if not self._aux_target_blocked(page, step, resolver):
             return None
         log.info(
@@ -796,6 +807,22 @@ class QAExecutor:
             str(step.get("value", "")), desc,
             "PASS", heal_stage="aux_skip",
         )
+
+    @staticmethod
+    def _transient_aux_target_absent(step: dict, resolver: LocatorResolver) -> bool:
+        """일회성 보조 target 이 현재 없으면 True.
+
+        예: codegen 이 ``page.get_by_role("alert").click()`` 로 캡처한 안내/경고
+        닫기 동작. 녹화 시에는 있었지만 재생 시 이미 dismiss 되어 사라질 수
+        있으므로, 없으면 LLM 치유 없이 skip 한다.
+        """
+        target = step.get("target") or ""
+        if not is_transient_auxiliary_target(str(target)):
+            return False
+        try:
+            return resolver.resolve(target) is None
+        except Exception:  # noqa: BLE001
+            return False
 
     @staticmethod
     def _aux_target_blocked(

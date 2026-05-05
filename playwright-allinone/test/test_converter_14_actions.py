@@ -180,3 +180,34 @@ def test_recorded_9_actions_still_converts(out_dir):
     for a in ("navigate", "verify", "wait", "click", "fill", "press", "select", "check", "hover"):
         assert a in actions, f"기존 9 대 회귀에 {a} 누락"
     _validate_scenario(scenario)
+
+
+def test_validate_allows_empty_fill_value():
+    """codegen 의 ``locator.fill("")`` (입력창 비우기 의도) 가 변환된 step 은
+    ``action=fill, value=""`` 형태인데, _validate_scenario 가 reject 하면
+    안 된다. (사용자가 select-all+delete 등으로 입력을 비우는 행동을 codegen 이
+    표준적으로 fill("") 로 캡처하므로 흔한 패턴.)"""
+    scenario = [
+        {"action": "navigate", "target": "", "value": "https://example.com",
+         "description": "이동", "step": 1, "fallback_targets": []},
+        {"action": "fill", "target": "role=textbox, name=Q", "value": "",
+         "description": "입력 비우기", "step": 2, "fallback_targets": []},
+        {"action": "fill", "target": "role=textbox, name=Q", "value": "검색어",
+         "description": "검색어 입력", "step": 3, "fallback_targets": []},
+    ]
+    # 빈 fill 이 들어 있어도 통과해야 한다.
+    _validate_scenario(scenario)
+
+
+def test_validate_still_rejects_empty_value_for_other_actions():
+    """fill 외 다른 value-required 액션 (press/select 등) 의 빈 value 는 그대로 reject."""
+    from zero_touch_qa.__main__ import ScenarioValidationError
+    import pytest
+    scenario = [
+        {"action": "navigate", "target": "", "value": "https://example.com",
+         "description": "이동", "step": 1, "fallback_targets": []},
+        {"action": "press", "target": "role=textbox, name=Q", "value": "",
+         "description": "키 입력", "step": 2, "fallback_targets": []},
+    ]
+    with pytest.raises(ScenarioValidationError, match="value 가 비어"):
+        _validate_scenario(scenario)

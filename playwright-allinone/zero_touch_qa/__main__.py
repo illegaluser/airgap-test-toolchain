@@ -319,6 +319,11 @@ def _check_target_value_contract(i: int, step: dict) -> None:
             f"step[{i}] action=press 인데 target/value 가 모두 비어 있음"
         )
     if action in _VALUE_REQUIRED_ACTIONS and not str(step.get("value", "")).strip():
+        # 빈 fill ("") 은 입력창 비우는 의도 — codegen 이 사용자의 select-all+delete
+        # 등 입력 clear 행동을 ``locator.fill("")`` 로 캡처하는 표준 패턴이라 허용.
+        # executor 의 _do_fill 이 빈 값도 정상 처리한다 (locator.fill("") + type("")).
+        if action == "fill" and step.get("value", "") == "":
+            return
         raise ScenarioValidationError(
             f"step[{i}] action={action} 인데 value 가 비어 있음"
         )

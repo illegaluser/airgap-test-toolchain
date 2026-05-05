@@ -6,6 +6,9 @@
 분류 규칙(보수적):
 - carousel navigation 의 의도가 명백한 경우만 auxiliary 로 분류.
   ("다음 슬라이드" / "이전 슬라이드" / "next slide" / "prev slide" / "previous slide")
+- ``role=alert`` 클릭은 auxiliary 로 분류. codegen 이 일회성 안내/경고 영역
+  닫기 동작을 클릭으로 캡처하는 경우가 있으며, 재생 시 이미 사라져 있어도
+  본 사용자 의도 진행을 막으면 안 된다.
 - 매치 안 되면 모두 terminal — default 가 안전(시나리오 진행 막지 않음).
 
 향후 다른 보조 패턴(자동완성 dropdown 닫기 등) 발견 시 본 모듈에 키워드 추가.
@@ -39,6 +42,8 @@ def classify_step_kind(action: str, target: str) -> str:
     """
     if (action or "").lower() != "click":
         return KIND_TERMINAL
+    if _is_transient_alert_target(target or ""):
+        return KIND_AUXILIARY
     name = _extract_name(target or "")
     if not name:
         return KIND_TERMINAL
@@ -46,6 +51,19 @@ def classify_step_kind(action: str, target: str) -> str:
         if pat.search(name):
             return KIND_AUXILIARY
     return KIND_TERMINAL
+
+
+def is_transient_auxiliary_target(target: str) -> bool:
+    """재생 시 사라져 있으면 바로 skip 해도 되는 보조 target 여부."""
+    return _is_transient_alert_target(target or "")
+
+
+def _is_transient_alert_target(target: str) -> bool:
+    s = target.strip()
+    if " >> " in s:
+        s = s.split(" >> ")[-1].strip()
+    s = re.sub(r",\s*(nth|has_text|exact)=.*$", "", s).strip()
+    return bool(re.match(r"role=alert(?:\s*,.*)?$", s, re.IGNORECASE))
 
 
 def _extract_name(target: str) -> str:
