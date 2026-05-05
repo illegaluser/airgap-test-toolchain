@@ -567,23 +567,63 @@ class QAExecutor:
         popup_to = step.get("popup_to")
         if not popup_to:
             return self._execute_step(active_page, step, resolver, healer, artifacts)
+        before_pages = list(active_page.context.pages)
+        # mutable container — with 블록 내부의 result 를 except 블록에서도 재사용.
+        # expect_popup __exit__ 가 timeout 으로 raise 해도 inner _execute_step 의
+        # click 은 이미 실행 완료된 상태. 재실행하면 click 두 번 발사 → 팝업 2개.
+        captured: dict = {}
         try:
             with active_page.expect_popup(timeout=10000) as popup_info:
-                result = self._execute_step(
+                captured["result"] = self._execute_step(
                     active_page, step, resolver, healer, artifacts,
                 )
         except PlaywrightTimeoutError:
-            log.warning(
-                "[Step %s] popup_to=%s 마킹됐으나 popup 발생 안 함 — alias 등록 skip.",
+            # JS dispatch fallback race — Playwright click 이 actionability
+            # timeout (10s) 을 다 쓴 뒤에야 dispatchEvent('click') 으로 떨어지는
+            # 케이스. 그 시점엔 expect_popup (10s) 도 만료. 실행 직후 새 page 가
+            # 생겼는지 context.pages diff 로 한 번 더 확인.
+            result = captured.get("result")
+            if result is None:
+                # _execute_step 이 raise 한 경우. expect_popup 은 보통 inner
+                # 예외를 그대로 전파하므로 여기 도달은 드물다 — 안전 fallback.
+                result = self._execute_step(active_page, step, resolver, healer, artifacts)
+            new_pages = [p for p in active_page.context.pages if p not in before_pages]
+            if not new_pages:
+                log.warning(
+                    "[Step %s] popup_to=%s 마킹됐으나 popup 발생 안 함 — alias 등록 skip.",
+                    step.get("step", "-"), popup_to,
+                )
+                return result
+            new_page = new_pages[-1]
+            log.info(
+                "[Step %s] popup pages-diff fallback 으로 alias '%s' 등록 시도",
                 step.get("step", "-"), popup_to,
             )
-            return self._execute_step(active_page, step, resolver, healer, artifacts)
+            return self._register_popup_or_skip(
+                step, popup_to, new_page, pages, active_page, artifacts, result,
+            )
+        result = captured["result"]
         # popup 캡처 성공 — 신규 page 검사 후 등록
         try:
             new_page = popup_info.value
         except Exception as e:  # noqa: BLE001
             log.warning("[Step %s] popup value 접근 실패: %s", step.get("step", "-"), e)
             return result
+        return self._register_popup_or_skip(
+            step, popup_to, new_page, pages, active_page, artifacts, result,
+        )
+
+    def _register_popup_or_skip(
+        self,
+        step: dict,
+        popup_to: str,
+        new_page: Page,
+        pages: dict,
+        active_page: Page,
+        artifacts: str,
+        result: StepResult,
+    ) -> StepResult:
+        """popup 캡처 후 URL 검증 → alias 등록 또는 skip 공통 분기."""
         try:
             new_page.wait_for_load_state("domcontentloaded", timeout=5000)
         except Exception:

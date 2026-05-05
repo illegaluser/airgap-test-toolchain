@@ -25,6 +25,7 @@ import ast
 import json
 import logging
 import os
+import re
 from typing import Optional
 
 from .step_kind import classify_step_kind
@@ -79,6 +80,12 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
         kind = classify_step_kind(s.get("action", ""), s.get("target", ""))
         if kind != "terminal":
             s["kind"] = kind
+    # 동일 accessible name 의 wrapper button + inner link 같은 중복 click 압축.
+    # codegen 이 한 번의 사용자 클릭을 outer/inner 양쪽으로 emit 하는 케이스 회피.
+    scenario = _dedupe_consecutive_clicks(scenario)
+    # 한글 IME 사이트에서 codegen 이 emit 하는 노이즈 step (CapsLock toggle /
+    # Unidentified key / 빈 fill→non-empty fill) 정리.
+    scenario = _strip_ime_noise(scenario)
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "scenario.json")
     with open(output_path, "w", encoding="utf-8") as f:
@@ -89,6 +96,128 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
         file_path, output_path, len(scenario),
     )
     return scenario
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Post-processing — 중복 click 압축
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _normalized_click_identity(step: dict) -> Optional[str]:
+    """click step 의 동일성 비교 키. 다른 step 또는 비교 불가면 None.
+
+    role-locator (``role=X, name=Y[, exact=true]``) 는 name 부분을 추출해
+    공백 정규화 + 인접 중복 토큰 압축. 그 외 selector 는 raw 문자열 사용.
+    """
+    if step.get("action") != "click":
+        return None
+    target = str(step.get("target") or "").strip()
+    if not target:
+        return None
+    if target.startswith("role="):
+        # name=...[, exact=...] 의 name 만 뽑아낸다.
+        m = re.match(r"role=(?P<role>[^,]+),\s*name=(?P<name>.*?)(?:,\s*exact=\w+)?$", target)
+        if not m:
+            return target
+        name = m.group("name").strip()
+        # 공백/개행 정규화
+        name = re.sub(r"\s+", " ", name)
+        # 인접 중복 토큰 압축 — "페르소나 ChatBot 페르소나 ChatBot" → "페르소나 ChatBot"
+        toks = name.split(" ")
+        n = len(toks)
+        for k in range(n // 2, 0, -1):
+            if toks[:k] == toks[k:2 * k] and 2 * k == n:
+                toks = toks[:k]
+                break
+        return f"name={' '.join(toks)}"
+    return target
+
+
+def _dedupe_consecutive_clicks(scenario: list[dict]) -> list[dict]:
+    """연속한 두 click step 이 같은 page 의 같은 accessible name 을 가리키면
+    하나만 남긴다. ``popup_to`` 가 있는 쪽을 우선 보존, 없으면 뒤쪽을 보존.
+
+    step 번호는 압축 후 1..N 으로 재부여 (validator 가 연속 번호 요구).
+    """
+    if len(scenario) < 2:
+        return scenario
+    out: list[dict] = []
+    for cur in scenario:
+        if not out:
+            out.append(cur)
+            continue
+        prev = out[-1]
+        if (
+            prev.get("page") == cur.get("page")
+            and _normalized_click_identity(prev) is not None
+            and _normalized_click_identity(prev) == _normalized_click_identity(cur)
+        ):
+            keep = prev if prev.get("popup_to") and not cur.get("popup_to") else cur
+            log.info(
+                "[Convert/AST] dedupe consecutive click step%s + step%s → keep step%s",
+                prev.get("step"), cur.get("step"), keep.get("step"),
+            )
+            out[-1] = keep
+            continue
+        out.append(cur)
+    # step 번호 재부여
+    for i, s in enumerate(out, start=1):
+        s["step"] = i
+    return out
+
+
+# IME composition / dead-key / modifier toggle 등 codegen 부산물.
+# 모두 재생 시 의미 없거나 (CapsLock — 재생 시 IME 상태 다름)
+# Playwright 가 거부 (Unidentified — Unknown key).
+_IME_NOISE_KEYS = frozenset({"CapsLock", "Unidentified", "Process", "Compose", "Dead"})
+
+
+def _strip_ime_noise(scenario: list[dict]) -> list[dict]:
+    """한글 IME 사이트 녹화의 codegen 노이즈 step 정리.
+
+    1. ``press`` value 가 IME 부산물 키이면 drop.
+    2. 빈 ``fill`` 직후 같은 target/page 에 non-empty ``fill`` 이 오면 빈 fill drop
+       (codegen 이 IME composition reset 으로 빈 fill 을 끼워 넣는 케이스).
+
+    step 번호는 1..N 으로 재부여.
+    """
+    if not scenario:
+        return scenario
+    # 1단계 — press IME 노이즈 drop
+    pruned: list[dict] = [
+        s for s in scenario
+        if not (s.get("action") == "press" and str(s.get("value", "")) in _IME_NOISE_KEYS)
+    ]
+    # 2단계 — 빈 fill 직후 같은 target 에 non-empty fill 이 있으면 빈 fill drop
+    out: list[dict] = []
+    for i, cur in enumerate(pruned):
+        if (
+            cur.get("action") == "fill"
+            and str(cur.get("value", "")) == ""
+            and i + 1 < len(pruned)
+        ):
+            nxt = pruned[i + 1]
+            if (
+                nxt.get("action") == "fill"
+                and nxt.get("page") == cur.get("page")
+                and nxt.get("target") == cur.get("target")
+                and str(nxt.get("value", "")) != ""
+            ):
+                log.info(
+                    "[Convert/AST] strip IME-noise empty fill step%s "
+                    "(다음 step%s 에 non-empty fill 존재)",
+                    cur.get("step"), nxt.get("step"),
+                )
+                continue
+        out.append(cur)
+    if len(out) != len(scenario):
+        log.info(
+            "[Convert/AST] IME-noise filter: %d → %d step",
+            len(scenario), len(out),
+        )
+    for i, s in enumerate(out, start=1):
+        s["step"] = i
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────
