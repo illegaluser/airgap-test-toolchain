@@ -7,6 +7,26 @@ log = logging.getLogger(__name__)
 
 # DSL target prefix 상수 — _resolve_* 와 _raw_* 양쪽에서 공용.
 _ROLE_PREFIX = "role="
+_TEXT_PREFIX = "text="
+_LABEL_PREFIX = "label="
+_PLACEHOLDER_PREFIX = "placeholder="
+_TESTID_PREFIX = "testid="
+_TITLE_PREFIX = "title="
+_ALT_PREFIX = "alt="
+
+# Page / FrameLocator / Locator 공통으로 갖는 semantic getter 메서드 이름.
+# get_by_role 만 name= kwarg 분기를 위해 별도 처리.
+_SEMANTIC_PREFIX_TO_METHOD: dict[str, str] = {
+    _TEXT_PREFIX: "get_by_text",
+    _LABEL_PREFIX: "get_by_label",
+    _PLACEHOLDER_PREFIX: "get_by_placeholder",
+    _TESTID_PREFIX: "get_by_test_id",
+    _TITLE_PREFIX: "get_by_title",
+    _ALT_PREFIX: "get_by_alt_text",
+}
+
+# role= "..." , name= "..." 분리 정규식 — 3개 분기 공용.
+_ROLE_NAME_RE = re.compile(r"role=(.+?),\s*name=(.+)")
 
 
 class ShadowAccessError(RuntimeError):
@@ -179,7 +199,7 @@ class LocatorResolver:
         """
         if not target_str.startswith(_ROLE_PREFIX):
             return None
-        m = re.match(r"role=(.+?),\s*name=(.+)", target_str)
+        m = _ROLE_NAME_RE.match(target_str)
         if m:
             loc = self.page.get_by_role(
                 m.group(1).strip(), name=m.group(2).strip()
@@ -210,15 +230,10 @@ class LocatorResolver:
         ``count() > 0`` 존재 검증을 수행하여 요소가 없을 때
         30초 타임아웃 없이 즉시 None 을 반환한다.
         """
-        prefix_map = {
-            "text=": self.page.get_by_text,
-            "label=": self.page.get_by_label,
-            "placeholder=": self.page.get_by_placeholder,
-            "testid=": self.page.get_by_test_id,
-        }
-        for prefix, method in prefix_map.items():
+        for prefix, method_name in _SEMANTIC_PREFIX_TO_METHOD.items():
             if target_str.startswith(prefix):
                 value = target_str.replace(prefix, "", 1).strip()
+                method = getattr(self.page, method_name)
                 loc = method(value)
                 return loc.first if self._safe_count(loc) > 0 else None
         return None
@@ -252,7 +267,7 @@ class LocatorResolver:
         ambiguous role 거부는 적용 안 한다."""
         if not base_str.startswith(_ROLE_PREFIX):
             return None
-        m = re.match(r"role=(.+?),\s*name=(.+)", base_str)
+        m = _ROLE_NAME_RE.match(base_str)
         if m:
             loc = self.page.get_by_role(
                 m.group(1).strip(), name=m.group(2).strip()
@@ -267,16 +282,12 @@ class LocatorResolver:
         return loc if self._safe_count(loc) > 0 else None
 
     def _raw_semantic_prefix(self, base_str: str) -> Locator | None:
-        """``text=`` / ``label=`` / ``placeholder=`` / ``testid=`` 의 raw locator."""
-        prefix_map = {
-            "text=": self.page.get_by_text,
-            "label=": self.page.get_by_label,
-            "placeholder=": self.page.get_by_placeholder,
-            "testid=": self.page.get_by_test_id,
-        }
-        for prefix, method in prefix_map.items():
+        """``text=`` / ``label=`` / ``placeholder=`` / ``testid=`` / ``title=`` /
+        ``alt=`` 의 raw locator."""
+        for prefix, method_name in _SEMANTIC_PREFIX_TO_METHOD.items():
             if base_str.startswith(prefix):
                 value = base_str.replace(prefix, "", 1).strip()
+                method = getattr(self.page, method_name)
                 loc = method(value)
                 return loc if self._safe_count(loc) > 0 else None
         return None
@@ -394,7 +405,7 @@ class LocatorResolver:
             return host
 
         if seg.startswith(_ROLE_PREFIX):
-            m = re.match(r"role=(.+?),\s*name=(.+)", seg)
+            m = _ROLE_NAME_RE.match(seg)
             if m:
                 return cur.get_by_role(
                     m.group(1).strip(), name=m.group(2).strip(),
@@ -406,13 +417,7 @@ class LocatorResolver:
                 return None
             return cur.get_by_role(role_only)
 
-        prefix_map = {
-            "text=": "get_by_text",
-            "label=": "get_by_label",
-            "placeholder=": "get_by_placeholder",
-            "testid=": "get_by_test_id",
-        }
-        for prefix, method_name in prefix_map.items():
+        for prefix, method_name in _SEMANTIC_PREFIX_TO_METHOD.items():
             if seg.startswith(prefix):
                 value = seg[len(prefix):].strip()
                 method = getattr(cur, method_name, None)

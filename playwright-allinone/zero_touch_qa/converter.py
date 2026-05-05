@@ -278,6 +278,16 @@ def _extract_target(line: str) -> str:
     if m:
         return f"testid={m.group(1)}"
 
+    # get_by_title
+    m = re.search(r'get_by_title\(["\'](.+?)["\']\)', line)
+    if m:
+        return f"title={m.group(1)}"
+
+    # get_by_alt_text
+    m = re.search(r'get_by_alt_text\(["\'](.+?)["\']\)', line)
+    if m:
+        return f"alt={m.group(1)}"
+
     # page.locator("css-selector")
     m = re.search(r'page\.locator\(["\'](.+?)["\']\)', line)
     if m:

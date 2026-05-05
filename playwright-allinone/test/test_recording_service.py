@@ -761,6 +761,108 @@ def test_assertion_hover_400_when_target_empty(client, patched_codegen):
     assert r.status_code == 400
 
 
+# ── C0b — position 으로 중간 삽입 ──────────────────────────────────────────
+
+
+def _scenario_len(client, sid):
+    return len(client.get(f"/recording/sessions/{sid}/scenario").json())
+
+
+def test_assertion_position_inserts_at_specified_step(client, patched_codegen):
+    """position=2 면 새 step 이 step 2 자리에 들어가고 기존 step 2~N 은 +1 재할당.
+
+    검증 핵심: 새 step 이 정확히 지정 위치에 들어가고, 전체 step 번호가
+    1..N 연속이며, 새 step 앞뒤 step 의 정체성이 보존됨.
+    """
+    sid = _create_done_session(client, patched_codegen)
+    base_len = _scenario_len(client, sid)
+    base_scn = client.get(f"/recording/sessions/{sid}/scenario").json()
+    target_pos = 2  # 1-base, 새 step 이 step 2 자리
+
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={
+            "action": "scroll", "target": "#mid", "value": "into_view",
+            "position": target_pos,
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["step_added"] == target_pos
+
+    scn = client.get(f"/recording/sessions/{sid}/scenario").json()
+    # 길이 +1 + step 번호 1..N 연속
+    assert len(scn) == base_len + 1
+    assert [s["step"] for s in scn] == list(range(1, base_len + 2))
+    # 삽입 위치
+    assert scn[target_pos - 1]["action"] == "scroll"
+    assert scn[target_pos - 1]["target"] == "#mid"
+    # 앞 step 보존
+    if target_pos - 1 > 0:
+        assert scn[target_pos - 2]["target"] == base_scn[target_pos - 2]["target"]
+    # 뒤 step 들 — 원래 step N 이 step N+1 로 밀려야 함
+    assert scn[target_pos]["target"] == base_scn[target_pos - 1]["target"]
+
+
+def test_assertion_position_none_appends_at_end(client, patched_codegen):
+    """position 미지정 (기본) 시 기존 동작 — 끝에 append."""
+    sid = _create_done_session(client, patched_codegen)
+    base_len = _scenario_len(client, sid)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={"action": "scroll", "target": "#tail", "value": "into_view"},
+    )
+    assert r.status_code == 201
+    assert r.json()["step_added"] == base_len + 1
+    scn = client.get(f"/recording/sessions/{sid}/scenario").json()
+    assert len(scn) == base_len + 1
+    assert scn[-1]["target"] == "#tail"
+
+
+def test_assertion_position_at_end_plus_one_is_valid(client, patched_codegen):
+    """position = len+1 = 끝에 명시 추가. 기존 append 와 동일 결과."""
+    sid = _create_done_session(client, patched_codegen)
+    base_len = _scenario_len(client, sid)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={
+            "action": "scroll", "target": "#tail", "value": "into_view",
+            "position": base_len + 1,
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["step_added"] == base_len + 1
+
+
+def test_assertion_position_zero_or_negative_is_400(client, patched_codegen):
+    """position < 1 거부."""
+    sid = _create_done_session(client, patched_codegen)
+    for bad in (0, -1):
+        r = client.post(
+            f"/recording/sessions/{sid}/assertion",
+            json={
+                "action": "scroll", "target": "#x", "value": "into_view",
+                "position": bad,
+            },
+        )
+        assert r.status_code == 400, f"position={bad}"
+        assert "position" in r.json()["detail"]
+
+
+def test_assertion_position_beyond_end_is_400(client, patched_codegen):
+    """position > len+1 거부."""
+    sid = _create_done_session(client, patched_codegen)
+    base_len = _scenario_len(client, sid)
+    r = client.post(
+        f"/recording/sessions/{sid}/assertion",
+        json={
+            "action": "scroll", "target": "#x", "value": "into_view",
+            "position": base_len + 99,
+        },
+    )
+    assert r.status_code == 400
+    assert "position" in r.json()["detail"]
+
+
 # ── TR.8 — 영속화 / 마운트 / 디스크 세션 흡수 ────────────────────────────────
 
 def test_storage_container_path_for_default_is_recordings(monkeypatch):

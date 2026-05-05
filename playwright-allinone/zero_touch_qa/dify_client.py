@@ -16,6 +16,23 @@ class DifyConnectionError(Exception):
     """Dify API 통신 실패 시 발생한다."""
 
 
+def _format_dify_error(base_url: str, exc: requests.RequestException) -> str:
+    """Dify API 호출 실패 메시지를 운영자 친화적으로 정리.
+
+    ``ConnectionError`` (TCP 연결 거부 / DNS 실패 등) 는 dscore 컨테이너
+    미가동 또는 ``DIFY_BASE_URL`` 오설정이 90 % 이상이라 가이드를 prepend.
+    원본 메시지는 디버깅용으로 보존.
+    """
+    raw = str(exc)
+    if isinstance(exc, requests.ConnectionError):
+        return (
+            "Dify API 연결 실패 — dscore.ttc.playwright 컨테이너가 떠 있는지, "
+            f"또는 DIFY_BASE_URL ({base_url}) 가 맞는지 확인하세요. "
+            f"원본: {raw}"
+        )
+    return f"Dify API 통신 실패: {raw}"
+
+
 class DifyClient:
     """
     Dify Chatflow API 통신 계층.
@@ -397,7 +414,9 @@ class DifyClient:
             retry_count = max_retries
             timeout_hit = isinstance(e, requests.Timeout)
             error_msg = str(e)
-            raise DifyConnectionError(f"Dify API 통신 실패: {e}") from e
+            raise DifyConnectionError(
+                _format_dify_error(self.base_url, e)
+            ) from e
         finally:
             self._record_llm_call_metric(
                 kind=call_kind,

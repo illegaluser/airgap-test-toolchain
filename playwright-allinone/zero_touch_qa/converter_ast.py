@@ -601,6 +601,17 @@ class _AstConverter(ast.NodeVisitor):
             return None
         return cur.id, segments, final_method, final_args, final_kwargs
 
+    # get_by_X(literal) → "<prefix>=<literal>" 단일-인자 semantic helper 표.
+    # role 은 name= kwarg 분기 때문에 별도 처리.
+    _SEMANTIC_PREFIX_BY_METHOD = {
+        "get_by_text": "text",
+        "get_by_label": "label",
+        "get_by_placeholder": "placeholder",
+        "get_by_test_id": "testid",
+        "get_by_title": "title",
+        "get_by_alt_text": "alt",
+    }
+
     def _segments_to_target(
         self, segments: list["_LocatorSegment"],
     ) -> Optional[str]:
@@ -609,8 +620,9 @@ class _AstConverter(ast.NodeVisitor):
         규칙:
           - frame_locator(sel) → target 앞에 ``frame=<sel> >> `` 누적
           - get_by_role(role, name=N) → ``role=<role>, name=<N>``
-          - get_by_text(t) / get_by_label(t) / get_by_placeholder(t) / get_by_test_id(t)
-            → 각각 ``text=t`` / ``label=t`` / ``placeholder=t`` / ``testid=t``
+          - get_by_text/label/placeholder/test_id/title/alt_text(t)
+            → 각각 ``text=`` / ``label=`` / ``placeholder=`` / ``testid=`` /
+              ``title=`` / ``alt=``
           - locator(sel) → ``sel`` (CSS/XPath 그대로). 이미 target 있으면 ``>> sel``
           - nth(N) → ``, nth=N`` 후미 부착
           - first → ``, nth=0``
@@ -646,40 +658,14 @@ class _AstConverter(ast.NodeVisitor):
                 target = self._append_to_target(target, base)
                 continue
 
-            if method == "get_by_text":
+            prefix = self._SEMANTIC_PREFIX_BY_METHOD.get(method)
+            if prefix is not None:
                 if not seg.args:
                     return None
                 t = self._literal_str(seg.args[0])
                 if t is None:
                     return None
-                target = self._append_to_target(target, f"text={t}")
-                continue
-
-            if method == "get_by_label":
-                if not seg.args:
-                    return None
-                t = self._literal_str(seg.args[0])
-                if t is None:
-                    return None
-                target = self._append_to_target(target, f"label={t}")
-                continue
-
-            if method == "get_by_placeholder":
-                if not seg.args:
-                    return None
-                t = self._literal_str(seg.args[0])
-                if t is None:
-                    return None
-                target = self._append_to_target(target, f"placeholder={t}")
-                continue
-
-            if method == "get_by_test_id":
-                if not seg.args:
-                    return None
-                t = self._literal_str(seg.args[0])
-                if t is None:
-                    return None
-                target = self._append_to_target(target, f"testid={t}")
+                target = self._append_to_target(target, f"{prefix}={t}")
                 continue
 
             if method == "locator":
