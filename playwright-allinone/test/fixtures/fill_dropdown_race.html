@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>[fixture] fill_dropdown_race</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .suggestion { display: none; margin-top: 8px; padding: 8px;
+                  background: #efe; border: 1px solid #6b6; }
+    .suggestion.visible { display: block; }
+  </style>
+</head>
+<body>
+  <h1>fill_dropdown_race fixture — 자동완성 dropdown race</h1>
+
+  <label for="kw">키워드 입력
+    <input id="kw" type="text" />
+  </label>
+
+  <!-- fill 직후 setTimeout 으로 표시되는 추천 항목 -->
+  <button id="suggest" class="suggestion" type="button"
+          aria-label="요기요 계정검증조회">요기요 계정검증조회</button>
+
+  <span id="status">idle</span>
+
+  <script>
+    const input = document.getElementById('kw');
+    const suggest = document.getElementById('suggest');
+    const status = document.getElementById('status');
+    input.addEventListener('input', () => {
+      // 자동완성 사이트의 흔한 패턴 — fill 직후가 아니라 약간의 지연 후 dropdown 표시.
+      setTimeout(() => { suggest.classList.add('visible'); }, 300);
+    });
+    suggest.addEventListener('click', () => {
+      status.textContent = 'selected:' + input.value;
+    });
+  </script>
+</body>
+</html>

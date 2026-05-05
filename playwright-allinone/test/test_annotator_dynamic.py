@@ -139,3 +139,87 @@ def test_dynamic_multiple_clicks_correct_lines(tmp_path: Path) -> None:
     lines = out.splitlines()
     apply_idx = next(i for i, l in enumerate(lines) if "사용신청 관리" in l and "click()" in l)
     assert ".hover()" in lines[apply_idx - 1], f"사용신청 관리 click 직전 라인:\n{lines[apply_idx-2:apply_idx+1]}"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# fill→click visibility race (자동완성 dropdown 패턴)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+FILL_RACE_URL = (FIXTURES_DIR / "fill_dropdown_race.html").as_uri()
+
+
+def _write_fill_race_codegen(tmp_path: Path) -> Path:
+    """fill → 자동완성 dropdown 클릭 패턴의 codegen .py 작성."""
+    src = tmp_path / "original.py"
+    indent = "    "
+    src.write_text(
+        "from playwright.sync_api import sync_playwright, expect\n\n\n"
+        "def run(playwright):\n"
+        f"{indent}browser = playwright.chromium.launch()\n"
+        f"{indent}context = browser.new_context()\n"
+        f"{indent}page = context.new_page()\n"
+        f"{indent}page.goto({FILL_RACE_URL!r})\n"
+        f'{indent}page.get_by_label("키워드 입력").fill("요기요")\n'
+        f'{indent}page.get_by_role("button", name="요기요 계정검증조회").click()\n'
+        f"{indent}context.close()\n"
+        f"{indent}browser.close()\n\n\n"
+        "with sync_playwright() as playwright:\n"
+        f"{indent}run(playwright)\n",
+        encoding="utf-8",
+    )
+    return src
+
+
+def test_dynamic_fill_then_dropdown_click_prepends_wait_visible(tmp_path: Path) -> None:
+    """fill 직후 자동완성 dropdown 의 추천 항목 click → expect-visible 라인 prepend."""
+    src = _write_fill_race_codegen(tmp_path)
+    dst = tmp_path / "original_annotated.py"
+    res = annotate_script_dynamic(str(src), str(dst), headless=True)
+
+    assert res.examined_clicks == 1
+    assert res.injected == 1, (
+        f"wait-visible 1개 prepend 기대, 실제 {res.injected}\n"
+        f"src:\n{src.read_text()}\n"
+        f"dst:\n{dst.read_text()}\n"
+        f"triggers={res.triggers}"
+    )
+    out = dst.read_text(encoding="utf-8")
+    assert "to_be_visible" in out, "expect-visible 라인이 prepend 되지 않음"
+    # click 라인 직전에 expect-visible 라인이 있어야
+    lines = out.splitlines()
+    click_idx = next(
+        i for i, l in enumerate(lines)
+        if "요기요 계정검증조회" in l and ".click()" in l
+    )
+    prev_line = lines[click_idx - 1]
+    assert "to_be_visible" in prev_line, (
+        f"click 직전 라인이 expect-visible 가 아님:\n{lines[click_idx-2:click_idx+1]}"
+    )
+
+
+def test_dynamic_visible_button_after_fill_no_wait_inject(tmp_path: Path) -> None:
+    """fill 후에도 click target 이 *처음부터 visible* 이면 wait 주입 없음 (false-positive 방지)."""
+    src = tmp_path / "original.py"
+    indent = "    "
+    # fill_dropdown_race fixture 의 #status 는 항상 visible — race 아님.
+    src.write_text(
+        "from playwright.sync_api import sync_playwright, expect\n\n\n"
+        "def run(playwright):\n"
+        f"{indent}browser = playwright.chromium.launch()\n"
+        f"{indent}context = browser.new_context()\n"
+        f"{indent}page = context.new_page()\n"
+        f"{indent}page.goto({FILL_RACE_URL!r})\n"
+        f'{indent}page.get_by_label("키워드 입력").fill("hi")\n'
+        f'{indent}page.locator("#status").click()\n'
+        f"{indent}context.close()\n"
+        f"{indent}browser.close()\n\n\n"
+        "with sync_playwright() as playwright:\n"
+        f"{indent}run(playwright)\n",
+        encoding="utf-8",
+    )
+    dst = tmp_path / "original_annotated.py"
+    res = annotate_script_dynamic(str(src), str(dst), headless=True)
+    assert res.examined_clicks == 1
+    assert res.injected == 0
+    assert "to_be_visible" not in dst.read_text(encoding="utf-8")
