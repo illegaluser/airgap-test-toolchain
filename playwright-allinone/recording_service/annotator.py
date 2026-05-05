@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -195,6 +196,19 @@ class _ReplayAction:
 class _HoverTrigger:
     css_path: str
     reason: str
+
+
+@dataclass
+class _WaitVisibleMarker:
+    """fill→click 같은 visibility race 패턴 — click target 자체를 visible 까지 wait.
+
+    write 단계에서 ``expect(<click_locator>).to_be_visible(timeout=...)`` 라인을
+    src 의 click 직전에 prepend. converter 가 to_be_visible 패턴을 verify(visible)
+    step 으로 변환 → executor 가 element visible 될 때까지 polling.
+    """
+    target: str
+    timeout_ms: int = 5000
+    reason: str = ""
 
 
 def _extract_replay_actions(tree: ast.Module) -> list[_ReplayAction]:
@@ -580,7 +594,7 @@ def _run_dynamic_pass_inproc(
     """
     from playwright.sync_api import sync_playwright
 
-    triggers_by_lineno: dict[int, _HoverTrigger] = {}
+    triggers_by_lineno: dict[int, _HoverTrigger | _WaitVisibleMarker] = {}
     examined = 0
     triggers_log: list[str] = []
 
@@ -591,24 +605,24 @@ def _run_dynamic_pass_inproc(
             context_kwargs["storage_state"] = storage_state_in
         ctx = browser.new_context(**context_kwargs)
         page = ctx.new_page()
+        prev_action: Optional[_ReplayAction] = None
         for action in actions:
             if action.kind == "click":
                 examined += 1
                 trig = _probe_click_trigger(
-                    page, action,
+                    page, action, prev_action=prev_action,
                     visibility_timeout_ms=visibility_timeout_ms,
                     hover_settle_ms=hover_settle_ms,
                 )
                 if trig is not None:
                     triggers_by_lineno[action.lineno] = trig
-                    triggers_log.append(
-                        f"L{action.lineno}: {trig.css_path} ({trig.reason})"
-                    )
+                    triggers_log.append(_format_trigger_log(action.lineno, trig))
             _replay_one(
                 page, action,
                 nav_timeout_ms=nav_timeout_ms,
                 action_timeout_ms=action_timeout_ms,
             )
+            prev_action = action
         ctx.close()
         browser.close()
     return triggers_by_lineno, examined, triggers_log
@@ -641,17 +655,62 @@ def _resolve_for_probe(page, target: str):
 
 def _probe_click_trigger(
     page, action: _ReplayAction,
-    *, visibility_timeout_ms: int, hover_settle_ms: int,
-) -> Optional[_HoverTrigger]:
-    """click action 의 target 을 resolve 후 hidden 이면 ancestor hover trigger 식별."""
+    *, prev_action: Optional[_ReplayAction] = None,
+    visibility_timeout_ms: int, hover_settle_ms: int,
+) -> Optional["_HoverTrigger | _WaitVisibleMarker"]:
+    """click action 의 target 을 sandbox 에서 분석해 보정 marker 반환.
+
+    1차: 기존 — hidden 이면 ancestor hover trigger 식별 (`_HoverTrigger`).
+    2차: hover trigger 못 찾고 *직전 action 이 fill* 인 경우, fill→dropdown 같은
+         visibility race 가능성 — click target 자체를 visible 까지 polling.
+         timeout 내 visible 되면 `_WaitVisibleMarker` 반환.
+
+    어느 쪽도 해당 안 되면 None — 기존 흐름 (static fallback 등) 유지.
+    """
     loc = _resolve_for_probe(page, action.target)
     if loc is None:
         return None
-    return _find_hover_trigger_dynamic(
+    hover_trig = _find_hover_trigger_dynamic(
         page, loc,
         visibility_timeout_ms=visibility_timeout_ms,
         hover_settle_ms=hover_settle_ms,
     )
+    if hover_trig is not None:
+        return hover_trig
+    # 2차 — fill→click visibility race
+    if prev_action is None or prev_action.kind != "fill":
+        return None
+    # 이미 visible 이면 race 가 아니므로 wait 주입 X (false-positive 방지)
+    try:
+        if loc.first.is_visible():
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+    if _wait_until_visible(loc, timeout_ms=5000):
+        return _WaitVisibleMarker(
+            target=action.target,
+            timeout_ms=5000,
+            reason="fill→click visibility race",
+        )
+    return None
+
+
+def _wait_until_visible(locator, *, timeout_ms: int) -> bool:
+    """locator 가 timeout_ms 안에 visible 되면 True. 검사 실패/timeout 은 False."""
+    try:
+        locator.first.wait_for(state="visible", timeout=timeout_ms)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _format_trigger_log(lineno: int, trig) -> str:
+    """trigger marker 별 로그 포맷."""
+    if isinstance(trig, _HoverTrigger):
+        return f"L{lineno}: {trig.css_path} ({trig.reason})"
+    if isinstance(trig, _WaitVisibleMarker):
+        return f"L{lineno}: wait-visible target={trig.target} ({trig.reason})"
+    return f"L{lineno}: unknown trigger {trig!r}"
 
 
 def _write_annotated_with_triggers(
@@ -660,15 +719,34 @@ def _write_annotated_with_triggers(
     """src source 의 click 라인 직전에 hover line 을 prepend 후 dst 에 write."""
     lines = source.splitlines(keepends=True)
     for lineno in sorted(triggers_by_lineno.keys(), reverse=True):
-        css_path = triggers_by_lineno[lineno].css_path
+        marker = triggers_by_lineno[lineno]
         idx = lineno - 1
         if idx < 0 or idx >= len(lines):
             continue
         line = lines[idx]
         indent = line[: len(line) - len(line.lstrip())]
-        hover_line = (
-            f"{indent}page.locator({css_path!r}).first.hover()  "
+        new_line = _format_prepend_line(marker, line, indent)
+        if new_line:
+            lines.insert(idx, new_line)
+    Path(dst_path).write_text("".join(lines), encoding="utf-8")
+
+
+def _format_prepend_line(marker, click_line: str, indent: str) -> str:
+    """marker 종류별 prepend 라인 생성. 패턴 안 맞으면 빈 문자열 (skip)."""
+    if isinstance(marker, _HoverTrigger):
+        return (
+            f"{indent}page.locator({marker.css_path!r}).first.hover()  "
             f"# auto-annotated (dynamic) for hidden-click healing\n"
         )
-        lines.insert(idx, hover_line)
-    Path(dst_path).write_text("".join(lines), encoding="utf-8")
+    if isinstance(marker, _WaitVisibleMarker):
+        # click 라인의 locator chain 추출 (예: `page.get_by_role(...).click()` 의 앞부분).
+        m = re.match(r"^(\s*)(.+)\.click\(\s*\)\s*$", click_line.rstrip("\n"))
+        if not m:
+            # `.click(arg)` 등 비표준 — skip (false-positive 방지).
+            return ""
+        locator_expr = m.group(2)
+        return (
+            f"{indent}expect({locator_expr}).to_be_visible(timeout={marker.timeout_ms})  "
+            f"# auto-annotated (dynamic) for fill→click race\n"
+        )
+    return ""
