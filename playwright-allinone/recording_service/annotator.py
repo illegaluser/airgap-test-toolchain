@@ -520,8 +520,63 @@ def _run_dynamic_pass(
     visibility_timeout_ms: int,
     hover_settle_ms: int,
 ) -> tuple[dict[int, _HoverTrigger], int, list[str]]:
+    """sandbox 본체 (`_run_dynamic_pass_inproc`) 를 별 thread 에서 실행해
+    main thread 의 asyncio loop 와 격리.
+
+    배경: pytest-playwright 등 외부 환경이 main thread 에 asyncio running loop
+    를 활성화한 상태에서 ``sync_playwright()`` 를 호출하면 Playwright 가
+    "Sync API inside asyncio loop" 으로 거부한다. 거부 검사는
+    ``asyncio.get_running_loop()`` 기반이라 thread-local — 별 thread 에서
+    호출하면 그 thread 에 loop 가 없어 통과.
+
+    docs/PLAN_ANNOTATOR_LOOP_ISOLATION.md 참고.
+    """
+    import queue as _queue
+    import threading
+
+    result_q: "_queue.Queue[tuple[str, object]]" = _queue.Queue(maxsize=1)
+
+    def _worker() -> None:
+        try:
+            payload = _run_dynamic_pass_inproc(
+                actions=actions,
+                storage_state_in=storage_state_in,
+                headless=headless,
+                nav_timeout_ms=nav_timeout_ms,
+                action_timeout_ms=action_timeout_ms,
+                visibility_timeout_ms=visibility_timeout_ms,
+                hover_settle_ms=hover_settle_ms,
+            )
+            result_q.put(("ok", payload))
+        except Exception as e:  # noqa: BLE001
+            result_q.put(("err", e))
+
+    t = threading.Thread(target=_worker, name="annotate-dynamic-sandbox", daemon=True)
+    t.start()
+    t.join(timeout=120.0)
+    if t.is_alive():
+        raise RuntimeError("dynamic annotate sandbox 시간 초과 (120s)")
+    kind, payload = result_q.get_nowait()
+    if kind == "err":
+        assert isinstance(payload, Exception)
+        raise payload
+    return payload  # type: ignore[return-value]
+
+
+def _run_dynamic_pass_inproc(
+    *,
+    actions: list[_ReplayAction],
+    storage_state_in: Optional[str],
+    headless: bool,
+    nav_timeout_ms: int,
+    action_timeout_ms: int,
+    visibility_timeout_ms: int,
+    hover_settle_ms: int,
+) -> tuple[dict[int, _HoverTrigger], int, list[str]]:
     """sandbox Playwright 세션에서 actions 를 sequential replay → click 직전
     visibility probe → trigger 식별. (triggers_by_lineno, examined, log) 반환.
+
+    *현재 thread* 에서 동작 — 외부에서 thread 격리 wrapper 로 호출.
     """
     from playwright.sync_api import sync_playwright
 
