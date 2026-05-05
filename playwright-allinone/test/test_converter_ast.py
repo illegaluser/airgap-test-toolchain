@@ -22,6 +22,8 @@ from zero_touch_qa.converter import convert_playwright_to_dsl
 from zero_touch_qa.converter_ast import (
     CodegenAstError,
     _AstConverter,
+    _dedupe_consecutive_clicks,
+    _normalized_click_identity,
     convert_via_ast,
 )
 
@@ -573,3 +575,151 @@ def test_try_except_body_is_recursed_for_extraction(tmp_path: Path) -> None:
         "navigate", "verify", "verify",  # a: navigate + 2 verify
         "navigate", "verify",            # b: navigate + 1 verify
     ], f"unexpected: {actions}"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 중복 click 압축 — wrapper button + inner link 같은 codegen 이중 emit 회피
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_normalized_click_identity_collapses_repeated_tokens():
+    step = {"action": "click", "target": "role=button, name=페르소나 ChatBot 페르소나 ChatBot"}
+    assert _normalized_click_identity(step) == "name=페르소나 ChatBot"
+
+
+def test_normalized_click_identity_strips_exact_qualifier():
+    a = {"action": "click", "target": "role=link, name=Foo, exact=true"}
+    b = {"action": "click", "target": "role=link, name=Foo"}
+    assert _normalized_click_identity(a) == _normalized_click_identity(b)
+
+
+def test_normalized_click_identity_returns_none_for_non_click():
+    assert _normalized_click_identity({"action": "fill", "target": "role=textbox, name=q"}) is None
+
+
+def test_dedupe_keeps_popup_to_carrier():
+    """outer button + inner link 가 같은 카드를 가리키면 popup_to 보유한 쪽 보존."""
+    s = [
+        {"step": 1, "action": "navigate", "target": "", "value": "http://x", "page": "page"},
+        {"step": 2, "action": "click", "target": "role=button, name=Card Card", "page": "page"},
+        {"step": 3, "action": "click", "target": "role=link, name=Card", "page": "page", "popup_to": "page1"},
+        {"step": 4, "action": "click", "target": "role=button, name=Other", "page": "page1"},
+    ]
+    out = _dedupe_consecutive_clicks(s)
+    assert len(out) == 3
+    assert out[1]["popup_to"] == "page1"
+    # step 번호 재부여
+    assert [x["step"] for x in out] == [1, 2, 3]
+
+
+def test_dedupe_no_change_for_distinct_names():
+    s = [
+        {"step": 1, "action": "click", "target": "role=button, name=A", "page": "page"},
+        {"step": 2, "action": "click", "target": "role=button, name=B", "page": "page"},
+    ]
+    out = _dedupe_consecutive_clicks(s)
+    assert len(out) == 2
+
+
+def test_dedupe_no_change_across_pages():
+    """같은 name 이라도 page 가 다르면 다른 click — 압축 안 함."""
+    s = [
+        {"step": 1, "action": "click", "target": "role=button, name=A", "page": "page"},
+        {"step": 2, "action": "click", "target": "role=button, name=A", "page": "page1"},
+    ]
+    out = _dedupe_consecutive_clicks(s)
+    assert len(out) == 2
+
+
+def test_dedupe_does_not_touch_fill_repeats():
+    """fill 반복은 의도적일 수 있어 손대지 않는다 (CapsLock 토글 등)."""
+    s = [
+        {"step": 1, "action": "fill", "target": "role=textbox, name=q", "value": "a", "page": "page"},
+        {"step": 2, "action": "fill", "target": "role=textbox, name=q", "value": "ab", "page": "page"},
+    ]
+    out = _dedupe_consecutive_clicks(s)
+    assert len(out) == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# IME 노이즈 필터 — CapsLock / Unidentified / 빈 fill
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_strip_ime_noise_drops_unidentified_press():
+    """press 'Unidentified' 는 Playwright 가 Unknown key 로 거부 — drop."""
+    from zero_touch_qa.converter_ast import _strip_ime_noise
+    s = [
+        {"step": 1, "action": "click", "target": "x", "page": "page"},
+        {"step": 2, "action": "press", "target": "y", "value": "Unidentified", "page": "page"},
+        {"step": 3, "action": "fill", "target": "y", "value": "버스", "page": "page"},
+    ]
+    out = _strip_ime_noise(s)
+    actions = [(o["action"], o.get("value", "")) for o in out]
+    assert ("press", "Unidentified") not in actions
+    assert len(out) == 2
+
+
+def test_strip_ime_noise_drops_capslock_press():
+    """press CapsLock 은 재생 시 IME 상태와 무관 — drop."""
+    from zero_touch_qa.converter_ast import _strip_ime_noise
+    s = [
+        {"step": 1, "action": "press", "target": "x", "value": "CapsLock", "page": "page"},
+        {"step": 2, "action": "fill", "target": "x", "value": "MCP", "page": "page"},
+    ]
+    out = _strip_ime_noise(s)
+    assert len(out) == 1
+    assert out[0]["action"] == "fill"
+    assert out[0]["step"] == 1
+
+
+def test_strip_ime_noise_drops_empty_fill_when_next_is_fill():
+    """빈 fill + 다음에 같은 target 의 non-empty fill → 빈 fill drop."""
+    from zero_touch_qa.converter_ast import _strip_ime_noise
+    s = [
+        {"step": 1, "action": "fill", "target": "role=textbox, name=q", "value": "", "page": "page"},
+        {"step": 2, "action": "fill", "target": "role=textbox, name=q", "value": "버스", "page": "page"},
+    ]
+    out = _strip_ime_noise(s)
+    assert len(out) == 1
+    assert out[0]["value"] == "버스"
+
+
+def test_strip_ime_noise_keeps_empty_fill_when_no_followup():
+    """빈 fill 만 있고 후속 fill 없으면 보존 (validator 별도 처리)."""
+    from zero_touch_qa.converter_ast import _strip_ime_noise
+    s = [
+        {"step": 1, "action": "fill", "target": "x", "value": "", "page": "page"},
+        {"step": 2, "action": "click", "target": "y", "page": "page"},
+    ]
+    out = _strip_ime_noise(s)
+    assert len(out) == 2
+
+
+def test_strip_ime_noise_keeps_empty_fill_for_different_target():
+    """다음 fill 의 target 이 다르면 빈 fill 보존."""
+    from zero_touch_qa.converter_ast import _strip_ime_noise
+    s = [
+        {"step": 1, "action": "fill", "target": "role=textbox, name=a", "value": "", "page": "page"},
+        {"step": 2, "action": "fill", "target": "role=textbox, name=b", "value": "X", "page": "page"},
+    ]
+    out = _strip_ime_noise(s)
+    assert len(out) == 2
+
+
+def test_strip_ime_noise_combined_d13ea6c9320c_pattern():
+    """실제 d13ea6c9320c 케이스 — click → 빈 fill → CapsLock → Unidentified → 'fill 버스'.
+    → click → fill 버스 만 남음.
+    """
+    from zero_touch_qa.converter_ast import _strip_ime_noise
+    s = [
+        {"step": 22, "action": "click", "target": "role=textbox, name=디지털자원명 입력", "page": "page"},
+        {"step": 23, "action": "fill", "target": "role=textbox, name=디지털자원명 입력", "value": "", "page": "page"},
+        {"step": 24, "action": "press", "target": "role=textbox, name=디지털자원명 입력", "value": "CapsLock", "page": "page"},
+        {"step": 25, "action": "press", "target": "role=textbox, name=디지털자원명 입력", "value": "Unidentified", "page": "page"},
+        {"step": 26, "action": "fill", "target": "role=textbox, name=디지털자원명 입력", "value": "버스", "page": "page"},
+    ]
+    out = _strip_ime_noise(s)
+    assert [o["action"] for o in out] == ["click", "fill"]
+    assert out[1]["value"] == "버스"
+    assert [o["step"] for o in out] == [1, 2]
