@@ -1,5 +1,10 @@
+import logging
 import os
 from dataclasses import dataclass
+
+from .dify_token import fetch_token_from_container
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,7 +45,9 @@ class Config:
             - ``DIFY_BASE_URL`` → ``http://localhost:18081/v1`` (dscore.ttc.playwright
               컨테이너의 nginx Dify gateway 포트 매핑. provision.sh 가 18081 →
               컨테이너 내부 nginx 로 노출. 호스트 80 포트는 사용 안 함.)
-            - ``DIFY_API_KEY`` → ``""`` (빈 문자열). Dify console 에서 발급 후 export.
+            - ``DIFY_API_KEY`` → env 가 비어 있으면 ``dscore.ttc.playwright`` 컨테이너의
+              Dify DB 에서 자동 조회 (provision 마다 재발급되는 토큰 추적). 컨테이너
+              미기동/docker 부재 시 빈 문자열 유지 — 이후 호출은 401 로 실패한다.
             - ``ARTIFACTS_DIR`` → ``artifacts``
             - ``VIEWPORT_WIDTH`` / ``VIEWPORT_HEIGHT`` → ``1440`` / ``900``
             - ``SLOW_MO`` → ``800`` (Playwright 액션 단위 지연, 봇 패턴 회피)
@@ -54,9 +61,20 @@ class Config:
         Returns:
             환경변수 값이 반영된 Config 인스턴스.
         """
+        api_key = os.getenv("DIFY_API_KEY", "")
+        if not api_key:
+            fetched = fetch_token_from_container()
+            if fetched:
+                log.info("[Config] DIFY_API_KEY 자동 조회 — 컨테이너 DB 에서 토큰 획득")
+                api_key = fetched
+            else:
+                log.warning(
+                    "[Config] DIFY_API_KEY 미설정 + 컨테이너 자동 조회 실패. "
+                    "Dify 호출은 401 로 실패할 것 — 컨테이너 기동/네트워크/docker CLI 확인."
+                )
         return cls(
             dify_base_url=os.getenv("DIFY_BASE_URL", "http://localhost:18081/v1"),
-            dify_api_key=os.getenv("DIFY_API_KEY", ""),
+            dify_api_key=api_key,
             artifacts_dir=os.getenv("ARTIFACTS_DIR", "artifacts"),
             viewport=(
                 int(os.getenv("VIEWPORT_WIDTH", "1440")),

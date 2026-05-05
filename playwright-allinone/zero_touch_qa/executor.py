@@ -82,6 +82,14 @@ def _is_allowed_action_transition(old_action: str, new_action: str) -> bool:
     return (old_action.lower(), new_action.lower()) in _HEAL_ACTION_TRANSITIONS
 
 
+def _page_closed(page) -> bool:
+    """page 가 closed 인지 안전 판정 — is_closed() 자체가 raise 해도 closed 로 본다."""
+    try:
+        return bool(page.is_closed())
+    except Exception:  # noqa: BLE001
+        return True
+
+
 class VerificationAssertionError(AssertionError):
     """요소 탐색은 성공했지만 verify 조건이 맞지 않을 때 사용한다."""
 
@@ -983,6 +991,48 @@ class QAExecutor:
             "PASS", screenshot_path=ss,
         )
 
+    def _log_resolver_miss(self, page: Page, original_target, step_id) -> None:
+        """resolver 가 None 을 반환한 원인 추정 진단.
+
+        직접 page.locator 로 raw probe (role/text/css 분리) 해서 어디서 0 이 났는지
+        / strict 위반인지 / role override 로 안 잡혔는지 좁힌다. 모두 best-effort —
+        예외는 무시. _try_initial_target 의 silent skip 케이스를 가시화하기 위함.
+        """
+        tgt_str = str(original_target or "")
+        log.warning(
+            "[Step %s] resolver 0건 — target=%r (1차 시도 스킵 → 치유 체인 진입)",
+            step_id, tgt_str,
+        )
+        # role=button/link/tab 류 일 때, name 추출해 동일 name 가진 element 의
+        # role 별 count 출력 → "role=button 으로 찾았는데 실은 role=link/tab" 인지 식별.
+        try:
+            m = re.search(r"name=([^,]+)", tgt_str)
+            if not m:
+                return
+            name = m.group(1).strip()
+            exact = "exact=true" in tgt_str
+            for role in ("button", "link", "tab", "menuitem"):
+                try:
+                    cnt = page.get_by_role(role, name=name, exact=exact).count()
+                    if cnt:
+                        log.warning(
+                            "[Step %s] 진단 — role=%s, name=%r, exact=%s → %d건",
+                            step_id, role, name, exact, cnt,
+                        )
+                except Exception:  # noqa: BLE001
+                    continue
+            try:
+                txt_cnt = page.get_by_text(name, exact=exact).count()
+                if txt_cnt:
+                    log.warning(
+                        "[Step %s] 진단 — text=%r, exact=%s → %d건 (role 무시)",
+                        step_id, name, exact, txt_cnt,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as e:  # noqa: BLE001
+            log.debug("[Step %s] resolver-miss 진단 실패: %s", step_id, e)
+
     def _try_initial_target(
         self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
     ) -> tuple[Optional[StepResult], Optional[VerificationAssertionError]]:
@@ -1009,6 +1059,7 @@ class QAExecutor:
                 None,
             )
         if not locator:
+            self._log_resolver_miss(page, original_target, step_id)
             return None, None
         # T-H — hidden element 면 ancestor hover / sibling swap 시도.
         swap = self._heal_visibility(page, locator, step_id)
@@ -1016,6 +1067,19 @@ class QAExecutor:
             locator = swap
         try:
             self._perform_action(page, locator, step, resolver)
+            if action == "click" and _page_closed(page):
+                log.info(
+                    "[Step %s] click 후 page closed — 의도된 팝업 닫기로 간주, PASS",
+                    step_id,
+                )
+                return (
+                    StepResult(
+                        step_id, action, str(original_target or ""),
+                        str(step.get("value", "")), desc,
+                        "PASS",
+                    ),
+                    None,
+                )
             ss = self._screenshot(page, artifacts, step_id, "pass")
             return (
                 StepResult(
@@ -1029,6 +1093,19 @@ class QAExecutor:
             log.warning("[Step %s] verify 조건 실패: %s", step_id, e)
             return None, e
         except Exception as e:  # noqa: BLE001
+            if action == "click" and _page_closed(page):
+                log.info(
+                    "[Step %s] click 중 page closed — 의도된 팝업 닫기로 간주, PASS (%s)",
+                    step_id, type(e).__name__,
+                )
+                return (
+                    StepResult(
+                        step_id, action, str(original_target or ""),
+                        str(step.get("value", "")), desc,
+                        "PASS",
+                    ),
+                    None,
+                )
             log.warning("[Step %s] 기본 타겟 실패: %s", step_id, e)
             return None, None
 
@@ -1156,6 +1233,9 @@ class QAExecutor:
         step_id = step.get("step", "-")
         desc = step.get("description", "")
         original_target = step.get("target")
+        if _page_closed(page):
+            log.info("[Step %s] Dify 치유 스킵 — page 가 이미 closed", step_id)
+            return None
         log.info(
             "[Step %s] Dify LLM 치유 요청 중 (timeout=%ds)...",
             step_id, self.config.heal_timeout_sec,
