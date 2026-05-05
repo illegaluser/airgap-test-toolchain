@@ -4,6 +4,8 @@ import os
 import re
 import logging
 
+from .step_kind import classify_step_kind
+
 log = logging.getLogger(__name__)
 
 
@@ -98,6 +100,13 @@ def _convert_via_lines(file_path: str, output_dir: str) -> list[dict]:
             step.setdefault("fallback_targets", [])
             scenario.append(step)
 
+    # 의도 분류 — auxiliary 만 명시 emit (AST 본체와 동일 규칙).
+    for s in scenario:
+        if "kind" in s:
+            continue
+        kind = classify_step_kind(s.get("action", ""), s.get("target", ""))
+        if kind != "terminal":
+            s["kind"] = kind
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "scenario.json")
     with open(output_path, "w", encoding="utf-8") as f:

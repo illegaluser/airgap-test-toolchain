@@ -74,6 +74,10 @@ class LocalHealer:
             return None
 
         for el in candidates:
+            # disabled element 는 매칭 후보에서 제외 — 같은 disabled 노드를
+            # 100% 유사도로 재선택해 같은 timeout 을 또 발생시키는 패턴 차단.
+            if self._is_disabled(el):
+                continue
             text = self._extract_text(el)
             if not text:
                 continue
@@ -159,3 +163,24 @@ class LocalHealer:
             ).strip()
         except Exception:
             return ""
+
+    @staticmethod
+    def _is_disabled(el) -> bool:
+        """후보 element 가 비활성 상태면 True. 검사 실패 시 False (보수적 — 매칭 시도).
+
+        검사: ``el.disabled`` / ``aria-disabled="true"`` / class 의
+        ``-disabled`` 또는 ``disabled`` 토큰.
+        """
+        try:
+            return bool(el.evaluate(
+                """(el) => {
+                    if (!el) return false;
+                    if (el.disabled === true) return true;
+                    if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') return true;
+                    const cls = el.className || '';
+                    const s = typeof cls === 'string' ? cls : (cls.baseVal || '');
+                    return /(?:^|\\s)\\S*-disabled(?:\\s|$)|(?:^|\\s)disabled(?:\\s|$)/.test(s);
+                }"""
+            ))
+        except Exception:
+            return False
