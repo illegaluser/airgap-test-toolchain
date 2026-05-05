@@ -138,6 +138,43 @@ class PlayResult:
     elapsed_ms: float
 
 
+def _fetch_dify_token_from_container(
+    container_name: str = "dscore.ttc.playwright",
+    app_name: str = "ZeroTouch QA Brain",
+    timeout_sec: float = 5.0,
+) -> Optional[str]:
+    """컨테이너의 Dify DB 에서 chatflow API token 을 조회해 반환.
+
+    매 호출마다 fresh — provision 단계에서 chatflow 가 재 import 되어
+    token 이 재발급되어도 자동 동기화된다. host shell env / .env 파일
+    의존 없이 Recording UI 호출 경로가 항상 최신 token 을 사용 (portability).
+
+    실패 (컨테이너 미실행 / docker CLI 부재 / DB 응답 비정상) 는 None
+    반환. 호출 측은 기존 env (사용자가 export 했을 수도 있는 값) 그대로
+    사용하도록 graceful degrade.
+    """
+    sql = (
+        "SELECT t.token FROM api_tokens t "
+        "JOIN apps a ON t.app_id = a.id "
+        f"WHERE a.name = '{app_name}' "
+        "ORDER BY t.created_at DESC LIMIT 1"
+    )
+    cmd = [
+        "docker", "exec", container_name,
+        "bash", "-lc",
+        f"PGPASSWORD=difyai123456 psql -h 127.0.0.1 -U postgres -d dify "
+        f"-t -A -c \"{sql}\"",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout_sec,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    token = (result.stdout or "").strip()
+    return token if token.startswith("app-") else None
+
+
 def _resolve_venv_py(venv_py: str | None) -> str:
     return venv_py or os.environ.get("RECORDING_VENV_PY") or sys.executable
 
@@ -402,6 +439,12 @@ def run_llm_play(
     env = os.environ.copy()
     env["PYTHONPATH"] = project_root + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
     env["ARTIFACTS_DIR"] = host_session_dir
+    # Dify chatflow token 자동 주입 — 컨테이너 DB 에서 매 호출마다 fresh fetch.
+    # provision 으로 token 재발급되어도 (또는 새 컴퓨터에 이미지 배포 후 첫 실행
+    # 시점에도) 사용자 export 없이 zero_touch_qa 의 healing 경로가 정상 동작.
+    fetched_token = _fetch_dify_token_from_container()
+    if fetched_token:
+        env["DIFY_API_KEY"] = fetched_token
     if fingerprint_env:
         env.update(fingerprint_env)
     log.info("[play-llm] %s (cwd=%s)", " ".join(cmd), host_session_dir)
