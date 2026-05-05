@@ -2282,17 +2282,28 @@ class QAExecutor:
         )
 
     def _do_fill(self, locator: Locator, value: str) -> None:
-        """fill 다중 전략. clear+fill → type → JS evaluate. post-check: input_value()."""
+        """fill 다중 전략. type → clear+fill → JS evaluate. post-check: input_value().
+
+        ``type`` 을 1순위로 두는 이유: ``locator.fill()`` 은 한 번에 value 만 set
+        하고 ``input`` 이벤트만 발사한다. 검색창 자동완성처럼 매 keystroke 의
+        ``keydown/keyup`` 에 의존하는 사이트는 fill 만으로는 dropdown 이 트리거
+        되지 않는다. ``type`` 은 한 글자씩 keystroke 시뮬레이션이라 인간 typing
+        과 동일한 이벤트 시퀀스를 발사 → 자동완성 호환. 짧은 입력에는 시간 비용
+        무시 가능 (~80ms × N).
+
+        ``type`` 이 fail 하면 (read-only input 등) ``clear+fill`` 로 fallback,
+        그것도 fail 하면 ``js-set`` 으로 마지막 시도.
+        """
         trace: list[_StrategyAttempt] = []
         last_err: Exception | None = None
+
+        def type_keystroke():
+            locator.fill("")
+            locator.type(value, delay=80)
 
         def clear_then_fill():
             locator.fill("")
             locator.fill(value)
-
-        def type_with_delay():
-            locator.fill("")
-            locator.type(value, delay=20)
 
         def js_set():
             locator.evaluate(
@@ -2303,8 +2314,8 @@ class QAExecutor:
             )
 
         strategies = [
+            ("type",       type_keystroke),
             ("clear+fill", clear_then_fill),
-            ("type",       type_with_delay),
             ("js-set",     js_set),
         ]
         for name, fn in strategies:
