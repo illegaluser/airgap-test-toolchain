@@ -2,24 +2,25 @@
   {
     "action": "navigate",
     "target": "",
-    "value": "https://example.com/menu",
-    "description": "https://example.com/menu로 이동",
+    "value": "https://example.com/portal",
+    "description": "https://example.com/portal로 이동",
     "page": "page",
     "step": 1,
     "fallback_targets": []
   },
   {
     "action": "click",
-    "target": "title=개인정보처리방침",
+    "target": "role=link, name=ChatBot",
     "value": "",
     "description": "클릭",
     "page": "page",
     "step": 2,
-    "fallback_targets": []
+    "fallback_targets": [],
+    "popup_to": "page1"
   },
   {
     "action": "click",
-    "target": "alt=회사 로고",
+    "target": "role=textbox, name=키워드",
     "value": "",
     "description": "클릭",
     "page": "page",
@@ -27,12 +28,21 @@
     "fallback_targets": []
   },
   {
+    "action": "fill",
+    "target": "role=textbox, name=키워드",
+    "value": "API",
+    "description": "'API' 입력",
+    "page": "page",
+    "step": 4,
+    "fallback_targets": []
+  },
+  {
     "action": "click",
-    "target": "#content >> title=툴팁",
+    "target": "role=button, name=확인",
     "value": "",
     "description": "클릭",
     "page": "page",
-    "step": 4,
+    "step": 5,
     "fallback_targets": []
   }
 ]

@@ -28,6 +28,24 @@ _SEMANTIC_PREFIX_TO_METHOD: dict[str, str] = {
 # role= "..." , name= "..." 분리 정규식 — 3개 분기 공용.
 _ROLE_NAME_RE = re.compile(r"role=(.+?),\s*name=(.+)")
 
+# name=... 끝에 붙은 ``, exact=true|false`` modifier — converter 가
+# ``get_by_role(..., exact=True)`` 를 보존하기 위해 emit. 미존재 시 False.
+_EXACT_SUFFIX_RE = re.compile(r",\s*exact=(true|false)\s*$", re.IGNORECASE)
+
+
+def _split_name_exact(raw_name: str) -> tuple[str, bool]:
+    """``name=`` 이후 raw 문자열에서 trailing ``, exact=true`` 를 분리.
+
+    ``"API, exact=true"`` → ``("API", True)``
+    ``"로그인"``           → ``("로그인", False)``
+    name 안에 콤마/등호가 있어도 끝부분의 ``, exact=...`` 만 떼므로 안전.
+    """
+    s = raw_name.strip()
+    m = _EXACT_SUFFIX_RE.search(s)
+    if m:
+        return s[: m.start()].strip(), m.group(1).lower() == "true"
+    return s, False
+
 
 class ShadowAccessError(RuntimeError):
     """closed shadow root 를 만나 자동화가 불가능한 상태.
@@ -201,8 +219,9 @@ class LocatorResolver:
             return None
         m = _ROLE_NAME_RE.match(target_str)
         if m:
+            name, exact = _split_name_exact(m.group(2))
             loc = self.page.get_by_role(
-                m.group(1).strip(), name=m.group(2).strip()
+                m.group(1).strip(), name=name, exact=exact,
             )
             if self._safe_count(loc) == 0:
                 return None
@@ -269,8 +288,9 @@ class LocatorResolver:
             return None
         m = _ROLE_NAME_RE.match(base_str)
         if m:
+            name, exact = _split_name_exact(m.group(2))
             loc = self.page.get_by_role(
-                m.group(1).strip(), name=m.group(2).strip()
+                m.group(1).strip(), name=name, exact=exact,
             )
             return loc if self._safe_count(loc) > 0 else None
         role_only = base_str.replace(_ROLE_PREFIX, "", 1).strip()
@@ -407,8 +427,9 @@ class LocatorResolver:
         if seg.startswith(_ROLE_PREFIX):
             m = _ROLE_NAME_RE.match(seg)
             if m:
+                name, exact = _split_name_exact(m.group(2))
                 return cur.get_by_role(
-                    m.group(1).strip(), name=m.group(2).strip(),
+                    m.group(1).strip(), name=name, exact=exact,
                 )
             role_only = seg[len(_ROLE_PREFIX):].strip()
             if "," in role_only:

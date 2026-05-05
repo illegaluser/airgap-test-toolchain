@@ -37,8 +37,10 @@ class Config:
         """환경변수에서 설정 값을 읽어 Config 인스턴스를 생성한다.
 
         각 환경변수와 기본값:
-            - ``DIFY_BASE_URL`` → ``http://localhost/v1``
-            - ``DIFY_API_KEY`` → ``""`` (빈 문자열)
+            - ``DIFY_BASE_URL`` → ``http://localhost:18081/v1`` (dscore.ttc.playwright
+              컨테이너의 nginx Dify gateway 포트 매핑. provision.sh 가 18081 →
+              컨테이너 내부 nginx 로 노출. 호스트 80 포트는 사용 안 함.)
+            - ``DIFY_API_KEY`` → ``""`` (빈 문자열). Dify console 에서 발급 후 export.
             - ``ARTIFACTS_DIR`` → ``artifacts``
             - ``VIEWPORT_WIDTH`` / ``VIEWPORT_HEIGHT`` → ``1440`` / ``900``
             - ``SLOW_MO`` → ``800`` (Playwright 액션 단위 지연, 봇 패턴 회피)
@@ -53,7 +55,7 @@ class Config:
             환경변수 값이 반영된 Config 인스턴스.
         """
         return cls(
-            dify_base_url=os.getenv("DIFY_BASE_URL", "http://localhost/v1"),
+            dify_base_url=os.getenv("DIFY_BASE_URL", "http://localhost:18081/v1"),
             dify_api_key=os.getenv("DIFY_API_KEY", ""),
             artifacts_dir=os.getenv("ARTIFACTS_DIR", "artifacts"),
             viewport=(

@@ -1,4 +1,20 @@
 [
-  {"step": 1, "action": "navigate", "target": "", "value": "https://playwright.dev/", "description": "https://playwright.dev/로 이동", "fallback_targets": []},
-  {"step": 2, "action": "click", "target": "a[href=\"/docs/intro\"], nth=0", "value": "", "description": "클릭", "fallback_targets": []}
+  {
+    "action": "navigate",
+    "target": "",
+    "value": "https://playwright.dev/",
+    "description": "https://playwright.dev/로 이동",
+    "page": "page",
+    "step": 1,
+    "fallback_targets": []
+  },
+  {
+    "action": "click",
+    "target": "a[href=\"/docs/intro\"], nth=0",
+    "value": "",
+    "description": "클릭",
+    "page": "page",
+    "step": 2,
+    "fallback_targets": []
+  }
 ]

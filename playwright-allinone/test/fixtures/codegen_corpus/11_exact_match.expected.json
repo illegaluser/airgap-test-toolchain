@@ -2,15 +2,15 @@
   {
     "action": "navigate",
     "target": "",
-    "value": "https://example.com/menu",
-    "description": "https://example.com/menu로 이동",
+    "value": "https://example.com/search",
+    "description": "https://example.com/search로 이동",
     "page": "page",
     "step": 1,
     "fallback_targets": []
   },
   {
     "action": "click",
-    "target": "title=개인정보처리방침",
+    "target": "role=button, name=API, exact=true",
     "value": "",
     "description": "클릭",
     "page": "page",
@@ -19,20 +19,11 @@
   },
   {
     "action": "click",
-    "target": "alt=회사 로고",
+    "target": "role=link, name=제출",
     "value": "",
     "description": "클릭",
     "page": "page",
     "step": 3,
-    "fallback_targets": []
-  },
-  {
-    "action": "click",
-    "target": "#content >> title=툴팁",
-    "value": "",
-    "description": "클릭",
-    "page": "page",
-    "step": 4,
     "fallback_targets": []
   }
 ]
