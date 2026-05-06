@@ -474,7 +474,7 @@ VENV_PY="$VENV_DIR/$VENV_BIN_REL/$VENV_PY_NAME"
 VENV_ACTIVATE="$VENV_DIR/$VENV_BIN_REL/activate"
 venv_ok() {
   [ -x "$VENV_PY" ] || return 1
-  "$VENV_PY" -c "import sys, os; assert os.path.normcase(os.path.realpath(sys.prefix)) == os.path.normcase(os.path.realpath(r'$VENV_DIR'))" 2>/dev/null || return 1
+  VENV_DIR_NATIVE=$(to_win_path "$VENV_DIR" 2>/dev/null || printf "%s" "$VENV_DIR"); "$VENV_PY" -c "import sys, os; assert os.path.normcase(os.path.realpath(sys.prefix)) == os.path.normcase(os.path.realpath(r\"$VENV_DIR_NATIVE\"))" 2>/dev/null || return 1
   "$VENV_PY" -m pip --version >/dev/null 2>&1 || return 1
 }
 if [ ! -f "$VENV_ACTIVATE" ]; then
