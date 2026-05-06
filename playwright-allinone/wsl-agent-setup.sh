@@ -499,6 +499,9 @@ set -e
 export PYTHONPATH="$ROOT_DIR:\${PYTHONPATH:-}"
 export RECORDING_HOST_ROOT="\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}"
 export PYTHONUNBUFFERED="\${PYTHONUNBUFFERED:-1}"
+# venv bin/ 을 PATH 앞에 둬야 codegen_runner.is_codegen_available() 가 'playwright'
+# CLI 를 찾는다. 이 줄이 없으면 UI badge 가 ⚠ codegen 미설치 로 떨어진다.
+export PATH="$(dirname "$VENV_PY"):\${PATH:-}"
 LOG_FILE="\${RECORDING_SERVICE_LOG:-$REC_LOG_FILE}"
 PID_FILE="\${RECORDING_SERVICE_PID:-$REC_PID_FILE}"
 mkdir -p "$AGENT_DIR"
