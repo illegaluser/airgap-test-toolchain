@@ -325,7 +325,7 @@ fi
 # pip / playwright 를 console script 대신 `python -m` 으로 호출 — shebang 깨짐 회피
 VENV_PY="$VENV_DIR/bin/python3"
 "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright fastapi uvicorn httpx pyotp python-multipart)
+REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright fastapi uvicorn httpx pyotp python-multipart portalocker)
 log "  pip install: ${REQ_PKGS[*]}"
 "$VENV_PY" -m pip install --quiet "${REQ_PKGS[@]}"
 
