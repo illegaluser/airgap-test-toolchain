@@ -76,7 +76,7 @@ chmod +x *.sh
 요구사항이 글로 잘 정의되어 있으면 Jenkins (LLM 이 시나리오 작성). 화면을 직접 보면서 클릭으로 정의하는 게 빠르면 Recording UI. 둘은 같은 시나리오 포맷을 공유.
 
 **Q. 호스트 Ollama 가 꼭 필요한가?**
-Jenkins Pipeline 의 LLM 단계 (시나리오 생성 / 치유) 가 호스트 Ollama 를 호출한다. 모델은 기본 `gemma4:26b`. Recording UI 의 Play (codegen) 만 쓸 거면 Ollama 미기동도 가능.
+Jenkins Pipeline 의 LLM 단계 (시나리오 생성 / 치유) 가 호스트 Ollama 를 호출한다. 기본 모델은 OS 별로 자동 분기 — **Mac → `gemma4:26b`**, **WSL2 / Linux / Windows → `qwen3.5:9b`** (둘 다 호스트에 사전 pull 필요). 임베딩은 `bge-m3:latest`. Recording UI 의 Play (codegen) 만 쓸 거면 Ollama 미기동도 가능.
 
 **Q. 컨테이너 안 코드를 바꾸려면?**
 호스트 코드 수정 후 `./build.sh --redeploy` 로 image 재빌드 + 컨테이너 swap. 데이터 볼륨은 보존됨. `--reprovision` 옵션을 추가하면 provision 재실행 (KB·Jenkins 이력 등 데이터는 유지하되 Jenkins job 정의 / Dify chatflow 같은 baked-in 정의는 새 image 기준으로 재생성).

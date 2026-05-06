@@ -65,7 +65,7 @@ docker run -d --name dscore.ttc.playwright \
   -v "$HOST_RECORDINGS_DIR":/recordings:rw \
   --add-host host.docker.internal:host-gateway \
   -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
-  -e OLLAMA_MODEL=gemma4:26b \
+  -e OLLAMA_MODEL=gemma4:26b \      # Mac. WSL2/Windows 라면 qwen3.5:9b
   -e AGENT_NAME="$AGENT_NAME" \
   --restart unless-stopped \
   dscore.ttc.playwright:latest
@@ -208,9 +208,9 @@ ollama pull llama3.1:8b
 모델을 영구 변경하려면 다음을 같이 맞춘다.
 
 1. 호스트에 모델 pull
-2. `dify-chatflow.yaml`의 Planner/Healer 모델명 수정
+2. (자동) — chatflow YAML 의 모델명은 placeholder 라 별도 수정 불필요. provision 이 import 시점에 `OLLAMA_MODEL` 값으로 치환한다.
 3. 컨테이너를 새 `OLLAMA_MODEL`로 재기동
-4. `--reprovision` 또는 `.app_provisioned` 제거 후 재기동
+4. `--reprovision` 으로 재기동 (provision 이 자동 재실행)
 5. agent 재연결
 
 간단한 개발 환경이면:
