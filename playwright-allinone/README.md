@@ -49,6 +49,93 @@ chmod +x *.sh
 
 자세한 설치 절차 (사전 요구사항, agent 자동/수동 연결, 첫 Pipeline 실행, 첫 녹화·재생) 는 [QUICKSTART](playwright-allinone_QUICKSTART.md) 에 단계별로 있다.
 
+## build.sh 자세히
+
+이 스크립트 한 개가 image 빌드 → 컨테이너 기동 → 데이터 초기화 → host agent 연결까지 모두 처리한다. 옵션 조합으로 "지금 무엇까지 할지" 를 선택한다.
+
+### 사전 요구사항
+
+- Docker 26+ (buildx 활성), 디스크 20GB 이상 여유
+- 호스트에 Ollama 가 설치·기동되어 있고 다음 모델이 pull 되어 있어야 한다.
+
+| 호스트 | LLM | 임베딩 |
+|---|---|---|
+| Mac | `ollama pull gemma4:26b` | `ollama pull bge-m3` |
+| WSL2 / Windows | `ollama pull qwen3.5:9b` | `ollama pull bge-m3` |
+
+호스트 OS 는 `build.sh` 가 `uname -s` 로 자동 판별해 LLM 기본값을 잡는다 (Mac=`gemma4:26b`, 그 외=`qwen3.5:9b`). 임베딩은 양쪽 모두 `bge-m3:latest`.
+
+### 옵션
+
+| 옵션 | 역할 | 자주 쓰는 상황 |
+|---|---|---|
+| (없음) | 빌드만 — `dscore.ttc.playwright-<ts>.tar.gz` 산출 | airgap 머신으로 옮길 배포 패키지 만들 때 |
+| `--redeploy` | 빌드 + 기존 컨테이너 swap + 호스트 agent 재연결. 데이터 볼륨은 보존. | 같은 머신에서 코드 수정 후 즉시 재기동 |
+| `--redeploy --reprovision` | 위 + provision 재실행. KB 임베딩 / Jenkins 이력 / 챗봇 대화는 보존하되 chatflow / Jenkins job 정의 / Dify provider 등록은 새 이미지 기준으로 재생성. | chatflow YAML 이나 provision 로직을 바꿨을 때 |
+| `--redeploy --fresh` | 위 + 볼륨까지 삭제 (`dscore-data` 제거). **모든 데이터 폐기**. | 처음부터 다시. 디버깅 막판. |
+| `--redeploy --no-agent` | 빌드 + 컨테이너만 재기동, agent 연결은 스킵 | CI 머신에서 컨테이너만 갱신 |
+| `-h`, `--help` | 도움말 출력 | |
+
+`--fresh` 와 `--reprovision` 동시 지정 시 `--fresh` 가 우선 (어차피 전체 wipe).
+
+### 환경변수
+
+| 변수 | 기본값 | 의미 |
+|---|---|---|
+| `OLLAMA_MODEL` | OS 별 자동 (Mac=`gemma4:26b`, WSL2/Linux/Windows=`qwen3.5:9b`) | Dify provider 에 등록될 LLM. chatflow YAML 의 placeholder 도 import 시 이 값으로 자동 치환. |
+| `EMBEDDING_MODEL` | `bge-m3:latest` | Test Planning RAG KB 용 임베딩 모델. |
+| `IMAGE_TAG` | `dscore.ttc.playwright:latest` | Docker image 태그 |
+| `TARGET_PLATFORM` | `uname -m` 자동 감지 | `linux/arm64` (Apple Silicon) 또는 `linux/amd64`. 다른 아키 서버로 배포할 때만 override. |
+| `OUTPUT_TAR` | `dscore.ttc.playwright-<ts>.tar.gz` | 산출 tar 파일명 |
+| `FORCE_PLUGIN_DOWNLOAD` | `false` | `true` 면 `jenkins-plugins/` `dify-plugins/` 에 파일이 있어도 재다운로드. 플러그인 버전 갱신 시만. |
+| `AGENT_NAME` | OS 별 자동 (Mac=`mac-ui-tester`, 그 외=`wsl-ui-tester`) | Jenkins Node 이름 |
+| `RECORDING_HOST_ROOT` | `~/.dscore.ttc.playwright-agent/recordings` | host 의 녹화 디렉토리 (컨테이너 `/recordings` 로 bind) |
+
+### 시나리오별 명령
+
+```bash
+# 처음 한 번 — 빌드 + 컨테이너 + agent 까지 (15-30분 첫 빌드, 이후 3-10분)
+./build.sh --redeploy
+
+# tar.gz 만 만들어 다른 머신으로 전달 (airgap)
+./build.sh
+
+# 코드/스크립트만 수정 → 같은 머신에서 즉시 갱신
+./build.sh --redeploy
+
+# chatflow YAML 또는 provision 로직 수정 → 데이터 보존하며 재 provision
+./build.sh --redeploy --reprovision
+
+# 처음부터 다시 (모든 데이터 폐기)
+./build.sh --redeploy --fresh
+
+# WSL2 호스트에서 qwen3.5:9b 대신 다른 모델로 강제
+OLLAMA_MODEL=qwen3-coder:30b ./build.sh --redeploy --reprovision
+
+# CI 환경 — agent 연결 없이 컨테이너만 갱신
+./build.sh --redeploy --no-agent
+
+# 플러그인 버전 올림 — hpi/difypkg 강제 재다운로드
+FORCE_PLUGIN_DOWNLOAD=true ./build.sh
+```
+
+### 산출물
+
+| 위치 | 무엇 |
+|---|---|
+| `./dscore.ttc.playwright-<timestamp>.tar.gz` | image 압축본 (airgap 배포용, ~5-7GB) |
+| `dscore.ttc.playwright:latest` (docker image) | 로컬 image |
+| `dscore.ttc.playwright` (docker container) | 실행 중인 컨테이너 (`--redeploy` 시) |
+| `dscore-data` (docker volume) | DB / Jenkins 이력 / Dify KB 데이터. `--fresh` 가 아니면 보존. |
+
+### 자주 막히는 곳
+
+- **호스트에 모델이 없어서 Dify 가 응답 못 함** → `ollama list` 로 LLM·임베딩 두 개가 다 있는지 확인.
+- **`--reprovision` 인데 변경이 반영 안 된 것 같다** → 컨테이너 안 `/data/.app_provisioned` 마커가 정상 wipe 됐는지: 컨테이너 entrypoint 로그에 `앱 프로비저닝 시작` 이 찍혀야 한다. (Windows Git Bash 의 알려진 결함은 2026-05-06 패치로 해결됨.)
+- **빌드는 됐는데 첫 Pipeline 호출이 timeout** → 호스트 Ollama 가 첫 모델 로드 중일 가능성. 한 번 `curl http://localhost:11434/api/generate -d '{"model":"qwen3.5:9b","prompt":"hi"}'` 으로 워밍업 후 재시도.
+
+상세 결함·수정 이력은 [docs/wsl2-build-fixes-2026-05-06.md](docs/wsl2-build-fixes-2026-05-06.md).
+
 ## 문서 안내
 
 | 문서 | 언제 본다 |
