@@ -72,7 +72,9 @@ while [ $# -gt 0 ]; do
 주요 env:
   IMAGE_TAG                dscore.ttc.playwright:latest (기본)
   TARGET_PLATFORM          uname -m 자동 감지 (Mac arm64 → linux/arm64, 그 외 → linux/amd64)
-  OLLAMA_MODEL             gemma4:26b (Dify provider 에 등록될 모델 id; Sprint 5 §10.2 기본 모델)
+  OLLAMA_MODEL             Dify provider 에 등록될 모델 id. OS 별 기본:
+                             · macOS (Darwin)         → gemma4:26b   (Sprint 5 §10.2 기본)
+                             · WSL2 / Linux / Windows → qwen3.5:9b   (WSL2 빌드 검증 기본)
   OUTPUT_TAR               dscore.ttc.playwright-<ts>.tar.gz
   FORCE_PLUGIN_DOWNLOAD    false (기본). true 면 jenkins-plugins/ dify-plugins/ 에
                            파일이 있어도 재다운로드 (플러그인 버전 갱신 시만 사용).
@@ -118,7 +120,13 @@ fi
 # OLLAMA_MODEL: 이미지에 사전 pull 되지 않음 (이 이미지는 호스트 Ollama 사용).
 # 이 값은 docker buildx 가 Dockerfile ARG 로 받아두긴 하지만 실질적 효과는 없음.
 # 실제 런타임 모델 지정은 docker run 의 `-e OLLAMA_MODEL=...` 로 Dify provider 에 등록됨.
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+# OS 분기 — macOS=gemma4:26b / WSL2·Linux·Windows=qwen3.5:9b. env 로 override 가능.
+if [ -z "${OLLAMA_MODEL:-}" ]; then
+  case "$(uname -s)" in
+    Darwin) OLLAMA_MODEL="gemma4:26b" ;;
+    *)      OLLAMA_MODEL="qwen3.5:9b" ;;
+  esac
+fi
 OUTPUT_TAR="${OUTPUT_TAR:-dscore.ttc.playwright-$(date +%Y%m%d-%H%M%S).tar.gz}"
 
 JENKINS_PLUGINS=(
@@ -315,7 +323,9 @@ if [ "$REDEPLOY" = "true" ]; then
   elif [ "$REPROVISION" = "true" ]; then
     if docker volume ls --format '{{.Name}}' | grep -qxF "$DATA_VOLUME"; then
       log "  [5-1] --reprovision — 볼륨 '$DATA_VOLUME' 의 .app_provisioned 마커만 wipe (provision 재실행, 데이터 보존)"
-      docker run --rm -v "$DATA_VOLUME":/data busybox rm -f /data/.app_provisioned
+      # MSYS_NO_PATHCONV=1: Git Bash (Windows) 가 /data/.app_provisioned 를
+      # C:/Program Files/Git/data/.app_provisioned 로 변환해 silent fail 하는 것 방지.
+      MSYS_NO_PATHCONV=1 docker run --rm -v "$DATA_VOLUME":/data busybox rm -f /data/.app_provisioned
     fi
   else
     log "  [5-1] 볼륨 '$DATA_VOLUME' 유지 — 기존 provision 결과 재사용"
