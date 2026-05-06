@@ -1247,7 +1247,7 @@ fi
 AGENT_NODE_NAME="${AGENT_NAME:-wsl-ui-tester}"
 case "$AGENT_NODE_NAME" in
   mac-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Mac, headed Playwright)' ;;
-  wsl-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Windows/WSL2, headed Playwright via WSLg)' ;;
+  wsl-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Windows/WSL2/Linux, headed Playwright)' ;;
   *)             AGENT_NODE_DESC="Host-side JNLP Agent ($AGENT_NODE_NAME)" ;;
 esac
 log "3-4. 에이전트 노드 등록 ('$AGENT_NODE_NAME' — 호스트 JNLP)"

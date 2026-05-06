@@ -115,14 +115,21 @@ def start_codegen(
 
 
 def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-    """Process group 에 신호. group 권한 없거나 이미 죽었으면 단일 PID fallback."""
-    try:
-        os.killpg(os.getpgid(proc.pid), sig)
-    except (ProcessLookupError, PermissionError):
+    """Process group 에 신호. group 권한 없거나 이미 죽었으면 단일 PID fallback.
+
+    Windows 는 process group 개념이 POSIX 와 달라 ``os.killpg`` 자체가 없다 —
+    이 경우 곧장 단일 PID 로 신호를 보낸다.
+    """
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
         try:
-            proc.send_signal(sig)
-        except ProcessLookupError:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return
+        except (ProcessLookupError, PermissionError):
             pass
+    try:
+        proc.send_signal(sig)
+    except ProcessLookupError:
+        pass
 
 
 def _close_pipes(proc: subprocess.Popen) -> None:
