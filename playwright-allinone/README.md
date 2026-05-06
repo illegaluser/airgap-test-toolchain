@@ -53,6 +53,20 @@ chmod +x *.sh
 
 이 스크립트 한 개가 image 빌드 → 컨테이너 기동 → 데이터 초기화 → host agent 연결까지 모두 처리한다. 옵션 조합으로 "지금 무엇까지 할지" 를 선택한다.
 
+### 어디서 실행하나
+
+어디서 실행하든 `./build.sh --redeploy` 한 번이면 빌드 → 컨테이너 → provision → agent 까지 자동 완료.
+
+| 호스트 | build.sh 실행 위치 | 분기 결과 |
+|---|---|---|
+| Mac | macOS 터미널 (`zsh` / `bash`) | `uname -s = Darwin` → `gemma4:26b` + `mac-ui-tester` + `mac-agent-setup.sh` 자동 기동 |
+| Windows | **WSL2 Ubuntu 안** | `uname -s = Linux` → `qwen3.5:9b` + `wsl-ui-tester` + `wsl-agent-setup.sh` 자동 기동 |
+| Windows | Git Bash / PowerShell+bash | `uname -s = MINGW64_NT-...` → `qwen3.5:9b` + `wsl-ui-tester`. agent 는 `wsl bash` 로 WSL2 distro 안에서 자동 기동 (WSL2 가 설치돼 있어야 함). |
+
+agent 실행 로그 위치는 호스트별로 다름.
+- Mac / WSL2 안 실행 → `/tmp/dscore-agent.log`
+- Windows Git Bash 실행 → WSL2 의 `/tmp/dscore-agent.log` (Windows 에서 보려면 `wsl tail -f /tmp/dscore-agent.log`)
+
 ### 사전 요구사항
 
 - Docker 26+ (buildx 활성), 디스크 20GB 이상 여유

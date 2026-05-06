@@ -1,6 +1,6 @@
 # WSL2 빌드 검증에서 발견된 결함과 수정 (2026-05-06)
 
-WSL2 환경 (`verify/wsl2-build-20260506-082223` 브랜치) 에서 `./build.sh --redeploy --reprovision` 으로 끝까지 가보며 드러난 5건의 사전 결함을 모두 잡았다. Mac 빌드는 영향 없음.
+WSL2 환경 (`verify/wsl2-build-20260506-082223` 브랜치) 에서 `./build.sh --redeploy --reprovision` 으로 끝까지 가보며 드러난 사전 결함 9건을 모두 잡았다. Mac 빌드는 영향 없음.
 
 ## 한눈에 보기
 
@@ -11,6 +11,11 @@ WSL2 환경 (`verify/wsl2-build-20260506-082223` 브랜치) 에서 `./build.sh -
 | 3 | KB (Test Planning RAG) 자동 생성 실패 — 기본 임베딩 모델이 호스트에 없는 이름 | 챗봇은 떠도 RAG 트랙은 빈 KB | 기본 임베딩 → `bge-m3:latest` (호스트 실존) |
 | 4 | Jenkins Pipeline Job 자동 등록이 매번 실패 — 로그에 원인 안 찍힘 | 잡 정의 수동 등록 부담 | 한글 문자 인코딩 헤더 보강 + 응답 본문 노출 |
 | 5 | 워크스페이스 기본 모델 설정이 재실행 시 500 에러 | 재 provision 마다 빨간 줄 | 기존 등록 row 정리 후 재등록 (멱등화) |
+| 6 | Windows Git Bash 에서 `--redeploy` 시 NODE_SECRET 대기 루프가 15분 타임아웃 | 빌드는 됐는데 agent 자동연결이 안 됨 | docker exec 호출에 경로 변환 우회 prefix |
+| 7 | 빌드 후 화면에 출력되는 Mac/Windows 사전준비 안내가 둘 다 같은 모델명 | 사용자가 어느 모델 pull 해야 할지 헷갈림 | 각 OS 섹션에 정확한 모델명 하드코딩 |
+| 8 | 임베딩 모델 환경변수가 컨테이너로 전달되지 않음 — 문서엔 override 가능하다고 적어놓고 실제로는 무시 | 사내 임베딩 교체 안 됨 | docker run 에 `-e EMBEDDING_MODEL` 추가 |
+| 9 | LLM 게이트웨이 주소(`OLLAMA_BASE_URL`) 사용자 override 가 무시 | airgap 사내 게이트웨이로 빼낼 수 없음 | 환경변수 있으면 존중하도록 수정 |
+| 10 | Windows Git Bash 에서 build.sh 실행 시 agent 자동기동이 silent skip | 매번 WSL2 에서 수동으로 한 번 더 실행 | Windows 호스트에서는 `wsl bash` 로 WSL2 distro 안에 위임 — 어디서 실행해도 한 번이면 끝 |
 
 ## 하나씩
 
@@ -89,6 +94,49 @@ KB 자동 생성은 어쨌든 진행되지만 매 실행마다 빨간 줄이 나
 **해결** — POST 직전에 현재 tenant 의 default-model row 들을 psql 로 일괄 DELETE (DB 컬럼이 `llm` / `embeddings` 인 점 + API 가 `text-embedding` 을 쓰는 점 모두 고려). 기존 line 361 의 PGPASSWORD psql 호출 패턴 그대로 채택.
 
 **확인 방법** — provision 로그 `2-3g ... ✓ workspace 기본 모델 설정 완료` (이전엔 `⚠ ... 500`).
+
+### 6. NODE_SECRET 대기 루프가 Windows Git Bash 에서 15분 타임아웃
+
+**문제** — `./build.sh --redeploy` (no `--no-agent`) 를 Git Bash 에서 직접 실행하면 빌드는 끝나는데 자동 agent 연결이 매번 15분 후 "NODE_SECRET 확보 실패" 로 종료.
+
+**원인** — 컨테이너 안 마커를 확인하는 `docker exec ... test -f /data/.app_provisioned` 호출에서 `/data/.app_provisioned` 가 Git Bash MSYS 에 의해 `C:/Program Files/Git/data/.app_provisioned` 로 변환됨. 컨테이너 안에는 그런 파일이 없으니 `test -f` 가 항상 false → 루프 탈출 못 함.
+
+**해결** — 해당 docker exec 호출에 `MSYS_NO_PATHCONV=1` prefix 부착. 같은 패턴을 plugin step 의 `docker run --entrypoint java ... -jar /usr/share/jenkins/jenkins.war --version` 에도 방어적으로 적용 (FORCE_PLUGIN_DOWNLOAD 시 동일 결함 잠재).
+
+### 7. 빌드 종료 안내 — Mac/Windows 모델명 혼동
+
+**문제** — 빌드 끝에 출력되는 사전준비 안내가:
+```
+[사전 준비 — 호스트 Mac]
+  ollama pull ${OLLAMA_MODEL}    ← 현재 OS 의 기본값
+[사전 준비 — Windows 11 ...]
+  ollama pull ${OLLAMA_MODEL}    ← 같은 값
+```
+즉 Mac 에서 빌드하면 Mac/Windows 양쪽 안내가 모두 `gemma4:26b`, WSL2 에서 빌드하면 양쪽 모두 `qwen3.5:9b` 로 표시. 다른 OS 사용자에게 잘못된 가이드.
+
+**해결** — 각 섹션에 OS 별 정확한 모델명을 하드코딩 (Mac=`gemma4:26b`, Windows=`qwen3.5:9b`) + 임베딩(`bge-m3`) 도 같이 표기. 끝에 "이번 빌드의 결정값" 줄도 추가해 사용자가 어떤 분기로 빌드됐는지 한눈에 확인.
+
+### 8. EMBEDDING_MODEL 사용자 override 무력
+
+**문제** — `playwright-allinone_REFERENCE.md` 에 `EMBEDDING_MODEL` 이 override 가능한 환경변수로 문서화되어 있지만, `build.sh` 의 `docker run` 에 `-e EMBEDDING_MODEL` 항이 없어 컨테이너 안 `provision.sh` 는 항상 default `bge-m3:latest` 만 사용.
+
+**해결** — `docker run` 에 `-e EMBEDDING_MODEL="${EMBEDDING_MODEL:-bge-b3:latest}"` 추가. 사용자가 사내 임베딩 (예: `bge-m3-korean`) 으로 교체 가능.
+
+### 9. OLLAMA_BASE_URL 사용자 override 무력
+
+**문제** — airgap 환경이나 사내 LLM 게이트웨이를 쓰는 경우 `OLLAMA_BASE_URL=http://my-internal:11434 ./build.sh --redeploy` 로 지정해야 하지만, `docker run` 에서 이 값이 하드코딩 (`http://host.docker.internal:11434`) 되어 사용자 환경변수가 무시됨.
+
+**해결** — `docker run` 의 `-e OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"` 패턴으로 변경. 사용자가 env 로 지정하면 존중, 아니면 기본값.
+
+### 10. Windows Git Bash 에서 agent 자동기동이 안 됨 (silent skip)
+
+**문제** — `./build.sh --redeploy` 를 Windows Git Bash 에서 실행하면, 컨테이너 기동 + NODE_SECRET 확보까지는 정상이지만 5-4 단계의 agent 자동기동이 `*) AGENT_SCRIPT=""` fallback 으로 스킵. 사용자는 빌드 끝난 후 직접 WSL2 로 들어가서 `NODE_SECRET=<값> ./wsl-agent-setup.sh` 를 수동 실행해야 함. "build.sh 한 번이면 끝" 이라는 약속과 모순.
+
+**원인** — `wsl-agent-setup.sh` 가 `apt`, `sudo` 같은 Linux 명령에 의존하므로 Git Bash 의 bash 로 직접 실행하면 깨짐. 이전 코드는 깨지는 걸 알고 silent skip 한 것.
+
+**해결** — Windows Git Bash 분기 (`MINGW*|MSYS*|CYGWIN*`) 를 추가하고, 그 경우 `wsl bash -lc "..."` 로 WSL2 distro 안에서 wsl-agent-setup.sh 를 기동. 경로는 Git Bash 의 `/c/...` → WSL2 의 `/mnt/c/...` 로 자동 변환. 로그는 WSL2 의 `/tmp/dscore-agent.log` 에 떨어지며 `wsl tail -f /tmp/dscore-agent.log` 로 확인.
+
+**확인 방법** — Windows Git Bash 에서 `./build.sh --redeploy` 후, 빌드 끝에 `[5-4] wsl-agent-setup (via wsl bash → WSL2 distro) 기동` 가 찍히는지. WSL2 미설치면 명확히 안내된 경고로 fail-fast.
 
 ## 영향받는 파일
 
