@@ -61,11 +61,8 @@ chmod +x *.sh
 |---|---|---|
 | Mac | macOS 터미널 (`zsh` / `bash`) | `uname -s = Darwin` → `gemma4:26b` + `mac-ui-tester` + `mac-agent-setup.sh` 자동 기동 |
 | Windows | **WSL2 Ubuntu 안** | `uname -s = Linux` → `qwen3.5:9b` + `wsl-ui-tester` + `wsl-agent-setup.sh` 자동 기동 |
-| Windows | Git Bash / PowerShell+bash | `uname -s = MINGW64_NT-...` → `qwen3.5:9b` + `wsl-ui-tester`. agent 는 `wsl bash` 로 WSL2 distro 안에서 자동 기동 (WSL2 가 설치돼 있어야 함). |
 
-agent 실행 로그 위치는 호스트별로 다름.
-- Mac / WSL2 안 실행 → `/tmp/dscore-agent.log`
-- Windows Git Bash 실행 → WSL2 의 `/tmp/dscore-agent.log` (Windows 에서 보려면 `wsl tail -f /tmp/dscore-agent.log`)
+agent 실행 로그는 `/tmp/dscore-agent.log`.
 
 ### 사전 요구사항
 
@@ -145,7 +142,7 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 ### 자주 막히는 곳
 
 - **호스트에 모델이 없어서 Dify 가 응답 못 함** → `ollama list` 로 LLM·임베딩 두 개가 다 있는지 확인.
-- **`--reprovision` 인데 변경이 반영 안 된 것 같다** → 컨테이너 안 `/data/.app_provisioned` 마커가 정상 wipe 됐는지: 컨테이너 entrypoint 로그에 `앱 프로비저닝 시작` 이 찍혀야 한다. (Windows Git Bash 의 알려진 결함은 2026-05-06 패치로 해결됨.)
+- **`--reprovision` 인데 변경이 반영 안 된 것 같다** → 컨테이너 안 `/data/.app_provisioned` 마커가 정상 wipe 됐는지: 컨테이너 entrypoint 로그에 `앱 프로비저닝 시작` 이 찍혀야 한다.
 - **빌드는 됐는데 첫 Pipeline 호출이 timeout** → 호스트 Ollama 가 첫 모델 로드 중일 가능성. 한 번 `curl http://localhost:11434/api/generate -d '{"model":"qwen3.5:9b","prompt":"hi"}'` 으로 워밍업 후 재시도.
 
 상세 결함·수정 이력은 [docs/wsl2-build-fixes-2026-05-06.md](docs/wsl2-build-fixes-2026-05-06.md).
