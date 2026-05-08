@@ -2,7 +2,7 @@
 
 녹화 PC 에서 만든 시나리오 zip 을 받아 다른 PC 에서 무인 실행하고, 결과를 한 화면에서 검증하는 작은 웹 앱.
 
-> **이 문서는 모니터링 PC 운영자 / 테스터 용**. 녹화 PC 쪽 안내는 [RECORDING_UI](playwright-allinone_RECORDING_UI.md), 큰 그림은 [README](README.md).
+> **이 문서는 모니터링 PC 운영자 / 테스터 용**. 녹화 PC 쪽 안내는 [RECORDING_UI](../playwright-allinone_RECORDING_UI.md), 큰 그림은 [README](../README.md).
 
 ---
 
@@ -235,7 +235,7 @@ GUI 없이 같은 일을 명령어로:
 
 | 문서 | 무엇 |
 |---|---|
-| [README](README.md) | 큰 그림 (녹화 PC ↔ 모니터링 PC) |
-| [RECORDING_UI](playwright-allinone_RECORDING_UI.md) | 녹화 PC 쪽 — bundle 만들기 |
-| [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md) | 통합 테스트 매트릭스 |
+| [README](../README.md) | 큰 그림 (녹화 PC ↔ 모니터링 PC) |
+| [RECORDING_UI](../playwright-allinone_RECORDING_UI.md) | 녹화 PC 쪽 — bundle 만들기 |
+| [replay-ui-integration-tests.md](replay-ui-integration-tests.md) | 통합 테스트 매트릭스 |
 | `.claude/plans/squishy-wishing-emerson.md` | 설계 결정 (D1–D11) + 동선 / 보안 정책 상세 |
