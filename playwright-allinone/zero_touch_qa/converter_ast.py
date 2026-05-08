@@ -239,7 +239,9 @@ class _AstConverter(ast.NodeVisitor):
 
     # def run(...) 만 처리 — 다른 함수는 noise 일 가능성 높음
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if node.name != "run":
+        # `def run(playwright)` — codegen output.
+        # `def test_*` — Zero-Touch QA regression export 가 만든 회귀 테스트.
+        if node.name != "run" and not node.name.startswith("test_"):
             return
         for stmt in node.body:
             self._handle_stmt(stmt)

@@ -72,7 +72,9 @@ while [ $# -gt 0 ]; do
 주요 env:
   IMAGE_TAG                dscore.ttc.playwright:latest (기본)
   TARGET_PLATFORM          uname -m 자동 감지 (Mac arm64 → linux/arm64, 그 외 → linux/amd64)
-  OLLAMA_MODEL             gemma4:26b (Dify provider 에 등록될 모델 id; Sprint 5 §10.2 기본 모델)
+  OLLAMA_MODEL             Dify provider 에 등록될 모델 id. OS 별 기본:
+                             · macOS (Darwin)         → gemma4:26b   (Sprint 5 §10.2 기본)
+                             · WSL2 / Linux / Windows → qwen3.5:9b   (WSL2 빌드 검증 기본)
   OUTPUT_TAR               dscore.ttc.playwright-<ts>.tar.gz
   FORCE_PLUGIN_DOWNLOAD    false (기본). true 면 jenkins-plugins/ dify-plugins/ 에
                            파일이 있어도 재다운로드 (플러그인 버전 갱신 시만 사용).
@@ -118,7 +120,13 @@ fi
 # OLLAMA_MODEL: 이미지에 사전 pull 되지 않음 (이 이미지는 호스트 Ollama 사용).
 # 이 값은 docker buildx 가 Dockerfile ARG 로 받아두긴 하지만 실질적 효과는 없음.
 # 실제 런타임 모델 지정은 docker run 의 `-e OLLAMA_MODEL=...` 로 Dify provider 에 등록됨.
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+# OS 분기 — macOS=gemma4:26b / WSL2·Linux·Windows=qwen3.5:9b. env 로 override 가능.
+if [ -z "${OLLAMA_MODEL:-}" ]; then
+  case "$(uname -s)" in
+    Darwin) OLLAMA_MODEL="gemma4:26b" ;;
+    *)      OLLAMA_MODEL="qwen3.5:9b" ;;
+  esac
+fi
 OUTPUT_TAR="${OUTPUT_TAR:-dscore.ttc.playwright-$(date +%Y%m%d-%H%M%S).tar.gz}"
 
 JENKINS_PLUGINS=(
@@ -210,7 +218,9 @@ else
     JENKINS_VERSION_DETECTED="$JENKINS_VERSION_OVERRIDE"
   else
     log "  $JENKINS_BASE_IMAGE 버전 동적 추출 중..."
-    JENKINS_VERSION_DETECTED=$(docker run --rm --entrypoint java "$JENKINS_BASE_IMAGE" \
+    # MSYS_NO_PATHCONV: Git Bash on Windows 가 /usr/share/jenkins/jenkins.war 를
+    # C:/Program Files/Git/usr/share/... 로 변환해 컨테이너 안에서 missing → 실패 방지.
+    JENKINS_VERSION_DETECTED=$(MSYS_NO_PATHCONV=1 docker run --rm --entrypoint java "$JENKINS_BASE_IMAGE" \
       -jar /usr/share/jenkins/jenkins.war --version 2>/dev/null | head -n1 | tr -d '\r')
   fi
   [ -z "$JENKINS_VERSION_DETECTED" ] && err "Jenkins 버전 추출 실패 — JENKINS_VERSION 환경변수로 명시"
@@ -315,7 +325,9 @@ if [ "$REDEPLOY" = "true" ]; then
   elif [ "$REPROVISION" = "true" ]; then
     if docker volume ls --format '{{.Name}}' | grep -qxF "$DATA_VOLUME"; then
       log "  [5-1] --reprovision — 볼륨 '$DATA_VOLUME' 의 .app_provisioned 마커만 wipe (provision 재실행, 데이터 보존)"
-      docker run --rm -v "$DATA_VOLUME":/data busybox rm -f /data/.app_provisioned
+      # MSYS_NO_PATHCONV=1: Git Bash (Windows) 가 /data/.app_provisioned 를
+      # C:/Program Files/Git/data/.app_provisioned 로 변환해 silent fail 하는 것 방지.
+      MSYS_NO_PATHCONV=1 docker run --rm -v "$DATA_VOLUME":/data busybox rm -f /data/.app_provisioned
     fi
   else
     log "  [5-1] 볼륨 '$DATA_VOLUME' 유지 — 기존 provision 결과 재사용"
@@ -338,13 +350,19 @@ if [ "$REDEPLOY" = "true" ]; then
   mkdir -p "$HOST_RECORDINGS_DIR"
   log "  [5-2] docker run (Ollama 는 호스트 → host.docker.internal 로 경유, Jenkins Node = $HOST_AGENT_NAME)"
   log "        recordings bind: $HOST_RECORDINGS_DIR → /recordings"
-  docker run -d --name "$CONTAINER_NAME" \
+  # OLLAMA_BASE_URL / EMBEDDING_MODEL: 사용자가 env 로 지정했으면 존중, 아니면 기본값.
+  # (이전엔 BASE_URL 이 하드코딩이라 airgap 사내 게이트웨이 override 가 silent ignore 됐음.
+  #  EMBEDDING_MODEL 도 docker run 으로 전달되지 않아 provision.sh 가 항상 default 사용했음.)
+  RUNTIME_OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+  RUNTIME_EMBEDDING_MODEL="${EMBEDDING_MODEL:-bge-m3:latest}"
+  MSYS_NO_PATHCONV=1 docker run -d --name "$CONTAINER_NAME" \
     -p 18080:18080 -p 18081:18081 -p 50001:50001 \
     -v "$DATA_VOLUME":/data \
     -v "$HOST_RECORDINGS_DIR":/recordings:rw \
     --add-host host.docker.internal:host-gateway \
-    -e OLLAMA_BASE_URL="http://host.docker.internal:11434" \
+    -e OLLAMA_BASE_URL="$RUNTIME_OLLAMA_BASE_URL" \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \
+    -e EMBEDDING_MODEL="$RUNTIME_EMBEDDING_MODEL" \
     -e AGENT_NAME="$HOST_AGENT_NAME" \
     --restart unless-stopped \
     "$IMAGE_TAG" >/dev/null
@@ -356,7 +374,9 @@ if [ "$REDEPLOY" = "true" ]; then
     _w=0
     NODE_SECRET=""
     while [ $_w -lt 900 ]; do
-      if docker exec "$CONTAINER_NAME" test -f /data/.app_provisioned 2>/dev/null; then
+      # MSYS_NO_PATHCONV: Git Bash on Windows 에서 /data/.app_provisioned 가
+      # C:/Program Files/Git/data/... 로 변환되어 test 가 항상 false → 15분 타임아웃 방지.
+      if MSYS_NO_PATHCONV=1 docker exec "$CONTAINER_NAME" test -f /data/.app_provisioned 2>/dev/null; then
         NODE_SECRET=$(docker logs "$CONTAINER_NAME" 2>&1 \
           | grep -oE 'NODE_SECRET: [a-f0-9]{64}' \
           | tail -n1 \
@@ -375,15 +395,46 @@ if [ "$REDEPLOY" = "true" ]; then
       log "  [5-3] NODE_SECRET 확보: ${NODE_SECRET:0:16}..."
 
       # 5-4. 플랫폼 감지 → 해당 agent-setup 호출 (setsid 로 분리 기동 — 셸 반환 후에도 생존)
+      # AGENT_INVOKE: local (네이티브 실행) | wsl (Git Bash on Windows → WSL2 안 wsl-agent-setup.sh 기동)
+      AGENT_INVOKE="local"
+      AGENT_SCRIPT=""
+      AGENT_LABEL=""
       case "$(uname -s)" in
-        Darwin) AGENT_SCRIPT="$SCRIPT_DIR/mac-agent-setup.sh"; AGENT_LABEL="mac-agent-setup" ;;
-        Linux)  AGENT_SCRIPT="$SCRIPT_DIR/wsl-agent-setup.sh"; AGENT_LABEL="wsl-agent-setup" ;;
-        *)      log "  [5-4] ⚠ 알 수 없는 OS ($(uname -s)) — agent 수동 연결 필요"; AGENT_SCRIPT="" ;;
+        Darwin)
+          AGENT_SCRIPT="$SCRIPT_DIR/mac-agent-setup.sh"
+          AGENT_LABEL="mac-agent-setup"
+          ;;
+        Linux)
+          AGENT_SCRIPT="$SCRIPT_DIR/wsl-agent-setup.sh"
+          AGENT_LABEL="wsl-agent-setup"
+          ;;
+        MINGW*|MSYS*|CYGWIN*)
+          # Git Bash / MSYS2 / Cygwin on Windows — wsl-agent-setup.sh 가 apt/sudo 같은
+          # Linux 명령에 의존하므로 같은 셸에서 직접 실행하면 깨짐. WSL2 distro 안에서
+          # 실행하도록 `wsl bash` 로 위임. SCRIPT_DIR 의 /c/... 형식을 /mnt/c/... 로 변환.
+          if command -v wsl.exe >/dev/null 2>&1 || command -v wsl >/dev/null 2>&1; then
+            WSL_SCRIPT_DIR=$(echo "$SCRIPT_DIR" | sed 's|^/\([a-zA-Z]\)/|/mnt/\1/|')
+            AGENT_SCRIPT="$WSL_SCRIPT_DIR/wsl-agent-setup.sh"
+            AGENT_LABEL="wsl-agent-setup (via wsl bash → WSL2 distro)"
+            AGENT_INVOKE="wsl"
+          else
+            log "  [5-4] ⚠ wsl 명령 없음 (WSL2 미설치) — agent 수동 연결 필요: NODE_SECRET=$NODE_SECRET ./wsl-agent-setup.sh"
+          fi
+          ;;
+        *)
+          log "  [5-4] ⚠ 알 수 없는 OS ($(uname -s)) — agent 수동 연결 필요"
+          ;;
       esac
       if [ -n "$AGENT_SCRIPT" ]; then
         log "  [5-4] $AGENT_LABEL 기동 (분리 실행 + /tmp/dscore-agent.log 로 리다이렉트)"
         # agent-setup 스크립트 자신이 기존 프로세스 정리 + 새 연결 수행
-        if command -v setsid >/dev/null 2>&1; then
+        if [ "$AGENT_INVOKE" = "wsl" ]; then
+          # Windows Git Bash → WSL2 distro 안 nohup 으로 위임. 로그는 WSL2 의 /tmp/.
+          # Windows 에서 보려면 \\wsl$\<distro>\tmp\dscore-agent.log
+          wsl bash -lc "nohup env NODE_SECRET='$NODE_SECRET' bash '$AGENT_SCRIPT' </dev/null >/tmp/dscore-agent.log 2>&1 &" \
+            >/dev/null 2>&1 &
+          disown 2>/dev/null || true
+        elif command -v setsid >/dev/null 2>&1; then
           setsid env NODE_SECRET="$NODE_SECRET" bash "$AGENT_SCRIPT" \
             </dev/null >/tmp/dscore-agent.log 2>&1 &
           disown
@@ -401,7 +452,11 @@ if [ "$REDEPLOY" = "true" ]; then
           disown
         fi
         sleep 3
-        log "  [5-4] 로그 위치: /tmp/dscore-agent.log  (tail -f 로 진행 관찰 가능)"
+        if [ "$AGENT_INVOKE" = "wsl" ]; then
+          log "  [5-4] 로그 위치: WSL2 의 /tmp/dscore-agent.log  (Windows 에서 'wsl tail -f /tmp/dscore-agent.log')"
+        else
+          log "  [5-4] 로그 위치: /tmp/dscore-agent.log  (tail -f 로 진행 관찰 가능)"
+        fi
         log "  [5-4] Jenkins Node online 확인: "
         log "        curl -sf -u admin:password \$JENKINS_URL/computer/mac-ui-tester/api/json | grep offline   # Mac"
         log "        curl -sf -u admin:password \$JENKINS_URL/computer/wsl-ui-tester/api/json | grep offline   # Windows(WSL2)"
@@ -432,17 +487,20 @@ log "                              — Mac: macOS 네이티브 창"
 log "                              — WSL2: WSLg 경유 Windows 데스크탑 창"
 log ""
 log "[사전 준비 — 호스트 Mac]"
-log "  A. Ollama:  brew install ollama && brew services start ollama && ollama pull ${OLLAMA_MODEL}"
+log "  A. Ollama:  brew install ollama && brew services start ollama && ollama pull gemma4:26b && ollama pull bge-m3"
 log "  B. JDK 21:  brew install --cask temurin@21   (또는 openjdk@21)"
 log "  C. Python:  brew install python@3.12   (3.11+)"
 log ""
 log "[사전 준비 — Windows 11 하이브리드 (Ollama = Windows 네이티브, agent = WSL2 Ubuntu)]"
 log "  0. Windows NVIDIA 드라이버 + WSL2 + Ubuntu 22.04 설치 (PowerShell 관리자: wsl --install -d Ubuntu-22.04)"
-log "  A. Ollama (Windows 네이티브 — PowerShell): winget install Ollama.Ollama && ollama pull ${OLLAMA_MODEL}"
+log "  A. Ollama (Windows 네이티브 — PowerShell): winget install Ollama.Ollama && ollama pull qwen3.5:9b && ollama pull bge-m3"
 log "     (Windows Ollama 가 host.docker.internal 로 Docker Desktop 포워딩되어 컨테이너에서 사용됨)"
 log "  B. WSL2 Ubuntu 안 — JDK 21:  sudo apt install -y openjdk-21-jdk-headless"
 log "  C. WSL2 Ubuntu 안 — Python:  sudo apt install -y python3.12 python3.12-venv"
 log "  D. Docker:  Docker Desktop (WSL2 백엔드) 또는 WSL native Docker Engine"
+log ""
+log "  ※ 이 빌드에서 결정된 LLM 기본값: $OLLAMA_MODEL  (호스트 OS=$(uname -s) 기준)"
+log "  ※ 임베딩 기본값: ${EMBEDDING_MODEL:-bge-m3:latest}"
 log ""
 log "[이미지 로드 및 컨테이너 기동 — 호스트 플랫폼에 맞는 AGENT_NAME 주입]"
 log "  docker load -i $OUTPUT_TAR"
@@ -459,6 +517,7 @@ log "    -v \"\$HOST_RECORDINGS_DIR\":/recordings:rw \\"
 log "    --add-host host.docker.internal:host-gateway \\"
 log "    -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \\"
 log "    -e OLLAMA_MODEL=${OLLAMA_MODEL} \\"
+log "    -e EMBEDDING_MODEL=${EMBEDDING_MODEL:-bge-m3:latest} \\"
 log "    -e AGENT_NAME=\"\$AGENT_NAME\" \\"
 log "    --restart unless-stopped \\"
 log "    $IMAGE_TAG"

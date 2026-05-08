@@ -14,7 +14,8 @@
 | 컨테이너 이름 | `dscore.ttc.playwright` |
 | 데이터 볼륨 | `dscore-data` → `/data` |
 | Recording bind mount | host recordings dir → `/recordings` |
-| 기본 Ollama 모델 | `gemma4:26b` |
+| 기본 Ollama LLM (OS 분기) | Mac → `gemma4:26b` / WSL2·Linux·Windows → `qwen3.5:9b` |
+| 기본 임베딩 모델 | `bge-m3:latest` (호스트 Ollama) |
 | DSL | 14대 표준 액션 + 보조 액션 |
 | 테스트 컬렉션 | 699건 (`python3 -m pytest --collect-only -q test`) |
 
@@ -163,7 +164,8 @@ Recording UI session 예:
 | `DATA_VOLUME` | `dscore-data` | Docker volume |
 | `TARGET_PLATFORM` | 자동 | `linux/arm64` 또는 `linux/amd64` |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | 컨테이너에서 볼 Ollama URL |
-| `OLLAMA_MODEL` | `gemma4:26b` | Dify provider 등록 모델 |
+| `OLLAMA_MODEL` | OS 별 자동 (Mac=`gemma4:26b`, WSL2/Linux/Windows=`qwen3.5:9b`) | Dify provider 등록 LLM. chatflow YAML 의 placeholder 도 import 시 이 값으로 자동 치환 |
+| `EMBEDDING_MODEL` | `bge-m3:latest` | Dify provider 등록 임베딩 (Test Planning RAG KB 용) |
 | `AGENT_NAME` | 플랫폼별 | `mac-ui-tester` 또는 `wsl-ui-tester` |
 | `DIFY_PUBLIC_URL` | `http://localhost:18081` | Dify public/share URL |
 

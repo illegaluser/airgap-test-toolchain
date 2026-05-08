@@ -1253,6 +1253,13 @@ class QAExecutor:
             return None
         if not new_target_info:
             return None
+        # extract_json_safely 가 배열 응답을 list 로 반환하는 경우 — 첫 dict 로 언래핑
+        if isinstance(new_target_info, list):
+            new_target_info = next(
+                (x for x in new_target_info if isinstance(x, dict)), None
+            )
+            if not new_target_info:
+                return None
         # target / value / condition / fallback_targets 는 자유롭게 mutate 허용.
         # action 변경은 화이트리스트 전이만 허용 (false-PASS 위험 차단).
         allowed_keys = {"target", "value", "condition", "fallback_targets"}

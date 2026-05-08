@@ -2,15 +2,19 @@
 # Test Planning Brain — Dify Chatflow DSL (v0.1.0)
 #
 # Test Planning RAG 트랙의 신규 챗봇. 사용자 자연어 요청을 받아 두 KB
-# (kb_project_info / kb_test_theory) 에서 retrieve 한 후 gemma4:26b 로
+# (kb_project_info / kb_test_theory) 에서 retrieve 한 후 호스트 Ollama LLM 으로
 # 테스트 계획서 / 시나리오 / 14-DSL JSON 을 생성한다.
 #
 # 자세한 설계: docs/PLAN_TEST_PLANNING_RAG.md 참조.
 #
 # 자동 import: provision.sh 의 dify_import_chatflow() 함수가 KB ID 두 개를
-# 빈 dataset_ids 리스트에 순서대로 substitute 한 뒤 import + publish.
+# 빈 dataset_ids 리스트에 순서대로 substitute 하고, 본문 placeholder
+# `gemma4:26b` 를 환경변수 `OLLAMA_MODEL` 값으로 치환한 뒤 import + publish.
 #
-# 모델: gemma4:26b (호스트 Ollama). 변경 시 planner_llm 노드의 model.name 만 수정.
+# 모델: placeholder = `gemma4:26b`. OS 별 기본값:
+#   · macOS (mac-agent-setup.sh) → gemma4:26b
+#   · WSL2  (wsl-agent-setup.sh) → qwen3.5:9b
+# 수동 import 시에는 planner_llm 노드의 model.name 을 직접 수정.
 # =============================================================================
 
 kind: app

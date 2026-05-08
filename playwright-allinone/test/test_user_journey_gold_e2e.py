@@ -33,6 +33,11 @@ from _authn_fixture_site import start_authn_site
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENV_PY = os.environ.get("E2E_PYTHON", sys.executable)
 
+# 기본 headless. `E2E_HEADED=1` 환경변수일 때만 tour 스크립트 launch + executor
+# 가 headed 로 동작 — 사용자가 녹화/재생 동작을 화면에서 직접 확인하는 수동
+# 디버깅 경로. pre-commit 은 env 미설정 → 항상 headless.
+_HEADED = os.environ.get("E2E_HEADED") == "1"
+
 
 @pytest.fixture
 def authn_site():
@@ -98,7 +103,7 @@ def test_user_journey_seed_to_play_with_real_subprocess(
         seed_url=authn_site,
         storage_path=storage,
         fingerprint=_StubFP(),
-        headless=True,
+        headless=not _HEADED,
         preflight_verify=True,
         verify_service_url="",
         verify_service_text="",
@@ -131,8 +136,9 @@ def test_user_journey_seed_to_play_with_real_subprocess(
         "--mode", "execute",
         "--scenario", str(scenario_path),
         "--storage-state-in", str(storage),
-        "--headless",
     ]
+    if not _HEADED:
+        cmd.append("--headless")
     proc = subprocess.run(cmd, env=env, capture_output=True, timeout=120)
     if proc.returncode != 0:
         pytest.fail(
