@@ -19,7 +19,7 @@ from . import profile_cmd, replay_cmd
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="monitor",
-        description="모니터링 PC 의 CLI — bundle 실행 / alias 시드 관리",
+        description="모니터링 PC CLI — 시나리오 묶음 실행 / 로그인 프로파일 관리",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

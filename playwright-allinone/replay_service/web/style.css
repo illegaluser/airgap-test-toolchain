@@ -231,3 +231,40 @@ button.ghost {
 .wizard-steps code {
   background: var(--card-bg); padding: 0.1rem 0.35rem; border-radius: 3px;
 }
+
+/* 시드 모달 (Recording UI 미러) */
+.modal-row.checkbox {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+.modal-row.checkbox input[type="checkbox"] { margin: 0; }
+.modal-hint {
+  margin: 0.25rem 0 0.5rem 130px;
+  font-size: 0.82rem;
+  font-style: normal;
+}
+.modal-hint em {
+  font-style: italic;
+  color: var(--muted);
+}
+.modal-warning {
+  background: #fff3cd;
+  border: 1px solid #ffe69c;
+  color: #664d03;
+  padding: 0.5rem 0.75rem;
+  margin: 0.75rem 0;
+  border-radius: 4px;
+  font-size: 0.88rem;
+}
+.seed-steps {
+  padding-left: 1.4rem;
+  line-height: 1.7;
+  margin: 0.5rem 0 1rem;
+}
+.seed-steps li { margin: 0.15rem 0; }
+.seed-steps li strong { color: var(--accent); }
+.seed-status {
+  margin: 0.6rem 0 0.25rem;
+  font-weight: 600;
+  font-style: normal;
+}
