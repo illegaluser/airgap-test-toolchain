@@ -7,12 +7,27 @@
 
 | 분류 | 통과 | 미수행 | 합계 |
 |---|---|---|---|
-| 자동 (pytest) | **22 / 22** | — | 22 |
-| 수동 — 단일 호스트 검증 (브라우저 필요) | — | T1, T3, T4, T5, T9, T10, T11(수동시드 분기) | 7 |
-| 수동 — 클린 OS 프로비저닝 | — | T2, T6, T7, T15 | 4 |
-| 수동 — 회귀 / 정책 | — | T8, T13, T14, T16–T20 | 9 |
+| 자동 (pytest 22) | **22 / 22** | — | 22 |
+| 자동 (manual_integration_smoke) | **10 / 10** | — | 10 |
+| 수동 — 브라우저/실 사이트 필요 | — | T2, T4, T5, T6, T7, T9, T10, T11(시드 분기), T13, T15, T16 | 11 |
+| 수동 — 회귀 | — | T8 | 1 |
 
-자동 22개는 모두 PASS, 수동 20개는 운영자/테스터 환경에서 수행 필요.
+총 32 자동 PASS + 12 수동 미수행. 자동 검증 가능한 모든 항목이 통과.
+
+### 자동 smoke 결과 (`python manual_integration_smoke.py`)
+
+| 케이스 | 결과 | 비고 |
+|---|---|---|
+| T14 LAN 거부 | ✅ PASS | LAN IP 로 접속 시도 → 거부 |
+| T18-first-upload | ✅ PASS | 최초 업로드 201 |
+| T18-second-conflict | ✅ PASS | 동일 이름 → 409 |
+| T18-overwrite | ✅ PASS | overwrite=1 → 201 |
+| T17 사전 차단 | ✅ PASS | 시드 안 된 alias 실행 → 412 |
+| T19 endpoint | ✅ PASS | /api/profiles missing 카운트 정상 |
+| T20-elapsed | ✅ PASS | 응답 없는 URL → 5±2s 후 종료 |
+| T20-result | ✅ PASS | system_error 분기 |
+| T1 정상 흐름 | ✅ PASS | probe valid + script ok → exit 0 |
+| T3 만료 분기 | ✅ PASS | probe expired → exit 3 + jsonl |
 
 ## 자동 검증된 항목 (pytest 22개)
 

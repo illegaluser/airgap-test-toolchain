@@ -170,6 +170,7 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 | [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) | **처음 한 번 성공시키기** — 사전 요구사항, 빌드, 기동 확인, 첫 Pipeline, 첫 녹화·재생 |
 | [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md) | Recording UI 의 6개 카드 (Login Profile / Discover / Recording / Play / 결과 / 세션) 카드별 사용법 |
 | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) | 재배포 / 백업·복원 / 모델 변경 / Recording UI 서비스 재기동 / 장애 대응 |
+| [playwright-allinone_REPLAY_UI.md](playwright-allinone_REPLAY_UI.md) | **모니터링 PC 운영자 / 테스터 용 — Replay UI 설치 + 사용 가이드** |
 | [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md) | Replay UI · 모니터링 PC bundle 흐름 통합 테스트 매트릭스 (자동 22 + 수동 20) |
 | [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) | 포트 / 볼륨 / 환경변수 / 데이터 구조 / DSL 액션 14종 / API 계약 |
 | [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md) | 자주 발생하는 녹화·재생 에러 모음 |
