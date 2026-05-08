@@ -2,7 +2,7 @@
 
 이 문서는 호스트에서 도는 **Recording UI** (포트 18092) 의 모든 기능을 설명한다.
 
-처음 시스템을 띄우는 절차는 [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) 에 있다. 본 문서는 Recording UI 가 떠 있다고 전제한다.
+처음 시스템을 띄우는 절차는 [quickstart.md](quickstart.md) 에 있다. 본 문서는 Recording UI 가 떠 있다고 전제한다.
 
 ## 목차
 
@@ -413,8 +413,8 @@ OpenAPI 자동 문서 — `http://localhost:18092/docs`.
 
 | 알고 싶은 것 | 문서 |
 | --- | --- |
-| 시스템을 처음 띄우기 | [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) |
-| 운영 (재배포 / 백업 / 로그) | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) |
-| 포트 / 환경변수 / DSL 계약 | [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) |
+| 시스템을 처음 띄우기 | [quickstart.md](quickstart.md) |
+| 운영 (재배포 / 백업 / 로그) | [operations.md](operations.md) |
+| 포트 / 환경변수 / DSL 계약 | [reference.md](reference.md) |
 | 트러블슈팅 모음 | [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md) |
 | 자동 정리 결정 배경 | [docs/PLAN_RECORDING_DEDUPE_AND_POPUP_RACE.md](docs/PLAN_RECORDING_DEDUPE_AND_POPUP_RACE.md) |

@@ -30,7 +30,7 @@
     포함.
   - 회귀: `test_recording_service.py` 140 PASS (기존 135 + 신규 5
     position 케이스). UI e2e 의 step-add-form 케이스 2 PASS.
-- 운영 매뉴얼: `playwright-allinone_OPERATIONS.md` §10 트러블슈팅 표에 두
+- 운영 매뉴얼: `operations.md` §10 트러블슈팅 표에 두
   항목 추가 (Dify 연결 실패 / codegen 이 wheel 안 잡힘).
 
 > **본 문서는 단기 hotfix 묶음입니다.** 근본 해결 (codegen 의존 제거 — 자체
@@ -144,7 +144,7 @@ scenario.json 의 selector DSL 에 신규 prefix `title=<value>` 추가. convert
   POST 실패 분기에서 `requests.exceptions.ConnectionError` 의
   `Connection refused` / `Name or service not known` 만 잡아 운영자용 한국어
   가이드를 error 메시지에 prepend. 기존 raw 메시지는 보존 (디버깅용).
-- README 또는 `playwright-allinone_OPERATIONS.md` 에 Dify endpoint 항목 한 줄
+- README 또는 `operations.md` 에 Dify endpoint 항목 한 줄
   추가 — 본 PLAN 작업과는 별개로 link 만 추가.
 
 ### 검증

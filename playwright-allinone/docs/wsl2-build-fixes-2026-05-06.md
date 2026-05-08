@@ -118,7 +118,7 @@ KB 자동 생성은 어쨌든 진행되지만 매 실행마다 빨간 줄이 나
 
 ### 8. EMBEDDING_MODEL 사용자 override 무력
 
-**문제** — `playwright-allinone_REFERENCE.md` 에 `EMBEDDING_MODEL` 이 override 가능한 환경변수로 문서화되어 있지만, `build.sh` 의 `docker run` 에 `-e EMBEDDING_MODEL` 항이 없어 컨테이너 안 `provision.sh` 는 항상 default `bge-m3:latest` 만 사용.
+**문제** — `reference.md` 에 `EMBEDDING_MODEL` 이 override 가능한 환경변수로 문서화되어 있지만, `build.sh` 의 `docker run` 에 `-e EMBEDDING_MODEL` 항이 없어 컨테이너 안 `provision.sh` 는 항상 default `bge-m3:latest` 만 사용.
 
 **해결** — `docker run` 에 `-e EMBEDDING_MODEL="${EMBEDDING_MODEL:-bge-b3:latest}"` 추가. 사용자가 사내 임베딩 (예: `bge-m3-korean`) 으로 교체 가능.
 
@@ -148,7 +148,7 @@ KB 자동 생성은 어쨌든 진행되지만 매 실행마다 빨간 줄이 나
 | `playwright-allinone/dify-chatflow.yaml` | 헤더 주석 — placeholder 운영 안내 |
 | `playwright-allinone/test-planning-chatflow.yaml` | 헤더 주석 — placeholder 운영 안내 |
 
-문서 동기화: `README.md`, `playwright-allinone_QUICKSTART.md`, `playwright-allinone_REFERENCE.md`, `playwright-allinone_OPERATIONS.md`.
+문서 동기화: `README.md`, `quickstart.md`, `reference.md`, `operations.md`.
 
 ## 사용자 체크리스트 (다음 빌드 전)
 

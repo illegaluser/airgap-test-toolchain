@@ -1,6 +1,6 @@
 # playwright-allinone_OPERATIONS
 
-이 문서는 이미 한 번 실행에 성공한 운영자가 반복적으로 수행하는 절차를 정리한다. 처음 설치하는 사람은 먼저 [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) 를 본다. Recording UI 카드별 사용법은 [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md), 포트·파일·환경변수의 정확한 목록은 [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) 를 본다.
+이 문서는 이미 한 번 실행에 성공한 운영자가 반복적으로 수행하는 절차를 정리한다. 처음 설치하는 사람은 먼저 [quickstart.md](quickstart.md) 를 본다. Recording UI 카드별 사용법은 [recording-ui.md](recording-ui.md), 포트·파일·환경변수의 정확한 목록은 [reference.md](reference.md) 를 본다.
 
 ## 1. 표준 실행 방식
 
@@ -284,4 +284,4 @@ python3 -m pytest --collect-only -q test
 | Dify share URL에 포트가 빠짐 | `APP_WEB_URL`/`DIFY_PUBLIC_URL` | 표준 `18081:18081` 매핑 사용 또는 `DIFY_PUBLIC_URL` 지정 |
 | 빌드 디스크 부족 | Docker disk usage 확인 | `docker builder prune -a -f` |
 
-더 깊은 원인 분석이 필요하면 [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md)의 로그와 파일 위치를 확인한다.
+더 깊은 원인 분석이 필요하면 [reference.md](reference.md)의 로그와 파일 위치를 확인한다.
