@@ -1,0 +1,34 @@
+"""monitor — 모니터링 PC 의 CLI 진입점.
+
+Usage::
+
+    python -m monitor replay <bundle.zip> --out <dir>
+    python -m monitor profile list
+    python -m monitor profile seed <alias> --target <url>
+    python -m monitor profile delete <alias>
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from . import profile_cmd, replay_cmd
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="monitor",
+        description="모니터링 PC 의 CLI — bundle 실행 / alias 시드 관리",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    replay_cmd.register(sub)
+    profile_cmd.register(sub)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
