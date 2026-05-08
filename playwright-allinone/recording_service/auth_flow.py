@@ -279,7 +279,11 @@ def unpack_bundle(zip_bytes: bytes, target_dir: Path) -> dict:
     보안: 절대경로 / 상위 디렉토리 탈출 (zip slip) 거부.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile as e:
+        raise BundleError(f"유효하지 않은 zip: {e}") from e
+    with zf as z:
         for name in z.namelist():
             if name.startswith("/") or ".." in Path(name).parts:
                 raise BundleError(f"안전하지 않은 zip entry 거부: {name}")
