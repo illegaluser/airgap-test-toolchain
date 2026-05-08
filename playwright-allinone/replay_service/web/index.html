@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>Replay UI</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header>
+  <h1>🎬 Replay UI</h1>
+  <span id="alarm-badge" class="alarm hidden" title="시드 만료 alias 수"></span>
+  <span class="spacer"></span>
+  <button id="btn-wizard" type="button" title="첫 사용 가이드 (alias 시드 → bundle 업로드 → 실행)">
+    🧭 첫 사용 가이드
+  </button>
+</header>
+
+<main>
+
+  <!-- 🔐 Login Profile -->
+  <section class="card">
+    <h2>🔐 Login Profile</h2>
+    <div class="card-actions">
+      <button id="btn-add-alias" type="button">+ alias 추가</button>
+      <button id="btn-refresh-profiles" type="button" class="ghost">↻ 새로고침</button>
+    </div>
+    <table id="profiles-table" class="data-table">
+      <thead>
+        <tr>
+          <th>alias</th><th>Storage</th><th>마지막 verify</th><th>service</th><th>액션</th>
+        </tr>
+      </thead>
+      <tbody id="profiles-tbody">
+        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 📦 Bundle -->
+  <section class="card">
+    <h2>📦 Bundle</h2>
+    <div class="card-actions">
+      <input type="file" id="bundle-file" accept=".zip" hidden />
+      <button id="btn-upload-bundle" type="button">⬆ 업로드</button>
+      <button id="btn-refresh-bundles" type="button" class="ghost">↻ 새로고침</button>
+    </div>
+    <table id="bundles-table" class="data-table">
+      <thead>
+        <tr>
+          <th>시나리오</th><th>alias</th><th>등록일</th><th>크기</th><th>액션</th>
+        </tr>
+      </thead>
+      <tbody id="bundles-tbody">
+        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ▶ Run (실시간) -->
+  <section class="card">
+    <h2>▶ Run (실시간)</h2>
+    <div id="run-status" class="muted">— 대기 —</div>
+    <pre id="run-stream" class="run-stream"></pre>
+  </section>
+
+  <!-- 📊 Results -->
+  <section class="card">
+    <h2>📊 Results</h2>
+    <div class="card-actions">
+      <button id="btn-refresh-runs" type="button" class="ghost">↻ 새로고침</button>
+    </div>
+    <table id="runs-table" class="data-table">
+      <thead>
+        <tr>
+          <th>시간</th><th>시나리오</th><th>alias</th><th>결과</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="runs-tbody">
+        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</main>
+
+<!-- 모달들 -->
+
+<!-- alias 추가 모달 (B1 의 1단계 + alias 추가 진입점 통합) -->
+<div id="alias-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-modal-close="alias-modal"></div>
+  <div class="modal-body">
+    <h3 id="alias-modal-title">+ alias 추가</h3>
+    <p class="muted">alias 이름과 사이트 진입 URL 을 입력해 주세요. 다음 단계에서 브라우저가 열려 직접 로그인하시면 됩니다.</p>
+    <label class="modal-row">
+      <span>alias 이름</span>
+      <input id="alias-name" type="text" placeholder="packaged" />
+    </label>
+    <label class="modal-row">
+      <span>target URL</span>
+      <input id="alias-target" type="text" placeholder="https://example.com/" />
+    </label>
+    <div class="modal-actions">
+      <button type="button" class="modal-cancel" data-modal-close="alias-modal">✗ 취소</button>
+      <button type="button" id="alias-confirm" class="primary">✓ 시드 시작</button>
+    </div>
+  </div>
+</div>
+
+<!-- 시드 진행상황 모달 -->
+<div id="seed-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-modal-close="seed-modal"></div>
+  <div class="modal-body">
+    <h3>🌱 시드 진행 중</h3>
+    <p id="seed-message" class="muted">브라우저에서 직접 로그인 후 창을 닫아 주세요.</p>
+    <p class="muted">시드 완료 후 자동으로 모달이 닫힙니다.</p>
+    <div class="modal-actions">
+      <button type="button" class="modal-cancel" data-modal-close="seed-modal">닫기</button>
+    </div>
+  </div>
+</div>
+
+<!-- Run 상세 모달 (Results [상세→]) -->
+<div id="detail-modal" class="modal modal-wide" hidden>
+  <div class="modal-backdrop" data-modal-close="detail-modal"></div>
+  <div class="modal-body">
+    <div class="detail-header">
+      <button type="button" class="ghost" data-modal-close="detail-modal">← 목록으로</button>
+      <h3 id="detail-title">실행 상세</h3>
+      <a id="detail-report" class="dl-link" href="#" target="_blank">📥 HTML 리포트</a>
+    </div>
+    <div id="detail-meta" class="detail-meta muted"></div>
+    <div class="detail-body">
+      <ul id="detail-steps" class="step-list"></ul>
+      <div class="detail-screenshot">
+        <img id="detail-shot" alt="" />
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 첫 사용 가이드 wizard -->
+<div id="wizard-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-modal-close="wizard-modal"></div>
+  <div class="modal-body">
+    <h3>🧭 첫 사용 가이드</h3>
+    <ol class="wizard-steps">
+      <li><strong>1단계</strong> — Login Profile 카드의 <code>+ alias 추가</code> 로 alias 이름과 사이트 진입 URL 을 입력</li>
+      <li><strong>2단계</strong> — 자동으로 브라우저가 열리면 직접 로그인 후 창을 닫아 주세요. storage 가 카탈로그에 저장됩니다.</li>
+      <li><strong>3단계</strong> — Bundle 카드의 <code>⬆ 업로드</code> 로 녹화 PC 에서 받은 <code>&lt;sid&gt;.bundle.zip</code> 을 올립니다.</li>
+      <li><strong>4단계</strong> — Bundle 행의 <code>▶ 실행</code> 으로 첫 번째 모니터링 실행을 확인합니다.</li>
+    </ol>
+    <div class="modal-actions">
+      <button type="button" class="primary" data-modal-close="wizard-modal">시작하기</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
