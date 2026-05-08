@@ -33,19 +33,19 @@
 
 ## 모니터링 PC 로 시나리오 옮기기 (Replay UI)
 
-녹화 PC 에서 만든 시나리오를 다른 PC 들에서 무인으로 돌리고 싶을 때:
+녹화 PC 에서 만든 시나리오를 다른 PC 들에서 무인으로 자동 실행하고 싶을 때:
 
-1. **녹화 PC**: Recording UI 의 결과 카드 → "Original Script" 카드의 `[📦 모니터링 번들 다운로드]` → `<sid>.bundle.zip` 받기
-2. **모니터링 PC**: `monitor-runtime-<ts>.zip` 풀고 `install-monitor` 한 번 실행 (Mac=`bash install-monitor.sh`, Windows=`install-monitor.ps1`)
-3. **모니터링 PC**: <http://127.0.0.1:18094> Replay UI 에서 alias 시드 → bundle 업로드 → 실행 → 스텝별 스크린샷 + HTML 리포트 검증
+1. **녹화 PC** — Recording UI 의 결과 카드 → "Original Script" 카드의 `[📦 모니터링 번들 다운로드]` → `<세션ID>.bundle.zip` 을 받는다.
+2. **모니터링 PC (1회 설치)** — `monitor-runtime-<날짜시각>.zip` 을 풀고 `install-monitor` 한 번 실행 (Mac/Linux = `bash install-monitor.sh`, Windows = `install-monitor.ps1`).
+3. **모니터링 PC (사용)** — <http://127.0.0.1:18094> 에서 로그인 프로파일을 한 번 등록 (사람이 직접 로그인) → 받은 시나리오 묶음 zip 업로드 → 실행 → 스텝별 스크린샷 + HTML 리포트로 검증.
 
 | 도구 | 위치 |
 | --- | --- |
-| Replay UI | <http://127.0.0.1:18094> (모니터링 PC, localhost only) |
-| CLI replay | `python -m monitor replay <bundle.zip> --out <dir>` |
-| CLI 시드 | `python -m monitor profile seed <alias> --target <url>` |
+| Replay UI | <http://127.0.0.1:18094> (모니터링 PC 자기 자신만 접속, LAN 노출 X) |
+| CLI 실행 | `python -m monitor replay <시나리오묶음.zip> --out <결과 폴더>` |
+| CLI 로그인 등록 | `python -m monitor profile seed <프로파일이름> --target <사이트 URL>` |
 
-상세 동선 / 보안 정책 / 자동 프로비저닝 옵션은 [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md) 의 매뉴얼 + 계획서 (`.claude/plans/squishy-wishing-emerson.md`).
+처음 보는 사용자가 따라할 수 있게 단계별로 정리한 문서는 [docs/replay-ui-guide.md](docs/replay-ui-guide.md). 통합 테스트 매트릭스는 [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md). 설계 결정 배경은 `.claude/plans/squishy-wishing-emerson.md`.
 
 ## 가장 짧은 시작
 

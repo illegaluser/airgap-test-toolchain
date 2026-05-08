@@ -2451,8 +2451,8 @@ const _bundleModal = {
     const verifyUrl = $("#bundle-verify-url").value.trim();
     const scriptSource = $("#bundle-script-source").value;
     const consent = $("#bundle-consent-plain-pw").checked ? 1 : 0;
-    if (!alias) { alert("alias 이름을 입력해 주세요"); return; }
-    if (!verifyUrl) { alert("probe URL 을 입력해 주세요"); return; }
+    if (!alias) { alert("로그인 프로파일 이름을 입력해 주세요"); return; }
+    if (!verifyUrl) { alert("로그인 상태 확인 URL 을 입력해 주세요"); return; }
     const url = `/recording/sessions/${encodeURIComponent(sid)}/bundle`
       + `?alias=${encodeURIComponent(alias)}`
       + `&verify_url=${encodeURIComponent(verifyUrl)}`
@@ -2470,7 +2470,7 @@ const _bundleModal = {
       return;
     }
     if (!resp.ok) {
-      alert(`bundle 다운로드 실패: HTTP ${resp.status}`);
+      alert(`시나리오 묶음 다운로드 실패: HTTP ${resp.status}`);
       return;
     }
     const blob = await resp.blob();

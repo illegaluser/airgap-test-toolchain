@@ -1,10 +1,10 @@
 // Replay UI — 정적 클라이언트.
 //
 // 주요 흐름:
-// - 5초 폴링으로 profiles / bundles / runs 갱신
-// - 시드 / 실행 subprocess 진행상황은 별도 polling
-// - Run 상세는 모달 + 스텝/스크린샷 lightbox
-// - 글로벌 알람 인디케이터 = 시드 missing alias 수
+// - 5초 폴링으로 프로파일 / 시나리오 묶음 / 실행 결과 갱신
+// - 로그인 등록 / 실행 subprocess 진행상황은 별도 polling
+// - 실행 상세는 모달 + 스텝/스크린샷 lightbox
+// - 글로벌 알람 인디케이터 = 다시 로그인이 필요한 프로파일 수
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -41,7 +41,7 @@ async function loadProfiles() {
   tbody.innerHTML = "";
   let expiredCount = 0;
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 alias 없음 —</td></tr>';
+    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 프로파일 없음 —</td></tr>';
   } else {
     for (const p of data) {
       const tr = document.createElement("tr");
@@ -49,35 +49,31 @@ async function loadProfiles() {
       if (!storageOk) expiredCount += 1;
       tr.innerHTML = `
         <td><strong>${escapeHtml(p.alias)}</strong></td>
-        <td>${storageOk ? "<span class='ok'>시드됨</span>" : "<span class='expired'>🔴 시드 필요</span>"}</td>
+        <td>${storageOk ? "<span class='ok'>등록됨</span>" : "<span class='expired'>🔴 다시 로그인 필요</span>"}</td>
         <td>${escapeHtml(p.last_verified_at || "-")}</td>
         <td>${escapeHtml(p.service_domain || "-")}</td>
         <td>
-          <button class="reseed-btn ghost" data-alias="${escapeHtml(p.alias)}">↻ Re-seed</button>
+          <button class="reseed-btn ghost" data-alias="${escapeHtml(p.alias)}">↻ 다시 로그인</button>
           <button class="del-profile-btn ghost" data-alias="${escapeHtml(p.alias)}">🗑</button>
         </td>`;
       tbody.appendChild(tr);
     }
   }
-  // 글로벌 알람 인디케이터 (B3).
+  // 글로벌 알람 인디케이터.
   const badge = $("#alarm-badge");
   if (expiredCount > 0) {
-    badge.textContent = `🔴 ${expiredCount} 시드 만료`;
+    badge.textContent = `🔴 ${expiredCount} 만료`;
     badge.classList.remove("hidden");
   } else {
     badge.classList.add("hidden");
   }
-  // 알라이아스 별 액션 wire.
+  // 프로파일 행별 액션 wire.
   $$(".reseed-btn").forEach((b) => {
-    b.addEventListener("click", () => {
-      const alias = b.dataset.alias;
-      const url = prompt(`alias '${alias}' 의 target URL 을 입력하세요`, "https://");
-      if (url) startSeed(alias, url);
-    });
+    b.addEventListener("click", () => openReseed(b.dataset.alias));
   });
   $$(".del-profile-btn").forEach((b) => {
     b.addEventListener("click", async () => {
-      if (!confirm(`alias '${b.dataset.alias}' 삭제할까요?`)) return;
+      if (!confirm(`프로파일 '${b.dataset.alias}' 을 삭제할까요?`)) return;
       const r = await fetch(`/api/profiles/${encodeURIComponent(b.dataset.alias)}`, { method: "DELETE" });
       if (r.ok) loadProfiles();
       else alert(`삭제 실패: HTTP ${r.status}`);
@@ -85,40 +81,123 @@ async function loadProfiles() {
   });
 }
 
-async function startSeed(alias, target) {
-  const r = await fetch(`/api/profiles/${encodeURIComponent(alias)}/seed`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target_url: target }),
-  });
-  if (!r.ok) {
-    alert(`시드 시작 실패: HTTP ${r.status}`);
-    return;
+// --- 시드 흐름 (Recording UI 미러) -------------------------------------------
+//
+//  (1) openSeedInput(prefill?)              — 입력 모달 (이름·시작URL·검증URL·검증텍스트·TTL·probe)
+//  (2) form submit → startSeedFlow(payload) — POST /api/profiles/seed + 진행 모달 + 1초 폴링
+//  (3) phase 추적: starting / login_waiting / verifying / ready / error
+//  (4) openReseed(name)                     — GET /api/profiles/{name} → 입력 모달 prefill
+
+let _seedPollTimer = null;
+let _lastSeedPayload = null;  // 만료 → 다시 로그인 시 입력 prefill
+
+function openSeedInput(prefill) {
+  const form = $("#seed-input-form");
+  form.reset();
+  $("#seed-input-title").textContent = prefill ? "↻ 다시 로그인" : "+ 새 로그인 프로파일";
+  if (prefill) {
+    if (prefill.name) form.elements["name"].value = prefill.name;
+    if (prefill.seed_url) form.elements["seed_url"].value = prefill.seed_url;
+    if (prefill.verify_service_url) form.elements["verify_service_url"].value = prefill.verify_service_url;
+    if (prefill.verify_service_text) form.elements["verify_service_text"].value = prefill.verify_service_text;
+    if (prefill.ttl_hint_hours) form.elements["ttl_hint_hours"].value = prefill.ttl_hint_hours;
+    if (prefill.naver_probe !== undefined) form.elements["naver_probe"].checked = !!prefill.naver_probe;
   }
-  $("#seed-modal").hidden = false;
-  $("#seed-message").textContent = "브라우저에서 직접 로그인 후 창을 닫아 주세요.";
-  pollSeedStatus(alias);
+  $("#seed-input-modal").hidden = false;
 }
 
-async function pollSeedStatus(alias) {
-  const interval = setInterval(async () => {
-    const r = await fetch(`/api/profiles/${encodeURIComponent(alias)}/seed/status`);
+async function openReseed(name) {
+  // 카탈로그에 저장된 verify spec 을 가져와 입력 모달을 prefill.
+  let detail = null;
+  try {
+    const r = await fetch(`/api/profiles/${encodeURIComponent(name)}`);
+    if (r.ok) detail = await r.json();
+  } catch {
+    /* fallthrough — detail 없이 빈 폼 + name 만 prefill */
+  }
+  openSeedInput({
+    name,
+    seed_url: detail?.verify_service_url || "",
+    verify_service_url: detail?.verify_service_url || "",
+    verify_service_text: detail?.verify_service_text || "",
+    ttl_hint_hours: detail?.ttl_hint_hours || 12,
+    naver_probe: detail?.naver_probe_enabled !== undefined ? detail.naver_probe_enabled : true,
+  });
+}
+
+async function startSeedFlow(payload) {
+  _lastSeedPayload = payload;
+  $("#seed-input-modal").hidden = true;
+
+  const status = $("#seed-progress-status");
+  const elapsed = $("#seed-progress-elapsed");
+  const hint = $("#seed-progress-hint");
+  const cancelBtn = $("#btn-seed-cancel");
+  const doneBtn = $("#btn-seed-done");
+
+  status.textContent = "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요";
+  elapsed.textContent = `경과 0초 / 한도 ${payload.timeout_sec || 600}초`;
+  hint.textContent = "창이 닫히면 세션을 저장하고, 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.";
+  cancelBtn.hidden = false;
+  cancelBtn.textContent = "취소 (창은 직접 닫으세요)";
+  cancelBtn.dataset.action = "cancel";
+  doneBtn.hidden = true;
+  $("#seed-progress-modal").hidden = false;
+
+  let resp;
+  try {
+    const r = await fetch("/api/profiles/seed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     if (!r.ok) {
-      clearInterval(interval);
+      const body = await r.json().catch(() => ({}));
+      status.textContent = `✗ 시작 실패: HTTP ${r.status} — ${body.detail || ""}`;
+      cancelBtn.textContent = "닫기";
       return;
     }
-    const st = await r.json();
-    if (st.finished) {
-      clearInterval(interval);
-      $("#seed-message").textContent = st.message || "완료";
-      setTimeout(() => {
-        $("#seed-modal").hidden = true;
-        loadProfiles();
-      }, 1500);
-    } else if (st.message) {
-      $("#seed-message").textContent = st.message;
+    resp = await r.json();
+  } catch (e) {
+    status.textContent = `✗ 시작 실패: ${e.message}`;
+    cancelBtn.textContent = "닫기";
+    return;
+  }
+
+  const seedSid = resp.seed_sid;
+  if (_seedPollTimer) clearInterval(_seedPollTimer);
+  _seedPollTimer = setInterval(async () => {
+    let poll;
+    try {
+      const r = await fetch(`/api/profiles/seed/${encodeURIComponent(seedSid)}`);
+      if (!r.ok) return;
+      poll = await r.json();
+    } catch {
+      return;
     }
-  }, 1500);
+    elapsed.textContent = `경과 ${Math.floor(poll.elapsed_sec)}초 / 한도 ${poll.timeout_sec}초`;
+    if (poll.message) status.textContent = poll.message;
+    if (poll.phase === "verifying") {
+      hint.textContent = "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.";
+    }
+    if (poll.state === "ready") {
+      clearInterval(_seedPollTimer);
+      _seedPollTimer = null;
+      status.textContent = poll.message || `✓ 시드 완료 — 프로파일 "${poll.profile_name}"`;
+      hint.textContent = "이 프로파일은 이제 시나리오 묶음 실행에 자동으로 재사용됩니다.";
+      cancelBtn.hidden = true;
+      doneBtn.hidden = false;
+      loadProfiles();
+    } else if (poll.state === "error") {
+      clearInterval(_seedPollTimer);
+      _seedPollTimer = null;
+      const kind = poll.error_kind ? `[${poll.error_kind}] ` : "";
+      status.textContent = poll.message || `✗ 실패 — ${kind}${poll.error}`;
+      hint.textContent = "입력값을 확인한 뒤 다시 시도해 주세요.";
+      cancelBtn.textContent = "다시 입력";
+      cancelBtn.dataset.action = "retry";
+    }
+  }, 1000);
 }
 
 // --- Bundle ------------------------------------------------------------------
@@ -134,13 +213,13 @@ async function loadBundles() {
   const tbody = $("#bundles-tbody");
   tbody.innerHTML = "";
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 bundle 없음 —</td></tr>';
+    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 시나리오 묶음 없음 —</td></tr>';
     return;
   }
   for (const b of data) {
     const tr = document.createElement("tr");
     const runDisabled = !b.seeded;
-    const tooltip = runDisabled ? `alias '${b.alias}' 시드 필요` : "";
+    const tooltip = runDisabled ? `프로파일 '${b.alias}' 의 로그인 등록이 필요합니다` : "";
     tr.innerHTML = `
       <td><strong>${escapeHtml(b.name)}</strong></td>
       <td>${escapeHtml(b.alias || "-")}</td>
@@ -158,7 +237,7 @@ async function loadBundles() {
   });
   $$(".del-bundle-btn").forEach((b) => {
     b.addEventListener("click", async () => {
-      if (!confirm(`bundle '${b.dataset.name}' 삭제할까요?`)) return;
+      if (!confirm(`시나리오 묶음 '${b.dataset.name}' 을 삭제할까요?`)) return;
       const r = await fetch(`/api/bundles/${encodeURIComponent(b.dataset.name)}`, { method: "DELETE" });
       if (r.ok) loadBundles();
     });
@@ -173,7 +252,7 @@ async function uploadBundle(file, overwrite = false) {
     body: fd,
   });
   if (r.status === 409) {
-    if (confirm(`'${file.name}' 이미 존재 — 덮어쓸까요?`)) {
+    if (confirm(`같은 이름의 시나리오 묶음 '${file.name}' 이 이미 있습니다. 덮어쓸까요?`)) {
       return uploadBundle(file, true);
     }
     return;
@@ -272,7 +351,7 @@ function renderResult(run) {
   if (code === 0) return "<span class='ok'>✓ PASS</span>";
   if (code === 1) return "<span class='fail'>✗ FAIL</span>";
   if (code === 2) return "<span class='warn'>⚠ 시스템 오류</span>";
-  if (code === 3) return "<span class='warn'>⚠ 시드 만료</span>";
+  if (code === 3) return "<span class='warn'>⚠ 로그인 만료</span>";
   if (run.state === "running") return "<span class='running'>… 진행중</span>";
   return "<span class='muted'>-</span>";
 }
@@ -289,7 +368,7 @@ async function openDetail(runId) {
   $("#detail-meta").innerHTML = [
     `결과: ${renderResult(meta)}`,
     `소요: ${meta.started_at ? "" : "-"}${meta.finished_at && meta.started_at ? " (" + meta.started_at + " → " + meta.finished_at + ")" : ""}`,
-    `alias: ${escapeHtml(meta.alias || "-")}`,
+    `프로파일: ${escapeHtml(meta.alias || "-")}`,
     `스크립트: ${escapeHtml(provenance.source_file || "-")} (${escapeHtml(provenance.source_kind || "-")})`,
   ].join("&nbsp;&nbsp;|&nbsp;&nbsp;");
   $("#detail-report").href = `/api/runs/${encodeURIComponent(runId)}/report.html`;
@@ -340,20 +419,43 @@ $("#btn-refresh-profiles")?.addEventListener("click", loadProfiles);
 $("#btn-refresh-bundles")?.addEventListener("click", loadBundles);
 $("#btn-refresh-runs")?.addEventListener("click", loadRuns);
 
-$("#btn-add-alias")?.addEventListener("click", () => {
-  $("#alias-name").value = "";
-  $("#alias-target").value = "https://";
-  $("#alias-modal").hidden = false;
+$("#btn-add-alias")?.addEventListener("click", () => openSeedInput());
+
+$("#seed-input-form")?.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const fd = new FormData(ev.target);
+  const payload = {
+    name: (fd.get("name") || "").trim(),
+    seed_url: (fd.get("seed_url") || "").trim(),
+    verify_service_url: (fd.get("verify_service_url") || "").trim(),
+    verify_service_text: (fd.get("verify_service_text") || "").trim(),
+    naver_probe: fd.get("naver_probe") === "on",
+    ttl_hint_hours: parseInt(fd.get("ttl_hint_hours") || "12", 10),
+    timeout_sec: 600,
+  };
+  startSeedFlow(payload);
 });
-$("#alias-confirm")?.addEventListener("click", () => {
-  const name = $("#alias-name").value.trim();
-  const target = $("#alias-target").value.trim();
-  if (!name || !target) {
-    alert("alias 이름과 target URL 을 입력해 주세요");
-    return;
+
+$("#btn-seed-cancel")?.addEventListener("click", () => {
+  if (_seedPollTimer) {
+    clearInterval(_seedPollTimer);
+    _seedPollTimer = null;
   }
-  $("#alias-modal").hidden = true;
-  startSeed(name, target);
+  $("#seed-progress-modal").hidden = true;
+  // 다시 입력 분기 — error 후 사용자가 값을 고쳐 다시 시도.
+  if ($("#btn-seed-cancel").dataset.action === "retry" && _lastSeedPayload) {
+    openSeedInput(_lastSeedPayload);
+  }
+});
+
+$("#btn-seed-done")?.addEventListener("click", () => {
+  $("#seed-progress-modal").hidden = true;
+});
+
+$("#btn-seed-expired-reseed")?.addEventListener("click", () => {
+  const name = $("#seed-expired-name").textContent.trim();
+  $("#seed-expired-modal").hidden = true;
+  if (name && name !== "—") openReseed(name);
 });
 
 $("#btn-upload-bundle")?.addEventListener("click", () => $("#bundle-file").click());

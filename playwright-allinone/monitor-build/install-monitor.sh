@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# install-monitor.sh — 모니터링 PC 자동 프로비저닝 (Mac · Linux).
+# install-monitor.sh — 모니터링 PC 자동 프로비저닝 (Mac · Linux 네이티브).
 #
-# monitor-runtime-<ts>.zip 을 풀어둔 디렉토리 안에서 실행.
-# 사람 손은 (옵션 prompt 외) 안 들어감.
+# 이 PC 에 Replay UI 가 동작할 모든 것을 한 번에 설치한다. 이미 설치된 항목은 SKIP.
+#
+# 두 가지 레이아웃 자동 감지:
+#   (A) monitor-runtime-<ts>.zip 을 푼 폴더 — wheels/<OS>/, chromium/<OS>/, src/<모듈>/
+#   (B) 소스 트리 (playwright-allinone/monitor-build/) — wheels 없음, ../<모듈>/ 직접 사용 + 온라인 PyPI fallback
 #
 # Usage:
 #   bash install-monitor.sh [--register-startup] [--register-task] [--python <python3>]
@@ -11,6 +14,7 @@ set -euo pipefail
 
 INSTALL_ROOT="${MONITOR_HOME:-$HOME/.dscore.ttc.monitor}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PARENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON="python3"
 REGISTER_STARTUP=0
 REGISTER_TASK=0
@@ -24,13 +28,20 @@ while [[ $# -gt 0 ]]; do
       cat <<USAGE
 Usage: $0 [--register-startup] [--register-task] [--python <python3>]
   --register-startup   Replay UI 를 사용자 startup task 로 등록 (Mac=launchd / Linux=systemd --user)
-  --register-task      30분 주기 모니터 스케줄러 등록 (cron). bundle 별로 행을 사용자가 마무리.
+  --register-task      30분 주기 모니터 스케줄러 등록 (cron) 안내. 시나리오 묶음 별 행은 사용자가 마무리.
 USAGE
       exit 0
       ;;
     *) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
   esac
 done
+
+# 소스 트리 레이아웃 감지: SCRIPT_DIR 가 .../playwright-allinone/monitor-build/ 인 경우
+# 부모 디렉토리에서 모듈을 직접 가져온다 (zip 빌드 없이도 동작).
+IS_SOURCE_TREE=0
+if [[ -d "$PARENT_DIR/replay_service" && -d "$PARENT_DIR/monitor" && -d "$PARENT_DIR/zero_touch_qa" ]]; then
+  IS_SOURCE_TREE=1
+fi
 
 OS="$(uname -s)"
 case "$OS" in
@@ -40,6 +51,24 @@ case "$OS" in
 esac
 
 echo "[install-monitor] OS=$OS  OS_TAG=$OS_TAG  INSTALL_ROOT=$INSTALL_ROOT"
+if [[ "$IS_SOURCE_TREE" = "1" ]]; then
+  echo "[install-monitor] 레이아웃: 소스 트리 (playwright-allinone 안)"
+else
+  echo "[install-monitor] 레이아웃: monitor-runtime zip"
+fi
+
+# Python 검증 (3.11+).
+PY_VER="$("$PYTHON" -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>&1)" || {
+  echo "Python 확인 실패: $PY_VER  (--python <python3 path> 옵션으로 명시 가능)" >&2
+  exit 1
+}
+PY_MAJOR="${PY_VER%.*}"
+PY_MINOR="${PY_VER#*.}"
+if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 11 ]]; }; then
+  echo "Python 3.11+ 필요 — 현재 $PY_VER" >&2
+  exit 1
+fi
+echo "[install-monitor] Python $PY_VER OK"
 
 # 1. 디렉토리.
 mkdir -p \
@@ -55,47 +84,54 @@ if [[ ! -x "$INSTALL_ROOT/venv/bin/python" ]]; then
   "$PYTHON" -m venv "$INSTALL_ROOT/venv"
   echo "[install-monitor] venv 생성"
 else
-  echo "[install-monitor] 기존 venv 재사용"
+  echo "[install-monitor] 기존 venv 재사용 (SKIP)"
 fi
 
-VENV_PIP="$INSTALL_ROOT/venv/bin/pip"
 VENV_PY="$INSTALL_ROOT/venv/bin/python"
 
-# 3. 의존성 wheels 설치 (offline).
+# 3. Python 패키지 설치 (이미 설치된 건 pip 가 자동 SKIP).
+PACKAGES=(fastapi uvicorn pydantic playwright python-multipart portalocker)
 WHEELS_DIR="$SCRIPT_DIR/wheels/$OS_TAG"
 if [[ -d "$WHEELS_DIR" ]]; then
-  "$VENV_PIP" install --no-index --find-links "$WHEELS_DIR" --upgrade pip wheel \
+  echo "[install-monitor] 오프라인 wheels 사용: $WHEELS_DIR"
+  "$VENV_PY" -m pip install --no-index --find-links "$WHEELS_DIR" --upgrade pip wheel \
     || echo "[install-monitor] pip 자체 업그레이드 skip"
-  "$VENV_PIP" install --no-index --find-links "$WHEELS_DIR" \
-    fastapi uvicorn pydantic playwright python-multipart
-  echo "[install-monitor] wheels 설치 완료"
+  "$VENV_PY" -m pip install --no-index --find-links "$WHEELS_DIR" "${PACKAGES[@]}"
 else
-  echo "[install-monitor] WARN — wheels/$OS_TAG 디렉토리 없음. 온라인 fallback 시도."
-  "$VENV_PIP" install fastapi uvicorn pydantic playwright python-multipart
+  echo "[install-monitor] 온라인 PyPI 사용 (오프라인 wheels 없음)"
+  "$VENV_PY" -m pip install --upgrade pip
+  "$VENV_PY" -m pip install "${PACKAGES[@]}"
 fi
+echo "[install-monitor] 패키지 설치 OK"
 
-# 4. Chromium 배치.
+# 4. Chromium — 오프라인 카피 우선, 없으면 playwright install (이미 받은 게 있으면 자동 SKIP).
 CHROMIUM_SRC="$SCRIPT_DIR/chromium/$OS_TAG"
+CHROMIUM_DST="$INSTALL_ROOT/chromium"
 if [[ -d "$CHROMIUM_SRC" ]]; then
-  cp -R "$CHROMIUM_SRC"/* "$INSTALL_ROOT/chromium/" 2>/dev/null || true
-  echo "[install-monitor] Chromium 배치 완료"
+  cp -R "$CHROMIUM_SRC"/* "$CHROMIUM_DST/" 2>/dev/null || true
+  echo "[install-monitor] Chromium 오프라인 배치 완료"
+else
+  echo "[install-monitor] Chromium 다운로드 (playwright install — 이미 받은 게 있으면 SKIP)"
+  PLAYWRIGHT_BROWSERS_PATH="$CHROMIUM_DST" "$VENV_PY" -m playwright install chromium
 fi
 
-# 5. 프로젝트 모듈 (소스 그대로).
-PY_VER="$("$VENV_PY" -c 'import sys; print(f"python{sys.version_info[0]}.{sys.version_info[1]}")')"
-SP="$INSTALL_ROOT/venv/lib/$PY_VER/site-packages"
-if [[ ! -d "$SP" ]]; then
-  # 일부 distro 는 lib64 경로.
-  SP="$("$VENV_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+# 5. 프로젝트 모듈 — 항상 최신본으로 덮어쓴다.
+SP="$("$VENV_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+if [[ "$IS_SOURCE_TREE" = "1" ]]; then
+  MODULES_ROOT="$PARENT_DIR"
+else
+  MODULES_ROOT="$SCRIPT_DIR/src"
 fi
 for mod in replay_service monitor zero_touch_qa recording_service; do
-  src="$SCRIPT_DIR/src/$mod"
+  src="$MODULES_ROOT/$mod"
   if [[ -d "$src" ]]; then
     rm -rf "$SP/$mod"
     cp -R "$src" "$SP/"
+    echo "[install-monitor] 모듈 배치: $mod"
+  else
+    echo "[install-monitor] WARN — 모듈 소스 없음: $src"
   fi
 done
-echo "[install-monitor] 프로젝트 모듈 site-packages 에 배치"
 
 # 6. startup task.
 if [[ "$REGISTER_STARTUP" = "1" ]]; then
@@ -130,11 +166,11 @@ EOS
   fi
 fi
 
-# 7. 30분 스케줄러 안내 (사용자가 crontab -e 로 bundle 별 행을 직접 추가).
+# 7. 30분 스케줄러 안내.
 if [[ "$REGISTER_TASK" = "1" ]]; then
   cat <<HINT
-[install-monitor] 스케줄러 등록 안내 — crontab -e 에 다음 패턴으로 bundle 별 행을 추가하세요:
-*/30 * * * * PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m monitor replay $INSTALL_ROOT/scenarios/<bundle.zip> --out $INSTALL_ROOT/runs/auto-\$(date +\%Y\%m\%dT\%H\%M\%S)
+[install-monitor] 스케줄러 등록 안내 — crontab -e 에 다음 패턴으로 시나리오 묶음 별 행을 추가하세요:
+*/30 * * * * PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m monitor replay $INSTALL_ROOT/scenarios/<시나리오묶음.zip> --out $INSTALL_ROOT/runs/auto-\$(date +\%Y\%m\%dT\%H\%M\%S)
 HINT
 fi
 
@@ -144,6 +180,6 @@ cat <<DONE
   Replay UI:   http://127.0.0.1:18094  (--register-startup 안 했으면 수동 기동)
   수동 기동:   PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
 
-  CLI replay:  $INSTALL_ROOT/venv/bin/python -m monitor replay <bundle.zip> --out <dir>
-  alias 시드:  $INSTALL_ROOT/venv/bin/python -m monitor profile seed <alias> --target <url>
+  CLI 실행:        $INSTALL_ROOT/venv/bin/python -m monitor replay <시나리오묶음.zip> --out <결과폴더>
+  로그인 프로파일: $INSTALL_ROOT/venv/bin/python -m monitor profile seed <이름> --target <사이트URL>
 DONE

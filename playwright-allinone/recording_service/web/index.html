@@ -462,7 +462,7 @@
                   title="클립보드에 복사">📋 복사</button>
           <span class="copy-toast" data-toast-for="result-original" hidden>✓ 복사됨</span>
           <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
-          <button type="button" id="btn-bundle" class="dl-link"
+          <button type="button" id="btn-bundle"
                   title="모니터링 PC 에서 그대로 실행 가능한 zip 묶음 다운로드">
             📦 모니터링 번들 다운로드
           </button>
@@ -535,7 +535,7 @@
     <!-- 섹션 3-E: codegen 원본 ↔ LLM healed regression 변경 분석 (항목 4) -->
     <section class="card" id="diff-card" hidden>
       <h2>원본 ↔ Regression 변경 분석
-        <button type="button" class="dl-link" id="btn-analyze-diff" title="LLM 으로 변경 의미 분석">🔎 LLM 분석</button>
+        <button type="button" id="btn-analyze-diff" title="LLM 으로 변경 의미 분석">🔎 LLM 분석</button>
       </h2>
       <p class="muted">
         codegen 원본과 LLM healed regression 의 차이를 LLM (Ollama) 이
@@ -666,34 +666,36 @@
     <span class="muted">Recording UI · 호스트 데몬 · 폐쇄망 호환</span>
   </footer>
 
-  <!-- 모니터링 번들 다운로드 모달 (Task 1.4) -->
+  <!-- 모니터링 번들 다운로드 모달 -->
   <div id="bundle-modal" class="modal" hidden role="dialog" aria-modal="true"
        aria-labelledby="bundle-modal-title">
     <div class="modal-backdrop" data-modal-close="bundle-modal"></div>
     <div class="modal-body">
       <h3 id="bundle-modal-title">📦 모니터링 번들 다운로드</h3>
       <p class="muted">
-        모니터링 PC 가 받을 zip 을 만듭니다. 시드된 alias 와 만료 감지에 쓸
-        URL 을 확인해 주세요.
+        다른 PC (모니터링 PC) 에서 그대로 자동 실행할 zip 을 만듭니다.
+        받는 쪽 PC 의 Replay UI 에 같은 이름으로 미리 등록된 로그인 프로파일이 필요합니다.
       </p>
 
       <label class="modal-row">
-        <span>alias 이름</span>
+        <span>로그인 프로파일 이름</span>
         <input type="text" id="bundle-alias" value="packaged"
-               placeholder="packaged" />
+               placeholder="예: dpg-qa" />
       </label>
       <p class="muted modal-hint">
-        모니터링 PC 의 카탈로그에 같은 alias 로 시드되어 있어야 합니다.
+        받는 쪽 모니터링 PC 의 Replay UI 에서 이 이름과 똑같이 (대소문자 구분)
+        로그인 프로파일을 등록해 둬야 합니다.
       </p>
 
       <label class="modal-row">
-        <span>probe URL (만료 감지)</span>
+        <span>로그인 상태 확인 URL</span>
         <input type="text" id="bundle-verify-url"
                placeholder="https://example.com/dashboard" />
       </label>
       <p class="muted modal-hint">
-        이미 로그인된 페이지여야 합니다 (로그인 페이지는 항상 expired 로 잡힘).
-        scenario 의 마지막 navigate URL 을 자동 제안합니다.
+        매 실행 직전에 이 URL 로 GET 1회를 보내 로그인 상태가 살아 있는지 확인합니다.
+        반드시 <strong>이미 로그인된 페이지</strong> 여야 합니다 — 로그인 페이지가 들어가면
+        받는 쪽에서 매번 만료로 잘못 판정합니다. 시나리오의 마지막 이동 URL 을 자동 제안합니다.
       </p>
 
       <label class="modal-row">
@@ -703,20 +705,20 @@
         </select>
       </label>
       <p class="muted modal-hint">
-        보통 <code>original.py</code> (codegen 직접) 또는
-        <code>regression_test.py</code> (LLM 적용) 중 선택.
+        보통 <code>original.py</code> (codegen 원본) 또는
+        <code>regression_test.py</code> (LLM 적용으로 selector 가 강화된 버전) 중 선택.
       </p>
 
       <div id="bundle-warning" class="modal-warning" hidden>
         <h4>⚠️ 평문 자격증명 의심 라인 잔존</h4>
         <p>
-          Login Profile 미적용으로 녹화한 세션입니다. 자동 sanitize 후에도
-          다음 라인이 잔존했습니다:
+          로그인 프로파일을 적용하지 않고 녹화한 세션입니다. 자동 정리 후에도
+          다음 라인이 남아 있어서 평문 비밀번호가 zip 안으로 들어갈 가능성이 있습니다:
         </p>
         <pre id="bundle-warning-diff" class="json-preview"></pre>
         <label>
           <input type="checkbox" id="bundle-consent-plain-pw" />
-          위 라인을 검토했고, 평문 가능성을 인지하고 동의합니다.
+          위 라인을 검토했고, 평문 가능성을 인지한 상태로 다운로드에 동의합니다.
         </label>
       </div>
 

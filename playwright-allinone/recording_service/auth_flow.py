@@ -233,14 +233,14 @@ def pack_bundle(
         login_profile_applied = bool(metadata.get("auth_profile"))
         if login_profile_applied:
             raise PlainCredentialDetectedError(
-                "Login Profile 적용 녹화이지만 자격증명 의심 라인이 잔존합니다 "
-                "(위양성 가능 — 사용자 검토 후 재시도)",
+                "로그인 프로파일을 적용해서 녹화한 세션이지만 자격증명 의심 라인이 잔존합니다 "
+                "(위양성 가능 — 라인을 검토 후 재시도해 주세요)",
                 diff_lines=[f"  L{n}: {t}" for n, t in residue],
             )
         if not consent_plain_pw:
             raise PlainCredentialDetectedError(
-                "Login Profile 미적용 녹화 — sanitize 후에도 자격증명 의심 라인이 잔존합니다. "
-                "diff 검토 후 consent_plain_pw=true 명시 동의 필요",
+                "로그인 프로파일을 적용하지 않고 녹화한 세션입니다 — 자동 정리 후에도 "
+                "자격증명 의심 라인이 잔존합니다. 라인 검토 후 동의 체크박스를 켜고 재시도해 주세요.",
                 diff_lines=diffs + [f"잔존 L{n}: {t}" for n, t in residue],
             )
         # 미적용 + 동의 → 통과 (사용자 책임).

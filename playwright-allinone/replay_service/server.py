@@ -77,13 +77,147 @@ def _safe_name(name: str) -> str:
 
 
 # --- /api/profiles ----------------------------------------------------------
+#
+# 시드 / verify / 카탈로그 등록 흐름은 Recording UI 의 /auth/profiles/* 와
+# 동일 구조로 미러링 (분석 결과 한 줄 요약):
+#   1) POST /api/profiles/seed       — background thread, auth_profiles.seed_profile() 호출
+#   2) GET  /api/profiles/seed/{sid} — phase / message / elapsed / state 폴링
+#   3) GET  /api/profiles/{name}     — re-seed 모달 prefill 용 detail
+#   4) GET  /api/profiles            — list (Login Profile 카드)
+#   5) DELETE /api/profiles/{name}   — 삭제
+#
+# 단계 (phase): starting → login_waiting → verifying → ready (또는 error)
+# 사용자는 브라우저 직접 닫기 → seed_profile 이 verify_url 도달 + 텍스트 확인 후 카탈로그 등록.
 
 
 class ProfileSummary(BaseModel):
-    alias: str
-    storage: str  # "ok" | "missing"
+    alias: str                 # 프로파일 이름 (UI 카드 컬럼명과 일치)
+    storage: str               # "ok" | "missing"
     last_verified_at: Optional[str]
     service_domain: str
+    ttl_hint_hours: int = 12
+    session_storage_warning: bool = False
+
+
+class ProfileDetail(ProfileSummary):
+    """re-seed 모달의 입력 prefill 용 detail."""
+    verify_service_url: str
+    verify_service_text: str
+    naver_probe_enabled: bool
+
+
+class AuthSeedReq(BaseModel):
+    """시드 시작 입력 — Recording UI 의 AuthSeedReq 와 동일 형태."""
+    name: str
+    seed_url: str
+    verify_service_url: str
+    verify_service_text: str = ""
+    naver_probe: bool = True
+    service_domain: Optional[str] = None
+    ttl_hint_hours: int = 12
+    notes: str = ""
+    timeout_sec: int = 600
+
+
+class AuthSeedStartResp(BaseModel):
+    seed_sid: str
+    state: str
+
+
+class AuthSeedPollResp(BaseModel):
+    seed_sid: str
+    state: str          # running / ready / error
+    phase: str          # starting / login_waiting / verifying / ready / error
+    message: str
+    profile_name: Optional[str] = None
+    error: Optional[str] = None
+    error_kind: Optional[str] = None
+    elapsed_sec: float
+    timeout_sec: int
+
+
+_AUTH_ERROR_KIND_MAP = {
+    "SeedTimeoutError": "timeout",
+    "SeedSubprocessError": "subprocess",
+    "EmptyDumpError": "validate",
+    "MissingDomainError": "validate",
+    "SeedVerifyFailedError": "verify",
+    "ChipsNotSupportedError": "chips",
+    "InvalidProfileNameError": "input",
+    "InvalidServiceDomainError": "input",
+}
+
+
+class _SeedJob:
+    """시드 background thread 의 상태 추적 (Recording UI 의 _SeedJob 미러)."""
+    __slots__ = (
+        "seed_sid", "state", "started_at", "timeout_sec",
+        "phase", "message", "profile_name", "error", "error_kind",
+    )
+
+    def __init__(self, seed_sid: str, timeout_sec: int):
+        self.seed_sid = seed_sid
+        self.state = "running"
+        self.started_at = time.time()
+        self.timeout_sec = timeout_sec
+        self.phase = "starting"
+        self.message = "시드 시작 중"
+        self.profile_name: Optional[str] = None
+        self.error: Optional[str] = None
+        self.error_kind: Optional[str] = None
+
+
+_seed_jobs: dict[str, _SeedJob] = {}
+_seed_jobs_lock = threading.Lock()
+
+
+def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
+    """background thread — auth_profiles.seed_profile() 호출 + 상태 갱신."""
+    from zero_touch_qa.auth_profiles import (
+        AuthProfileError, NaverProbeSpec, VerifySpec,
+    )
+
+    def _progress(phase: str, message: str) -> None:
+        with _seed_jobs_lock:
+            job.phase = phase
+            job.message = message
+
+    try:
+        verify = VerifySpec(
+            service_url=req.verify_service_url,
+            service_text=req.verify_service_text,
+            naver_probe=NaverProbeSpec() if req.naver_probe else None,
+        )
+        prof = auth_profiles.seed_profile(
+            name=req.name,
+            seed_url=req.seed_url,
+            verify=verify,
+            service_domain=req.service_domain,
+            ttl_hint_hours=req.ttl_hint_hours,
+            notes=req.notes,
+            timeout_sec=req.timeout_sec,
+            progress_callback=_progress,
+        )
+        with _seed_jobs_lock:
+            job.state = "ready"
+            job.phase = "ready"
+            job.message = f"시드 완료 — 프로파일 '{prof.name}' 이 저장되었습니다."
+            job.profile_name = prof.name
+    except AuthProfileError as e:
+        kind = _AUTH_ERROR_KIND_MAP.get(type(e).__name__, "auth_error")
+        with _seed_jobs_lock:
+            job.state = "error"
+            job.phase = "error"
+            job.message = f"시드 실패 — {e}"
+            job.error = str(e)
+            job.error_kind = kind
+    except Exception as e:  # noqa: BLE001
+        with _seed_jobs_lock:
+            job.state = "error"
+            job.phase = "error"
+            job.message = f"시드 실패 — {e!r}"
+            job.error = repr(e)
+            job.error_kind = "unknown"
 
 
 @app.get("/api/profiles", response_model=list[ProfileSummary])
@@ -96,103 +230,76 @@ def api_list_profiles() -> list[ProfileSummary]:
                 storage="ok" if p.storage_path.is_file() else "missing",
                 last_verified_at=p.last_verified_at,
                 service_domain=p.service_domain,
+                ttl_hint_hours=p.ttl_hint_hours,
+                session_storage_warning=p.session_storage_warning,
             )
         )
     return out
 
 
-# --- 시드 (수동, subprocess 추적) -------------------------------------------
+@app.get("/api/profiles/{name}", response_model=ProfileDetail)
+def api_profile_detail(name: str) -> ProfileDetail:
+    """단일 프로파일 detail — re-seed 모달의 prefill 에 사용."""
+    name = _safe_name(name)
+    try:
+        p = auth_profiles.get_profile(name)
+    except auth_profiles.AuthProfileError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ProfileDetail(
+        alias=p.name,
+        storage="ok" if p.storage_path.is_file() else "missing",
+        last_verified_at=p.last_verified_at,
+        service_domain=p.service_domain,
+        ttl_hint_hours=p.ttl_hint_hours,
+        session_storage_warning=p.session_storage_warning,
+        verify_service_url=p.verify.service_url,
+        verify_service_text=p.verify.service_text,
+        naver_probe_enabled=p.verify.naver_probe is not None,
+    )
 
 
-_seed_lock = threading.Lock()
-_seed_state: dict[str, dict] = {}  # alias → {"pid": int, "phase": str, "message": str, "finished": bool}
+@app.post("/api/profiles/seed", response_model=AuthSeedStartResp, status_code=201)
+def api_seed_start(req: AuthSeedReq) -> AuthSeedStartResp:
+    """시드 시작 — background thread 에서 auth_profiles.seed_profile() 호출.
 
-
-class SeedRequest(BaseModel):
-    target_url: str
-
-
-@app.post("/api/profiles/{alias}/seed")
-def api_seed_start(alias: str, req: SeedRequest):
-    """수동 시드 시작 — playwright open --save-storage subprocess 띄움.
-
-    UI 가 GET /seed/status 로 진행 폴링.
+    사용자는 별도 창에서 직접 로그인 + 인증 통과 후 *수동으로 창을 닫는다*. 워커
+    스레드가 그 후 verify (verify_service_url 접근 + 텍스트 확인) 를 마치면 카탈로그에
+    프로파일을 등록하고 state=ready 로 전환한다. UI 는 GET /api/profiles/seed/{sid}
+    로 phase/message 를 폴링한다.
     """
-    alias = _safe_name(alias)
-    target = req.target_url
-    if not target:
-        raise HTTPException(status_code=400, detail="target_url 필수")
+    seed_sid = uuid.uuid4().hex[:12]
+    job = _SeedJob(seed_sid=seed_sid, timeout_sec=req.timeout_sec)
+    with _seed_jobs_lock:
+        _seed_jobs[seed_sid] = job
+    threading.Thread(target=_seed_worker, args=(job, req), daemon=True).start()
+    return AuthSeedStartResp(seed_sid=seed_sid, state=job.state)
 
-    storage_dir = auth_profiles._root() if hasattr(auth_profiles, "_root") else (_monitor_home() / "auth-profiles")
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    storage_file = storage_dir / f"{alias}.storage.json"
 
-    # subprocess: playwright open <url> --save-storage <file>
-    cmd = [
-        sys.executable, "-m", "playwright", "open",
-        target,
-        "--save-storage", str(storage_file),
-    ]
+@app.get("/api/profiles/seed/{seed_sid}", response_model=AuthSeedPollResp)
+def api_seed_poll(seed_sid: str) -> AuthSeedPollResp:
+    """시드 진행 상태 폴링."""
+    with _seed_jobs_lock:
+        job = _seed_jobs.get(seed_sid)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"시드 작업을 찾을 수 없음: {seed_sid}")
+    return AuthSeedPollResp(
+        seed_sid=seed_sid,
+        state=job.state,
+        phase=job.phase,
+        message=job.message,
+        profile_name=job.profile_name,
+        error=job.error,
+        error_kind=job.error_kind,
+        elapsed_sec=time.time() - job.started_at,
+        timeout_sec=job.timeout_sec,
+    )
+
+
+@app.delete("/api/profiles/{name}")
+def api_delete_profile(name: str):
+    name = _safe_name(name)
     try:
-        proc = subprocess.Popen(cmd)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"playwright 호출 실패: {e}")
-
-    with _seed_lock:
-        _seed_state[alias] = {
-            "pid": proc.pid,
-            "phase": "running",
-            "message": "브라우저에서 직접 로그인 후 창을 닫아 주세요",
-            "started_at": _utc_iso(),
-            "finished": False,
-            "storage_file": str(storage_file),
-            "_proc": proc,  # 객체는 응답에 포함 안 함.
-        }
-    return {"alias": alias, "phase": "running", "pid": proc.pid}
-
-
-@app.get("/api/profiles/{alias}/seed/status")
-def api_seed_status(alias: str):
-    alias = _safe_name(alias)
-    with _seed_lock:
-        st = _seed_state.get(alias)
-    if st is None:
-        return {"alias": alias, "phase": "idle"}
-    proc = st.get("_proc")
-    if proc is not None:
-        rc = proc.poll()
-        if rc is not None:
-            # 종료됨.
-            storage_file = Path(st["storage_file"])
-            saved = storage_file.is_file() and storage_file.stat().st_size > 0
-            with _seed_lock:
-                st["finished"] = True
-                st["phase"] = "saved" if saved else "aborted"
-                st["message"] = (
-                    "storage 저장 완료" if saved else "브라우저 종료 — 저장 실패 (파일 없음)"
-                )
-                st["return_code"] = rc
-
-                # 카탈로그에 등록 (이미 등록되어 있으면 skip).
-                if saved:
-                    try:
-                        existing = auth_profiles.get_profile(alias)
-                    except auth_profiles.AuthProfileError:
-                        existing = None
-                    if existing is None:
-                        # seed 후 카탈로그 수동 등록을 단순화 — 여기서는 storage 파일만
-                        # 두고 등록은 별도 API/CLI 흐름으로 위임 (1차 단순화).
-                        pass
-    public = {k: v for k, v in st.items() if not k.startswith("_")}
-    public["alias"] = alias
-    return public
-
-
-@app.delete("/api/profiles/{alias}")
-def api_delete_profile(alias: str):
-    alias = _safe_name(alias)
-    try:
-        auth_profiles.delete_profile(alias)
+        auth_profiles.delete_profile(name)
     except auth_profiles.AuthProfileError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return Response(status_code=204)
@@ -339,16 +446,16 @@ def api_start_run(req: RunRequest):
     name = _safe_name(req.bundle_name)
     bundle_path = _bundles_dir() / name
     if not bundle_path.is_file():
-        raise HTTPException(status_code=404, detail=f"bundle 미존재: {name}")
+        raise HTTPException(status_code=404, detail=f"시나리오 묶음을 찾을 수 없음: {name}")
 
-    # 사전 차단 (B4) — alias 미시드면 실행 거부.
+    # 사전 차단 — 로그인 프로파일이 등록 안 됐으면 실행 거부.
     meta = _read_bundle_meta(bundle_path)
     ab = (meta or {}).get("auth_bundle") or {}
     alias = ab.get("alias", "")
     if not _is_alias_seeded(alias):
         raise HTTPException(
             status_code=412,
-            detail=f"alias '{alias}' 시드 필요 (Login Profile 카드에서 시드 후 재시도)",
+            detail=f"로그인 프로파일 '{alias}' 등록 필요 (로그인 프로파일 카드에서 등록 후 재시도)",
         )
 
     run_id = _make_run_id()

@@ -15,13 +15,13 @@ from replay_service import orchestrator
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "replay",
-        help="bundle.zip 한 개 실행 (probe → script → trace 파싱)",
+        help="시나리오 묶음 zip 한 개 실행 (로그인 상태 확인 → 스크립트 실행 → 결과 파싱)",
     )
-    p.add_argument("bundle", help="bundle.zip 경로")
+    p.add_argument("bundle", metavar="시나리오묶음.zip", help="시나리오 묶음 zip 경로")
     p.add_argument(
         "--out",
         required=True,
-        help="결과 디렉토리 (run_log.jsonl / trace.zip / screenshots/ / meta.json 누적)",
+        help="결과 디렉토리 (run_log.jsonl / trace.zip / screenshots/ / meta.json 이 누적됨)",
     )
     p.set_defaults(func=_run_replay)
 
@@ -29,7 +29,7 @@ def register(sub: argparse._SubParsersAction) -> None:
 def _run_replay(args: argparse.Namespace) -> int:
     bundle = Path(args.bundle).expanduser().resolve()
     if not bundle.is_file():
-        print(f"bundle 파일 없음: {bundle}", file=sys.stderr)
+        print(f"시나리오 묶음 파일을 찾을 수 없습니다: {bundle}", file=sys.stderr)
         return orchestrator.EXIT_SYS_ERROR
     out = Path(args.out).expanduser().resolve()
 
