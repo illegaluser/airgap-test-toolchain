@@ -33,7 +33,7 @@
 #
 # 환경변수:
 #   OLLAMA_PING_URL  - 호스트 Ollama 확인 URL 강제 지정 (기본: 자동 탐색)
-#   OLLAMA_MODEL     - 존재 확인 대상 모델 (정보성, 기본 gemma4:26b)
+#   OLLAMA_MODEL     - 존재 확인 대상 모델 (정보성, WSL2 기본 qwen3.5:9b)
 #
 # 재실행은 idempotent — 이미 설치된 것은 스킵.
 # ============================================================================
@@ -43,7 +43,7 @@ AGENT_DIR="${WSL_AGENT_WORKDIR:-$HOME/.dscore.ttc.playwright-agent}"
 JENKINS_URL="${JENKINS_URL:-http://localhost:18080}"
 AGENT_NAME="${AGENT_NAME:-wsl-ui-tester}"
 PY_VERSION_MIN="${PY_VERSION_MIN:-3.11}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5:9b}"
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-false}"
 # NODE_SECRET 자동 추출 시 읽을 컨테이너 (docker logs) — 이름 override 가능
 CONTAINER_NAME="${CONTAINER_NAME:-dscore.ttc.playwright}"
@@ -55,16 +55,63 @@ log()  { printf '[wsl-agent-setup] %s\n' "$*"; }
 err()  { printf '[wsl-agent-setup] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[wsl-agent-setup] WARN:  %s\n' "$*" >&2; }
 
-# ── 0. 사전 검증 ────────────────────────────────────────────────────────────
-[[ "$(uname -s)" == "Linux" ]] || err "Linux / WSL2 전용 스크립트. 현재 OS: $(uname -s) (Mac 은 mac-agent-setup.sh 사용)"
+# ── 0. 사전 검증 + 호스트 종류 판별 ─────────────────────────────────────────
+# 본 스크립트는 다음 세 환경을 cover:
+#   - Linux 베어 호스트  : python3 / java / Linux Chromium / X11 디스플레이
+#   - WSL2 (정보성)      : 사용 중단 — 사용자 원칙에 따라 Windows 호스트 직접 권장 (Git Bash)
+#   - Git Bash on Windows: python.exe / java.exe / Windows Chromium 네이티브 (host-native 원칙)
+# Mac 은 mac-agent-setup.sh 별도.
+UNAME_S="$(uname -s)"
+case "$UNAME_S" in
+  MINGW*|MSYS*|CYGWIN*)
+    IS_WIN_HOST=true; IS_WSL=false
+    log "Git Bash on Windows 감지 — Windows 호스트 네이티브 (python.exe / java.exe / Windows Chromium) 사용"
+    ;;
+  Linux)
+    IS_WIN_HOST=false
+    if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+      IS_WSL=true
+      err "WSL2 안에서 본 스크립트 실행 금지. 사용자 원칙: Windows 호스트 네이티브 — Git Bash 에서 ./wsl-agent-setup.sh 를 실행하세요."
+    else
+      IS_WSL=false
+      log "일반 Linux — headed 창은 X server (DISPLAY=${DISPLAY:-unset}) 가 있어야 표시됩니다"
+    fi
+    ;;
+  *)
+    err "지원 OS 아님: $UNAME_S (Mac 은 mac-agent-setup.sh, Windows 는 Git Bash 에서 실행)"
+    ;;
+esac
 
-# WSL2 감지 (정보성 — 순수 Linux 서버에서도 동작)
-if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
-  IS_WSL=true
-  log "WSL2 감지됨 — headed Chromium 은 WSLg 경유로 Windows 데스크탑에 표시됩니다"
+# OS 별 바이너리 / 캐시 경로 정규화 — 이후 단계는 이 변수만 참조한다.
+if [ "$IS_WIN_HOST" = "true" ]; then
+  VENV_BIN_REL="Scripts"               # venv 안 실행파일 디렉토리 (Win)
+  VENV_PY_NAME="python.exe"
+  PW_CACHE="${LOCALAPPDATA:-$HOME/AppData/Local}/ms-playwright"
+  # Java/Python 절대 경로를 JVM/Windows 가 이해하는 'C:\...' 형식으로 바꿔주는 헬퍼.
+  to_win_path() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
+  # mklink junction — 인자는 따로 전달해야 cmd 가 공백 포함 path 를 올바르게 파싱.
+  # rc=0 정상, rc!=0 실패. set -e 트리거 안 되도록 호출자가 ||/&& 로 감싸 사용.
+  make_junction() {
+    local link_p="$1" target="$2"
+    MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(to_win_path "$link_p")" "$(to_win_path "$target")" >/dev/null 2>&1
+  }
+  # 기존 junction/디렉토리 안전 제거.
+  remove_path() {
+    local p="$1"
+    if [ -L "$p" ]; then
+      rm -f "$p" 2>/dev/null || true
+    elif [ -d "$p" ]; then
+      MSYS_NO_PATHCONV=1 cmd /c rmdir "$(to_win_path "$p")" 2>/dev/null \
+        || rm -rf "$p" 2>/dev/null || true
+    fi
+  }
 else
-  IS_WSL=false
-  log "일반 Linux — headed 창은 X server ($DISPLAY) 가 있어야 표시됩니다"
+  VENV_BIN_REL="bin"
+  VENV_PY_NAME="python3"
+  PW_CACHE="$HOME/.cache/ms-playwright"
+  to_win_path() { echo "$1"; }
+  make_junction() { ln -sfn "$2" "$1"; }
+  remove_path() { rm -rf "$1"; }
 fi
 
 # ── 0-A. 기존 세션 정리 — "빌드/재배포 시마다 깨끗하게" 보장 ──────────────────
@@ -83,16 +130,27 @@ MY_SID=$({ ps -o sid= -p "$MY_PID" 2>/dev/null || true; } | tr -d ' ')
 log "[0-A] 기존 agent / setup 프로세스 정리 (my_sid=$MY_SID)"
 
 # agent.jar 프로세스 (현재 $AGENT_NAME 기준 — 다른 세션 포함 모두)
-EXISTING_AGENT_PIDS=$(pgrep -f "agent.jar.*-name $AGENT_NAME" 2>/dev/null || true)
+# Linux: pgrep -f / Windows(Git Bash): wmic + taskkill (pgrep 은 MSYS 프로세스만 보임)
+if [ "$IS_WIN_HOST" = "true" ]; then
+  # wmic 출력은 \r 포함 — strip 하고 PID 컬럼만 추출
+  EXISTING_AGENT_PIDS=$(wmic process where "name='java.exe' and CommandLine like '%%agent.jar%%-name $AGENT_NAME%%'" get processid 2>/dev/null \
+    | tr -d '\r' | awk 'NR>1 && /^[0-9]+/ {print $1}' | head -10 || true)
+else
+  EXISTING_AGENT_PIDS=$(pgrep -f "agent.jar.*-name $AGENT_NAME" 2>/dev/null || true)
+fi
 if [ -n "$EXISTING_AGENT_PIDS" ]; then
   log "  기존 agent.jar 감지 (pid: $(echo "$EXISTING_AGENT_PIDS" | tr '\n' ' ')) — 종료"
-  kill $EXISTING_AGENT_PIDS 2>/dev/null || true
-  for _ in 1 2 3 4 5; do
-    pgrep -f "agent.jar.*-name $AGENT_NAME" >/dev/null 2>&1 || break
-    sleep 1
-  done
-  STILL=$(pgrep -f "agent.jar.*-name $AGENT_NAME" 2>/dev/null || true)
-  [ -n "$STILL" ] && kill -9 $STILL 2>/dev/null || true
+  if [ "$IS_WIN_HOST" = "true" ]; then
+    for _p in $EXISTING_AGENT_PIDS; do taskkill //F //T //PID "$_p" 2>/dev/null || true; done
+  else
+    kill $EXISTING_AGENT_PIDS 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      pgrep -f "agent.jar.*-name $AGENT_NAME" >/dev/null 2>&1 || break
+      sleep 1
+    done
+    STILL=$(pgrep -f "agent.jar.*-name $AGENT_NAME" 2>/dev/null || true)
+    [ -n "$STILL" ] && kill -9 $STILL 2>/dev/null || true
+  fi
 fi
 
 # 다른 wsl-agent-setup.sh 인스턴스 (자기 세션 제외). ps/pgrep 실패를 set -e 가
@@ -206,8 +264,12 @@ log "[1/7] 호스트 Ollama 도달성 확인 (정보성 — 실제 호출은 컨
 # 컨테이너 → Windows localhost:11434 를 포워딩하므로 전체 파이프라인은 동작.
 OLLAMA_PING_URL="${OLLAMA_PING_URL:-}"
 if [ -z "$OLLAMA_PING_URL" ]; then
-  # 자동 탐색: WSL default gateway (Windows 호스트) 와 loopback 둘 다 시도
-  WIN_HOST=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
+  # 자동 탐색: 기본 경로 + (Linux 만) WSL default gateway. ip 명령은 Git Bash 에 없음.
+  WIN_HOST=""
+  if [ "$IS_WIN_HOST" = "false" ] && command -v ip >/dev/null 2>&1; then
+    # set -e + pipefail 환경에서 ip 가 실패해도 트리거 안 되게 || true
+    WIN_HOST=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}' || true)
+  fi
   CANDIDATES="http://127.0.0.1:11434 http://${WIN_HOST:-127.0.0.1}:11434 http://host.docker.internal:11434"
 else
   CANDIDATES="$OLLAMA_PING_URL"
@@ -259,6 +321,33 @@ log "[2/7] JDK 21 확인"
 
 detect_java21() {
   local cand
+  if [ "$IS_WIN_HOST" = "true" ]; then
+    # Windows 호스트 — PATH 의 java.exe / java 와 일반 설치 경로 (공백 포함) 모두 시도.
+    # 공백 path 는 array 로 보존해야 word-splitting 에 의해 깨지지 않는다.
+    # 1) PATH 우선
+    local p
+    for cand in java.exe java; do
+      p="$(command -v "$cand" 2>/dev/null || true)"
+      if [ -n "$p" ] && [ -x "$p" ] && "$p" -version 2>&1 | head -1 | grep -qE 'version "21'; then
+        echo "$p"; return 0
+      fi
+    done
+    # 2) 표준 설치 위치 — bash 가 array 정의 시 글로브 확장. 매치 없으면 literal 유지 → -x 에서 걸러짐.
+    local paths=(
+      "/c/Program Files/Common Files/Oracle/Java/javapath/java.exe"
+      /c/Program\ Files/Microsoft/jdk-21*/bin/java.exe
+      /c/Program\ Files/Eclipse\ Adoptium/jdk-21*/bin/java.exe
+      /c/Program\ Files/Java/jdk-21*/bin/java.exe
+    )
+    for p in "${paths[@]}"; do
+      [ -x "$p" ] || continue
+      if "$p" -version 2>&1 | head -1 | grep -qE 'version "21'; then
+        echo "$p"; return 0
+      fi
+    done
+    return 1
+  fi
+  # Linux
   for cand in \
       "/usr/lib/jvm/temurin-21-jdk-amd64/bin/java" \
       "/usr/lib/jvm/temurin-21-jdk-arm64/bin/java" \
@@ -278,7 +367,9 @@ detect_java21() {
 
 JAVA_BIN="$(detect_java21 || true)"
 if [ -z "$JAVA_BIN" ]; then
-  if [ "$AUTO_INSTALL_DEPS" = "true" ]; then
+  if [ "$IS_WIN_HOST" = "true" ]; then
+    err "JDK 21 미설치. winget install Microsoft.OpenJDK.21 (또는 Temurin 21) 실행 후 재시도."
+  elif [ "$AUTO_INSTALL_DEPS" = "true" ]; then
     log "  JDK 21 미설치 — apt install openjdk-21-jdk-headless"
     sudo apt-get update
     sudo apt-get install -y openjdk-21-jdk-headless
@@ -294,14 +385,11 @@ JDK 21 미만은 UnsupportedClassVersionError 로 즉시 연결 실패합니다.
 설치 (Ubuntu 22.04+ 는 apt 에 openjdk-21 포함):
   sudo apt update && sudo apt install -y openjdk-21-jdk-headless
 
-Temurin (Eclipse Adoptium) apt repo 가 필요하면:
-  sudo apt install -y wget apt-transport-https
-  wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | sudo tee /etc/apt/trusted.gpg.d/adoptium.asc
-  echo "deb https://packages.adoptium.net/artifactory/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/adoptium.list
-  sudo apt update && sudo apt install -y temurin-21-jdk
-
 자동 설치 (이 스크립트가 apt install 수행):
-  AUTO_INSTALL_DEPS=true NODE_SECRET=... ./offline/wsl-agent-setup.sh
+  AUTO_INSTALL_DEPS=true NODE_SECRET=... ./wsl-agent-setup.sh
+
+Windows (Git Bash):
+  winget install Microsoft.OpenJDK.21
 EOT
     exit 2
   fi
@@ -317,13 +405,31 @@ detect_python() {
   local min_major min_minor cand
   min_major="${PY_VERSION_MIN%%.*}"
   min_minor="${PY_VERSION_MIN##*.}"
-  for cand in \
-      "/usr/bin/python3.12" \
-      "/usr/bin/python3.11" \
-      "$(command -v python3.12 2>/dev/null || true)" \
-      "$(command -v python3.11 2>/dev/null || true)" \
-      "$(command -v python3 2>/dev/null || true)" \
-    ; do
+  local cands=()
+  if [ "$IS_WIN_HOST" = "true" ]; then
+    # py 런처가 있으면 가장 신뢰. 없으면 PATH 의 python.exe.
+    if command -v py >/dev/null 2>&1; then
+      for v in 3.12 3.11; do
+        local p; p="$(py -$v -c 'import sys; print(sys.executable)' 2>/dev/null || true)"
+        [ -n "$p" ] && cands+=("$p")
+      done
+    fi
+    cands+=(
+      "$(command -v python.exe 2>/dev/null || true)"
+      "$(command -v python 2>/dev/null || true)"
+      "$LOCALAPPDATA/Programs/Python/Python312/python.exe"
+      "$LOCALAPPDATA/Programs/Python/Python311/python.exe"
+    )
+  else
+    cands=(
+      "/usr/bin/python3.12"
+      "/usr/bin/python3.11"
+      "$(command -v python3.12 2>/dev/null || true)"
+      "$(command -v python3.11 2>/dev/null || true)"
+      "$(command -v python3 2>/dev/null || true)"
+    )
+  fi
+  for cand in "${cands[@]}"; do
     [ -n "$cand" ] && [ -x "$cand" ] || continue
     if "$cand" -c "import sys; sys.exit(0 if sys.version_info >= ($min_major,$min_minor) else 1)" 2>/dev/null; then
       echo "$cand"; return 0
@@ -334,7 +440,9 @@ detect_python() {
 
 PY_BIN="$(detect_python || true)"
 if [ -z "$PY_BIN" ]; then
-  if [ "$AUTO_INSTALL_DEPS" = "true" ]; then
+  if [ "$IS_WIN_HOST" = "true" ]; then
+    err "Python $PY_VERSION_MIN+ 미설치. winget install Python.Python.3.11 (또는 3.12) 실행 후 재시도."
+  elif [ "$AUTO_INSTALL_DEPS" = "true" ]; then
     log "  python3 $PY_VERSION_MIN+ 미존재 — apt install python3.12-venv (또는 python3.11-venv)"
     sudo apt-get update
     # Ubuntu 22.04 는 python3.10 이 기본 — 3.12 는 deadsnakes PPA 필요할 수 있음.
@@ -362,13 +470,14 @@ log "  OK: $PY_BIN (python $PY_VER)"
 log "[4/7] venv 준비 + Playwright Chromium 호스트 설치"
 
 VENV_DIR="$AGENT_DIR/venv"
+VENV_PY="$VENV_DIR/$VENV_BIN_REL/$VENV_PY_NAME"
+VENV_ACTIVATE="$VENV_DIR/$VENV_BIN_REL/activate"
 venv_ok() {
-  [ -x "$VENV_DIR/bin/python3" ] || return 1
-  "$VENV_DIR/bin/python3" -c "import sys; assert sys.prefix == '$VENV_DIR'" 2>/dev/null || return 1
-  "$VENV_DIR/bin/python3" -m pip --version >/dev/null 2>&1 || return 1
-  [ -x "$VENV_DIR/bin/pip" ] && "$VENV_DIR/bin/pip" --version >/dev/null 2>&1
+  [ -x "$VENV_PY" ] || return 1
+  "$VENV_PY" -c "import sys, os; assert os.path.normcase(os.path.realpath(sys.prefix)) == os.path.normcase(os.path.realpath(r'$VENV_DIR'))" 2>/dev/null || return 1
+  "$VENV_PY" -m pip --version >/dev/null 2>&1 || return 1
 }
-if [ ! -f "$VENV_DIR/bin/activate" ]; then
+if [ ! -f "$VENV_ACTIVATE" ]; then
   log "  venv 생성: $VENV_DIR"
   "$PY_BIN" -m venv "$VENV_DIR"
 elif ! venv_ok; then
@@ -379,36 +488,39 @@ else
   log "  venv 이미 존재 — 스킵"
 fi
 
-VENV_PY="$VENV_DIR/bin/python3"
 "$VENV_PY" -m pip install --upgrade pip >/dev/null 2>&1
-REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright fastapi uvicorn httpx pyotp python-multipart)
+REQ_PKGS=(requests playwright pillow pymupdf pytest pytest-xdist pytest-playwright fastapi uvicorn httpx pyotp python-multipart portalocker)
 log "  pip install: ${REQ_PKGS[*]}"
 "$VENV_PY" -m pip install --quiet "${REQ_PKGS[@]}"
 
-# Playwright 캐시는 ~/.cache/ms-playwright/ (Linux 표준)
-if ls -d "$HOME/.cache/ms-playwright/chromium-"* >/dev/null 2>&1; then
-  log "  Chromium 이미 설치됨 — 스킵"
+# Windows venv 는 Scripts/ 인데 Jenkinsfile 은 venv/bin/activate 를 호출 — bin junction 으로 호환.
+if [ "$IS_WIN_HOST" = "true" ] && [ ! -e "$VENV_DIR/bin" ]; then
+  if make_junction "$VENV_DIR/bin" "$VENV_DIR/Scripts"; then
+    log "  venv bin -> Scripts junction (Jenkinsfile 호환)"
+  else
+    warn "  venv bin junction 생성 실패 — Jenkinsfile 의 bin/activate 참조가 깨질 수 있음"
+  fi
+fi
+
+# Playwright Chromium 캐시 — Linux: ~/.cache/ms-playwright/, Windows: %LOCALAPPDATA%\ms-playwright\
+if ls -d "$PW_CACHE/chromium-"* >/dev/null 2>&1; then
+  log "  Chromium 이미 설치됨 — 스킵 ($PW_CACHE)"
 else
-  # WSL2 최소 Ubuntu 이미지는 libasound2 / libgbm1 / libnss3 / libatk-bridge2.0-0 /
-  # libgtk-3-0 등이 빠져 있을 수 있어 headed Chromium 기동이 실패한다.
-  # `playwright install-deps` 가 Playwright 가 요구하는 정확한 apt 패키지 목록을
-  # 알아서 설치해 주므로, WSL 감지 시 sudo 로 선행한다. sudo 가 NOPASSWD 가 아니면
-  # 사용자가 비번을 입력해야 함 — AUTO_INSTALL_DEPS=true 플로우와 동일 UX.
-  if [ "$IS_WSL" = "true" ] && command -v sudo >/dev/null 2>&1; then
-    log "  WSL2 감지 — Playwright Chromium 의존 apt 패키지 자동 설치 (sudo 필요)"
+  if [ "$IS_WIN_HOST" = "true" ]; then
+    log "  playwright install chromium (Windows 네이티브 — 100MB+ 다운로드)"
+  elif command -v sudo >/dev/null 2>&1; then
+    # 베어 Linux — Playwright 가 요구하는 X libs 사전 설치
+    log "  Playwright Chromium 의존 apt 패키지 자동 설치 (sudo 필요)"
     sudo "$VENV_PY" -m playwright install-deps chromium 2>&1 \
-      || warn "  install-deps 실패 — 이미 설치돼 있거나 수동 apt 필요. 계속 진행 (README §4.3)"
+      || warn "  install-deps 실패 — 이미 설치돼 있거나 수동 apt 필요. 계속 진행."
   fi
   "$VENV_PY" -m playwright install chromium
 fi
 
-# WSLg 경유 headed 창 사전 체크 (정보성)
-if [ "$IS_WSL" = "true" ]; then
+# Linux 베어 호스트 — DISPLAY 가 있어야 headed Chromium 가 보인다.
+if [ "$IS_WIN_HOST" = "false" ]; then
   if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-    warn "  WSL2 인데 DISPLAY / WAYLAND_DISPLAY 가 비어있음 — WSLg 미활성 가능성"
-    warn "  Windows 11 은 WSLg 기본 탑재. 'wsl --update' 로 WSL 커널 업데이트 권장"
-  else
-    log "  WSLg 활성화됨 (DISPLAY=${DISPLAY:-unset} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}) — Chromium 창이 Windows 데스크탑에 뜰 예정"
+    warn "  DISPLAY / WAYLAND_DISPLAY 가 비어있음 — headed 창이 안 뜰 수 있습니다."
   fi
 fi
 
@@ -424,21 +536,32 @@ fi
 ABS_WORKSPACE="$AGENT_DIR/workspace/ZeroTouch-QA"
 log "[5/7] Jenkins Node remoteFS 절대경로 갱신 + workspace venv 사전 링크"
 
-# PoC 2026-04-20: Jenkins 2.555 의 /crumbIssuer/api/json 은 404 HTML 을 반환함 (엔드포인트 자체 부재).
-# crumb 없이도 basic auth 요청이면 POST 가 통과되므로, 파싱 실패 시 empty 로 두고 warn 후 진행.
-CRUMB=$(curl -sS -u admin:password "$JENKINS_URL/crumbIssuer/api/json" 2>/dev/null \
-  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['crumbRequestField']+':'+d['crumb'])" 2>/dev/null \
-  || true)
-if [ -z "$CRUMB" ]; then
-  warn "Jenkins crumb 획득 실패 (2.555+ 는 /crumbIssuer 미제공) — basic auth 만으로 진행"
+# Jenkins 2.555 의 /crumbIssuer 는 404 일 수 있고, 이 이미지의 Jenkins 는 200 + JSON.
+# python3 이 없는 Git Bash 환경 호환을 위해 sed 로 직접 파싱 (의존성 없음).
+CRUMB_JSON=$(curl -sS -u admin:password "$JENKINS_URL/crumbIssuer/api/json" 2>/dev/null || true)
+CRUMB=""
+if [ -n "$CRUMB_JSON" ] && echo "$CRUMB_JSON" | grep -q '"crumb"'; then
+  CRUMB_FIELD=$(echo "$CRUMB_JSON" | sed -n 's/.*"crumbRequestField":"\([^"]*\)".*/\1/p')
+  CRUMB_VAL=$(echo "$CRUMB_JSON"   | sed -n 's/.*"crumb":"\([^"]*\)".*/\1/p')
+  if [ -n "$CRUMB_FIELD" ] && [ -n "$CRUMB_VAL" ]; then
+    CRUMB="${CRUMB_FIELD}:${CRUMB_VAL}"
+  fi
 fi
+if [ -z "$CRUMB" ]; then
+  warn "Jenkins crumb 획득 실패 — basic auth 만으로 진행 (POST 가 403 이면 본 Jenkins 인스턴스가 crumb 강제)"
+fi
+# Windows 호스트 — JVM 이 인식하는 Windows-style 경로 (C:\...) 로 remoteFS 갱신.
+# Linux 호스트 — POSIX 절대경로 그대로.
+AGENT_DIR_FOR_JVM=$(to_win_path "$AGENT_DIR")
+# Groovy 문자열 안 백슬래시 escape (Windows path 의 \ 를 \\ 로)
+AGENT_DIR_FOR_JVM_ESC=${AGENT_DIR_FOR_JVM//\\/\\\\}
 GROOVY_UPDATE=$(cat <<GROOVY
 import jenkins.model.Jenkins
 def n = Jenkins.get().getNode("$AGENT_NAME")
 if (n == null) { println "ERR: Node '$AGENT_NAME' 없음"; return }
 def f = n.getClass().getSuperclass().getDeclaredField("remoteFS")
 f.setAccessible(true)
-f.set(n, "$AGENT_DIR")
+f.set(n, "$AGENT_DIR_FOR_JVM_ESC")
 Jenkins.get().updateNode(n)
 println "OK remoteFS=" + n.getRemoteFS()
 GROOVY
@@ -448,11 +571,17 @@ UPDATE_RESP=$(curl -sS -u admin:password ${CRUMB:+-H "$CRUMB"} \
     "$JENKINS_URL/scriptText" 2>&1)
 log "  $UPDATE_RESP"
 
-# workspace 스켈레톤 + venv 심볼릭 링크
+# workspace 스켈레톤 + venv 링크 (Linux=symlink, Windows=directory junction).
+# make_junction 헬퍼가 OS 별로 분기.
 mkdir -p "$ABS_WORKSPACE/.qa_home/artifacts"
-if [ -d "$VENV_DIR/bin" ]; then
-  ln -sfn "$VENV_DIR" "$ABS_WORKSPACE/.qa_home/venv"
-  log "  workspace venv 링크: $ABS_WORKSPACE/.qa_home/venv → $VENV_DIR"
+if [ -d "$VENV_DIR/$VENV_BIN_REL" ]; then
+  WS_VENV_LINK="$ABS_WORKSPACE/.qa_home/venv"
+  remove_path "$WS_VENV_LINK"
+  if make_junction "$WS_VENV_LINK" "$VENV_DIR"; then
+    log "  workspace venv link/junction: $WS_VENV_LINK → $VENV_DIR"
+  else
+    warn "  workspace venv 링크 생성 실패 — Pipeline 이 .qa_home/venv 를 못 찾을 수 있음"
+  fi
 fi
 
 # ── 6. agent.jar 다운로드 ──────────────────────────────────────────────────
@@ -478,15 +607,23 @@ REC_RUN_SCRIPT="$AGENT_DIR/run-recording-service.sh"
 
 if [ -f "$REC_PID_FILE" ]; then
   OLD_PID=$(cat "$REC_PID_FILE" 2>/dev/null || true)
-  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-    log "  [6.5] 기존 recording_service PID=$OLD_PID 정리"
-    kill "$OLD_PID" 2>/dev/null || true
+  if [ -n "$OLD_PID" ]; then
+    log "  [6.5] 기존 recording_service PID=$OLD_PID 정리 시도"
+    if [ "$IS_WIN_HOST" = "true" ]; then
+      taskkill //F //T //PID "$OLD_PID" 2>/dev/null || true
+    else
+      kill -0 "$OLD_PID" 2>/dev/null && kill "$OLD_PID" 2>/dev/null || true
+    fi
     sleep 1
   fi
   rm -f "$REC_PID_FILE"
 fi
-# 포트 점유 프로세스 정리 (안전망 — fuser / ss 우선, lsof fallback)
-if command -v fuser >/dev/null 2>&1; then
+# 포트 점유 프로세스 정리 (안전망)
+if [ "$IS_WIN_HOST" = "true" ]; then
+  # netstat -ano + taskkill (Windows). LISTENING 상태의 PID 만 잡는다.
+  PORT_PIDS=$(netstat -ano 2>/dev/null | tr -d '\r' | awk -v p=":$REC_PORT" '$2 ~ p"$" && $4=="LISTENING" {print $5}' | sort -u)
+  for _p in $PORT_PIDS; do taskkill //F //T //PID "$_p" 2>/dev/null || true; done
+elif command -v fuser >/dev/null 2>&1; then
   fuser -k "$REC_PORT/tcp" 2>/dev/null || true
 elif command -v lsof >/dev/null 2>&1; then
   lsof -nP -iTCP:"$REC_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 | xargs -r -I{} kill {} 2>/dev/null || true
@@ -499,6 +636,9 @@ set -e
 export PYTHONPATH="$ROOT_DIR:\${PYTHONPATH:-}"
 export RECORDING_HOST_ROOT="\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}"
 export PYTHONUNBUFFERED="\${PYTHONUNBUFFERED:-1}"
+# venv bin/ 을 PATH 앞에 둬야 codegen_runner.is_codegen_available() 가 'playwright'
+# CLI 를 찾는다. 이 줄이 없으면 UI badge 가 ⚠ codegen 미설치 로 떨어진다.
+export PATH="$(dirname "$VENV_PY"):\${PATH:-}"
 LOG_FILE="\${RECORDING_SERVICE_LOG:-$REC_LOG_FILE}"
 PID_FILE="\${RECORDING_SERVICE_PID:-$REC_PID_FILE}"
 mkdir -p "$AGENT_DIR"

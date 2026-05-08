@@ -21,7 +21,7 @@ Phase: P1.1 (디렉토리/스키마 헬퍼 + 이름 sanitize + index 락) 까지
 
 from __future__ import annotations
 
-import fcntl
+import portalocker  # cross-platform exclusive file lock (Windows + POSIX)
 import hashlib
 import json
 import logging
@@ -97,7 +97,17 @@ def _ensure_root() -> Path:
     (``ttc-allinone-data`` 자체는 사용자 환경에 의존).
     """
     root = _root()
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        # 부모 디렉토리에 쓰기 권한이 없어 root 생성 실패. 흔한 원인:
+        # 다른 사용자(root 등)로 한 번 만들었던 ``ttc-allinone-data`` 가 그대로
+        # 남아 현재 사용자가 그 안에 서브디렉토리를 못 만드는 케이스.
+        # raw PermissionError 가 워커까지 올라가면 UI 에 repr 만 떠 진단 어려움.
+        raise AuthProfileError(
+            f"auth-profile 루트 생성 실패 — '{root}' 에 쓰기 권한 없음. "
+            f"부모 디렉토리 소유권/권한을 확인하세요 ({e})"
+        ) from e
     # 부모가 만들어진 직후 mode 가 umask 영향 받을 수 있어 명시적으로 chmod.
     try:
         os.chmod(root, _DIR_MODE)
@@ -148,29 +158,29 @@ def _validate_name(name: str) -> None:
 def _index_lock() -> Iterator[None]:
     """``_index.lock`` 파일에 대한 advisory exclusive lock 보유.
 
-    POSIX ``fcntl.flock`` 사용. 동일 프로세스 내 여러 스레드 / 다른 프로세스
-    모두 직렬화. ``with _index_lock():`` 블록 안에서 ``_load_index`` /
-    ``_save_index`` 를 호출하면 read-modify-write 사이클이 안전하다.
-
-    Note: macOS / Linux 모두 지원. Windows 는 fcntl 자체가 없어 본 모듈은
-    POSIX 전용. (호스트 데몬 가정 — Recording UI 와 동일한 운영 모델.)
+    portalocker 로 cross-platform exclusive lock — Linux/macOS 는 fcntl.flock,
+    Windows 는 msvcrt.locking 으로 자동 분기. ``with _index_lock():`` 블록 안에서
+    ``_load_index`` / ``_save_index`` 를 호출하면 read-modify-write 사이클이 안전하다.
+    동일 프로세스 내 여러 스레드 / 다른 프로세스 모두 직렬화.
     """
     _ensure_root()
     lock_p = _lock_path()
-    # 락 파일 자체는 비어있어도 됨 — flock 만 잡고 풀면 끝.
+    # 락 파일 자체는 비어있어도 됨 — lock 만 잡고 풀면 끝.
+    # 0600 으로 만들기 위해 os.open 으로 fd 확보 후 portalocker 로 lock.
     fd = os.open(str(lock_p), os.O_RDWR | os.O_CREAT, _FILE_MODE)
     try:
         os.chmod(lock_p, _FILE_MODE)
     except OSError:
         pass
+    f = os.fdopen(fd, "r+b")
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        portalocker.lock(f, portalocker.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            portalocker.unlock(f)
     finally:
-        os.close(fd)
+        f.close()
 
 
 def _empty_index() -> dict:

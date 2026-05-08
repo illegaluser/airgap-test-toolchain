@@ -60,7 +60,8 @@ Mac 터미널:
 ```bash
 brew install ollama openjdk@21 python@3.12
 brew services start ollama
-ollama pull gemma4:26b
+ollama pull gemma4:26b      # Mac 기본 LLM
+ollama pull bge-m3          # 임베딩 (Test Planning RAG)
 ```
 
 Windows 11:
@@ -74,7 +75,8 @@ PowerShell:
 ```powershell
 wsl --install -d Ubuntu-22.04
 winget install Ollama.Ollama
-ollama pull gemma4:26b
+ollama pull qwen3.5:9b      # WSL2 / Windows 기본 LLM
+ollama pull bge-m3          # 임베딩 (Test Planning RAG)
 ```
 
 WSL2 Ubuntu:

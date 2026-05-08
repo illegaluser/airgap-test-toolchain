@@ -374,10 +374,10 @@ SQL
   ok "  Redis 캐시 삭제 완료"
 
   # 2-3f. Embedding 모델 등록 — Test Planning RAG 트랙용 (별도 트랙, KB 검색에 사용)
-  # `bona/bge-m3-korean:latest` 모델을 text-embedding type 으로 추가 등록한다.
+  # `bge-m3:latest` 모델을 text-embedding type 으로 추가 등록한다 (호스트 Ollama).
   # Dify Knowledge Base 가 청크를 임베딩할 때 이 provider 를 사용한다. LLM 등록과
   # 동일한 endpoint 를 쓰되 model_type 이 다르다. 자세한 설계는 docs/PLAN_TEST_PLANNING_RAG.md.
-  EMBEDDING_MODEL="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
+  EMBEDDING_MODEL="${EMBEDDING_MODEL:-bge-m3:latest}"
   log "2-3f. Embedding 모델 등록: ${EMBEDDING_MODEL} (text-embedding)"
   EMB_REG_BODY=$($PY - << PYEOF
 import json
@@ -450,8 +450,20 @@ fi
 # 패턴 채택.
 # ────────────────────────────────────────────────────────────────────────────
 if [ "$DIFY_LOGGED_IN" = "true" ]; then
-  log "2-3g. Workspace 기본 모델 설정 (llm=${OLLAMA_MODEL}, embedding=${EMBEDDING_MODEL:-bona/bge-m3-korean:latest})"
-  EMB_MODEL_NAME="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
+  log "2-3g. Workspace 기본 모델 설정 (llm=${OLLAMA_MODEL}, embedding=${EMBEDDING_MODEL:-bge-m3:latest})"
+  EMB_MODEL_NAME="${EMBEDDING_MODEL:-bge-m3:latest}"
+
+  # 멱등성 보강 — Dify default-model POST 는 INSERT-only 라 row 가 이미 있으면
+  # `unique_tenant_default_model_type` 위반으로 HTTP:500. 재실행 (--reprovision) 시
+  # 매번 실패하므로, POST 전에 현재 tenant 의 default-model row 를 모두 비워
+  # 새 값으로 재등록한다. DB 의 model_type 은 'llm' / 'embeddings' 로 저장되며
+  # API 의 'text-embedding' 과 매핑이 다르므로 둘 다 정리.
+  PGPASSWORD=difyai123456 psql -h 127.0.0.1 -U postgres -d dify -tAc \
+      "DELETE FROM tenant_default_models
+       WHERE tenant_id IN (SELECT id FROM tenants)
+         AND model_type IN ('llm','embeddings','text-embedding');" \
+      >/dev/null 2>&1 || warn "  default-model 사전정리 SQL 실패 (POST 시 충돌 가능)"
+
   DEFAULT_MODEL_BODY=$($PY - <<PYEOF
 import json
 print(json.dumps({
@@ -517,7 +529,7 @@ except Exception:
   fi
 
   # 신규 생성 — sister body schema 그대로 채택
-  local emb="${EMBEDDING_MODEL:-bona/bge-m3-korean:latest}"
+  local emb="${EMBEDDING_MODEL:-bge-m3:latest}"
   local body
   body=$($PY - <<PYEOF
 import json
@@ -739,6 +751,21 @@ dify_import_chatflow() {
   local tmp_yaml
   tmp_yaml=$(mktemp /tmp/chatflow.XXXXXX.yaml)
   cp "$src_yaml" "$tmp_yaml"
+
+  # 1-a. LLM 모델명 substitute — chatflow YAML 의 placeholder `gemma4:26b` 를
+  #      런타임 OLLAMA_MODEL (mac=gemma4:26b / wsl=qwen3.5:9b) 로 치환.
+  if [ -n "${OLLAMA_MODEL:-}" ] && [ "$OLLAMA_MODEL" != "gemma4:26b" ]; then
+    log "  LLM 모델명 substitute: gemma4:26b → ${OLLAMA_MODEL}"
+    OLLAMA_MODEL_ENV="$OLLAMA_MODEL" $PY - "$tmp_yaml" <<'PYEOF'
+import os, sys
+target = os.environ["OLLAMA_MODEL_ENV"]
+path = sys.argv[1]
+content = open(path).read()
+content = content.replace("gemma4:26b", target)
+open(path, "w").write(content)
+PYEOF
+  fi
+
   if [ "${#kb_ids[@]}" -gt 0 ]; then
     log "  KB UUID substitute: ${#kb_ids[@]} 개 → $tmp_yaml"
     KB_IDS_JSON=$(printf '%s\n' "${kb_ids[@]}" | $PY -c "
@@ -915,7 +942,7 @@ except Exception: print('')
   local cred_resp
   cred_resp=$(jkpost -w $'\nHTTP:%{http_code}' -X POST \
       "${JENKINS_URL}/credentials/store/system/domain/_/createCredentials" \
-      -H "Content-Type: application/xml" \
+      -H "Content-Type: application/xml; charset=utf-8" \
       --data "$cred_xml" 2>&1 || echo "HTTP:000")
   if echo "$cred_resp" | grep -qE 'HTTP:(200|302)'; then
     ok "  Jenkins credential '$cred_id' 등록 완료"
@@ -923,7 +950,7 @@ except Exception: print('')
     local upd_resp
     upd_resp=$(jkpost -w $'\nHTTP:%{http_code}' -X POST \
         "${JENKINS_URL}/credentials/store/system/domain/_/credential/${cred_id}/config.xml" \
-        -H "Content-Type: application/xml" \
+        -H "Content-Type: application/xml; charset=utf-8" \
         --data "$cred_xml" 2>&1 || echo "HTTP:000")
     if echo "$upd_resp" | grep -qE 'HTTP:(200|302)'; then
       ok "  Jenkins credential '$cred_id' 업데이트 완료"
@@ -1142,14 +1169,14 @@ if [ -n "$DIFY_API_KEY" ]; then
 
   CRED_RESP=$(jkpost -w $'\nHTTP:%{http_code}' -X POST \
       "${JENKINS_URL}/credentials/store/system/domain/_/createCredentials" \
-      -H "Content-Type: application/xml" \
+      -H "Content-Type: application/xml; charset=utf-8" \
       --data "$CRED_XML" 2>&1 || echo "HTTP:000")
   if echo "$CRED_RESP" | grep -qE 'HTTP:(200|302)'; then
     ok "Credentials 등록 완료"
   else
     UPDATE_CRED_RESP=$(jkpost -w $'\nHTTP:%{http_code}' -X POST \
         "${JENKINS_URL}/credentials/store/system/domain/_/credential/dify-qa-api-token/config.xml" \
-        -H "Content-Type: application/xml" \
+        -H "Content-Type: application/xml; charset=utf-8" \
         --data "$CRED_XML" 2>&1 || echo "HTTP:000")
     if echo "$UPDATE_CRED_RESP" | grep -qE 'HTTP:(200|302)'; then
       ok "Credentials 업데이트 완료"
@@ -1211,19 +1238,25 @@ PYEOF
   else
     JOB_RESP=$(printf '%s' "$JOB_XML" | jkpost -w $'\nHTTP:%{http_code}' -X POST \
         "${JENKINS_URL}/createItem?name=ZeroTouch-QA" \
-        -H "Content-Type: application/xml" \
+        -H "Content-Type: application/xml; charset=utf-8" \
         --data-binary @- 2>&1 || echo "HTTP:000")
     if echo "$JOB_RESP" | grep -qE 'HTTP:(200|302)'; then
       ok "Pipeline Job 생성 완료"
-    elif echo "$JOB_RESP" | grep -qE 'HTTP:400' && echo "$JOB_RESP" | grep -qi 'already exists'; then
+    elif echo "$JOB_RESP" | grep -qE 'HTTP:(400|409)'; then
+      # 이미 존재 → config.xml POST 로 갱신. Jenkins 2.555 는 'already exists' 문구
+      # 외에도 HTTP:400/409 여러 형태로 응답하므로 status 만 보고 update 시도한다.
       UPDATE_RESP=$(printf '%s' "$JOB_XML" | jkpost -w $'\nHTTP:%{http_code}' -X POST \
           "${JENKINS_URL}/job/ZeroTouch-QA/config.xml" \
-          -H "Content-Type: application/xml" \
+          -H "Content-Type: application/xml; charset=utf-8" \
           --data-binary @- 2>&1 || echo "HTTP:000")
-      echo "$UPDATE_RESP" | grep -qE 'HTTP:(200|302)' && ok "Pipeline Job 업데이트 완료" \
-        || warn "Pipeline Job 업데이트 실패"
+      if echo "$UPDATE_RESP" | grep -qE 'HTTP:(200|302)'; then
+        ok "Pipeline Job 업데이트 완료"
+      else
+        warn "Pipeline Job 업데이트 실패 — response: $(echo "$UPDATE_RESP" | tr '\n' ' ' | head -c 400)"
+        warn "  create response 였음: $(echo "$JOB_RESP" | tr '\n' ' ' | head -c 200)"
+      fi
     else
-      warn "Pipeline Job 생성 실패: $JOB_RESP"
+      warn "Pipeline Job 생성 실패 — response: $(echo "$JOB_RESP" | tr '\n' ' ' | head -c 400)"
     fi
   fi
 fi
@@ -1247,7 +1280,7 @@ fi
 AGENT_NODE_NAME="${AGENT_NAME:-wsl-ui-tester}"
 case "$AGENT_NODE_NAME" in
   mac-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Mac, headed Playwright)' ;;
-  wsl-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Windows/WSL2, headed Playwright via WSLg)' ;;
+  wsl-ui-tester) AGENT_NODE_DESC='Host-side JNLP Agent (Windows/WSL2/Linux, headed Playwright)' ;;
   *)             AGENT_NODE_DESC="Host-side JNLP Agent ($AGENT_NODE_NAME)" ;;
 esac
 log "3-4. 에이전트 노드 등록 ('$AGENT_NODE_NAME' — 호스트 JNLP)"

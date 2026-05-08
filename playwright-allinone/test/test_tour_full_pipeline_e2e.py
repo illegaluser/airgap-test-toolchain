@@ -28,6 +28,11 @@ from _authn_fixture_site import start_authn_site
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENV_PY = os.environ.get("E2E_PYTHON", sys.executable)
 
+# 기본 headless. `E2E_HEADED=1` 환경변수일 때만 tour 스크립트 launch + codegen
+# wrapper 가 headed — 사용자가 호스트 Windows 데스크탑에서 녹화/재생 동작을
+# 직접 확인하는 수동 디버깅 경로. pre-commit 은 env 미설정 → 항상 headless.
+_HEADED = os.environ.get("E2E_HEADED") == "1"
+
 
 @pytest.fixture
 def authn_site():
@@ -94,7 +99,7 @@ def test_tour_codegen_pattern_runs_end_to_end_with_authn(
         seed_url=authn_site,
         storage_path=storage,
         fingerprint=_StubFP(),
-        headless=True,
+        headless=not _HEADED,
         preflight_verify=True,
         verify_service_url="",
         verify_service_text="",
@@ -112,7 +117,8 @@ def test_tour_codegen_pattern_runs_end_to_end_with_authn(
     )
     env["CODEGEN_SESSION_DIR"] = str(sess)
     env["CODEGEN_SCRIPT"] = "original.py"
-    env["CODEGEN_HEADLESS"] = "1"
+    if not _HEADED:
+        env["CODEGEN_HEADLESS"] = "1"
     proc = subprocess.run(
         [VENV_PY, "-m", "recording_service.codegen_trace_wrapper"],
         env=env, capture_output=True, timeout=90,
@@ -167,7 +173,7 @@ def test_tour_continues_after_first_failure(authn_site: str, tmp_path: Path):
         seed_url=authn_site,
         storage_path=storage,
         fingerprint=_StubFP(),
-        headless=True,
+        headless=not _HEADED,
         preflight_verify=True,
         verify_service_url="",
         verify_service_text="",
@@ -184,7 +190,8 @@ def test_tour_continues_after_first_failure(authn_site: str, tmp_path: Path):
     )
     env["CODEGEN_SESSION_DIR"] = str(sess)
     env["CODEGEN_SCRIPT"] = "original.py"
-    env["CODEGEN_HEADLESS"] = "1"
+    if not _HEADED:
+        env["CODEGEN_HEADLESS"] = "1"
     proc = subprocess.run(
         [VENV_PY, "-m", "recording_service.codegen_trace_wrapper"],
         env=env, capture_output=True, timeout=60,
