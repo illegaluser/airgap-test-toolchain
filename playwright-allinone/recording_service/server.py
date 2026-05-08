@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from . import (
-    codegen_runner, converter_proxy, post_process, session, storage,
+    auth_flow, codegen_runner, converter_proxy, post_process, session, storage,
 )
 from .codegen_runner import CodegenError, CodegenHandle
 from .converter_proxy import ConverterProxyError
@@ -1172,6 +1172,57 @@ def get_session_regression(sid: str, download: int = 0):
             filename=f"{sid}-regression_test.py",
         )
     return FileResponse(str(p), media_type="text/plain")
+
+
+@app.get("/recording/sessions/{sid}/bundle", include_in_schema=False)
+def get_session_bundle(
+    sid: str,
+    alias: str = Query(..., description="모니터링 PC 카탈로그 alias (예: packaged)"),
+    verify_url: str = Query(..., description="만료 감지용 URL (이미 로그인된 페이지)"),
+    script_source: Optional[str] = Query(
+        None,
+        description="sess_dir 안 .py 파일명. None 이면 자동 선택 (.py 가 1개일 때만)",
+    ),
+    consent_plain_pw: int = Query(
+        0,
+        description="Login Profile 미적용 + sanitize 후에도 자격증명 잔존 시 1 로 동의",
+    ),
+):
+    """모니터링 PC 가 받을 portable bundle.zip 다운로드.
+
+    호출자 (Recording UI 모달) 책임:
+    - alias / verify_url 사용자가 명시.
+    - script_source 는 sess_dir 의 .py 가 여러 개면 명시 필수.
+    - 422 (PlainCredentialDetected) 받으면 diff 보여주고 동의 후 ``consent_plain_pw=1`` 재시도.
+
+    bundle 내용 / sanitize 정책 / 보안 원칙은 ``auth_flow.pack_bundle`` 참조.
+    """
+    sess = _registry.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+    sess_dir = storage.session_dir(sid)
+    try:
+        zip_bytes = auth_flow.pack_bundle(
+            sess_dir,
+            alias=alias,
+            verify_url=verify_url,
+            script_source=script_source,
+            consent_plain_pw=bool(consent_plain_pw),
+        )
+    except auth_flow.PlainCredentialDetectedError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(e), "diff_lines": e.diff_lines},
+        )
+    except auth_flow.BundleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    filename = f"{sid}.bundle.zip"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.delete("/recording/sessions/{sid}", status_code=204)
