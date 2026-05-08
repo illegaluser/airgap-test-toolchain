@@ -31,6 +31,22 @@
 
 두 경로는 같은 14대 DSL 시나리오 형식을 공유하므로 한쪽에서 만든 결과를 다른 쪽이 그대로 받을 수 있다.
 
+## 모니터링 PC 로 시나리오 옮기기 (Replay UI)
+
+녹화 PC 에서 만든 시나리오를 다른 PC 들에서 무인으로 돌리고 싶을 때:
+
+1. **녹화 PC**: Recording UI 의 결과 카드 → "Original Script" 카드의 `[📦 모니터링 번들 다운로드]` → `<sid>.bundle.zip` 받기
+2. **모니터링 PC**: `monitor-runtime-<ts>.zip` 풀고 `install-monitor` 한 번 실행 (Mac=`bash install-monitor.sh`, Windows=`install-monitor.ps1`)
+3. **모니터링 PC**: <http://127.0.0.1:18094> Replay UI 에서 alias 시드 → bundle 업로드 → 실행 → 스텝별 스크린샷 + HTML 리포트 검증
+
+| 도구 | 위치 |
+| --- | --- |
+| Replay UI | <http://127.0.0.1:18094> (모니터링 PC, localhost only) |
+| CLI replay | `python -m monitor replay <bundle.zip> --out <dir>` |
+| CLI 시드 | `python -m monitor profile seed <alias> --target <url>` |
+
+상세 동선 / 보안 정책 / 자동 프로비저닝 옵션은 [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md) 의 매뉴얼 + 계획서 (`.claude/plans/squishy-wishing-emerson.md`).
+
 ## 가장 짧은 시작
 
 ```bash
@@ -154,6 +170,7 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 | [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) | **처음 한 번 성공시키기** — 사전 요구사항, 빌드, 기동 확인, 첫 Pipeline, 첫 녹화·재생 |
 | [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md) | Recording UI 의 6개 카드 (Login Profile / Discover / Recording / Play / 결과 / 세션) 카드별 사용법 |
 | [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) | 재배포 / 백업·복원 / 모델 변경 / Recording UI 서비스 재기동 / 장애 대응 |
+| [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md) | Replay UI · 모니터링 PC bundle 흐름 통합 테스트 매트릭스 (자동 22 + 수동 20) |
 | [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) | 포트 / 볼륨 / 환경변수 / 데이터 구조 / DSL 액션 14종 / API 계약 |
 | [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md) | 자주 발생하는 녹화·재생 에러 모음 |
 | [docs/](docs/) | 결정 문서 (PLAN_*.md) — 설계 배경 / 트레이드오프 / 검증 |
