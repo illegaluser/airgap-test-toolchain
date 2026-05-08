@@ -2,7 +2,7 @@
 
 **Zero-Touch QA All-in-One** 은 테스트 자동화에 필요한 Jenkins / Dify / DB 를 한 docker 컨테이너로 올리고, Ollama 와 실제 브라우저는 사용자 PC 에서 처리하는 배포본이다.
 
-> **이 문서가 처음이면** — [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) 한 페이지만 따라가면 빌드 → 컨테이너 기동 → 첫 녹화·재생까지 한 번 성공할 수 있다.
+> **이 문서가 처음이면** — [docs/quickstart.md](docs/quickstart.md) 한 페이지만 따라가면 빌드 → 컨테이너 기동 → 첫 녹화·재생까지 한 번 성공할 수 있다.
 
 ## 시스템 한눈에
 
@@ -63,7 +63,7 @@ chmod +x *.sh
 | Dify | <http://localhost:18081> | `admin@example.com` / `Admin1234!` |
 | Recording UI | <http://localhost:18092> | (로컬 서비스, 계정 없음) |
 
-자세한 설치 절차 (사전 요구사항, agent 자동/수동 연결, 첫 Pipeline 실행, 첫 녹화·재생) 는 [QUICKSTART](playwright-allinone_QUICKSTART.md) 에 단계별로 있다.
+자세한 설치 절차 (사전 요구사항, agent 자동/수동 연결, 첫 Pipeline 실행, 첫 녹화·재생) 는 [QUICKSTART](docs/quickstart.md) 에 단계별로 있다.
 
 ## build.sh 자세히
 
@@ -167,18 +167,18 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 
 | 문서 | 언제 본다 |
 | --- | --- |
-| [playwright-allinone_QUICKSTART.md](playwright-allinone_QUICKSTART.md) | **처음 한 번 성공시키기** — 사전 요구사항, 빌드, 기동 확인, 첫 Pipeline, 첫 녹화·재생 |
-| [playwright-allinone_RECORDING_UI.md](playwright-allinone_RECORDING_UI.md) | Recording UI 의 6개 카드 (Login Profile / Discover / Recording / Play / 결과 / 세션) 카드별 사용법 |
-| [playwright-allinone_OPERATIONS.md](playwright-allinone_OPERATIONS.md) | 재배포 / 백업·복원 / 모델 변경 / Recording UI 서비스 재기동 / 장애 대응 |
+| [docs/quickstart.md](docs/quickstart.md) | **처음 한 번 성공시키기** — 사전 요구사항, 빌드, 기동 확인, 첫 Pipeline, 첫 녹화·재생 |
+| [docs/recording-ui.md](docs/recording-ui.md) | Recording UI 의 6개 카드 (Login Profile / Discover / Recording / Play / 결과 / 세션) 카드별 사용법 |
+| [docs/operations.md](docs/operations.md) | 재배포 / 백업·복원 / 모델 변경 / Recording UI 서비스 재기동 / 장애 대응 |
 | [docs/replay-ui-guide.md](docs/replay-ui-guide.md) | **모니터링 PC 운영자 / 테스터 용 — Replay UI 설치 + 사용 가이드** |
 | [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md) | Replay UI · 모니터링 PC bundle 흐름 통합 테스트 매트릭스 (자동 22 + 수동 20) |
-| [playwright-allinone_REFERENCE.md](playwright-allinone_REFERENCE.md) | 포트 / 볼륨 / 환경변수 / 데이터 구조 / DSL 액션 14종 / API 계약 |
+| [docs/reference.md](docs/reference.md) | 포트 / 볼륨 / 환경변수 / 데이터 구조 / DSL 액션 14종 / API 계약 |
 | [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md) | 자주 발생하는 녹화·재생 에러 모음 |
 | [docs/](docs/) | 결정 문서 (PLAN_*.md) — 설계 배경 / 트레이드오프 / 검증 |
 
 ## Recording UI 의 핵심 능력 (요약)
 
-자세한 건 [RECORDING_UI 문서](playwright-allinone_RECORDING_UI.md) 에. 요약하면:
+자세한 건 [RECORDING_UI 문서](docs/recording-ui.md) 에. 요약하면:
 
 - **🔐 Login Profile** — 테스트 대상의 로그인 세션을 한 번 시드 → 매 녹화·재생마다 재사용.
 - **🔍 Discover URLs** — 사이트 URL 자동 수집 → tour 시나리오 자동 생성.
