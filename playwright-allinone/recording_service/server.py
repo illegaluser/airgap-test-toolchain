@@ -105,11 +105,16 @@ def _stop_codegen_impl(handle: CodegenHandle) -> CodegenHandle:
 
 
 def _run_convert_impl(
-    *, container_session_dir: str, host_scenario_path: str,
+    *, host_session_dir: str, host_scenario_path: str,
 ):
-    """TR.3 변환 단계 monkeypatch hook."""
+    """TR.3 변환 단계 monkeypatch hook (2026-05-11 docker-cp 재설계).
+
+    호스트의 세션 디렉토리 (``original.py`` 가 있는 곳) 와 결과 ``scenario.json``
+    의 호스트 측 출력 경로만 받는다. 컨테이너 내부 scratch 는 converter_proxy 가
+    내부에서 격리 관리. 호스트/컨테이너 mount 정합 의존 없음.
+    """
     return converter_proxy.run_convert(
-        container_session_dir=container_session_dir,
+        host_session_dir=host_session_dir,
         host_scenario_path=host_scenario_path,
     )
 
@@ -483,7 +488,7 @@ def _convert_imported_script(sid: str) -> dict:
     패턴(`URLS = [...]`) 을 AST 로 추출해 navigate-only 시나리오를 합성 시도.
     합성 성공 시 ``scenario_source="synthesized_tour"`` 표시.
     """
-    container_dir = storage.container_path_for(sid)
+    host_session = str(storage.session_dir(sid))
     host_scenario = str(storage.scenario_path(sid))
     convert_err: Optional[str] = None
     convert_exception: Optional[str] = None  # ConverterProxyError 메시지 (호환 키 'error')
@@ -491,7 +496,7 @@ def _convert_imported_script(sid: str) -> dict:
     convert_elapsed: Optional[float] = None
     try:
         result = _run_convert_impl(
-            container_session_dir=container_dir,
+            host_session_dir=host_session,
             host_scenario_path=host_scenario,
         )
         convert_rc = result.returncode
@@ -710,15 +715,15 @@ def recording_stop(sid: str) -> dict:
         action_count=action_count_estimate,
     )
 
-    # TR.3 — docker exec 위임 변환
-    container_dir = storage.container_path_for(sid)
+    # TR.3 — docker exec 위임 변환 (2026-05-11 docker-cp 재설계)
+    host_session = str(storage.session_dir(sid))
     host_scenario = str(storage.scenario_path(sid))
 
     convert_error: Optional[str] = None
     convert_result = None
     try:
         convert_result = _run_convert_impl(
-            container_session_dir=container_dir,
+            host_session_dir=host_session,
             host_scenario_path=host_scenario,
         )
     except ConverterProxyError as e:
@@ -889,14 +894,17 @@ def get_session_original(sid: str, download: int = 0):
             status_code=404,
             detail=f"original.py 없음 (state={sess.state})",
         )
+    # D17 — sanitize 항상 통과시켜 응답 (이전엔 번들 다운로드 시점에만 sanitize 했음).
+    # 평문 자격증명을 placeholder 로 치환 — 사용자가 받는 .py 는 항상 안전.
+    src_text = p.read_text(encoding="utf-8")
+    sanitized, _diffs = auth_flow.sanitize_script(src_text)
     if download:
-        return FileResponse(
-            str(p),
+        return Response(
+            content=sanitized,
             media_type="text/x-python",
-            filename=f"{sid}-original.py",
+            headers={"Content-Disposition": f'attachment; filename="{sid}-original.py"'},
         )
-    # 브라우저 표시용 — text/plain 이 안전 (브라우저가 .py 를 다운로드로 처리하는 것 회피).
-    return FileResponse(str(p), media_type="text/plain")
+    return Response(content=sanitized, media_type="text/plain")
 
 
 # ── P1 (항목 5) — Step 결과 시각화: run_log + 스크린샷 ─────────────────────
@@ -1165,64 +1173,16 @@ def get_session_regression(sid: str, download: int = 0):
             status_code=404,
             detail="regression_test.py 없음 — Play with LLM 미실행",
         )
+    # D17 — sanitize 항상 통과시켜 응답.
+    src_text = p.read_text(encoding="utf-8")
+    sanitized, _diffs = auth_flow.sanitize_script(src_text)
     if download:
-        return FileResponse(
-            str(p),
+        return Response(
+            content=sanitized,
             media_type="text/x-python",
-            filename=f"{sid}-regression_test.py",
+            headers={"Content-Disposition": f'attachment; filename="{sid}-regression_test.py"'},
         )
-    return FileResponse(str(p), media_type="text/plain")
-
-
-@app.get("/recording/sessions/{sid}/bundle", include_in_schema=False)
-def get_session_bundle(
-    sid: str,
-    alias: str = Query(..., description="모니터링 PC 카탈로그 alias (예: packaged)"),
-    verify_url: str = Query(..., description="만료 감지용 URL (이미 로그인된 페이지)"),
-    script_source: Optional[str] = Query(
-        None,
-        description="sess_dir 안 .py 파일명. None 이면 자동 선택 (.py 가 1개일 때만)",
-    ),
-    consent_plain_pw: int = Query(
-        0,
-        description="Login Profile 미적용 + sanitize 후에도 자격증명 잔존 시 1 로 동의",
-    ),
-):
-    """모니터링 PC 가 받을 portable bundle.zip 다운로드.
-
-    호출자 (Recording UI 모달) 책임:
-    - alias / verify_url 사용자가 명시.
-    - script_source 는 sess_dir 의 .py 가 여러 개면 명시 필수.
-    - 422 (PlainCredentialDetected) 받으면 diff 보여주고 동의 후 ``consent_plain_pw=1`` 재시도.
-
-    bundle 내용 / sanitize 정책 / 보안 원칙은 ``auth_flow.pack_bundle`` 참조.
-    """
-    sess = _registry.get(sid)
-    if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
-    sess_dir = storage.session_dir(sid)
-    try:
-        zip_bytes = auth_flow.pack_bundle(
-            sess_dir,
-            alias=alias,
-            verify_url=verify_url,
-            script_source=script_source,
-            consent_plain_pw=bool(consent_plain_pw),
-        )
-    except auth_flow.PlainCredentialDetectedError as e:
-        raise HTTPException(
-            status_code=422,
-            detail={"message": str(e), "diff_lines": e.diff_lines},
-        )
-    except auth_flow.BundleError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    filename = f"{sid}.bundle.zip"
-    return Response(
-        content=zip_bytes,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return Response(content=sanitized, media_type="text/plain")
 
 
 @app.delete("/recording/sessions/{sid}", status_code=204)
@@ -1549,6 +1509,7 @@ class AuthProfileDetail(AuthProfileSummary):
     verify_service_url: str
     verify_service_text: str
     naver_probe_enabled: bool
+    idp_domain: Optional[str]
 
 
 class AuthSeedReq(BaseModel):
@@ -1559,6 +1520,9 @@ class AuthSeedReq(BaseModel):
     verify_service_url: str
     verify_service_text: str = ""
     naver_probe: bool = True
+    # IdP 도메인 — 빈 문자열/None 이면 IdP 검증 없음 (순수 ID/PW 사이트).
+    # default 는 하위 호환을 위해 "naver.com".
+    idp_domain: Optional[str] = "naver.com"
     service_domain: Optional[str] = None
     ttl_hint_hours: int = 12
     notes: str = ""
@@ -1619,10 +1583,13 @@ def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
         )
 
     try:
+        # 빈 문자열도 None 으로 정규화 — UI 가 빈칸 입력 시 IdP 검증 skip.
+        idp = (req.idp_domain or "").strip() or None
         verify = VerifySpec(
             service_url=req.verify_service_url,
             service_text=req.verify_service_text,
             naver_probe=NaverProbeSpec() if req.naver_probe else None,
+            idp_domain=idp,
         )
         prof = auth_profiles.seed_profile(
             name=req.name,
@@ -1704,6 +1671,7 @@ def auth_profile_get(name: str) -> AuthProfileDetail:
         verify_service_url=p.verify.service_url,
         verify_service_text=p.verify.service_text,
         naver_probe_enabled=p.verify.naver_probe is not None,
+        idp_domain=p.verify.idp_domain,
     )
 
 

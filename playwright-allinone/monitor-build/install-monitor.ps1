@@ -153,23 +153,22 @@ if ($RegisterStartup) {
     Write-Host "[install-monitor] 작업 스케줄러 등록 (At log on): $TaskName"
 }
 
-# 7. 30분 스케줄러 안내.
+# 7. 30분 스케줄러 안내 (D17 — 단일 .py 흐름).
 if ($RegisterTask) {
     Write-Host @"
-[install-monitor] 30분 주기 스케줄러 등록 안내 - 시나리오 묶음 별로 한 번씩 만들어 주세요:
-schtasks /create /sc minute /mo 30 /tn "Monitor Replay [시나리오이름]" /tr "$InstallRoot\venv\Scripts\python.exe -m monitor replay $InstallRoot\scenarios\[시나리오이름.bundle.zip] --out $InstallRoot\runs\auto"
+[install-monitor] 30분 주기 스케줄러 등록 안내 - 시나리오 .py 별로 한 번씩 만들어 주세요:
+schtasks /create /sc minute /mo 30 /tn "Monitor Replay [시나리오이름]" /tr "$InstallRoot\venv\Scripts\python.exe -m monitor replay-script $InstallRoot\scripts\[시나리오이름.py] --out $InstallRoot\runs\auto --profile [프로파일이름]"
 "@
 }
 
 Write-Host @"
 
-[install-monitor] 셋업 완료.
+[install-monitor] 셋업 완료 (D17 — .py 일원화).
   Replay UI:   http://127.0.0.1:18094  (RegisterStartup 미사용 시 수동 기동)
-  수동 기동 (PowerShell):
-    `$env:PLAYWRIGHT_BROWSERS_PATH = '$InstallRoot\chromium'
-    `$env:AUTH_PROFILES_DIR        = '$InstallRoot\auth-profiles'
-    `$env:MONITOR_HOME             = '$InstallRoot'
-    & '$InstallRoot\venv\Scripts\python.exe' -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
+  단일 진입점 launcher (Recording UI 와 동등 패턴, 권장):
+    bash <repo>/playwright-allinone/run-replay-ui.sh restart
   CLI 실행:
-    & '$InstallRoot\venv\Scripts\python.exe' -m monitor replay [시나리오묶음.zip] --out [결과폴더]
+    & '$InstallRoot\venv\Scripts\python.exe' -m monitor replay-script [시나리오.py] --out [결과폴더] [--profile <alias>] [--verify-url <URL>]
+  CLI 로그인 등록:
+    & '$InstallRoot\venv\Scripts\python.exe' -m monitor profile seed [프로파일이름] --target [사이트 URL]
 "@

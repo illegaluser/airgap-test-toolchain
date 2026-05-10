@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
       cat <<USAGE
 Usage: $0 [--register-startup] [--register-task] [--python <python3>]
   --register-startup   Replay UI 를 사용자 startup task 로 등록 (Mac=launchd / Linux=systemd --user)
-  --register-task      30분 주기 모니터 스케줄러 등록 (cron) 안내. 시나리오 묶음 별 행은 사용자가 마무리.
+  --register-task      30분 주기 모니터 스케줄러 등록 (cron) 안내. 시나리오 .py 별 행은 사용자가 마무리.
 USAGE
       exit 0
       ;;
@@ -166,20 +166,20 @@ EOS
   fi
 fi
 
-# 7. 30분 스케줄러 안내.
+# 7. 30분 스케줄러 안내 (D17 — 단일 .py 흐름).
 if [[ "$REGISTER_TASK" = "1" ]]; then
   cat <<HINT
-[install-monitor] 스케줄러 등록 안내 — crontab -e 에 다음 패턴으로 시나리오 묶음 별 행을 추가하세요:
-*/30 * * * * PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m monitor replay $INSTALL_ROOT/scenarios/<시나리오묶음.zip> --out $INSTALL_ROOT/runs/auto-\$(date +\%Y\%m\%dT\%H\%M\%S)
+[install-monitor] 스케줄러 등록 안내 — crontab -e 에 다음 패턴으로 시나리오 .py 별 행을 추가하세요:
+*/30 * * * * PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m monitor replay-script $INSTALL_ROOT/scripts/<시나리오.py> --out $INSTALL_ROOT/runs/auto-\$(date +\%Y\%m\%dT\%H\%M\%S) --profile <프로파일이름>
 HINT
 fi
 
 cat <<DONE
 
-[install-monitor] 셋업 완료.
+[install-monitor] 셋업 완료 (D17 — .py 일원화).
   Replay UI:   http://127.0.0.1:18094  (--register-startup 안 했으면 수동 기동)
-  수동 기동:   PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
-
-  CLI 실행:        $INSTALL_ROOT/venv/bin/python -m monitor replay <시나리오묶음.zip> --out <결과폴더>
+  단일 진입점 launcher (Recording UI 와 동등 패턴, 권장):
+    bash <repo>/playwright-allinone/run-replay-ui.sh restart
+  CLI 실행:        $INSTALL_ROOT/venv/bin/python -m monitor replay-script <시나리오.py> --out <결과폴더> [--profile <alias>] [--verify-url <URL>]
   로그인 프로파일: $INSTALL_ROOT/venv/bin/python -m monitor profile seed <이름> --target <사이트URL>
 DONE

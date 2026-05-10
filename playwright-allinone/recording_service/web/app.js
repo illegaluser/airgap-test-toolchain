@@ -359,8 +359,6 @@ async function openSession(sid) {
   // recording 도중 stop 직전 / done / error 모두에서 codegen 산출물이 있으면 표시.
   const originalCard = $("#original-card");
   $("#dl-original").href = `/recording/sessions/${sid}/original?download=1`;
-  const _btnBundle = $("#btn-bundle");
-  if (_btnBundle) _btnBundle.dataset.sid = sid;
   try {
     const original = await getSessionOriginal(sid);
     originalCard.hidden = false;
@@ -1569,6 +1567,7 @@ function _openSeedDialog(prefill) {
     if (prefill.verify_service_text) form.elements["verify_service_text"].value = prefill.verify_service_text;
     if (prefill.ttl_hint_hours) form.elements["ttl_hint_hours"].value = prefill.ttl_hint_hours;
     if (prefill.naver_probe !== undefined) form.elements["naver_probe"].checked = !!prefill.naver_probe;
+    if (prefill.idp_domain !== undefined) form.elements["idp_domain"].value = prefill.idp_domain;
   }
   dlg.showModal();
 }
@@ -1592,6 +1591,8 @@ $("#auth-seed-form").addEventListener("submit", async (e) => {
     verify_service_url: fd.get("verify_service_url").trim(),
     verify_service_text: fd.get("verify_service_text").trim(),
     naver_probe: fd.get("naver_probe") === "on",
+    // 빈 문자열은 서버에서 None 으로 정규화 — IdP 검증 skip.
+    idp_domain: (fd.get("idp_domain") || "").trim(),
     ttl_hint_hours: parseInt(fd.get("ttl_hint_hours") || "12", 10),
   };
   // 입력 모달 닫고 진행 모달 오픈 + 시드 시작.
@@ -1747,6 +1748,7 @@ $("#btn-auth-expired-reseed").addEventListener("click", async () => {
       verify_service_text: detail.verify_service_text,
       ttl_hint_hours: detail.ttl_hint_hours,
       naver_probe: detail.naver_probe_enabled,
+      idp_domain: detail.idp_domain !== undefined ? (detail.idp_domain || "") : "naver.com",
     });
   } else {
     _openSeedDialog({ name });
@@ -2416,75 +2418,6 @@ setInterval(_syncDiscoverAuthSelect, 1500);
 // 초기 1회는 loadAuthProfiles() 가 _authState.profiles 를 채운 직후 시도.
 setTimeout(_syncDiscoverAuthSelect, 500);
 
-// ── 모니터링 번들 다운로드 모달 (Task 1.4) ──────────────────────────────────
-const _bundleModal = {
-  show(sid, defaultVerifyUrl, availableScripts) {
-    const modal = $("#bundle-modal");
-    if (!modal) return;
-    modal.dataset.sid = sid;
-    $("#bundle-alias").value = "packaged";
-    $("#bundle-verify-url").value = defaultVerifyUrl || "";
-    const select = $("#bundle-script-source");
-    select.innerHTML = "";
-    for (const name of availableScripts) {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      select.appendChild(opt);
-    }
-    if (availableScripts.includes("regression_test.py")) {
-      select.value = "regression_test.py";
-    }
-    $("#bundle-warning").hidden = true;
-    $("#bundle-warning-diff").textContent = "";
-    $("#bundle-consent-plain-pw").checked = false;
-    modal.hidden = false;
-  },
-  hide() {
-    const modal = $("#bundle-modal");
-    if (modal) modal.hidden = true;
-  },
-  async confirm() {
-    const modal = $("#bundle-modal");
-    const sid = modal.dataset.sid;
-    const alias = $("#bundle-alias").value.trim();
-    const verifyUrl = $("#bundle-verify-url").value.trim();
-    const scriptSource = $("#bundle-script-source").value;
-    const consent = $("#bundle-consent-plain-pw").checked ? 1 : 0;
-    if (!alias) { alert("로그인 프로파일 이름을 입력해 주세요"); return; }
-    if (!verifyUrl) { alert("로그인 상태 확인 URL 을 입력해 주세요"); return; }
-    const url = `/recording/sessions/${encodeURIComponent(sid)}/bundle`
-      + `?alias=${encodeURIComponent(alias)}`
-      + `&verify_url=${encodeURIComponent(verifyUrl)}`
-      + `&script_source=${encodeURIComponent(scriptSource)}`
-      + `&consent_plain_pw=${consent}`;
-    let resp;
-    try { resp = await fetch(url); }
-    catch (e) { alert(`네트워크 오류: ${e.message}`); return; }
-    if (resp.status === 422) {
-      const body = await resp.json().catch(() => ({}));
-      const detail = body.detail || {};
-      $("#bundle-warning").hidden = false;
-      const diff = (detail.diff_lines || []).join("\n");
-      $("#bundle-warning-diff").textContent = diff || (detail.message || JSON.stringify(detail));
-      return;
-    }
-    if (!resp.ok) {
-      alert(`시나리오 묶음 다운로드 실패: HTTP ${resp.status}`);
-      return;
-    }
-    const blob = await resp.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${sid}.bundle.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(a.href);
-    _bundleModal.hide();
-  },
-};
-
 // 모든 [data-modal-close] 버튼 / backdrop 은 같은 핸들러로 닫힘 처리.
 document.addEventListener("click", (ev) => {
   const target = ev.target.closest("[data-modal-close]");
@@ -2492,32 +2425,6 @@ document.addEventListener("click", (ev) => {
   const id = target.getAttribute("data-modal-close");
   const modal = document.getElementById(id);
   if (modal) modal.hidden = true;
-});
-
-$("#bundle-confirm-btn")?.addEventListener("click", () => _bundleModal.confirm());
-
-$("#btn-bundle")?.addEventListener("click", async () => {
-  const btn = $("#btn-bundle");
-  const sid = btn.dataset.sid;
-  if (!sid) { alert("세션이 선택되지 않았습니다"); return; }
-  // scenario.json 의 마지막 goto URL 자동 추출 (verify_url 추천).
-  let suggested = "";
-  try {
-    const r = await fetch(`/recording/sessions/${sid}/scenario`);
-    if (r.ok) {
-      const sc = await r.json();
-      const navs = (Array.isArray(sc) ? sc : [])
-        .filter((s) => s && s.action === "goto" && typeof s.url === "string");
-      if (navs.length) suggested = navs[navs.length - 1].url;
-    }
-  } catch (e) { /* ignore */ }
-  // 후보 .py 수집 — original 은 항상, regression 은 200 일 때만.
-  const scripts = ["original.py"];
-  try {
-    const r2 = await fetch(`/recording/sessions/${sid}/regression`);
-    if (r2.ok) scripts.push("regression_test.py");
-  } catch (e) { /* ignore */ }
-  _bundleModal.show(sid, suggested, scripts);
 });
 
 // ── 시작 ─────────────────────────────────────────────────────────────────────

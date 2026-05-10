@@ -2,6 +2,28 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 
 Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
+0. Read Docs First — NON-NEGOTIABLE
+
+Before implementing, modifying, restarting services, or changing structure on **any** part of this repo, you MUST consult the project's own documentation. Speaking or coding from your own assumptions about the architecture is forbidden.
+
+What to read, in order, before acting:
+
+1. Top-level `README.md` (this repo) — the high-level architecture, what runs on host vs container vs WSL2, network topology, the canonical entry-points (e.g. `./run-recording-ui.sh`, `./build.sh`).
+2. The sub-package `README.md` for the area you are touching (e.g. `playwright-allinone/README.md`, `playwright-allinone/docs/recording-ui.md`).
+3. Planning / decision documents under `**/docs/PLAN_*.md` for the feature you are touching. The decision log (D1, D2, …) records *why* the current shape exists — do not undo decisions silently.
+4. Any `CLAUDE.md` files at deeper paths.
+
+Hard rules:
+
+- **Service launch / restart** — use the documented launcher (e.g. `./run-recording-ui.sh restart`). Do **not** invent your own `Start-Process`, `nohup`, `Popen`, or `wsl.exe` invocations to spin services up. If the documented launcher fails, fix the launcher or surface the failure — do not bypass it.
+- **Host-vs-container-vs-WSL2 split** — every service in this repo has a designated execution location (host native / container / WSL2 venv). Read the README to find which, then respect it. In particular: **Playwright browser execution must run on host (Mac / Windows native), headed**. WSL2 / WSLg / container Playwright is a violation of the project's design.
+- **Path / mount semantics** — when a flow crosses host ↔ container ↔ WSL2 (e.g. docker bind mounts, recording dirs, storage_state), check the existing build/launcher scripts for the canonical mount source. Don't fabricate alternative paths.
+- **Don't "fix" by relocating** — if a flow seems broken, the answer is almost never "re-host the service somewhere else." First, read the docs, find the documented topology, restore that topology, and only then debug whatever real bug remains.
+
+If the docs are missing, ambiguous, or contradict the code, **say so explicitly to the user and ask** before picking a side. Silent reinterpretation of architecture is the failure mode this rule exists to prevent.
+
+This rule applies to everyone working on the repo, human or agent. If you are tempted to skip it because "this is just a quick restart" — that is exactly the case where this rule has been violated most.
+
 1. Think Before Coding
 Don't assume. Don't hide confusion. Surface tradeoffs.
 

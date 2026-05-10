@@ -37,6 +37,8 @@ async function loadProfiles() {
   } catch {
     return;
   }
+  // run-profile-select 의 후보로 시드된 프로파일만 캐시.
+  _availableProfiles = (data || []).filter((p) => p.storage === "ok");
   const tbody = $("#profiles-tbody");
   tbody.innerHTML = "";
   let expiredCount = 0;
@@ -102,6 +104,7 @@ function openSeedInput(prefill) {
     if (prefill.verify_service_text) form.elements["verify_service_text"].value = prefill.verify_service_text;
     if (prefill.ttl_hint_hours) form.elements["ttl_hint_hours"].value = prefill.ttl_hint_hours;
     if (prefill.naver_probe !== undefined) form.elements["naver_probe"].checked = !!prefill.naver_probe;
+    if (prefill.idp_domain !== undefined) form.elements["idp_domain"].value = prefill.idp_domain;
   }
   $("#seed-input-modal").hidden = false;
 }
@@ -122,6 +125,7 @@ async function openReseed(name) {
     verify_service_text: detail?.verify_service_text || "",
     ttl_hint_hours: detail?.ttl_hint_hours || 12,
     naver_probe: detail?.naver_probe_enabled !== undefined ? detail.naver_probe_enabled : true,
+    idp_domain: detail?.idp_domain !== undefined ? (detail.idp_domain || "") : "naver.com",
   });
 }
 
@@ -200,119 +204,11 @@ async function startSeedFlow(payload) {
   }, 1000);
 }
 
-// --- Bundle ------------------------------------------------------------------
+// --- 시드된 프로파일 목록 (script 카드용) -----------------------------------
 
-async function loadBundles() {
-  let data;
-  try {
-    const r = await fetch("/api/bundles");
-    data = await r.json();
-  } catch {
-    return;
-  }
-  const tbody = $("#bundles-tbody");
-  tbody.innerHTML = "";
-  if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 시나리오 묶음 없음 —</td></tr>';
-    return;
-  }
-  for (const b of data) {
-    const tr = document.createElement("tr");
-    const runDisabled = !b.seeded;
-    const tooltip = runDisabled ? `프로파일 '${b.alias}' 의 로그인 등록이 필요합니다` : "";
-    tr.innerHTML = `
-      <td><strong>${escapeHtml(b.name)}</strong></td>
-      <td>${escapeHtml(b.alias || "-")}</td>
-      <td>${fmtTime(b.uploaded_at)}</td>
-      <td>${fmtBytes(b.size)}</td>
-      <td>
-        <button class="run-btn primary" data-name="${escapeHtml(b.name)}"
-                ${runDisabled ? "disabled" : ""} title="${escapeHtml(tooltip)}">▶ 실행</button>
-        <button class="del-bundle-btn ghost" data-name="${escapeHtml(b.name)}">🗑</button>
-      </td>`;
-    tbody.appendChild(tr);
-  }
-  $$(".run-btn").forEach((b) => {
-    b.addEventListener("click", () => startRun(b.dataset.name));
-  });
-  $$(".del-bundle-btn").forEach((b) => {
-    b.addEventListener("click", async () => {
-      if (!confirm(`시나리오 묶음 '${b.dataset.name}' 을 삭제할까요?`)) return;
-      const r = await fetch(`/api/bundles/${encodeURIComponent(b.dataset.name)}`, { method: "DELETE" });
-      if (r.ok) loadBundles();
-    });
-  });
-}
-
-async function uploadBundle(file, overwrite = false) {
-  const fd = new FormData();
-  fd.append("file", file);
-  const r = await fetch(`/api/bundles?overwrite=${overwrite ? 1 : 0}`, {
-    method: "POST",
-    body: fd,
-  });
-  if (r.status === 409) {
-    if (confirm(`같은 이름의 시나리오 묶음 '${file.name}' 이 이미 있습니다. 덮어쓸까요?`)) {
-      return uploadBundle(file, true);
-    }
-    return;
-  }
-  if (!r.ok) {
-    alert(`업로드 실패: HTTP ${r.status}`);
-    return;
-  }
-  loadBundles();
-}
-
-// --- Run ---------------------------------------------------------------------
+let _availableProfiles = [];  // GET /api/profiles 결과 (storage=ok 만). loadProfiles 가 채움.
 
 let _currentEventSource = null;
-
-async function startRun(bundleName) {
-  if (_currentEventSource) {
-    _currentEventSource.close();
-    _currentEventSource = null;
-  }
-  $("#run-stream").textContent = "";
-  $("#run-status").textContent = `시작 중: ${bundleName} ...`;
-  let resp;
-  try {
-    resp = await fetch("/api/runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bundle_name: bundleName }),
-    });
-  } catch (e) {
-    $("#run-status").textContent = `실패: ${e.message}`;
-    return;
-  }
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    $("#run-status").textContent = `실패: HTTP ${resp.status} — ${body.detail || ""}`;
-    return;
-  }
-  const r = await resp.json();
-  $("#run-status").textContent = `진행중: ${r.bundle} (run_id=${r.run_id})`;
-  // SSE 스트림 구독.
-  _currentEventSource = new EventSource(`/api/runs/${encodeURIComponent(r.run_id)}/stream`);
-  _currentEventSource.onmessage = (ev) => {
-    const pre = $("#run-stream");
-    pre.textContent += ev.data + "\n";
-    pre.scrollTop = pre.scrollHeight;
-  };
-  _currentEventSource.addEventListener("done", () => {
-    $("#run-status").textContent = `완료: ${r.bundle} (run_id=${r.run_id})`;
-    _currentEventSource.close();
-    _currentEventSource = null;
-    loadRuns();
-  });
-  _currentEventSource.onerror = () => {
-    if (_currentEventSource) {
-      _currentEventSource.close();
-      _currentEventSource = null;
-    }
-  };
-}
 
 // --- Results -----------------------------------------------------------------
 
@@ -335,8 +231,8 @@ async function loadRuns() {
     const result = renderResult(run);
     tr.innerHTML = `
       <td>${fmtTime(run.started_at)}</td>
-      <td>${escapeHtml(run.bundle || "-")}</td>
-      <td>${escapeHtml(run.alias || "-")}</td>
+      <td>${escapeHtml(run.script || run.bundle || "-")}</td>
+      <td>${escapeHtml(run.alias || "(비로그인)")}</td>
       <td>${result}</td>
       <td><button class="detail-btn ghost" data-run="${escapeHtml(run.run_id)}">상세 →</button></td>`;
     tbody.appendChild(tr);
@@ -363,7 +259,7 @@ async function openDetail(runId) {
   const stepsBody = await (await fetch(`/api/runs/${encodeURIComponent(runId)}/steps`)).json();
   const steps = stepsBody.steps || [];
 
-  $("#detail-title").textContent = `${meta.bundle || runId}`;
+  $("#detail-title").textContent = `${meta.script || meta.bundle || runId}`;
   const provenance = meta.script_provenance || {};
   $("#detail-meta").innerHTML = [
     `결과: ${renderResult(meta)}`,
@@ -416,7 +312,6 @@ document.addEventListener("click", (ev) => {
 // --- 헤더 / 카드 액션 wire ----------------------------------------------------
 
 $("#btn-refresh-profiles")?.addEventListener("click", loadProfiles);
-$("#btn-refresh-bundles")?.addEventListener("click", loadBundles);
 $("#btn-refresh-runs")?.addEventListener("click", loadRuns);
 
 $("#btn-add-alias")?.addEventListener("click", () => openSeedInput());
@@ -430,6 +325,8 @@ $("#seed-input-form")?.addEventListener("submit", (ev) => {
     verify_service_url: (fd.get("verify_service_url") || "").trim(),
     verify_service_text: (fd.get("verify_service_text") || "").trim(),
     naver_probe: fd.get("naver_probe") === "on",
+    // 빈 문자열은 서버에서 None 으로 정규화 — IdP 검증 skip.
+    idp_domain: (fd.get("idp_domain") || "").trim(),
     ttl_hint_hours: parseInt(fd.get("ttl_hint_hours") || "12", 10),
     timeout_sec: 600,
   };
@@ -458,12 +355,174 @@ $("#btn-seed-expired-reseed")?.addEventListener("click", () => {
   if (name && name !== "—") openReseed(name);
 });
 
-$("#btn-upload-bundle")?.addEventListener("click", () => $("#bundle-file").click());
-$("#bundle-file")?.addEventListener("change", (ev) => {
+
+// ── D17 — 시나리오 스크립트 카드 (.py 일원화) ────────────────────────────────
+
+async function loadScripts() {
+  let data;
+  try {
+    const r = await fetch("/api/scripts");
+    data = await r.json();
+  } catch {
+    return;
+  }
+  const tbody = $("#scripts-tbody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  refreshScriptProfileSelect();
+  if (!Array.isArray(data) || data.length === 0) {
+    tbody.innerHTML = '<tr class="muted"><td colspan="4">— 등록된 스크립트 없음 —</td></tr>';
+    return;
+  }
+  for (const s of data) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><strong>${escapeHtml(s.name)}</strong></td>
+      <td>${fmtTime(s.uploaded_at)}</td>
+      <td>${fmtBytes(s.size)}</td>
+      <td>
+        <button class="run-script-btn primary" data-name="${escapeHtml(s.name)}" title="단일 .py 시나리오 실행">▶ 실행</button>
+        <button class="del-script-btn ghost" data-name="${escapeHtml(s.name)}">🗑</button>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+  $$(".run-script-btn").forEach((b) => {
+    b.addEventListener("click", () => startRunScript(b.dataset.name));
+  });
+  $$(".del-script-btn").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm(`스크립트 '${b.dataset.name}' 을 삭제할까요?`)) return;
+      const r = await fetch(`/api/scripts/${encodeURIComponent(b.dataset.name)}`, { method: "DELETE" });
+      if (r.ok) loadScripts();
+    });
+  });
+}
+
+async function uploadScript(file, overwrite = false) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`/api/scripts?overwrite=${overwrite ? 1 : 0}`, {
+    method: "POST",
+    body: fd,
+  });
+  if (r.status === 409) {
+    if (confirm(`같은 이름의 스크립트 '${file.name}' 이 이미 있습니다. 덮어쓸까요?`)) {
+      return uploadScript(file, true);
+    }
+    return;
+  }
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    alert(`업로드 실패: HTTP ${r.status} — ${body.detail || ""}`);
+    return;
+  }
+  loadScripts();
+}
+
+function refreshScriptProfileSelect() {
+  const sel = $("#run-script-profile-select");
+  if (!sel) return;
+  const previous = sel.value;
+  // 첫 옵션 = "(비로그인)" 은 HTML 에 박혀 있으므로 그 이후만 갱신.
+  // 기존 dynamic option 제거.
+  const fixed = sel.querySelector('option[value=""]');
+  sel.innerHTML = "";
+  if (fixed) sel.appendChild(fixed); else {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "(비로그인 — storage_state 미주입)";
+    sel.appendChild(o);
+  }
+  for (const p of _availableProfiles) {
+    const opt = document.createElement("option");
+    opt.value = p.alias;
+    opt.textContent = `${p.alias}  (${p.service_domain || "—"})`;
+    sel.appendChild(opt);
+  }
+  // previous 가 여전히 유효하면 복원, 아니면 "(비로그인)" default.
+  sel.value = (previous && Array.from(sel.options).some(o => o.value === previous))
+    ? previous : "";
+}
+
+async function startRunScript(scriptName) {
+  if (_currentEventSource) {
+    _currentEventSource.close();
+    _currentEventSource = null;
+  }
+  $("#run-stream").textContent = "";
+  const alias = $("#run-script-profile-select")?.value || "";
+  const verifyUrl = $("#run-script-verify-url")?.value?.trim() || "";
+  const headed = !!$("#run-script-headed-toggle")?.checked;
+  // 슬로모 — 체크박스가 켜져 있고 양수일 때만 payload 에 실음.
+  let slowMoMs = null;
+  const slowEnabled = !!$("#run-script-slowmo-enabled")?.checked;
+  if (slowEnabled) {
+    const n = Number($("#run-script-slowmo-ms")?.value || 0);
+    if (Number.isFinite(n) && n > 0) slowMoMs = n;
+  }
+  const aliasNote = alias ? `  (프로파일: ${alias})` : "  (비로그인)";
+  const slowNote = slowMoMs ? `  (slow_mo=${slowMoMs}ms)` : "";
+  $("#run-status").textContent = `시작 중: ${scriptName}${aliasNote}${headed ? "  (화면 표시)" : ""}${slowNote} ...`;
+  let resp;
+  try {
+    resp = await fetch("/api/runs/script", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        script_name: scriptName,
+        alias: alias || null,
+        verify_url: verifyUrl || null,
+        headed: headed,
+        slow_mo_ms: slowMoMs,
+      }),
+    });
+  } catch (e) {
+    $("#run-status").textContent = `실패: ${e.message}`;
+    return;
+  }
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    $("#run-status").textContent = `실패: HTTP ${resp.status} — ${body.detail || ""}`;
+    return;
+  }
+  const r = await resp.json();
+  $("#run-status").textContent = `진행중: ${r.script} (run_id=${r.run_id})`;
+  _currentEventSource = new EventSource(`/api/runs/${encodeURIComponent(r.run_id)}/stream`);
+  _currentEventSource.onmessage = (ev) => {
+    const pre = $("#run-stream");
+    pre.textContent += ev.data + "\n";
+    pre.scrollTop = pre.scrollHeight;
+  };
+  _currentEventSource.addEventListener("done", () => {
+    $("#run-status").textContent = `완료: ${r.script} (run_id=${r.run_id})`;
+    _currentEventSource.close();
+    _currentEventSource = null;
+    loadRuns();
+  });
+  _currentEventSource.onerror = () => {
+    if (_currentEventSource) {
+      _currentEventSource.close();
+      _currentEventSource = null;
+    }
+  };
+}
+
+$("#btn-upload-script")?.addEventListener("click", () => $("#script-file").click());
+$("#script-file")?.addEventListener("change", (ev) => {
   const f = ev.target.files?.[0];
-  if (f) uploadBundle(f);
-  ev.target.value = "";  // reset.
+  if (f) uploadScript(f);
+  ev.target.value = "";
 });
+$("#btn-refresh-scripts")?.addEventListener("click", loadScripts);
+
+// 슬로모 체크박스 ↔ 숫자 입력 활성화 토글 (Recording UI 와 동일 패턴).
+(function _wireScriptSlowmoToggle() {
+  const cb = document.getElementById("run-script-slowmo-enabled");
+  const num = document.getElementById("run-script-slowmo-ms");
+  if (!cb || !num) return;
+  const sync = () => { num.disabled = !cb.checked; };
+  cb.addEventListener("change", sync);
+  sync();
+})();
 
 $("#btn-wizard")?.addEventListener("click", () => {
   $("#wizard-modal").hidden = false;
@@ -472,11 +531,14 @@ $("#btn-wizard")?.addEventListener("click", () => {
 // --- 초기 로드 + 폴링 ---------------------------------------------------------
 
 loadProfiles();
-loadBundles();
+loadScripts();
 loadRuns();
 setInterval(loadProfiles, 10000);
-setInterval(loadBundles, 10000);
+setInterval(loadScripts, 10000);
 setInterval(loadRuns, 5000);
+// loadProfiles 가 _availableProfiles 를 채운 직후 select 동기화.
+setTimeout(refreshScriptProfileSelect, 500);
+setInterval(refreshScriptProfileSelect, 10000);
 
 // --- util --------------------------------------------------------------------
 

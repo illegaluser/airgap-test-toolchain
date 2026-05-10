@@ -1,25 +1,39 @@
 #!/usr/bin/env bash
-# Standalone Recording UI launcher.
+# Standalone Replay UI launcher (D17 일원화 후, Recording UI 의 run-recording-ui.sh 와 동일 패턴).
 #
-# This runs only the host-side FastAPI daemon that serves Recording UI and its
-# API. It does not start Jenkins, Dify, Ollama, or the Jenkins agent.
+# Recording UI 의 run-recording-ui.sh 와 대칭 — env 자동 셋업 + nohup detach +
+# PID 관리. 사용자는 ./run-replay-ui.sh restart 한 줄로 재기동 가능.
+#
+# 본 스크립트는 host-side FastAPI daemon 만 띄운다 (Jenkins / Dify / Ollama /
+# Jenkins agent 와 무관). install-monitor.ps1 / install-monitor.sh 는 1회 셋업
+# (venv / chromium / 모듈 복사) 전용 — 일상 재기동은 본 스크립트.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENT_DIR="${DSCORE_AGENT_DIR:-$HOME/.dscore.ttc.playwright-agent}"
-HOST="${RECORDING_HOST:-127.0.0.1}"
-PORT="${RECORDING_PORT:-18092}"
-PYTHON_BIN="${RECORDING_PYTHON:-${VENV_PY:-python3}}"
-PID_FILE="${RECORDING_SERVICE_PID:-$AGENT_DIR/recording-service.pid}"
-LOG_FILE="${RECORDING_SERVICE_LOG:-$AGENT_DIR/recording-service.log}"
-RECORDINGS_DIR="${RECORDING_HOST_ROOT:-$AGENT_DIR/recordings}"
+INSTALL_ROOT="${MONITOR_HOME:-$HOME/.dscore.ttc.monitor}"
+HOST="${REPLAY_HOST:-127.0.0.1}"
+PORT="${REPLAY_PORT:-18094}"
+
+# Python: monitor venv 우선, env override 가능. Windows venv (Git bash 에서
+# 보면 Scripts/python.exe) 와 POSIX venv (bin/python) 둘 다 자동 감지.
+if [ -x "$INSTALL_ROOT/venv/bin/python" ]; then
+  DEFAULT_PY="$INSTALL_ROOT/venv/bin/python"
+elif [ -x "$INSTALL_ROOT/venv/Scripts/python.exe" ]; then
+  DEFAULT_PY="$INSTALL_ROOT/venv/Scripts/python.exe"
+else
+  DEFAULT_PY="python3"
+fi
+PYTHON_BIN="${REPLAY_PYTHON:-${VENV_PY:-$DEFAULT_PY}}"
+PID_FILE="${REPLAY_SERVICE_PID:-$INSTALL_ROOT/replay-ui.pid}"
+LOG_FILE="${REPLAY_SERVICE_LOG:-$INSTALL_ROOT/replay-ui.stdout.log}"
+STDERR_FILE="${REPLAY_SERVICE_STDERR:-$INSTALL_ROOT/replay-ui.stderr.log}"
 
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [start|stop|restart|status|logs|foreground|doctor]
 
 Commands:
-  start       Start Recording UI in the background (default)
+  start       Start Replay UI in the background (default)
   stop        Stop the background daemon
   restart     Stop then start
   status      Show daemon health and paths
@@ -28,22 +42,26 @@ Commands:
   doctor      Check Python modules and external tools
 
 Environment:
-  RECORDING_PORT          Port to bind (default: 18092)
-  RECORDING_HOST          Host to bind (default: 127.0.0.1)
-  RECORDING_PYTHON        Python executable (default: python3)
-  RECORDING_HOST_ROOT     Recordings dir (default: ~/.dscore.ttc.playwright-agent/recordings)
-  RECORDING_SERVICE_LOG   Log file path
-  RECORDING_SERVICE_PID   PID file path
-  RECORDING_CONTAINER_NAME Docker container used for Stop & Convert (default in code: dscore.ttc.playwright)
+  REPLAY_PORT             Port to bind (default: 18094)
+  REPLAY_HOST             Host to bind (default: 127.0.0.1)
+  REPLAY_PYTHON           Python executable (default: \$MONITOR_HOME/venv 의 python)
+  MONITOR_HOME            Replay UI 데이터 루트 (default: ~/.dscore.ttc.monitor)
+  REPLAY_SERVICE_LOG      Log 파일 경로
+  REPLAY_SERVICE_PID      PID 파일 경로
 EOF
 }
 
 log() {
-  printf '[recording-ui] %s\n' "$*"
+  printf '[replay-ui] %s\n' "$*"
 }
 
 ensure_dirs() {
-  mkdir -p "$AGENT_DIR" "$RECORDINGS_DIR"
+  mkdir -p "$INSTALL_ROOT" \
+           "$INSTALL_ROOT/auth-profiles" \
+           "$INSTALL_ROOT/scenarios" \
+           "$INSTALL_ROOT/scripts" \
+           "$INSTALL_ROOT/runs" \
+           "$INSTALL_ROOT/chromium"
 }
 
 python_bin_dir() {
@@ -56,14 +74,22 @@ PY
 
 export_runtime_env() {
   ensure_dirs
+  # 소스 우선 — venv site-packages 미설치 환경에서도 동작.
   export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
-  export RECORDING_HOST_ROOT="$RECORDINGS_DIR"
   export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
-  # Windows 콘솔 cp949 한글 깨짐 회귀 방지 — 자식 subprocess stdout/stderr UTF-8 강제.
+  # Windows 콘솔 default codec (cp949) 가 UTF-8 byte 를 garbage 로 디코딩하는
+  # 회귀 방지 — 자식 subprocess (monitor replay-script / codegen_trace_wrapper /
+  # zero_touch_qa) 모두 UTF-8 stdout/stderr 강제.
   export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+  export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$INSTALL_ROOT/chromium}"
+  export AUTH_PROFILES_DIR="${AUTH_PROFILES_DIR:-$INSTALL_ROOT/auth-profiles}"
+  export MONITOR_HOME="$INSTALL_ROOT"
 
-  # Playwright installed in a venv exposes the `playwright` console script next
-  # to python. recording_service.codegen_runner currently probes PATH.
+  # monitor venv 의 bin/Scripts 를 PATH 첫 자리에 — `playwright open ...`
+  # subprocess (시드 단계) 가 monitor venv 의 playwright CLI 를 정확히 잡도록
+  # (run-recording-ui.sh 와 동일 패턴). 이 줄 누락 시 시드의 `playwright open`
+  # 이 PATH 의 다른 playwright 를 잡아 "Looks like Playwright was just
+  # installed or updated. playwright install" 에러로 떨어진다.
   local py_dir
   py_dir="$(python_bin_dir)"
   export PATH="$py_dir:$PATH"
@@ -74,19 +100,13 @@ check_python_modules() {
 import importlib.util
 import sys
 
-required = {
-    "fastapi": "fastapi",
-    "uvicorn": "uvicorn",
-    "pydantic": "pydantic",
-    "multipart": "python-multipart",
-    "requests": "requests",
-}
-missing = [pkg for mod, pkg in required.items() if importlib.util.find_spec(mod) is None]
+required = ["fastapi", "uvicorn", "pydantic", "playwright"]
+missing = [m for m in required if importlib.util.find_spec(m) is None]
 if missing:
     print("Missing Python packages: " + ", ".join(missing), file=sys.stderr)
     print(
-        "Install them in the selected Python environment, for example:\n"
-        "  python3 -m pip install fastapi uvicorn pydantic python-multipart requests playwright httpx pyotp",
+        "monitor venv 에 누락된 모듈입니다. install-monitor.{ps1,sh} 가 venv 셋업과 \n"
+        "모듈 복사를 해 주는 1회 셋업 도구입니다.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -94,7 +114,7 @@ PY
 }
 
 health_url() {
-  printf 'http://%s:%s/healthz' "$HOST" "$PORT"
+  printf 'http://%s:%s/api/profiles' "$HOST" "$PORT"
 }
 
 ui_url() {
@@ -130,47 +150,23 @@ is_pid_running() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
-port_owner_hint() {
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
-  elif command -v ss >/dev/null 2>&1; then
-    ss -ltnp "sport = :$PORT" 2>/dev/null || true
-  fi
-}
-
 doctor() {
   export_runtime_env
-
   log "root: $ROOT_DIR"
+  log "install_root: $INSTALL_ROOT"
   log "python: $("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
-  log "recordings: $RECORDINGS_DIR"
   log "log: $LOG_FILE"
   log "pid: $PID_FILE"
-
   check_python_modules
   log "python modules: ok"
-
-  if command -v playwright >/dev/null 2>&1; then
-    log "playwright CLI: $(command -v playwright)"
-  else
-    log "playwright CLI: missing (Start Recording will fail until it is installed)"
-  fi
-
-  if command -v docker >/dev/null 2>&1; then
-    log "docker CLI: $(command -v docker)"
-  else
-    log "docker CLI: missing (Stop & Convert will fail until Docker is available)"
-  fi
 }
 
 foreground() {
   export_runtime_env
   check_python_modules
-
   log "starting foreground server: $(ui_url)"
   log "health: $(health_url)"
-  log "recordings: $RECORDINGS_DIR"
-  exec "$PYTHON_BIN" -m uvicorn recording_service.server:app \
+  exec "$PYTHON_BIN" -m uvicorn replay_service.server:app \
     --host "$HOST" \
     --port "$PORT" \
     --workers 1 \
@@ -191,31 +187,25 @@ start() {
   old_pid="$(pid_from_file)"
   if is_pid_running "$old_pid"; then
     log "PID file points to a running process ($old_pid), but health check failed."
-    log "Use '$0 restart' if this is a stale or unhealthy Recording UI process."
+    log "Use '$0 restart' if this is a stale or unhealthy Replay UI process."
     return 1
   fi
   rm -f "$PID_FILE"
 
-  if port_owner_hint | grep -q .; then
-    log "port $PORT is already in use:"
-    port_owner_hint
-    return 1
-  fi
-
   {
-    printf '\n[%s] recording_ui launcher start\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
+    printf '\n[%s] replay_ui launcher start\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
     printf '[%s] root=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$ROOT_DIR"
+    printf '[%s] install_root=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$INSTALL_ROOT"
     printf '[%s] python=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
-    printf '[%s] recordings=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$RECORDINGS_DIR"
   } >> "$LOG_FILE"
 
-  RECORDING_HOST="$HOST" \
-  RECORDING_PORT="$PORT" \
-  RECORDING_PYTHON="$PYTHON_BIN" \
-  RECORDING_HOST_ROOT="$RECORDINGS_DIR" \
-  RECORDING_SERVICE_LOG="$LOG_FILE" \
-  RECORDING_SERVICE_PID="$PID_FILE" \
-    nohup "$0" foreground >> "$LOG_FILE" 2>&1 &
+  REPLAY_HOST="$HOST" \
+  REPLAY_PORT="$PORT" \
+  REPLAY_PYTHON="$PYTHON_BIN" \
+  MONITOR_HOME="$INSTALL_ROOT" \
+  REPLAY_SERVICE_LOG="$LOG_FILE" \
+  REPLAY_SERVICE_PID="$PID_FILE" \
+    nohup "$0" foreground >> "$LOG_FILE" 2>> "$STDERR_FILE" &
   local child_pid=$!
   echo "$child_pid" > "$PID_FILE"
 
@@ -230,6 +220,7 @@ start() {
     if ! is_pid_running "$child_pid"; then
       log "process exited before health check passed. Recent log:"
       tail -40 "$LOG_FILE" 2>/dev/null || true
+      tail -20 "$STDERR_FILE" 2>/dev/null || true
       return 1
     fi
     sleep 0.5
@@ -247,8 +238,7 @@ stop() {
   if ! is_pid_running "$pid"; then
     rm -f "$PID_FILE"
     if http_ok "$(health_url)"; then
-      log "health check still responds, but PID file is stale. Inspect port owner:"
-      port_owner_hint
+      log "health check still responds, but PID file is stale. 다른 프로세스가 포트 점유 중일 수 있습니다."
       return 1
     fi
     log "not running"
@@ -277,7 +267,7 @@ status() {
   pid="$(pid_from_file)"
   log "url: $(ui_url)"
   log "health: $(health_url)"
-  log "recordings: $RECORDINGS_DIR"
+  log "install_root: $INSTALL_ROOT"
   log "log: $LOG_FILE"
   log "pid_file: $PID_FILE"
   if is_pid_running "$pid"; then

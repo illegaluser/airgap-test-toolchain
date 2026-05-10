@@ -80,7 +80,27 @@ main {
   display: flex;
   gap: 0.5rem;
   margin-bottom: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
+.card-actions-spacer { flex: 1; }
+.inline-label {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  font-size: 0.85rem;
+}
+.inline-label > span { color: var(--muted); }
+.inline-label select {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: white;
+  min-width: 280px;
+}
+.inline-label.inline-checkbox > span { color: var(--fg); }
+.inline-label.inline-checkbox input[type="checkbox"] { margin: 0; }
 
 button {
   padding: 0.4rem 0.8rem;

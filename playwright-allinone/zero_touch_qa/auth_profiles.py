@@ -31,6 +31,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -154,6 +155,15 @@ def _validate_name(name: str) -> None:
 # Index 락 + 원자적 read-modify-write
 # ─────────────────────────────────────────────────────────────────────────
 
+# 같은 프로세스 안 스레드 직렬화용 — portalocker 만으로는 부족.
+# Windows 는 같은 프로세스의 다른 스레드가 같은 파일 락을 시도하면 EDEADLK 로
+# 거절한다 (msvcrt.locking 의 동작). POSIX 도 fcntl.flock 의 의미가 (process,
+# fd) 단위라 같은 파일을 여러 fd 로 열어 잡으면 서로 무시되는 구간이 생길 수
+# 있다. 모든 플랫폼에서 동일 프로세스 내 스레드 직렬화를 보장하려면 process-
+# wide threading.Lock 으로 한 겹 더 감싸야 한다.
+_INDEX_THREAD_LOCK = threading.Lock()
+
+
 @contextmanager
 def _index_lock() -> Iterator[None]:
     """``_index.lock`` 파일에 대한 advisory exclusive lock 보유.
@@ -165,22 +175,28 @@ def _index_lock() -> Iterator[None]:
     """
     _ensure_root()
     lock_p = _lock_path()
-    # 락 파일 자체는 비어있어도 됨 — lock 만 잡고 풀면 끝.
-    # 0600 으로 만들기 위해 os.open 으로 fd 확보 후 portalocker 로 lock.
-    fd = os.open(str(lock_p), os.O_RDWR | os.O_CREAT, _FILE_MODE)
+    # 1) 같은 프로세스 내 스레드 직렬화 (in-process).
+    _INDEX_THREAD_LOCK.acquire()
     try:
-        os.chmod(lock_p, _FILE_MODE)
-    except OSError:
-        pass
-    f = os.fdopen(fd, "r+b")
-    try:
-        portalocker.lock(f, portalocker.LOCK_EX)
+        # 2) 다른 프로세스 직렬화 (inter-process).
+        # 락 파일 자체는 비어있어도 됨 — lock 만 잡고 풀면 끝.
+        # 0600 으로 만들기 위해 os.open 으로 fd 확보 후 portalocker 로 lock.
+        fd = os.open(str(lock_p), os.O_RDWR | os.O_CREAT, _FILE_MODE)
         try:
-            yield
+            os.chmod(lock_p, _FILE_MODE)
+        except OSError:
+            pass
+        f = os.fdopen(fd, "r+b")
+        try:
+            portalocker.lock(f, portalocker.LOCK_EX)
+            try:
+                yield
+            finally:
+                portalocker.unlock(f)
         finally:
-            portalocker.unlock(f)
+            f.close()
     finally:
-        f.close()
+        _INDEX_THREAD_LOCK.release()
 
 
 def _empty_index() -> dict:
@@ -407,16 +423,22 @@ class VerifySpec:
     service_url 은 필수. service_text 는 선택 — 값이 있으면 해당 텍스트까지
     확인하는 강한 검증, 비어 있으면 보호 URL 접근 성공만 확인하는 약한 검증.
     naver_probe 는 optional weak — 실패해도 OK 판정에는 영향 없음 (warn-only).
+    idp_domain 은 시드 storage 에 *반드시 존재해야 하는* IdP 도메인 (validate_dump).
+    네이버 OAuth 가 아닌 다른 IdP (카카오/구글/사내 SSO) 도 지원하기 위한 파라메터.
+    None 으로 두면 IdP 검증 자체를 skip — 순수 ID/PW 사이트용.
+    하위 호환을 위해 default 는 "naver.com".
     """
 
     service_url: str
     service_text: str = ""
     naver_probe: Optional[NaverProbeSpec] = None
+    idp_domain: Optional[str] = "naver.com"
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {
             "service_url": self.service_url,
             "service_text": self.service_text,
+            "idp_domain": self.idp_domain,
         }
         if self.naver_probe is not None:
             d["naver_probe"] = self.naver_probe.to_dict()
@@ -426,10 +448,17 @@ class VerifySpec:
     def from_dict(cls, d: dict) -> "VerifySpec":
         probe_raw = d.get("naver_probe")
         probe = NaverProbeSpec.from_dict(probe_raw) if isinstance(probe_raw, dict) else None
+        # 카탈로그 하위 호환 — idp_domain 키가 없는 v1 entry 는 "naver.com" 으로 fallback.
+        if "idp_domain" in d:
+            idp_raw = d.get("idp_domain")
+            idp = str(idp_raw) if idp_raw else None
+        else:
+            idp = "naver.com"
         return cls(
             service_url=str(d["service_url"]),
             service_text=str(d.get("service_text") or ""),
             naver_probe=probe,
+            idp_domain=idp,
         )
 
 
@@ -1583,7 +1612,10 @@ def seed_profile(
         name, seed_url, resolved_domain,
     )
 
-    expected_domains = ["naver.com"]
+    # IdP 도메인은 VerifySpec.idp_domain 으로 결정 — None 이면 IdP 검증 skip.
+    expected_domains: list[str] = []
+    if verify.idp_domain:
+        expected_domains.append(verify.idp_domain)
     if resolved_domain and resolved_domain not in expected_domains:
         expected_domains.append(resolved_domain)
 

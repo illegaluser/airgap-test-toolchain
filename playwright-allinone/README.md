@@ -33,17 +33,20 @@
 
 ## 모니터링 PC 로 시나리오 옮기기 (Replay UI)
 
-녹화 PC 에서 만든 시나리오를 다른 PC 들에서 무인으로 자동 실행하고 싶을 때:
+녹화 PC 에서 만든 시나리오를 다른 PC 들에서 자동 실행하고 싶을 때:
 
-1. **녹화 PC** — Recording UI 의 결과 카드 → "Original Script" 카드의 `[📦 모니터링 번들 다운로드]` → `<세션ID>.bundle.zip` 을 받는다.
+1. **녹화 PC** — Recording UI 의 결과 카드 → `Original Script` 또는 `셀프힐링 후` 카드의 `⬇ 다운로드` 클릭. 받는 `.py` 는 평문 자격증명 자동 sanitize (`auth_flow.sanitize_script`) 통과한 안전한 본문.
 2. **모니터링 PC (1회 설치)** — `monitor-runtime-<날짜시각>.zip` 을 풀고 `install-monitor` 한 번 실행 (Mac/Linux = `bash install-monitor.sh`, Windows = `install-monitor.ps1`).
-3. **모니터링 PC (사용)** — <http://127.0.0.1:18094> 에서 로그인 프로파일을 한 번 등록 (사람이 직접 로그인) → 받은 시나리오 묶음 zip 업로드 → 실행 → 스텝별 스크린샷 + HTML 리포트로 검증.
+3. **모니터링 PC (사용)** — <http://127.0.0.1:18094> 에서 (a) 로그인 프로파일 등록 (필요 시 — 비로그인 시나리오면 생략), (b) `시나리오 스크립트` 카드에 받아온 `.py` 업로드, (c) 적용할 프로파일 select (또는 *비로그인*) + verify URL 옵션 → `▶ 실행` → 스텝별 스크린샷 + HTML 리포트.
 
 | 도구 | 위치 |
 | --- | --- |
 | Replay UI | <http://127.0.0.1:18094> (모니터링 PC 자기 자신만 접속, LAN 노출 X) |
-| CLI 실행 | `python -m monitor replay <시나리오묶음.zip> --out <결과 폴더>` |
+| 단일 진입점 launcher | `./run-replay-ui.sh {start\|stop\|restart\|status\|logs\|foreground\|doctor}` |
+| CLI 실행 | `python -m monitor replay-script <script.py> --out <결과 폴더> [--profile <alias>] [--verify-url <URL>]` |
 | CLI 로그인 등록 | `python -m monitor profile seed <프로파일이름> --target <사이트 URL>` |
+
+> 2026-05-11 D17 일원화 — 이전 `bundle.zip` 흐름은 폐기됐다. 한 시나리오 = 한 `.py`. 적용할 로그인 프로파일과 verify URL 은 받는 쪽 Replay UI 에서 사용자가 명시 (또는 *비로그인* 으로 비워둠). 자세한 결정은 [PLAN_AUTH_PROFILE_NAVER_OAUTH.md §2 D17](docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md#2-의사결정-로그).
 
 처음 보는 사용자가 따라할 수 있게 단계별로 정리한 문서는 [docs/replay-ui-guide.md](docs/replay-ui-guide.md). 통합 테스트 매트릭스는 [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md). 설계 결정 배경은 `.claude/plans/squishy-wishing-emerson.md`.
 
@@ -204,3 +207,11 @@ Jenkins Pipeline 의 LLM 단계 (시나리오 생성 / 치유) 가 호스트 Oll
 ```
 
 호스트 venv 의 코드만 바꾼 경우 (executor / scenario validator 등) 컨테이너 재빌드 없이 이거면 충분.
+
+**Q. Replay UI 만 재기동하려면?**
+
+```bash
+./run-replay-ui.sh restart
+```
+
+Recording UI launcher 와 동등 패턴 — env 자동 셋업 (PYTHONPATH / PLAYWRIGHT_BROWSERS_PATH / AUTH_PROFILES_DIR / MONITOR_HOME) + nohup detach + PID 관리. macOS / WSL2 / Linux / Windows(Git Bash) 모두 동작. `start` / `stop` / `restart` / `status` / `logs` / `foreground` / `doctor` 서브커맨드 지원.

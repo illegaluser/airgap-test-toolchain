@@ -11,7 +11,7 @@
   <h1>🎬 Replay UI</h1>
   <span id="alarm-badge" class="alarm hidden" title="다시 로그인이 필요한 프로파일 수"></span>
   <span class="spacer"></span>
-  <button id="btn-wizard" type="button" title="첫 사용 가이드 (로그인 등록 → 시나리오 묶음 업로드 → 실행)">
+  <button id="btn-wizard" type="button" title="첫 사용 가이드 (로그인 등록 → 시나리오 .py 업로드 → 실행)">
     🧭 첫 사용 가이드
   </button>
 </header>
@@ -37,25 +37,53 @@
     </table>
   </section>
 
-  <!-- 📦 시나리오 묶음 -->
+  <!-- 📄 시나리오 스크립트 (D17 — 번들 zip 폐기 후 단일 진입점) -->
   <section class="card">
-    <h2>📦 시나리오 묶음</h2>
+    <h2>📄 시나리오 스크립트</h2>
+    <p class="muted">
+      Recording UI 에서 <code>⬇ 다운로드</code> 받은 <code>.py</code> 스크립트를 업로드합니다.
+      적용할 로그인 프로파일은 실행 시점에 사용자가 직접 고르며, 비로그인 시나리오면 프로파일을 비워 두세요.
+    </p>
     <div class="card-actions">
-      <input type="file" id="bundle-file" accept=".zip" hidden />
-      <button id="btn-upload-bundle" type="button">⬆ 업로드</button>
-      <button id="btn-refresh-bundles" type="button" class="ghost">↻ 새로고침</button>
+      <input type="file" id="script-file" accept=".py" hidden />
+      <button id="btn-upload-script" type="button">⬆ 업로드 (.py)</button>
+      <button id="btn-refresh-scripts" type="button" class="ghost">↻ 새로고침</button>
+      <span class="card-actions-spacer"></span>
+      <label class="inline-label">
+        <span>적용할 로그인 프로파일</span>
+        <select id="run-script-profile-select">
+          <option value="">(비로그인 — storage_state 미주입)</option>
+        </select>
+      </label>
+      <label class="inline-label inline-checkbox">
+        <input type="checkbox" id="run-script-headed-toggle" checked />
+        <span>화면 표시 (headed)</span>
+      </label>
+      <label class="inline-label inline-checkbox"
+             title="각 액션 사이에 지연을 줍니다. 사람이 눈으로 따라가며 디버깅할 때 유용 — 다만 액션 수만큼 누적되어 전체 실행 시간이 길어집니다.">
+        <input type="checkbox" id="run-script-slowmo-enabled" />
+        <span>액션 사이 지연</span>
+        <input type="number" id="run-script-slowmo-ms" value="1000" min="0" step="100"
+               style="width:80px;" disabled />
+        <span class="muted">ms</span>
+      </label>
     </div>
-    <table id="bundles-table" class="data-table">
+    <label class="inline-label" style="display:block; margin-top:6px;">
+      <span>verify URL <em>(선택)</em></span>
+      <input type="url" id="run-script-verify-url" placeholder="비우면 프로파일 카탈로그의 verify URL 사용" style="width:60%;" />
+    </label>
+    <table id="scripts-table" class="data-table">
       <thead>
         <tr>
-          <th>시나리오</th><th>프로파일 이름</th><th>등록일</th><th>크기</th><th>액션</th>
+          <th>스크립트</th><th>등록일</th><th>크기</th><th>액션</th>
         </tr>
       </thead>
-      <tbody id="bundles-tbody">
-        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+      <tbody id="scripts-tbody">
+        <tr class="muted"><td colspan="4">— 로딩 중 —</td></tr>
       </tbody>
     </table>
   </section>
+
 
   <!-- ▶ 실행 (실시간) -->
   <section class="card">
@@ -138,9 +166,19 @@
         <input type="number" name="ttl_hint_hours" min="1" max="168" value="12" />
       </label>
 
+      <label class="modal-row">
+        <span>IdP 도메인 <em>(선택)</em></span>
+        <input type="text" name="idp_domain" placeholder="naver.com"
+               value="naver.com"
+               title="2중 확인을 거치는 외부 IdP 도메인 (예: naver.com / kakao.com / accounts.google.com). 비우면 IdP 검증 없음 — 순수 ID/PW 서비스용." />
+      </label>
+      <p class="muted modal-hint">
+        시드 후 storage 에 이 도메인의 쿠키가 있어야 합니다. ID/PW 만 쓰는 사이트면 비워 주세요.
+      </p>
+
       <label class="modal-row checkbox">
         <input type="checkbox" name="naver_probe" checked />
-        <span>네이버 측 weak probe 활성 (best-effort, 권장)</span>
+        <span>네이버 측 weak probe 활성 (best-effort, IdP=naver.com 일 때만 의미 있음)</span>
       </label>
 
       <p class="modal-warning">⚠ 운영 계정 사용 금지 — 테스트 전용 계정 권장</p>
@@ -218,8 +256,8 @@
     <ol class="wizard-steps">
       <li><strong>1단계</strong> — 로그인 프로파일 카드의 <code>+ 새 프로파일</code> 로 프로파일 이름과 사이트 주소를 입력합니다.</li>
       <li><strong>2단계</strong> — 자동으로 열린 브라우저에서 직접 로그인 후 창을 닫아 주세요. 로그인 상태가 모니터링 PC 에 저장됩니다.</li>
-      <li><strong>3단계</strong> — 시나리오 묶음 카드의 <code>⬆ 업로드</code> 로 녹화 PC 에서 받은 <code>&lt;세션ID&gt;.bundle.zip</code> 을 올립니다.</li>
-      <li><strong>4단계</strong> — 시나리오 묶음 행의 <code>▶ 실행</code> 으로 첫 실행을 확인합니다.</li>
+      <li><strong>3단계</strong> — 시나리오 스크립트 카드의 <code>⬆ 업로드 (.py)</code> 로 녹화 PC 에서 받은 <code>original.py</code> 또는 <code>regression_test.py</code> 를 올립니다.</li>
+      <li><strong>4단계</strong> — 적용할 로그인 프로파일 select 에서 (등록한 alias 또는 비로그인) 선택 → 행의 <code>▶ 실행</code>.</li>
     </ol>
     <div class="modal-actions">
       <button type="button" class="primary" data-modal-close="wizard-modal">시작하기</button>
