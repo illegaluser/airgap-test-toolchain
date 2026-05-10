@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 # 모듈 위치는 monitor-runtime zip 에 동봉된 src/ 와 동일하므로 절대 import 가능.
-from recording_service import auth_flow, trace_parser
+from recording_service import trace_parser
 from zero_touch_qa import auth_profiles
 
 
@@ -114,12 +114,28 @@ def _run_script_wrapper(
     script_name: str,
     storage_path: Optional[str],
     fingerprint_env: dict,
+    headed: bool = True,
+    slow_mo_ms: Optional[int] = None,
 ) -> int:
     """``codegen_trace_wrapper`` 를 subprocess 로 호출 (계획의 wrapper 재사용)."""
     env = os.environ.copy()
     env["CODEGEN_SESSION_DIR"] = str(unpack_dir)
     env["CODEGEN_SCRIPT"] = script_name
-    env["CODEGEN_HEADLESS"] = "1"  # 모니터링은 headless 강제.
+    # D9 — 운영 기본은 headed. headless 는 사용자 명시 옵트인.
+    # codegen_trace_wrapper 의 _install_launch_overrides 는 CODEGEN_HEADED=1
+    # 또는 CODEGEN_HEADLESS=1 *둘 중 하나가 명시* 되어야 monkey-patch 를 설치.
+    # 이전 `"0" if headed else "1"` 패턴은 headed 케이스에서 patch 가 미설치되어
+    # 사용자 .py 의 launch() 가 Playwright default(headless=True) 로 떨어지던
+    # 회귀 (2026-05-11). Recording UI 의 replay_proxy.py 와 같은 형태로 정정.
+    if headed:
+        env["CODEGEN_HEADED"] = "1"
+    else:
+        env["CODEGEN_HEADLESS"] = "1"
+    # 액션 사이 지연 — wrapper 의 monkey-patch 가 launch() kwargs 에 slow_mo 주입.
+    if slow_mo_ms and slow_mo_ms > 0:
+        env["CODEGEN_SLOW_MO_MS"] = str(int(slow_mo_ms))
+    # Windows 콘솔 cp949 한글 깨짐 회귀 방지 — 자식 stdout/stderr UTF-8 강제.
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     if storage_path:
         env["AUTH_STORAGE_STATE_IN"] = storage_path
     env.update(fingerprint_env or {})
@@ -130,6 +146,8 @@ def _run_script_wrapper(
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=SCENARIO_TIMEOUT_S,
         )
         return result.returncode
@@ -165,15 +183,37 @@ def _write_exit(out_dir: Path, code: int) -> None:
     (out_dir / "exit_code").write_text(str(code))
 
 
-# --- 메인 진입점 -------------------------------------------------------------
+# --- 신규 진입점 (D17) — 단일 .py 흐름 -----------------------------------
 
 
-def run_bundle(bundle_zip_path: Path, out_dir: Path) -> int:
-    """bundle.zip 한 개를 실행해 결과를 ``out_dir`` 에 저장.
+def run_script(
+    script_path: Path,
+    out_dir: Path,
+    alias: Optional[str] = None,
+    verify_url: Optional[str] = None,
+    headed: bool = True,
+    slow_mo_ms: Optional[int] = None,
+) -> int:
+    """단일 ``.py`` 시나리오를 실행해 결과를 ``out_dir`` 에 저장 (D17 일원화).
 
-    Returns: exit code (§8.3).
+    번들 zip / metadata 없이 사용자가 직접 정한 (alias, verify_url) 만 받아
+    실행한다. ``alias`` 가 ``None`` 또는 빈 문자열이면 *비로그인* 시나리오로
+    간주 — storage_state 미주입 + verify probe 스킵.
+
+    Args:
+        script_path: 실행할 Playwright ``.py``. 실재 파일이어야 함.
+        out_dir: 결과 디렉토리 (run_log.jsonl, screenshots, trace.zip, meta.json).
+        alias: 적용할 로그인 프로파일 이름. None/"" 이면 비로그인.
+        verify_url: 만료 감지 probe URL. ``alias`` 가 있을 때만 의미. None 이면
+            카탈로그 entry 의 ``verify.service_url`` 로 fallback.
+        headed: D9 — 운영 기본 True.
+        slow_mo_ms: 양수면 wrapper monkey-patch 가 launch() 의 ``slow_mo`` 인자에
+            ms 단위 주입. 사람이 눈으로 따라가며 디버깅할 때 유용.
+
+    Returns: exit code (§8.3 — EXIT_OK / EXIT_SCENARIO_FAIL / EXIT_SYS_ERROR /
+        EXIT_SEED_EXPIRED).
     """
-    bundle_zip_path = Path(bundle_zip_path)
+    script_path = Path(script_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     screenshots_dir = out_dir / "screenshots"
@@ -183,126 +223,83 @@ def run_bundle(bundle_zip_path: Path, out_dir: Path) -> int:
 
     started_at = _utc_iso()
 
+    if not script_path.is_file():
+        with run_log_path.open("w", encoding="utf-8") as f_log:
+            _emit(f_log, event="system_error", reason=f"script 파일 없음: {script_path}")
+        _write_exit(out_dir, EXIT_SYS_ERROR)
+        _save_meta(
+            meta_file, started_at=started_at, finished_at=_utc_iso(),
+            bundle=script_path, alias=alias, provenance={}, exit_code=EXIT_SYS_ERROR,
+        )
+        return EXIT_SYS_ERROR
+
+    # 비로그인 정규화 — 빈 문자열도 None 처리.
+    alias_norm = (alias or "").strip() or None
+
     with run_log_path.open("w", encoding="utf-8") as f_log:
-        with tempfile.TemporaryDirectory(prefix="replay-bundle-") as td:
+        with tempfile.TemporaryDirectory(prefix="replay-script-") as td:
             unpack_dir = Path(td) / "unpacked"
+            unpack_dir.mkdir(parents=True)
+            # codegen_trace_wrapper 가 ARTIFACTS_DIR 로 사용 — script.py 만 복사.
+            target_script = unpack_dir / "script.py"
+            target_script.write_bytes(script_path.read_bytes())
 
-            # 1. unpack.
-            try:
-                info = auth_flow.unpack_bundle(
-                    bundle_zip_path.read_bytes(), unpack_dir
-                )
-            except auth_flow.BundleError as e:
-                _emit(f_log, event="system_error", reason=f"unpack 실패: {e}")
-                _write_exit(out_dir, EXIT_SYS_ERROR)
-                _save_meta(
-                    meta_file,
-                    started_at=started_at,
-                    finished_at=_utc_iso(),
-                    bundle=bundle_zip_path,
-                    alias=None,
-                    provenance={},
-                    exit_code=EXIT_SYS_ERROR,
-                )
-                return EXIT_SYS_ERROR
+            storage_path: Optional[str] = None
+            fingerprint_env: dict = {}
 
-            alias = info["alias"]
-            verify_url = info["verify_url"]
-            script_path = info["script_path"]
-            provenance = info["script_provenance"] or {}
+            if alias_norm:
+                # 카탈로그 조회.
+                try:
+                    profile = auth_profiles.get_profile(alias_norm)
+                except auth_profiles.AuthProfileError as e:
+                    _emit(f_log, event="auth_seed_expired", alias=alias_norm,
+                          reason=f"profile_not_found: {e}")
+                    _write_exit(out_dir, EXIT_SEED_EXPIRED)
+                    _save_meta(meta_file, started_at=started_at, finished_at=_utc_iso(),
+                               bundle=script_path, alias=alias_norm, provenance={},
+                               exit_code=EXIT_SEED_EXPIRED)
+                    return EXIT_SEED_EXPIRED
 
-            if not alias or not verify_url:
-                _emit(
-                    f_log,
-                    event="system_error",
-                    reason="bundle metadata 에 alias / verify_url 누락",
+                storage_path = (
+                    str(profile.storage_path) if profile.storage_path.is_file() else None
                 )
-                _write_exit(out_dir, EXIT_SYS_ERROR)
-                _save_meta(
-                    meta_file,
-                    started_at=started_at,
-                    finished_at=_utc_iso(),
-                    bundle=bundle_zip_path,
-                    alias=alias,
-                    provenance=provenance,
-                    exit_code=EXIT_SYS_ERROR,
-                )
-                return EXIT_SYS_ERROR
+                fingerprint_env = profile.fingerprint.to_env() if profile.fingerprint else {}
 
-            # 2. 카탈로그 조회.
-            try:
-                profile = auth_profiles.get_profile(alias)
-            except auth_profiles.AuthProfileError as e:
-                _emit(
-                    f_log,
-                    event="auth_seed_expired",
-                    alias=alias,
-                    reason=f"profile_not_found: {e}",
-                )
-                _write_exit(out_dir, EXIT_SEED_EXPIRED)
-                _save_meta(
-                    meta_file,
-                    started_at=started_at,
-                    finished_at=_utc_iso(),
-                    bundle=bundle_zip_path,
-                    alias=alias,
-                    provenance=provenance,
-                    exit_code=EXIT_SEED_EXPIRED,
-                )
-                return EXIT_SEED_EXPIRED
+                # verify_url 결정 — 사용자 입력 우선, 없으면 프로파일 fallback.
+                effective_verify = (verify_url or "").strip() or profile.verify.service_url
+                if effective_verify:
+                    probe_result = probe_verify_url(effective_verify, storage_path)
+                    _emit(f_log, event="auth_probe", result=probe_result, url=effective_verify)
+                    if probe_result == "expired":
+                        _emit(f_log, event="auth_seed_expired", alias=alias_norm)
+                        _write_exit(out_dir, EXIT_SEED_EXPIRED)
+                        _save_meta(meta_file, started_at=started_at, finished_at=_utc_iso(),
+                                   bundle=script_path, alias=alias_norm, provenance={},
+                                   exit_code=EXIT_SEED_EXPIRED)
+                        return EXIT_SEED_EXPIRED
+                    if probe_result == "error":
+                        _emit(f_log, event="system_error",
+                              reason="probe 실패 (Playwright / 네트워크)")
+                        _write_exit(out_dir, EXIT_SYS_ERROR)
+                        _save_meta(meta_file, started_at=started_at, finished_at=_utc_iso(),
+                                   bundle=script_path, alias=alias_norm, provenance={},
+                                   exit_code=EXIT_SYS_ERROR)
+                        return EXIT_SYS_ERROR
+            else:
+                # 비로그인 — probe / storage_state 모두 스킵.
+                _emit(f_log, event="auth_skip", reason="alias 미지정 — 비로그인 시나리오")
 
-            storage_path: Optional[str] = (
-                str(profile.storage_path)
-                if profile.storage_path.is_file()
-                else None
-            )
-            fingerprint_env = (
-                profile.fingerprint.to_env() if profile.fingerprint else {}
-            )
-
-            # 3. probe.
-            probe_result = probe_verify_url(verify_url, storage_path)
-            _emit(f_log, event="auth_probe", result=probe_result)
-            if probe_result == "expired":
-                _emit(f_log, event="auth_seed_expired", alias=alias)
-                _write_exit(out_dir, EXIT_SEED_EXPIRED)
-                _save_meta(
-                    meta_file,
-                    started_at=started_at,
-                    finished_at=_utc_iso(),
-                    bundle=bundle_zip_path,
-                    alias=alias,
-                    provenance=provenance,
-                    exit_code=EXIT_SEED_EXPIRED,
-                )
-                return EXIT_SEED_EXPIRED
-            if probe_result == "error":
-                _emit(
-                    f_log,
-                    event="system_error",
-                    reason="probe 실패 (Playwright / 네트워크)",
-                )
-                _write_exit(out_dir, EXIT_SYS_ERROR)
-                _save_meta(
-                    meta_file,
-                    started_at=started_at,
-                    finished_at=_utc_iso(),
-                    bundle=bundle_zip_path,
-                    alias=alias,
-                    provenance=provenance,
-                    exit_code=EXIT_SYS_ERROR,
-                )
-                return EXIT_SYS_ERROR
-
-            # 4. 스크립트 실행 (codegen_trace_wrapper subprocess).
+            # 스크립트 실행 (codegen_trace_wrapper subprocess).
             script_exit = _run_script_wrapper(
                 unpack_dir=unpack_dir,
-                script_name=script_path.name,
+                script_name=target_script.name,
                 storage_path=storage_path,
                 fingerprint_env=fingerprint_env,
+                headed=headed,
+                slow_mo_ms=slow_mo_ms,
             )
 
-            # 5. trace 추출.
+            # trace 파싱.
             trace_zip = unpack_dir / "trace.zip"
             steps_written = 0
             if trace_zip.is_file():
@@ -314,7 +311,7 @@ def run_bundle(bundle_zip_path: Path, out_dir: Path) -> int:
                 )
                 shutil.copy2(trace_zip, out_dir / "trace.zip")
 
-            # 6. 최종 exit code.
+            # 최종 exit code.
             if script_exit == 0:
                 final_exit = EXIT_OK
             elif script_exit == -1:
@@ -322,21 +319,12 @@ def run_bundle(bundle_zip_path: Path, out_dir: Path) -> int:
                 final_exit = EXIT_SCENARIO_FAIL
             else:
                 final_exit = EXIT_SCENARIO_FAIL
-            _emit(
-                f_log,
-                event="scenario_done",
-                script_exit=script_exit,
-                steps=steps_written,
-                final_exit=final_exit,
-            )
+            _emit(f_log, event="scenario_done",
+                  script_exit=script_exit, steps=steps_written, final_exit=final_exit)
             _write_exit(out_dir, final_exit)
-            _save_meta(
-                meta_file,
-                started_at=started_at,
-                finished_at=_utc_iso(),
-                bundle=bundle_zip_path,
-                alias=alias,
-                provenance=provenance,
-                exit_code=final_exit,
-            )
+            _save_meta(meta_file, started_at=started_at, finished_at=_utc_iso(),
+                       bundle=script_path, alias=alias_norm, provenance={},
+                       exit_code=final_exit)
             return final_exit
+
+

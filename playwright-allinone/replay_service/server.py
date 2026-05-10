@@ -36,7 +36,7 @@ from zero_touch_qa import auth_profiles
 
 app = FastAPI(
     title="DSCORE Replay UI",
-    description="모니터링 PC 용 — bundle 실행 + 시각 결과 검증 (계획 §11)",
+    description="모니터링 PC 용 — .py 시나리오 실행 + 시각 결과 검증 (D17 일원화)",
 )
 
 
@@ -51,8 +51,9 @@ def _monitor_home() -> Path:
     return root
 
 
-def _bundles_dir() -> Path:
-    p = _monitor_home() / "scenarios"
+def _scripts_dir() -> Path:
+    """D17 — 단일 .py 시나리오 보관 위치."""
+    p = _monitor_home() / "scripts"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -104,6 +105,7 @@ class ProfileDetail(ProfileSummary):
     verify_service_url: str
     verify_service_text: str
     naver_probe_enabled: bool
+    idp_domain: Optional[str]
 
 
 class AuthSeedReq(BaseModel):
@@ -113,6 +115,9 @@ class AuthSeedReq(BaseModel):
     verify_service_url: str
     verify_service_text: str = ""
     naver_probe: bool = True
+    # IdP 도메인 — 빈 문자열/None 이면 "IdP 검증 없음" (순수 ID/PW 사이트).
+    # default 는 하위 호환을 위해 "naver.com".
+    idp_domain: Optional[str] = "naver.com"
     service_domain: Optional[str] = None
     ttl_hint_hours: int = 12
     notes: str = ""
@@ -183,10 +188,13 @@ def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
             job.message = message
 
     try:
+        # 빈 문자열도 None 으로 정규화 — UI 가 빈칸 입력 시 IdP 검증 skip.
+        idp = (req.idp_domain or "").strip() or None
         verify = VerifySpec(
             service_url=req.verify_service_url,
             service_text=req.verify_service_text,
             naver_probe=NaverProbeSpec() if req.naver_probe else None,
+            idp_domain=idp,
         )
         prof = auth_profiles.seed_profile(
             name=req.name,
@@ -255,6 +263,7 @@ def api_profile_detail(name: str) -> ProfileDetail:
         verify_service_url=p.verify.service_url,
         verify_service_text=p.verify.service_text,
         naver_probe_enabled=p.verify.naver_probe is not None,
+        idp_domain=p.verify.idp_domain,
     )
 
 
@@ -305,25 +314,7 @@ def api_delete_profile(name: str):
     return Response(status_code=204)
 
 
-# --- /api/bundles -----------------------------------------------------------
-
-
-class BundleSummary(BaseModel):
-    name: str          # 파일명
-    alias: str         # bundle 안 metadata 의 alias
-    verify_url: str
-    seeded: bool       # alias 가 카탈로그에 시드되어 있는지 (B4)
-    size: int
-    uploaded_at: str
-
-
-def _read_bundle_meta(zip_path: Path) -> dict:
-    import zipfile
-    try:
-        with zipfile.ZipFile(zip_path) as z:
-            return json.loads(z.read("metadata.json").decode("utf-8"))
-    except Exception:
-        return {}
+# --- /api/scripts (D17 — 단일 .py 진입점) ----------------------------------
 
 
 def _is_alias_seeded(alias: str) -> bool:
@@ -336,19 +327,19 @@ def _is_alias_seeded(alias: str) -> bool:
     return prof.storage_path.is_file()
 
 
-@app.get("/api/bundles", response_model=list[BundleSummary])
-def api_list_bundles() -> list[BundleSummary]:
-    out: list[BundleSummary] = []
-    for p in sorted(_bundles_dir().glob("*.zip")):
-        meta = _read_bundle_meta(p)
-        ab = (meta or {}).get("auth_bundle") or {}
-        alias = ab.get("alias", "")
+class ScriptSummary(BaseModel):
+    name: str          # 파일명
+    size: int
+    uploaded_at: str
+
+
+@app.get("/api/scripts", response_model=list[ScriptSummary])
+def api_list_scripts() -> list[ScriptSummary]:
+    out: list[ScriptSummary] = []
+    for p in sorted(_scripts_dir().glob("*.py")):
         out.append(
-            BundleSummary(
+            ScriptSummary(
                 name=p.name,
-                alias=alias,
-                verify_url=ab.get("verify_url", ""),
-                seeded=_is_alias_seeded(alias),
                 size=p.stat().st_size,
                 uploaded_at=datetime.fromtimestamp(
                     p.stat().st_mtime, tz=timezone.utc
@@ -358,65 +349,105 @@ def api_list_bundles() -> list[BundleSummary]:
     return out
 
 
-@app.post("/api/bundles", status_code=201)
-async def api_upload_bundle(
+@app.post("/api/scripts", status_code=201)
+async def api_upload_script(
     file: UploadFile = File(...),
     overwrite: int = Query(0, description="1 이면 동일 이름 덮어쓰기"),
 ):
     name = file.filename or ""
-    if not name.endswith(".zip"):
-        raise HTTPException(status_code=400, detail=".zip 만 허용")
+    if not name.endswith(".py"):
+        raise HTTPException(status_code=400, detail=".py 만 허용")
     safe = _safe_name(name)
-    target = _bundles_dir() / safe
+    target = _scripts_dir() / safe
     if target.exists() and not overwrite:
         raise HTTPException(
             status_code=409, detail=f"이미 존재: {safe}. overwrite=1 으로 재시도",
         )
     content = await file.read()
+    # 가벼운 sanity — UTF-8 디코딩 + AST 파싱 + playwright 토큰 존재.
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="UTF-8 로 디코딩되지 않는 .py")
+    import ast as _ast
+    try:
+        _ast.parse(text)
+    except SyntaxError as e:
+        raise HTTPException(status_code=400, detail=f"AST 파싱 실패: {e}")
+    if "playwright" not in text:
+        raise HTTPException(status_code=400, detail="playwright 토큰이 없는 스크립트")
     target.write_bytes(content)
-    meta = _read_bundle_meta(target)
-    ab = (meta or {}).get("auth_bundle") or {}
-    return {"name": safe, "size": len(content), "alias": ab.get("alias", "")}
+    return {"name": safe, "size": len(content)}
 
 
-@app.delete("/api/bundles/{name}")
-def api_delete_bundle(name: str):
+@app.delete("/api/scripts/{name}")
+def api_delete_script(name: str):
     name = _safe_name(name)
-    target = _bundles_dir() / name
+    target = _scripts_dir() / name
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"미존재: {name}")
     target.unlink()
     return Response(status_code=204)
 
 
-# --- /api/runs --------------------------------------------------------------
+# --- /api/runs (D17 — 단일 .py 실행 진입점) -------------------------------
 
 
 _run_lock = threading.Lock()
-_runs: dict[str, dict] = {}  # run_id → {state, bundle, alias, out_dir, started_at, _proc}
-
-
-class RunRequest(BaseModel):
-    bundle_name: str
+_runs: dict[str, dict] = {}  # run_id → {state, script, alias, out_dir, started_at, _proc}
 
 
 def _make_run_id() -> str:
     return f"run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
-def _run_subprocess_target(run_id: str, bundle_path: Path, out_dir: Path) -> None:
-    """별도 스레드에서 monitor replay subprocess 실행 + 종료 시 상태 갱신."""
+class RunScriptRequest(BaseModel):
+    """단일 .py 실행 요청 (D17 — 번들 zip 폐기 후 진입점).
+
+    alias 가 빈 문자열/None 이면 *비로그인* 시나리오로 실행 (storage_state 미주입,
+    verify probe 스킵). verify_url 도 빈 값이면 프로파일 카탈로그의
+    ``verify.service_url`` 로 fallback. slow_mo_ms 가 양수면 launch() 의
+    slow_mo 인자로 주입 (codegen_trace_wrapper monkey-patch).
+    """
+    script_name: str
+    alias: Optional[str] = None
+    verify_url: Optional[str] = None
+    headed: bool = True
+    slow_mo_ms: Optional[int] = None
+
+
+def _run_script_subprocess_target(
+    run_id: str,
+    script_path: Path,
+    out_dir: Path,
+    alias: Optional[str],
+    verify_url: Optional[str],
+    headed: bool,
+    slow_mo_ms: Optional[int],
+) -> None:
+    """별도 스레드에서 ``monitor replay-script`` subprocess 실행."""
     cmd = [
-        sys.executable, "-m", "monitor", "replay",
-        str(bundle_path), "--out", str(out_dir),
+        sys.executable, "-m", "monitor", "replay-script",
+        str(script_path), "--out", str(out_dir),
     ]
+    if alias:
+        cmd += ["--profile", alias]
+    if verify_url:
+        cmd += ["--verify-url", verify_url]
+    if not headed:
+        cmd += ["--headless"]
+    if slow_mo_ms and slow_mo_ms > 0:
+        cmd += ["--slow-mo", str(int(slow_mo_ms))]
+    # Windows 환경에서 subprocess 의 default 디코딩이 cp949 라 한글 깨짐 회귀
+    # 방지 — UTF-8 강제 + 자식의 stdout 도 UTF-8 (env PYTHONIOENCODING).
+    sub_env = os.environ.copy()
+    sub_env.setdefault("PYTHONIOENCODING", "utf-8")
     try:
         proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,  # line-buffered
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+            encoding="utf-8", errors="replace",
+            env=sub_env,
         )
     except Exception as e:
         with _run_lock:
@@ -427,7 +458,6 @@ def _run_subprocess_target(run_id: str, bundle_path: Path, out_dir: Path) -> Non
     with _run_lock:
         _runs[run_id]["_proc"] = proc
 
-    # stdout 을 줄 단위로 모아 _runs 의 stdout_log 에 누적 (SSE 가 폴링).
     stdout_log: list[str] = []
     if proc.stdout is not None:
         for line in proc.stdout:
@@ -441,21 +471,25 @@ def _run_subprocess_target(run_id: str, bundle_path: Path, out_dir: Path) -> Non
         _runs[run_id]["finished_at"] = _utc_iso()
 
 
-@app.post("/api/runs", status_code=201)
-def api_start_run(req: RunRequest):
-    name = _safe_name(req.bundle_name)
-    bundle_path = _bundles_dir() / name
-    if not bundle_path.is_file():
-        raise HTTPException(status_code=404, detail=f"시나리오 묶음을 찾을 수 없음: {name}")
+@app.post("/api/runs/script", status_code=201)
+def api_start_run_script(req: RunScriptRequest):
+    """D17 — 단일 .py 시나리오 실행. 비로그인 케이스 (alias 빈 값) 자동 분기."""
+    name = _safe_name(req.script_name)
+    script_path = _scripts_dir() / name
+    if not script_path.is_file():
+        raise HTTPException(status_code=404, detail=f"스크립트를 찾을 수 없음: {name}")
 
-    # 사전 차단 — 로그인 프로파일이 등록 안 됐으면 실행 거부.
-    meta = _read_bundle_meta(bundle_path)
-    ab = (meta or {}).get("auth_bundle") or {}
-    alias = ab.get("alias", "")
-    if not _is_alias_seeded(alias):
+    alias_norm = (req.alias or "").strip() or None
+    verify_norm = (req.verify_url or "").strip() or None
+
+    # alias 명시했는데 카탈로그에 없으면 412 (사용자 의도 명시인데 누락이라 가드).
+    if alias_norm is not None and not _is_alias_seeded(alias_norm):
         raise HTTPException(
             status_code=412,
-            detail=f"로그인 프로파일 '{alias}' 등록 필요 (로그인 프로파일 카드에서 등록 후 재시도)",
+            detail=(
+                f"로그인 프로파일 '{alias_norm}' 등록 필요 — "
+                "비로그인 실행을 의도했다면 프로파일 select 를 비워 주세요."
+            ),
         )
 
     run_id = _make_run_id()
@@ -464,19 +498,24 @@ def api_start_run(req: RunRequest):
     with _run_lock:
         _runs[run_id] = {
             "run_id": run_id,
-            "bundle": name,
-            "alias": alias,
+            "script": name,
+            "alias": alias_norm or "",
+            "verify_url": verify_norm or "",
             "out_dir": str(out_dir),
             "state": "running",
             "started_at": _utc_iso(),
             "stdout_log": [],
         }
+    slow_mo_norm = req.slow_mo_ms if (req.slow_mo_ms and req.slow_mo_ms > 0) else None
     threading.Thread(
-        target=_run_subprocess_target,
-        args=(run_id, bundle_path, out_dir),
+        target=_run_script_subprocess_target,
+        args=(run_id, script_path, out_dir, alias_norm, verify_norm, bool(req.headed), slow_mo_norm),
         daemon=True,
     ).start()
-    return {"run_id": run_id, "state": "running", "bundle": name, "alias": alias}
+    return {
+        "run_id": run_id, "state": "running",
+        "script": name, "alias": alias_norm or "",
+    }
 
 
 @app.get("/api/runs")

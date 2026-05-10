@@ -87,9 +87,14 @@
               <span>TTL 힌트 (시간) — 일 1회 재시드 가정 권장</span>
               <input type="number" name="ttl_hint_hours" min="1" max="168" value="12">
             </label>
+            <label class="optional">
+              <span>IdP 도메인 <em>(선택 — 비우면 IdP 검증 없음)</em></span>
+              <input type="text" name="idp_domain" placeholder="naver.com" value="naver.com"
+                     title="2중 확인을 거치는 외부 IdP 도메인 (예: naver.com / kakao.com / accounts.google.com). ID/PW 만 쓰는 사이트면 비우세요.">
+            </label>
             <label class="auth-checkbox">
               <input type="checkbox" name="naver_probe" checked>
-              <span>네이버 측 weak probe 활성 (best-effort, 권장)</span>
+              <span>네이버 측 weak probe 활성 (best-effort, IdP=naver.com 일 때만 의미 있음)</span>
             </label>
             <p class="auth-warning">
               ⚠ 운영 계정 사용 금지 — 테스트 전용 계정 권장
@@ -462,10 +467,6 @@
                   title="클립보드에 복사">📋 복사</button>
           <span class="copy-toast" data-toast-for="result-original" hidden>✓ 복사됨</span>
           <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
-          <button type="button" id="btn-bundle"
-                  title="모니터링 PC 에서 그대로 실행 가능한 zip 묶음 다운로드">
-            📦 모니터링 번들 다운로드
-          </button>
         </div>
         <pre id="result-original" class="json-preview collapsible">— original.py 미로드 —</pre>
         <button type="button" class="preview-toggle" data-toggle-target="result-original" hidden>▾ 전체 펼치기</button>
@@ -665,72 +666,6 @@
   <footer>
     <span class="muted">Recording UI · 호스트 데몬 · 폐쇄망 호환</span>
   </footer>
-
-  <!-- 모니터링 번들 다운로드 모달 -->
-  <div id="bundle-modal" class="modal" hidden role="dialog" aria-modal="true"
-       aria-labelledby="bundle-modal-title">
-    <div class="modal-backdrop" data-modal-close="bundle-modal"></div>
-    <div class="modal-body">
-      <h3 id="bundle-modal-title">📦 모니터링 번들 다운로드</h3>
-      <p class="muted">
-        다른 PC (모니터링 PC) 에서 그대로 자동 실행할 zip 을 만듭니다.
-        받는 쪽 PC 의 Replay UI 에 같은 이름으로 미리 등록된 로그인 프로파일이 필요합니다.
-      </p>
-
-      <label class="modal-row">
-        <span>로그인 프로파일 이름</span>
-        <input type="text" id="bundle-alias" value="packaged"
-               placeholder="예: dpg-qa" />
-      </label>
-      <p class="muted modal-hint">
-        받는 쪽 모니터링 PC 의 Replay UI 에서 이 이름과 똑같이 (대소문자 구분)
-        로그인 프로파일을 등록해 둬야 합니다.
-      </p>
-
-      <label class="modal-row">
-        <span>로그인 상태 확인 URL</span>
-        <input type="text" id="bundle-verify-url"
-               placeholder="https://example.com/dashboard" />
-      </label>
-      <p class="muted modal-hint">
-        매 실행 직전에 이 URL 로 GET 1회를 보내 로그인 상태가 살아 있는지 확인합니다.
-        반드시 <strong>이미 로그인된 페이지</strong> 여야 합니다 — 로그인 페이지가 들어가면
-        받는 쪽에서 매번 만료로 잘못 판정합니다. 시나리오의 마지막 이동 URL 을 자동 제안합니다.
-      </p>
-
-      <label class="modal-row">
-        <span>사용할 스크립트</span>
-        <select id="bundle-script-source">
-          <!-- option 은 모달 열릴 때 동적으로 채워짐 -->
-        </select>
-      </label>
-      <p class="muted modal-hint">
-        보통 <code>original.py</code> (codegen 원본) 또는
-        <code>regression_test.py</code> (LLM 적용으로 selector 가 강화된 버전) 중 선택.
-      </p>
-
-      <div id="bundle-warning" class="modal-warning" hidden>
-        <h4>⚠️ 평문 자격증명 의심 라인 잔존</h4>
-        <p>
-          로그인 프로파일을 적용하지 않고 녹화한 세션입니다. 자동 정리 후에도
-          다음 라인이 남아 있어서 평문 비밀번호가 zip 안으로 들어갈 가능성이 있습니다:
-        </p>
-        <pre id="bundle-warning-diff" class="json-preview"></pre>
-        <label>
-          <input type="checkbox" id="bundle-consent-plain-pw" />
-          위 라인을 검토했고, 평문 가능성을 인지한 상태로 다운로드에 동의합니다.
-        </label>
-      </div>
-
-      <div class="modal-actions">
-        <button type="button" class="modal-cancel"
-                data-modal-close="bundle-modal">✗ 취소</button>
-        <button type="button" id="bundle-confirm-btn" class="primary">
-          ✓ 다운로드
-        </button>
-      </div>
-    </div>
-  </div>
 
   <script src="/static/app.js"></script>
 </body>

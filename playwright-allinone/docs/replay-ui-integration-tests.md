@@ -3,6 +3,13 @@
 계획 §19 의 T1–T20 매트릭스 검증 결과. 단위 테스트로 자동 검증된 항목과
 실제 PC 환경에서 사람이 수행해야 하는 수동 항목을 분리.
 
+> **⚠ 2026-05-11 D17 stale notice** — 본 문서의 매트릭스 (특히 `pack_bundle` /
+> `unpack_bundle` / `run_bundle` / `monitor replay <bundle>` / "시나리오 묶음
+> 업로드" 항목들) 은 D17 일원화로 *코드가 제거된 흐름* 을 가리킵니다.
+> 다음 세션에서 매트릭스를 새 흐름 (sanitize .py 다운로드 → .py 업로드 →
+> `monitor replay-script` / `/api/runs/script`) 기준으로 재작성 예정.
+> 그동안에는 본 문서를 *과거 baseline* 으로만 참조해 주세요.
+
 ## 요약
 
 | 분류 | 통과 | 미수행 | 합계 |

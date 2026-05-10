@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m monitor replay <bundle.zip> --out <dir>
+    python -m monitor replay-script <script.py> --out <dir> [--profile <alias>] [--verify-url <url>]
     python -m monitor profile list
     python -m monitor profile seed <alias> --target <url>
     python -m monitor profile delete <alias>
@@ -19,11 +19,11 @@ from . import profile_cmd, replay_cmd
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="monitor",
-        description="모니터링 PC CLI — 시나리오 묶음 실행 / 로그인 프로파일 관리",
+        description="모니터링 PC CLI — 단일 .py 시나리오 실행 / 로그인 프로파일 관리 (D17 일원화)",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    replay_cmd.register(sub)
+    replay_cmd.register_script(sub)
     profile_cmd.register(sub)
 
     args = parser.parse_args(argv)

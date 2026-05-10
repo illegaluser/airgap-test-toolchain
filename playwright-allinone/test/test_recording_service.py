@@ -93,7 +93,7 @@ def patched_codegen(monkeypatch):
         captured["stopped"].append(handle.pid)
         return handle
 
-    def fake_convert(*, container_session_dir, host_scenario_path):
+    def fake_convert(*, host_session_dir, host_scenario_path):
         # 컨테이너가 scenario.json 을 썼다고 시뮬레이션
         Path(host_scenario_path).parent.mkdir(parents=True, exist_ok=True)
         Path(host_scenario_path).write_text(
@@ -101,7 +101,7 @@ def patched_codegen(monkeypatch):
             '{"step":2,"action":"click","target":"button","value":""}]',
             encoding="utf-8",
         )
-        captured["converted"].append((container_session_dir, host_scenario_path))
+        captured["converted"].append((host_session_dir, host_scenario_path))
         return ConvertResult(
             returncode=0,
             stdout="[convert-only] 2 스텝 변환 + 검증 완료",
@@ -408,7 +408,7 @@ def test_stop_with_convert_returncode_nonzero(client, monkeypatch):
     def fake_stop(handle):
         return handle
 
-    def fake_convert(*, container_session_dir, host_scenario_path):
+    def fake_convert(*, host_session_dir, host_scenario_path):
         return ConvertResult(
             returncode=1,
             stdout="",
@@ -444,7 +444,7 @@ def test_stop_with_converter_proxy_error(client, monkeypatch):
     def fake_stop(handle):
         return handle
 
-    def fake_convert(*, container_session_dir, host_scenario_path):
+    def fake_convert(*, host_session_dir, host_scenario_path):
         raise ConverterProxyError("docker 실행 파일을 찾을 수 없습니다.")
 
     monkeypatch.setattr(srv, "_start_codegen_impl", fake_start)
@@ -474,7 +474,7 @@ def test_stop_after_codegen_empty_skips_conversion(client, monkeypatch):
     def fake_stop(handle):
         return handle
 
-    def fake_convert(*, container_session_dir, host_scenario_path):
+    def fake_convert(*, host_session_dir, host_scenario_path):
         convert_calls.append(1)
         return None
 
@@ -493,40 +493,58 @@ def test_stop_after_codegen_empty_skips_conversion(client, monkeypatch):
 
 # ── converter_proxy 순수 함수 ────────────────────────────────────────────────
 
-def test_converter_proxy_run_convert_when_docker_missing(monkeypatch):
+def test_converter_proxy_run_convert_when_docker_missing(monkeypatch, tmp_path):
     """docker 미설치 시 ConverterProxyError. subprocess 실행 안 함."""
     from recording_service import converter_proxy
     from recording_service.converter_proxy import ConverterProxyError
 
     monkeypatch.setattr(converter_proxy, "is_docker_available", lambda: False)
+    sess = tmp_path / "sess"
+    sess.mkdir()
+    (sess / "original.py").write_text("# noop\n", encoding="utf-8")
     with pytest.raises(ConverterProxyError) as excinfo:
         converter_proxy.run_convert(
-            container_session_dir="/data/recordings/x",
-            host_scenario_path="/tmp/nonexistent/scenario.json",
+            host_session_dir=str(sess),
+            host_scenario_path=str(tmp_path / "scenario.json"),
         )
     assert "docker" in str(excinfo.value)
 
 
 def test_converter_proxy_run_convert_returns_result(monkeypatch, tmp_path):
-    """subprocess.run 을 fake 로 대체해 ConvertResult 형식 검증."""
+    """subprocess.run 을 fake 로 대체해 ConvertResult 형식 검증.
+
+    docker-cp 재설계 — run_convert 가 mkdir / cp-in / exec / cp-out / rm 순으로
+    여러 번 subprocess.run 을 호출. fake 가 모두 rc=0 + 비어있는 stderr 를 반환하면
+    main exec 의 stdout 에 결과 메시지가 박혀 있는 케이스가 된다.
+    """
     from recording_service import converter_proxy
 
     monkeypatch.setattr(converter_proxy, "is_docker_available", lambda: True)
 
-    fake_completed = SimpleNamespace(
-        returncode=0,
-        stdout=b"[convert-only] 5 \xec\x8a\xa4\xed\x85\x9d \xeb\xb3\x80\xed\x99\x98 \xec\x99\x84\xeb\xa3\x8c",
-        stderr=b"",
-    )
-    monkeypatch.setattr(converter_proxy.subprocess, "run", lambda *a, **kw: fake_completed)
+    sess = tmp_path / "sess"
+    sess.mkdir()
+    (sess / "original.py").write_text("# noop\n", encoding="utf-8")
+    host_scenario = tmp_path / "scenario.json"
+    # main exec 의 stdout 만 의미 있는 메시지를 박는다. mkdir/cp/rm 은 빈 출력.
+    main_exec_stdout = b"[convert-only] 5 \xec\x8a\xa4\xed\x85\x9d \xeb\xb3\x80\xed\x99\x98 \xec\x99\x84\xeb\xa3\x8c"
+    call_idx = {"i": 0}
 
-    # scenario.json 시뮬레이션
-    scenario = tmp_path / "scenario.json"
-    scenario.write_text("[]", encoding="utf-8")
+    def fake_run(args, **kw):
+        idx = call_idx["i"]
+        call_idx["i"] += 1
+        # 4번째 호출이 main exec (mkdir, cp-in, [main exec], cp-out, rm).
+        if isinstance(args, list) and "zero_touch_qa" in " ".join(args):
+            return SimpleNamespace(returncode=0, stdout=main_exec_stdout, stderr=b"")
+        # cp-out 단계: scenario.json 을 호스트에 쓴 척.
+        if isinstance(args, list) and len(args) >= 2 and args[0] == "docker" and args[1] == "cp" and "scenario.json" in args[2]:
+            host_scenario.write_text("[]", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(converter_proxy.subprocess, "run", fake_run)
 
     result = converter_proxy.run_convert(
-        container_session_dir="/data/recordings/x",
-        host_scenario_path=str(scenario),
+        host_session_dir=str(sess),
+        host_scenario_path=str(host_scenario),
     )
     assert result.returncode == 0
     assert result.scenario_exists is True
@@ -534,24 +552,31 @@ def test_converter_proxy_run_convert_returns_result(monkeypatch, tmp_path):
     assert result.elapsed_ms >= 0
 
 
-def test_converter_proxy_timeout_raises(monkeypatch):
-    """subprocess.TimeoutExpired → ConverterProxyError."""
+def test_converter_proxy_timeout_raises(monkeypatch, tmp_path):
+    """subprocess.TimeoutExpired (메인 exec) → ConverterProxyError."""
     from recording_service import converter_proxy
     from recording_service.converter_proxy import ConverterProxyError
 
     monkeypatch.setattr(converter_proxy, "is_docker_available", lambda: True)
 
-    def fake_run(*a, **kw):
-        raise converter_proxy.subprocess.TimeoutExpired(cmd="docker exec", timeout=1)
+    sess = tmp_path / "sess"
+    sess.mkdir()
+    (sess / "original.py").write_text("# noop\n", encoding="utf-8")
+
+    def fake_run(args, **kw):
+        # mkdir / cp-in 은 정상 통과시키고, 메인 exec 만 timeout.
+        if isinstance(args, list) and "zero_touch_qa" in " ".join(args):
+            raise converter_proxy.subprocess.TimeoutExpired(cmd="docker exec", timeout=1)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(converter_proxy.subprocess, "run", fake_run)
 
     with pytest.raises(ConverterProxyError) as excinfo:
         converter_proxy.run_convert(
-            container_session_dir="/data/recordings/x",
-            host_scenario_path="/tmp/no.json",
+            host_session_dir=str(sess),
+            host_scenario_path=str(tmp_path / "scenario.json"),
         )
-    assert "안에 끝나지 않았습니다" in str(excinfo.value)
+    assert "timeout" in str(excinfo.value).lower()
 
 
 # ── TR.4 — Web UI 정적 서빙 ─────────────────────────────────────────────────

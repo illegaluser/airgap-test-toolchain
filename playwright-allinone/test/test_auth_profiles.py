@@ -10,11 +10,25 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
 
 import pytest
+
+
+def _assert_posix_mode(p: Path, expected_mode: int) -> None:
+    """POSIX 모드 비트 어서션 — Windows 에서는 ACL 기반이라 해당 검증을 스킵.
+
+    POSIX 호스트에서만 의미 있는 보안 가드. Windows 도 보호되지 않는다는 뜻은
+    아니고, NTFS ACL 로 다르게 표현되므로 같은 어서션은 부적합 (별도 검증 트랙).
+    """
+    if sys.platform == "win32":
+        return
+    assert _file_mode(p) == expected_mode, (
+        f"{p}: expected mode {oct(expected_mode)}, got {oct(_file_mode(p))}"
+    )
 
 from zero_touch_qa import auth_profiles as ap
 from zero_touch_qa.auth_profiles import (
@@ -152,13 +166,13 @@ class TestRoot:
         assert not new_root.exists()
         _ensure_root()
         assert new_root.is_dir()
-        assert _file_mode(new_root) == 0o700
+        _assert_posix_mode(new_root, 0o700)
 
     def test_ensure_root_idempotent(self, isolated_root: Path):
         """두 번 호출해도 권한 유지."""
         _ensure_root()
         _ensure_root()
-        assert _file_mode(isolated_root) == 0o700
+        _assert_posix_mode(isolated_root, 0o700)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -190,7 +204,7 @@ class TestIndexRoundTrip:
         """카탈로그 파일 권한이 0600."""
         with _index_lock():
             _save_index({"version": INDEX_VERSION, "profiles": []})
-        assert _file_mode(_index_path()) == 0o600
+        _assert_posix_mode(_index_path(), 0o600)
 
     def test_corrupt_file_falls_back_to_empty(self, isolated_root: Path):
         """손상된 JSON 이면 경고만 로그하고 빈 카탈로그 반환."""
@@ -438,6 +452,43 @@ class TestVerifySpec:
         """service_url 은 여전히 필수."""
         with pytest.raises(KeyError):
             VerifySpec.from_dict({"service_text": "x"})
+
+    def test_idp_domain_default_naver(self):
+        """idp_domain 미지정 시 default 는 'naver.com' (하위 호환)."""
+        spec = VerifySpec(service_url="https://booking.example.com/mypage")
+        assert spec.idp_domain == "naver.com"
+
+    def test_idp_domain_custom_roundtrip(self):
+        """카카오/구글 등 다른 IdP 명시 시 round-trip."""
+        original = VerifySpec(
+            service_url="https://booking.example.com/mypage",
+            idp_domain="kakao.com",
+        )
+        d = original.to_dict()
+        assert d["idp_domain"] == "kakao.com"
+        loaded = VerifySpec.from_dict(d)
+        assert loaded.idp_domain == "kakao.com"
+
+    def test_idp_domain_none_means_no_idp(self):
+        """idp_domain=None 은 '순수 ID/PW 사이트 — IdP 검증 없음'."""
+        original = VerifySpec(
+            service_url="https://internal.example.com/mypage",
+            idp_domain=None,
+        )
+        d = original.to_dict()
+        assert d["idp_domain"] is None
+        loaded = VerifySpec.from_dict(d)
+        assert loaded.idp_domain is None
+
+    def test_legacy_dict_without_idp_domain_falls_back_to_naver(self):
+        """idp_domain 키가 없는 v1 카탈로그 entry 는 'naver.com' 으로 fallback."""
+        # 일부러 idp_domain 키를 빼서 v1 형태 시뮬레이션.
+        d = {
+            "service_url": "https://booking.example.com/mypage",
+            "service_text": "환영합니다",
+        }
+        loaded = VerifySpec.from_dict(d)
+        assert loaded.idp_domain == "naver.com"
 
 
 class TestAuthProfile:
@@ -1398,7 +1449,7 @@ class TestSeedProfile:
         # 카탈로그에 등록되었는지.
         assert get_profile("alpha").name == "alpha"
         # storage 파일 권한 0600.
-        assert _file_mode(prof.storage_path) == 0o600
+        _assert_posix_mode(prof.storage_path, 0o600)
 
     def test_invalid_name_rejected_early(self, isolated_root: Path, monkeypatch):
         self._patch_chips_ok(monkeypatch)
@@ -1554,6 +1605,94 @@ class TestSeedProfile:
         assert prof2.notes == "second"
         # 카탈로그에는 한 번만 등록되어야 함 (덮어쓰기).
         assert len(list_profiles()) == 1
+
+    def test_idp_domain_custom_kakao(self, isolated_root: Path, monkeypatch):
+        """idp_domain='kakao.com' 시 storage 가 kakao.com 쿠키 가져야 통과 (naver 불필요)."""
+        self._patch_chips_ok(monkeypatch)
+        self._patch_verify_ok(monkeypatch)
+        # naver.com 쿠키 없음 — kakao.com + service 만 있어도 통과해야 함.
+        dump = _make_dump_with_domains([".kakao.com", "booking.example.com"])
+        storage_target = _storage_path("kakao-profile")
+        monkeypatch.setattr(
+            ap.subprocess, "run",
+            _seed_subprocess_writes(storage_target, dump),
+        )
+
+        prof = seed_profile(
+            "kakao-profile",
+            "https://booking.example.com/",
+            VerifySpec(
+                service_url="https://booking.example.com/mypage",
+                idp_domain="kakao.com",
+            ),
+        )
+        assert prof.verify.idp_domain == "kakao.com"
+        assert prof.storage_path.exists()
+
+    def test_idp_domain_custom_kakao_rejects_when_kakao_cookies_missing(
+        self, isolated_root: Path, monkeypatch,
+    ):
+        """idp_domain='kakao.com' 인데 storage 에 kakao 쿠키 없으면 MissingDomainError."""
+        self._patch_chips_ok(monkeypatch)
+        # service 도메인 쿠키만 있고 kakao 없음.
+        dump = _make_dump_with_domains(["booking.example.com"])
+        storage_target = _storage_path("kakao-profile")
+        monkeypatch.setattr(
+            ap.subprocess, "run",
+            _seed_subprocess_writes(storage_target, dump),
+        )
+
+        with pytest.raises(MissingDomainError) as excinfo:
+            seed_profile(
+                "kakao-profile",
+                "https://booking.example.com/",
+                VerifySpec(
+                    service_url="https://booking.example.com/mypage",
+                    idp_domain="kakao.com",
+                ),
+            )
+        assert "kakao.com" in excinfo.value.missing
+        # naver.com 은 더 이상 강제 아님 — missing 에 들어있으면 안 됨.
+        assert "naver.com" not in excinfo.value.missing
+
+    def test_idp_domain_none_skips_idp_check(self, isolated_root: Path, monkeypatch):
+        """idp_domain=None 시 service 도메인 쿠키만 있어도 통과 (순수 ID/PW 사이트)."""
+        self._patch_chips_ok(monkeypatch)
+        self._patch_verify_ok(monkeypatch)
+        dump = _make_dump_with_domains(["internal.example.com"])
+        storage_target = _storage_path("pure-pw-profile")
+        monkeypatch.setattr(
+            ap.subprocess, "run",
+            _seed_subprocess_writes(storage_target, dump),
+        )
+
+        prof = seed_profile(
+            "pure-pw-profile",
+            "https://internal.example.com/",
+            VerifySpec(
+                service_url="https://internal.example.com/mypage",
+                idp_domain=None,
+            ),
+        )
+        assert prof.verify.idp_domain is None
+        assert prof.storage_path.exists()
+
+    def test_default_idp_naver_still_required(
+        self, isolated_root: Path, monkeypatch,
+    ):
+        """idp_domain 미지정 시 default='naver.com' — 기존 동작 그대로 (회귀 가드)."""
+        self._patch_chips_ok(monkeypatch)
+        # naver.com 쿠키 없음 — default IdP 강제 때문에 fail 해야 함.
+        dump = _make_dump_with_domains(["booking.example.com"])
+        storage_target = _storage_path("alpha")
+        monkeypatch.setattr(
+            ap.subprocess, "run",
+            _seed_subprocess_writes(storage_target, dump),
+        )
+
+        with pytest.raises(MissingDomainError) as excinfo:
+            seed_profile("alpha", "https://booking.example.com/", self._verify_spec())
+        assert "naver.com" in excinfo.value.missing
 
 
 # ─────────────────────────────────────────────────────────────────────────
