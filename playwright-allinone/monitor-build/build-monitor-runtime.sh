@@ -64,7 +64,8 @@ declare -A PIP_PLATFORM=(
 # Replay UI 는 local dev tool 이라 [standard] 의 성능 향상 extra (httptools/
 # uvloop/...) 가 필요 없음. install-monitor 의 PACKAGES 도 `uvicorn` 만 사용 중.
 # 2026-05-11 WSL2 빌드 실패 회귀 차단.
-REQS=(fastapi uvicorn pydantic playwright python-multipart wheel portalocker)
+REQS_COMMON=(fastapi uvicorn pydantic playwright python-multipart wheel portalocker)
+REQS_WIN64=(pywin32)
 for t in "${TARGETS[@]}"; do
   out="$BUILD_DIR/wheels/$t"
   if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
@@ -72,13 +73,20 @@ for t in "${TARGETS[@]}"; do
     continue
   fi
   mkdir -p "$out"
+  reqs=("${REQS_COMMON[@]}")
+  if [[ "$t" = "win64" ]]; then
+    # portalocker declares pywin32 behind a Windows environment marker. When
+    # pip download runs on WSL/Linux with --platform win_amd64, that marker is
+    # still evaluated from the build host, so include it explicitly.
+    reqs+=("${REQS_WIN64[@]}")
+  fi
   echo "[build] pip download → $out (target=$t)"
   "$PYTHON" -m pip download \
     --platform "${PIP_PLATFORM[$t]}" \
     --python-version 3.11 \
     --only-binary :all: \
     --dest "$out" \
-    "${REQS[@]}"
+    "${reqs[@]}"
 done
 
 # Windows target carries the official Python 3.11 installer so the monitoring PC

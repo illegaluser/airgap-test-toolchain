@@ -192,7 +192,7 @@ if (-not (Test-Path $VenvPy)) {
 }
 
 # 3. Python 패키지 설치 (이미 설치된 건 pip 가 자동 SKIP).
-$Packages = @("fastapi", "uvicorn", "pydantic", "playwright", "python-multipart", "portalocker")
+$Packages = @("fastapi", "uvicorn", "pydantic", "playwright", "python-multipart", "portalocker", "pywin32")
 $WheelsDir = Join-Path $ScriptDir "wheels\$OsTag"
 if (Test-Path $WheelsDir) {
     Write-Host "[install-monitor] 오프라인 wheels 사용: $WheelsDir"
