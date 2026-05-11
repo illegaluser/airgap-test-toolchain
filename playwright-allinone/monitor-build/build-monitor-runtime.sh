@@ -18,6 +18,9 @@ SRC_REPLAY="$ALLINONE/replay_service"
 SRC_MONITOR="$ALLINONE/monitor"
 SRC_ZTQ="$ALLINONE/zero_touch_qa"
 BUILD_DIR_ROOT="${BUILD_DIR_ROOT:-$ROOT/.monitor-runtime-cache}"
+PYTHON_WINDOWS_VERSION="${PYTHON_WINDOWS_VERSION:-3.11.9}"
+PYTHON_WINDOWS_INSTALLER="python-$PYTHON_WINDOWS_VERSION-amd64.exe"
+PYTHON_WINDOWS_URL="${PYTHON_WINDOWS_URL:-https://www.python.org/ftp/python/$PYTHON_WINDOWS_VERSION/$PYTHON_WINDOWS_INSTALLER}"
 
 TARGET="all"
 NO_CHROMIUM=0
@@ -78,6 +81,33 @@ for t in "${TARGETS[@]}"; do
     "${REQS[@]}"
 done
 
+# Windows target carries the official Python 3.11 installer so the monitoring PC
+# can be provisioned offline without a preinstalled interpreter.
+for t in "${TARGETS[@]}"; do
+  if [[ "$t" != "win64" ]]; then
+    continue
+  fi
+  out="$BUILD_DIR/python/$t"
+  installer="$out/$PYTHON_WINDOWS_INSTALLER"
+  if [[ "$REUSE_CACHE" = "1" && -s "$installer" ]]; then
+    echo "[build] Python installer 캐시 재사용 — $installer"
+    continue
+  fi
+  mkdir -p "$out"
+  echo "[build] Python installer download → $installer"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL "$PYTHON_WINDOWS_URL" -o "$installer"
+  else
+    "$PYTHON" - "$PYTHON_WINDOWS_URL" "$installer" <<'PYPY'
+import sys
+import urllib.request
+
+url, out = sys.argv[1], sys.argv[2]
+urllib.request.urlretrieve(url, out)
+PYPY
+  fi
+done
+
 # Chromium.
 if [[ "$NO_CHROMIUM" != "1" ]]; then
   for t in "${TARGETS[@]}"; do
@@ -136,7 +166,7 @@ DSCORE 모니터링 PC 셋업 패키지 — monitor-runtime
   bash install-monitor.sh --register-startup --register-task
 
 설치 (Windows):
-  powershell -ExecutionPolicy Bypass -File install-monitor.ps1 -RegisterStartup -RegisterTask
+  powershell -ExecutionPolicy Bypass -File install-monitor.ps1
 
 설치 후 Replay UI: http://127.0.0.1:18094
 EOF

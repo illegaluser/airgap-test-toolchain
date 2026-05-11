@@ -58,7 +58,7 @@ Replay UI 는 이 갭을 메운다. **로그인은 모니터링 PC 에서 사람
 | 항목 | 값 |
 |---|---|
 | OS | macOS 12+ / Ubuntu 22.04+ / Windows 10·11 |
-| Python 3.11+ | Mac/Linux 는 `python3` 로 확인. Windows 는 [python.org](https://www.python.org/downloads/) 에서 설치 또는 `winget install Python.Python.3.11` |
+| Python 3.11.x | Windows 는 zip 안의 Python 3.11 installer 로 자동 준비. Mac/Linux 는 `python3` 로 확인. monitor-runtime wheel 번들은 cp311 전용입니다 |
 | 디스크 여유 | 1GB 이상 (브라우저 + 가상환경) |
 | 권한 | 일반 사용자 권한이면 충분 (관리자 권한 / sudo 불필요) |
 | 네트워크 | 설치 시 외부 인터넷 불필요 (패키지 zip 안에 모두 포함) |
@@ -75,7 +75,7 @@ python3 --version
 python --version
 ```
 
-`Python 3.11.x` 또는 그 이상이 보이면 OK.
+Mac/Linux 는 `Python 3.11.x` 가 보이면 OK. `Python 3.12+`, `3.13+`, `3.14+` 는 이 오프라인 wheel 번들과 맞지 않습니다. Windows 는 설치 스크립트가 3.11 을 찾지 못하면 zip 안의 installer 로 `%USERPROFILE%\.dscore.ttc.monitor\python311` 아래에 자동 설치합니다.
 
 ---
 
@@ -114,10 +114,11 @@ bash install-monitor.sh --register-startup --register-task
 PowerShell 을 일반 사용자로 (관리자 권한 X) 열고, 압축 푼 폴더로 이동 후:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install-monitor.ps1 -RegisterStartup -RegisterTask
+powershell -ExecutionPolicy Bypass -File install-monitor.ps1
 ```
 
-옵션은 위 표와 같다 (`-RegisterStartup` / `-RegisterTask`).
+Windows 는 이 한 번으로 Python 3.11 준비, venv/패키지/Chromium/모듈 설치, 로그인 시 자동시작 등록, 현재 세션의 Replay UI 실행까지 처리한다.
+필요할 때만 `-NoRegisterStartup`, `-NoStart`, `-RegisterTask` 옵션을 추가한다.
 
 ### 4.4 설치가 만든 것
 
@@ -406,7 +407,7 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 | 로그인 했는데 매번 만료 알람 | verify URL 이 잘못 — 로그인 페이지로 잡혀 있으면 항상 만료로 판정. Replay UI 카드의 verify URL 입력에 *이미 로그인된 페이지* 의 URL 을 직접 명시 (또는 비워서 프로파일 카탈로그 fallback 사용) |
 | 사이트가 1시간 만에 매번 만료 | 사이트 정책상 세션이 짧다. 일정 주기로 사람이 `[↻ 다시 로그인]` 하는 게 정상 동작. 자동 재로그인 안 한다 ([§1.2](#12-자동-재로그인은-안-한다)) |
 | 같은 LAN 의 다른 PC 에서 접속 안 됨 | 의도된 보안 정책. 결과만 공유하려면 `[📥 HTML 리포트]` 받아서 이메일 / 메신저로 |
-| Windows 에서 `[↻ 다시 로그인]` 시 브라우저가 안 열림 | Replay UI 가 OS 서비스로 잘못 등록된 상태. `install-monitor.ps1 -RegisterStartup` 으로 재설치 → 작업 스케줄러에 사용자 권한으로 다시 등록 |
+| Windows 에서 `[↻ 다시 로그인]` 시 브라우저가 안 열림 | Replay UI 가 OS 서비스로 잘못 등록된 상태. `install-monitor.ps1` 로 재설치 → 작업 스케줄러에 사용자 권한으로 다시 등록 |
 | `python -m monitor` 가 `ModuleNotFoundError` | 시스템 Python 을 쓰고 있다. [§7](#7-명령줄-cli-사용) 의 가상환경 Python 경로 사용 |
 
 ---

@@ -57,15 +57,16 @@ else
   echo "[install-monitor] 레이아웃: monitor-runtime zip"
 fi
 
-# Python 검증 (3.11+).
+# Python 검증. monitor-runtime wheels are built with --python-version 3.11,
+# so the target interpreter must be Python 3.11.x, not just 3.11+.
 PY_VER="$("$PYTHON" -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>&1)" || {
   echo "Python 확인 실패: $PY_VER  (--python <python3 path> 옵션으로 명시 가능)" >&2
   exit 1
 }
 PY_MAJOR="${PY_VER%.*}"
 PY_MINOR="${PY_VER#*.}"
-if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 11 ]]; }; then
-  echo "Python 3.11+ 필요 — 현재 $PY_VER" >&2
+if [[ "$PY_MAJOR" -ne 3 || "$PY_MINOR" -ne 11 ]]; then
+  echo "Python 3.11.x required; current $PY_VER (offline wheels are cp311-only)" >&2
   exit 1
 fi
 echo "[install-monitor] Python $PY_VER OK"
@@ -80,6 +81,13 @@ mkdir -p \
 echo "[install-monitor] 디렉토리 생성 완료"
 
 # 2. venv (이미 있으면 재사용).
+if [[ -x "$INSTALL_ROOT/venv/bin/python" ]]; then
+  VENV_VER="$("$INSTALL_ROOT/venv/bin/python" -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>&1 || true)"
+  if [[ "$VENV_VER" != "3.11" ]]; then
+    echo "[install-monitor] existing venv Python $VENV_VER does not match cp311 wheels; recreating venv"
+    rm -rf "$INSTALL_ROOT/venv"
+  fi
+fi
 if [[ ! -x "$INSTALL_ROOT/venv/bin/python" ]]; then
   "$PYTHON" -m venv "$INSTALL_ROOT/venv"
   echo "[install-monitor] venv 생성"
