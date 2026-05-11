@@ -257,7 +257,7 @@ foreach ($mod in @("replay_service", "monitor", "zero_touch_qa", "recording_serv
 # 6. Replay UI launcher — startup task 와 즉시 실행이 같은 진입점을 사용한다.
 $LauncherPs1 = Join-Path $InstallRoot "start-replay-ui.ps1"
 @"
-`$ErrorActionPreference = "Stop"
+`$ErrorActionPreference = "Continue"
 `$env:PLAYWRIGHT_BROWSERS_PATH = "$ChromiumDst"
 `$env:AUTH_PROFILES_DIR = "$InstallRoot\auth-profiles"
 `$env:MONITOR_HOME = "$InstallRoot"
@@ -265,6 +265,57 @@ Set-Location "$InstallRoot"
 & "$VenvPy" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094 1>> "$InstallRoot\replay-ui.stdout.log" 2>> "$InstallRoot\replay-ui.stderr.log"
 "@ | Set-Content -Path $LauncherPs1 -Encoding UTF8
 Write-Host "[install-monitor] Replay UI launcher 생성: $LauncherPs1"
+
+# 사용자는 PowerShell 실행 정책을 신경 쓰지 않고 이 파일만 더블클릭하면 된다.
+$OpenPs1 = Join-Path $InstallRoot "open-replay-ui.ps1"
+@"
+`$ErrorActionPreference = "Continue"
+`$root = "$InstallRoot"
+`$url = "http://127.0.0.1:18094"
+function Test-ReplayUI {
+    try {
+        `$resp = Invoke-WebRequest -UseBasicParsing -Uri `$url -TimeoutSec 2
+        return (`$resp.StatusCode -ge 200 -and `$resp.StatusCode -lt 500)
+    } catch {
+        return `$false
+    }
+}
+if (-not (Test-ReplayUI)) {
+    Start-Process -FilePath "powershell.exe" `
+        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path `$root "start-replay-ui.ps1")) `
+        -WorkingDirectory `$root `
+        -WindowStyle Hidden
+    foreach (`$i in 1..10) {
+        Start-Sleep -Seconds 1
+        if (Test-ReplayUI) { break }
+    }
+}
+Start-Process `$url
+"@ | Set-Content -Path $OpenPs1 -Encoding UTF8
+
+$OpenCmd = Join-Path $InstallRoot "open-replay-ui.cmd"
+@"
+@echo off
+set "SCRIPT_DIR=%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%open-replay-ui.ps1"
+"@ | Set-Content -Path $OpenCmd -Encoding ASCII
+Write-Host "[install-monitor] Replay UI 더블클릭 실행 파일 생성: $OpenCmd"
+
+try {
+    $DesktopDir = [Environment]::GetFolderPath("Desktop")
+    if ($DesktopDir) {
+        $ShortcutPath = Join-Path $DesktopDir "DSCORE Replay UI.lnk"
+        $Wsh = New-Object -ComObject WScript.Shell
+        $Shortcut = $Wsh.CreateShortcut($ShortcutPath)
+        $Shortcut.TargetPath = $OpenCmd
+        $Shortcut.WorkingDirectory = $InstallRoot
+        $Shortcut.IconLocation = "shell32.dll,220"
+        $Shortcut.Save()
+        Write-Host "[install-monitor] 바탕화면 바로가기 생성: $ShortcutPath"
+    }
+} catch {
+    Write-Warning "바탕화면 바로가기 생성 실패: $($_.Exception.Message)"
+}
 
 # 7. startup task (기본 등록, 사용자 권한, UAC 승격 없이).
 $ShouldRegisterStartup = (-not $NoRegisterStartup) -or $RegisterStartup
@@ -313,6 +364,7 @@ Write-Host @"
 [install-monitor] 셋업 완료 (D17 — .py 일원화).
   Replay UI:   http://127.0.0.1:18094
   launcher:    $LauncherPs1
+  double-click: $OpenCmd
   logs:        $InstallRoot\replay-ui.stdout.log
                $InstallRoot\replay-ui.stderr.log
   CLI 실행:
