@@ -70,10 +70,6 @@ REQS_COMMON=(fastapi uvicorn pydantic playwright python-multipart wheel portaloc
 REQS_WIN64=(pywin32 colorama)
 for t in "${TARGETS[@]}"; do
   out="$BUILD_DIR/wheels/$t"
-  if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
-    echo "[build] wheels 캐시 재사용 — $out"
-    continue
-  fi
   mkdir -p "$out"
   reqs=("${REQS_COMMON[@]}")
   if [[ "$t" = "win64" ]]; then
@@ -82,11 +78,16 @@ for t in "${TARGETS[@]}"; do
     # still evaluated from the build host, so include it explicitly.
     reqs+=("${REQS_WIN64[@]}")
   fi
-  echo "[build] pip download → $out (target=$t)"
+  if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
+    echo "[build] pip download 증분 확인 → $out (target=$t, cached files are kept)"
+  else
+    echo "[build] pip download → $out (target=$t)"
+  fi
   "$PYTHON" -m pip download \
     --platform "${PIP_PLATFORM[$t]}" \
     --python-version 3.11 \
     --only-binary :all: \
+    --exists-action i \
     --dest "$out" \
     "${reqs[@]}"
 done
