@@ -98,7 +98,7 @@ fi
 VENV_PY="$INSTALL_ROOT/venv/bin/python"
 
 # 3. Python 패키지 설치 (이미 설치된 건 pip 가 자동 SKIP).
-PACKAGES=(fastapi uvicorn pydantic playwright python-multipart portalocker)
+PACKAGES=(fastapi uvicorn pydantic playwright python-multipart portalocker requests pyotp pillow)
 WHEELS_DIR="$SCRIPT_DIR/wheels/$OS_TAG"
 if [[ -d "$WHEELS_DIR" ]]; then
   echo "[install-monitor] 오프라인 wheels 사용: $WHEELS_DIR"

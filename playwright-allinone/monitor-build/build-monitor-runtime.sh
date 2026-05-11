@@ -64,8 +64,8 @@ declare -A PIP_PLATFORM=(
 # Replay UI 는 local dev tool 이라 [standard] 의 성능 향상 extra (httptools/
 # uvloop/...) 가 필요 없음. install-monitor 의 PACKAGES 도 `uvicorn` 만 사용 중.
 # 2026-05-11 WSL2 빌드 실패 회귀 차단.
-REQS_COMMON=(fastapi uvicorn pydantic playwright python-multipart wheel portalocker)
-REQS_WIN64=(pywin32)
+REQS_COMMON=(fastapi uvicorn pydantic playwright python-multipart wheel portalocker requests pyotp pillow)
+REQS_WIN64=(pywin32 colorama)
 for t in "${TARGETS[@]}"; do
   out="$BUILD_DIR/wheels/$t"
   if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
