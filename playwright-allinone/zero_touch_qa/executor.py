@@ -142,12 +142,12 @@ class StepResult:
     pre_actions: list = field(default_factory=list)
 
 
-# Visibility Healer (T-H) JS — 2026-05-11 부로 공유 모듈 ``recording_service.
-# visibility_heal`` 에 이전. 기존 import path (`from zero_touch_qa.executor import
-# _VISIBILITY_HEALER_JS`, annotator.py 가 사용) 호환을 위해 re-export 만 유지.
-from recording_service.visibility_heal import (
-    VISIBILITY_HEALER_JS as _VISIBILITY_HEALER_JS,
-)
+# Visibility Healer (T-H) JS — zero_touch_qa 패키지 안의 ``visibility_heal`` 모듈
+# 에서 import. 이전엔 ``recording_service.visibility_heal`` 을 가리켰는데, 컨테이너
+# 안에는 zero_touch_qa 만 배포되고 recording_service 가 없어서 컨테이너에서
+# convert 가 ``ModuleNotFoundError`` 로 깨지던 회귀 차단 (2026-05-11). 기존 import
+# path (``from zero_touch_qa.executor import _VISIBILITY_HEALER_JS``) 호환 유지.
+from .visibility_heal import VISIBILITY_HEALER_JS as _VISIBILITY_HEALER_JS
 
 
 # Fragile target grounding (2026-05-11) — codegen 이 accessible name 을 못 잡은
