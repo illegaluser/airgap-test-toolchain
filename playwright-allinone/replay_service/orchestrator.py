@@ -36,8 +36,12 @@ EXIT_SCENARIO_FAIL = 1
 EXIT_SYS_ERROR = 2
 EXIT_SEED_EXPIRED = 3
 
-# Probe 타임아웃 (계획 C4 — 1차 보수적 5s).
-PROBE_TIMEOUT_S = 5.0
+# Probe 타임아웃 — 한국 정부/엔터프라이즈 포털은 첫 로드 + 인증 redirect 가 5초
+# 안에 끝나지 않는 케이스 다수. storage_state 가 유효해도 5초 안에 verify URL
+# domcontentloaded 못 잡으면 페이지 자체 fail 로 expired 오판 → 실 script 미실행.
+# 2026-05-11 회귀 — 같은 dpg 프로파일로 Recording UI Play 는 통과하는데 Replay UI
+# probe 만 expired 떨어지던 케이스. 15초로 완화 (실 만료 감지 정확도와 균형).
+PROBE_TIMEOUT_S = 15.0
 
 # 메인 시나리오 실행 타임아웃 (10 분 — codegen wrapper subprocess 가 끝나기 전 강제 종료).
 SCENARIO_TIMEOUT_S = 600

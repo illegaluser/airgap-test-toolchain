@@ -255,6 +255,37 @@ def test_regression_test_fill_handles_unicode_value(tmp_path: Path):
     compile(src, output, "exec")
 
 
+def test_regression_test_select_waits_before_select_option(tmp_path: Path):
+    """select step 은 select_option 직전 wait_for(attached) 로 element 자리잡음 대기.
+
+    2026-05-11 FLOW-USR-007 step 14 회귀 — ``combobox.nth(1).select_option(label="50")``
+    가 element 가 ajax 로 늦게 attach 되는 사이트에서 30s timeout 으로 깨졌음.
+    Recording UI 의 LLM Play 는 executor 의 자체 retry 로 통과하지만, raw 회귀본은
+    healing 없어서 정확히 같은 명령 한 번에 fail. wait_for(attached, 15000) 로
+    명시적 대기 후 select_option 호출.
+    """
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "select", "target": "role=combobox, nth=1", "value": "50"},
+    ]
+    results = [_make_pass_result(s["step"], s["action"]) for s in scenario]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+
+    # wait_for(attached) 가 select_option 보다 *먼저* 와야.
+    wait_idx = src.find("wait_for(state='attached'")
+    select_idx = src.find("select_option")
+    assert wait_idx >= 0, f"wait_for(attached) emit 누락\n{src}"
+    assert select_idx > wait_idx, (
+        f"wait_for 가 select_option 보다 *뒤* 에 옴 — 순서 보장 실패\n{src}"
+    )
+    # 옛 한 줄 emit 사라져야.
+    assert ".combobox).first.select_option(" not in src
+    compile(src, output, "exec")
+
+
 def test_regression_test_splits_exact_modifier_from_name(tmp_path: Path):
     """``name=텍스트, exact=true`` 후미 modifier 는 ``exact=True`` kwarg 로 분리.
 
