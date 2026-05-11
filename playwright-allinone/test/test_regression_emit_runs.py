@@ -195,16 +195,11 @@ def test_regression_test_converts_shadow_chain_to_locator(tmp_path: Path):
 
 
 def test_regression_test_emits_fill_as_press_sequentially(tmp_path: Path):
-    """검색창 자동완성 호환 — fill step 은 clear + press_sequentially 로 emit.
-
-    한 번에 value 만 set 하는 ``fill()`` 은 ``input`` 이벤트만 발사해서 keydown/keyup
-    listener (자동완성 dropdown) 가 안 떴음. 2026-05-11 사용자 보고 — Recording UI
-    의 ``_do_fill`` 1순위 전략 (clear + per-keystroke type) 을 regression 도
-    미러해야 Replay UI 가 돌리는 회귀 .py 에서도 자동완성이 트리거됨.
+    """검색창 자동완성 호환 — fill step 4단계 emit (clear + per-keystroke +
+    keyup dispatch + 자동완성 settle wait). 2026-05-11 회귀 — Recording UI 의
+    ``_do_fill`` 1순위 전략을 완전 미러해야 Replay UI 가 돌리는 회귀 .py 에서
+    자동완성 listener 가 트리거되고 dropdown 이 떠서 다음 click step 이 매칭됨.
     """
-    # ASCII value 로 검증 — json.dumps 가 비ASCII 를 \uXXXX 로 escape 하므로
-    # 한글 literal 비교는 환경 인코딩 의존성을 부른다. 별도 테스트에서 unicode
-    # 입력도 escape 후 들어가는지 확인.
     scenario = [
         {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
         {"step": 2, "action": "fill", "target": "#search", "value": "hello"},
@@ -215,10 +210,19 @@ def test_regression_test_emits_fill_as_press_sequentially(tmp_path: Path):
     assert output is not None
     src = Path(output).read_text(encoding="utf-8")
 
-    # clear 가 먼저, 그 다음 press_sequentially.
+    # 1) clear 가 먼저.
     assert '.fill("")' in src, "fill('') 로 입력창 비우는 단계가 없음"
+    # 2) press_sequentially.
     assert '.press_sequentially("hello", delay=80)' in src, (
         "press_sequentially 미적용 — 한 글자씩 입력이 안 됨\n" + src
+    )
+    # 3) keyup dispatch (자동완성 listener 호환).
+    assert "KeyboardEvent('keyup'" in src, (
+        "keyup 이벤트 dispatch 가 없음 — 자동완성 ajax 트리거 미보장 (FLOW-USR-007 회귀)\n" + src
+    )
+    # 4) settle wait.
+    assert "page.wait_for_timeout(300)" in src, (
+        "fill 후 settle wait 가 없음 — 자동완성 응답 대기 안 함\n" + src
     )
     # 옛 한 줄 ``.fill("hello")`` 패턴은 사라져야 함.
     assert '.fill("hello")' not in src, (
@@ -247,6 +251,45 @@ def test_regression_test_fill_handles_unicode_value(tmp_path: Path):
     # json.dumps escape 된 형태 — 환경 인코딩 무관하게 안정.
     assert "press_sequentially(\"\\uc694\\uae30\\uc694\", delay=80)" in src, (
         f"unicode value 가 press_sequentially 로 안 들어감\n{src}"
+    )
+    compile(src, output, "exec")
+
+
+def test_regression_test_splits_exact_modifier_from_name(tmp_path: Path):
+    """``name=텍스트, exact=true`` 후미 modifier 는 ``exact=True`` kwarg 로 분리.
+
+    2026-05-11 FLOW-USR-007 사례 — ``role=button, name=검색, exact=true`` 가
+    회귀 .py 에 ``name="검색, exact=true"`` 통째로 박혀 Playwright 가 실 버튼을
+    못 찾고 5초 timeout 회귀. executor 의 resolver 와 동일 의미로 분리해야 함.
+    """
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "click",
+         "target": "role=button, name=검색, exact=true", "value": ""},
+        {"step": 3, "action": "click",
+         "target": "role=button, name=Login, exact=false", "value": ""},
+        {"step": 4, "action": "click",
+         "target": "role=button, name=Without Modifier", "value": ""},
+    ]
+    results = [_make_pass_result(s["step"], s["action"]) for s in scenario]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+
+    # exact=true 케이스 — name 은 순수, exact=True kwarg 분리.
+    assert 'name="\\uac80\\uc0c9", exact=True' in src, (
+        "exact=true 가 분리되지 않고 name 안에 박혀 있음\n" + src
+    )
+    assert '"\\uac80\\uc0c9, exact=true"' not in src, (
+        "exact 가 name 안에 새어 들어감"
+    )
+    # exact=false 케이스 — exact=True 안 박혀야 하고, name 도 순수.
+    assert '"Login, exact=false"' not in src, "exact=false 가 name 안에 박힘"
+    # modifier 없는 케이스 — 기존 형태 유지.
+    assert '"Without Modifier"' in src
+    assert 'name="Without Modifier", exact' not in src, (
+        "modifier 없는 케이스에 exact kwarg 가 임의로 들어감"
     )
     compile(src, output, "exec")
 
