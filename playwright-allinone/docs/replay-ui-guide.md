@@ -411,7 +411,80 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 
 ---
 
-## 11. 다음 문서
+## 11. 공유 모드 — 같은 호스트에서 Recording UI 와 로그인 프로파일 공유
+
+> **언제 쓰는가** — 개발자 1 명이 같은 PC 에서 Recording UI 와 Replay UI 를 둘 다
+> 띄우는 경우. 같은 사이트에 두 번 (Recording 시드 + Replay 시드) 로그인하는 게
+> 낭비라면 두 UI 가 같은 `auth-profiles/` 디렉토리를 보게 만들 수 있다.
+>
+> **언제 쓰지 말 것** — Recording PC 와 Monitoring PC 가 *물리적으로 다른 머신*
+> 인 폐쇄망 운영 모델. 그쪽에서는 모니터링 PC 가 자체적으로 로그인하는 게 원래
+> 설계 ([§1.1](#11-이-도구가-푸는-문제)) — 공유하지 말 것.
+
+### 11.1 기본 경로 (서로 다름)
+
+| | 기본 경로 |
+|---|---|
+| Recording UI | `~/ttc-allinone-data/auth-profiles/` |
+| Replay UI    | `~/.dscore.ttc.monitor/auth-profiles/` |
+
+파일 포맷 (`<프로파일이름>.storage.json`, `_index.json`, `_index.lock`) 은 두 쪽이
+동일하게 `zero_touch_qa.auth_profiles` 모듈을 쓰므로 **완전 호환**. 디렉토리만 같이
+가리키면 그대로 공유된다.
+
+### 11.2 공유하는 법 — `AUTH_PROFILES_DIR` env 통일
+
+두 launcher 모두 `AUTH_PROFILES_DIR` env 를 존중한다. 쉘에서 한 줄 export 후 띄우면 끝.
+
+**Mac / Linux**
+
+```bash
+export AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
+
+# 그 다음 두 UI 띄우기 (어느 쪽이든 같은 env 가 적용됨)
+./playwright-allinone/run-recording-ui.sh restart
+./playwright-allinone/run-replay-ui.sh restart
+```
+
+**Windows (PowerShell)**
+
+```powershell
+$env:AUTH_PROFILES_DIR = "$HOME\ttc-allinone-data\auth-profiles"
+
+bash playwright-allinone/run-recording-ui.sh restart
+bash playwright-allinone/run-replay-ui.sh restart
+```
+
+위와 같이 띄운 뒤 Recording UI 에서 `dpg-qa` 로 시드하면, Replay UI 의 `🔐 로그인
+프로파일` 카드에 `dpg-qa` 가 자동으로 보인다 (그 반대도 동일).
+
+### 11.3 한 번만 옮기고 싶다면 — 디렉토리 복사
+
+이미 한쪽에 등록된 프로파일을 다른 쪽에 가져가고 싶다면 디렉토리째 복사하면 된다.
+
+```bash
+# Recording UI → Replay UI 방향 (예시)
+rsync -a "$HOME/ttc-allinone-data/auth-profiles/" \
+        "$HOME/.dscore.ttc.monitor/auth-profiles/"
+```
+
+`_index.lock` 파일은 활성 잠금이라 양쪽 UI 가 떠 있을 때 복사하면 잠금 충돌이
+날 수 있다 — 복사 전 한 쪽은 `stop` 권장.
+
+### 11.4 주의
+
+- **세션 / 토큰 노출 범위 변화** — 공유하면 Recording UI 에서 쓰는 동일 토큰을
+  Replay UI 도 그대로 쓴다. 정상이지만, 두 UI 가 다른 권한·계정 컨텍스트라고
+  가정한 운영 정책이 있다면 깨진다.
+- **동시 시드 금지** — 같은 프로파일 이름으로 두 UI 에서 동시에 시드 (브라우저
+  창 2 개 동시 열림) 하면 `_index.lock` 경합. 이 경우 둘 다 실패할 수 있다.
+  시드는 한 쪽에서만.
+- **만료 알람** — 만료 감지는 verify URL 단위라 양쪽 UI 가 같은 만료 시점을 본다.
+  한 쪽에서 재로그인하면 다른 쪽에도 그대로 반영됨 (의도된 동작).
+
+---
+
+## 12. 다음 문서
 
 | 알고 싶은 것 | 문서 |
 |---|---|

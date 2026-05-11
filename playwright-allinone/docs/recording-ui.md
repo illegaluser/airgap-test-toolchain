@@ -106,6 +106,10 @@
 └── <프로파일이름>.storage.json   ← Playwright storageState
 ```
 
+`AUTH_PROFILES_DIR` env 로 경로 override 가능. 같은 호스트에서 Replay UI 와 로그인
+프로파일을 공유하려면 두 launcher 를 같은 env 로 띄우면 된다 —
+[replay-ui-guide.md §11](replay-ui-guide.md#11-공유-모드--같은-호스트에서-recording-ui-와-로그인-프로파일-공유) 참조.
+
 ### 보안 주의
 
 `storage.json` 은 **세션 토큰을 그대로 담는다**. git 에 커밋하지 말 것 (`.gitignore` 처리됨). 공유 머신에서는 사용 후 삭제 권장.

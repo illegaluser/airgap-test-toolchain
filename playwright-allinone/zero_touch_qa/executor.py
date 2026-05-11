@@ -126,99 +126,87 @@ class StepResult:
     value: str
     description: str
     status: str  # "PASS" | "HEALED" | "FAIL" | "SKIP"
-    heal_stage: str = "none"  # "none" | "fallback" | "local" | "dify"
+    heal_stage: str = "none"  # "none" | "fallback" | "alternative" | "local" | "dify" | "visibility"
     timestamp: float = field(default_factory=time.time)
     screenshot_path: str | None = None
     # 스텝 실행 중 발생한 네이티브 dialog (alert/confirm/prompt/beforeunload) 의
     # message 본문. Playwright 가 자동 dismiss 해 스크린샷에는 절대 안 잡히므로
     # 텍스트만 보존해 리포트가 "여기서 alert 떴음" 을 명시. None 이면 발생 안 함.
     dialog_text: str | None = None
+    # visibility healer 가 이 스텝을 통과시키기 위해 *실제로 한* 사전 액션 시퀀스.
+    # 예: hidden 인 클릭 대상 앞에서 ancestor cascade hover 가 필요했다면
+    # ``[{"action":"hover","target":"#gnbBox > li:nth-of-type(3)"}, ...]``.
+    # regression_generator 가 회귀 .py 의 본 스텝 *앞에* 그대로 emit 해 같은
+    # 환경에서 같은 통과 시퀀스를 재현한다 (Replay UI 가 healing 안전망을 매번
+    # 다시 돌릴 필요 없음).
+    pre_actions: list = field(default_factory=list)
 
 
-# Visibility Healer (T-H) JS — element 의 ancestor chain 에서 hoverable 후보 추출.
-# 우선순위: aria-haspopup > aria-expanded=false > role=menu/menubar/listbox/tooltip/combobox >
-#          tag=nav/details/summary > [data-state=closed] / [hidden] toggleable > :hover CSS rule.
-# 각 후보에 대해 stable CSS path 를 함께 반환 (id 우선 → nth-of-type chain).
-_VISIBILITY_HEALER_JS = r"""
-el => {
-  function cssPath(node) {
-    if (!node || node === document.body) return 'body';
-    if (node.id) return '#' + CSS.escape(node.id);
-    let parts = [];
-    let cur = node;
-    while (cur && cur !== document.body && parts.length < 6) {
-      if (cur.id) { parts.unshift('#' + CSS.escape(cur.id)); break; }
-      const tag = cur.tagName.toLowerCase();
-      const parent = cur.parentElement;
-      if (!parent) { parts.unshift(tag); break; }
-      const same = [...parent.children].filter(c => c.tagName === cur.tagName);
-      const idx = same.indexOf(cur) + 1;
-      parts.unshift(same.length > 1 ? `${tag}:nth-of-type(${idx})` : tag);
-      cur = parent;
-    }
-    return parts.join(' > ');
-  }
+# Visibility Healer (T-H) JS — 2026-05-11 부로 공유 모듈 ``recording_service.
+# visibility_heal`` 에 이전. 기존 import path (`from zero_touch_qa.executor import
+# _VISIBILITY_HEALER_JS`, annotator.py 가 사용) 호환을 위해 re-export 만 유지.
+from recording_service.visibility_heal import (
+    VISIBILITY_HEALER_JS as _VISIBILITY_HEALER_JS,
+)
 
-  // :hover CSS rule 의 trigger 인지 검사. selectorText 가 'A:hover B' 라면
-  // trigger 는 A — node 가 A 와 matches 하면 hoverable.
-  // 'ul#gnb > li:hover > .submenu' → trigger=`ul#gnb > li`.
-  function hoverTriggerSelectors(rule) {
-    const out = [];
-    if (!rule.selectorText || !rule.selectorText.includes(':hover')) return out;
-    for (const part of rule.selectorText.split(',').map(s => s.trim())) {
-      if (!part.includes(':hover')) continue;
-      const idx = part.indexOf(':hover');
-      let trigger = part.slice(0, idx);
-      trigger = trigger.replace(/[\s>+~]+$/, '').trim();
-      if (trigger) out.push(trigger);
-    }
-    return out;
-  }
-  function isHoverTrigger(node) {
-    try {
-      for (const sheet of document.styleSheets) {
-        let rules;
-        try { rules = sheet.cssRules; } catch (_) { continue; }
-        for (const r of rules || []) {
-          for (const sel of hoverTriggerSelectors(r)) {
-            try { if (node.matches(sel)) return true; } catch (_) {}
-          }
-        }
-      }
-    } catch (_) {}
-    return false;
-  }
 
-  const out = [];
-  let cur = el;
-  let depth = 0;
-  while (cur && cur !== document.body && depth < 12) {
-    let reason = null;
-    if (cur.getAttribute && cur.getAttribute('aria-haspopup')) reason = 'aria-haspopup';
-    else if (cur.getAttribute && cur.getAttribute('aria-expanded') === 'false') reason = 'aria-expanded=false';
-    else {
-      const role = cur.getAttribute && cur.getAttribute('role');
-      if (role && ['menu','menubar','listbox','tooltip','combobox'].includes(role)) reason = 'role=' + role;
-    }
-    if (!reason) {
-      const tag = cur.tagName ? cur.tagName.toLowerCase() : '';
-      if (['nav','details','summary'].includes(tag)) reason = 'tag=' + tag;
-    }
-    if (!reason && cur.getAttribute) {
-      const ds = cur.getAttribute('data-state');
-      if (ds === 'closed') reason = 'data-state=closed';
-    }
-    if (!reason && isHoverTrigger(cur)) reason = ':hover-css';
+# Fragile target grounding (2026-05-11) — codegen 이 accessible name 을 못 잡은
+# 경우 ``page.locator("button").nth(5)`` 같은 위치-기반 selector 를 그대로 emit
+# 하는데, 회귀 .py 가 그걸 받으면 페이지 구조가 살짝 바뀌어도 깨진다. 실행 시
+# 1차 target 으로 element 가 잡힌 직후 안정적 identity (role+name / text) 로
+# 재서술해 step.target / StepResult.target 을 갱신 → 회귀 generator 가 권장
+# selector 로 emit. 재서술 selector 가 단일 매치인지 확인하지 못하면 원본 보존
+# (false-positive 방지).
+_FRAGILE_BARE_TAG_RE = re.compile(
+    r"^(button|a|input|li|div|span|td|th|p)(\s*,\s*nth=-?\d+)?\s*$",
+    re.IGNORECASE,
+)
+_TAG_TO_ROLE = {"button": "button", "a": "link"}
 
-    if (reason) {
-      out.push({ path: cssPath(cur), reason });
-    }
-    cur = cur.parentElement;
-    depth++;
-  }
-  return out;
-}
-"""
+
+def _ground_fragile_target(page, locator, original_target: str) -> "str | None":
+    """원본 target 이 fragile pattern 이면 안정적 identity 로 재서술한 selector 반환.
+
+    fragile 패턴: bare CSS tag (``button`` / ``a`` / ...) + 선택적 ``, nth=N``.
+    재서술 우선순위: ``role=<role>, name=<label>`` (tag→role 매핑 가능 시) →
+    ``text=<label>``. 둘 다 unique 매치가 아니면 None (원본 유지).
+
+    label 추출: inner_text → aria-label 순. 첫 줄만, 80자 이내.
+    """
+    if not original_target:
+        return None
+    m = _FRAGILE_BARE_TAG_RE.match(original_target)
+    if not m:
+        return None
+    base_tag = m.group(1).lower()
+
+    try:
+        text = (locator.inner_text(timeout=500) or "").strip()
+    except Exception:
+        text = ""
+    if not text:
+        try:
+            text = (locator.get_attribute("aria-label") or "").strip()
+        except Exception:
+            text = ""
+    if "\n" in text:
+        text = text.split("\n", 1)[0].strip()
+    if not text or len(text) > 80:
+        return None
+
+    role = _TAG_TO_ROLE.get(base_tag)
+    if role:
+        try:
+            if page.get_by_role(role, name=text, exact=True).count() == 1:
+                return f"role={role}, name={text}"
+        except Exception:
+            pass
+    try:
+        if page.get_by_text(text, exact=True).count() == 1:
+            return f"text={text}"
+    except Exception:
+        pass
+    return None
 
 
 # T-H (G) — JS dispatchEvent('click') 폴백 안전 가드.
@@ -1062,9 +1050,34 @@ class QAExecutor:
             self._log_resolver_miss(page, original_target, step_id)
             return None, None
         # T-H — hidden element 면 ancestor hover / sibling swap 시도.
-        swap = self._heal_visibility(page, locator, step_id)
+        # pre_actions: 통과시킨 hover/wait 시퀀스를 회귀 .py 가 prepend 하도록
+        # 보존. healer 가 swap 만 한 경우(빈 list) 와 cascade hover 가 통과시킨
+        # 경우(비어있지 않은 list) 가 모두 정상.
+        pre_actions: list = []
+        swap = self._heal_visibility(
+            page, locator, step_id, pre_actions_out=pre_actions,
+        )
         if swap is not None:
             locator = swap
+        # visibility healer 가 *살린* 경우엔 status/heal_stage 도 HEALED/visibility
+        # 로 표기해 운영자가 후에 trace 할 수 있게 한다. 이전엔 healer 가 작동해도
+        # heal_stage 가 "none" 으로 남아 *기록 누락* 이었음 (2026-05-11 사용자
+        # 케이스의 실제 root cause — codegen 은 raw timeout 으로 fail 한 같은
+        # element 가 executor 에서는 heal=none/PASS 로 잘못 기록되어 regression
+        # generator 가 visibility heal 흔적 없이 emit 했고 Replay UI 가 깨졌음).
+        visibility_healed = bool(pre_actions) or swap is not None
+        eff_status = "HEALED" if visibility_healed else "PASS"
+        eff_heal_stage = "visibility" if visibility_healed else "none"
+        # Fragile target grounding — click 이 navigate 해 element 가 detach 되기
+        # 전에 안정적 identity 추출. 실패해도 원본 유지 (graceful degradation).
+        grounded = _ground_fragile_target(page, locator, str(original_target or ""))
+        effective_target = grounded if grounded else str(original_target or "")
+        if grounded and grounded != original_target:
+            step["target"] = grounded
+            log.info(
+                "[Step %s] fragile target grounded: %r → %r",
+                step_id, original_target, grounded,
+            )
         try:
             self._perform_action(page, locator, step, resolver)
             if action == "click" and _page_closed(page):
@@ -1074,18 +1087,20 @@ class QAExecutor:
                 )
                 return (
                     StepResult(
-                        step_id, action, str(original_target or ""),
+                        step_id, action, effective_target,
                         str(step.get("value", "")), desc,
-                        "PASS",
+                        eff_status, heal_stage=eff_heal_stage,
+                        pre_actions=list(pre_actions),
                     ),
                     None,
                 )
             ss = self._screenshot(page, artifacts, step_id, "pass")
             return (
                 StepResult(
-                    step_id, action, str(original_target or ""),
+                    step_id, action, effective_target,
                     str(step.get("value", "")), desc,
-                    "PASS", screenshot_path=ss,
+                    eff_status, heal_stage=eff_heal_stage,
+                    screenshot_path=ss, pre_actions=list(pre_actions),
                 ),
                 None,
             )
@@ -1204,20 +1219,33 @@ class QAExecutor:
         self, page: Page, step: dict, healer: LocalHealer,
         resolver: LocatorResolver, artifacts: str,
     ) -> Optional[StepResult]:
-        """LocalHealer DOM 유사도 매칭으로 healed locator 시도."""
+        """LocalHealer DOM 유사도 매칭으로 healed locator 시도.
+
+        ``StepResult.target`` 에는 *실제로 통과한* DSL selector (try_heal 이
+        돌려준 ``healed_selector``) 를 저장한다. 이전 구현은 원본 target 을
+        그대로 박아 둬 regression_generator 가 fragile selector 를 회귀 .py
+        에 흘려보내는 원인이었다 (2026-05-11 수정).
+        """
         action = step["action"].lower()
         step_id = step.get("step", "-")
         desc = step.get("description", "")
         original_target = step.get("target")
-        healed_loc = healer.try_heal(step)
-        if not healed_loc:
+        heal_result = healer.try_heal(step)
+        if not heal_result:
             return None
+        healed_loc, healed_selector = heal_result
         try:
             self._perform_action(page, healed_loc, step, resolver)
             ss = self._screenshot(page, artifacts, step_id, "healed")
-            log.info("[Step %s] LocalHealer DOM 유사도 복구 성공", step_id)
+            # healed_selector 가 비면 (source='value' 같은 DSL 미지원 케이스)
+            # 원본 target 보존 — regression_generator 가 그대로 fallback.
+            final_target = healed_selector or str(original_target or "")
+            log.info(
+                "[Step %s] LocalHealer DOM 유사도 복구 성공 (healed_target=%r)",
+                step_id, final_target,
+            )
             return StepResult(
-                step_id, action, str(original_target or ""),
+                step_id, action, final_target,
                 str(step.get("value", "")), desc,
                 "HEALED", heal_stage="local", screenshot_path=ss,
             )
@@ -2738,144 +2766,24 @@ class QAExecutor:
 
     def _heal_visibility(
         self, page: Page, locator: Locator, step_id,
+        *, pre_actions_out: Optional[list] = None,
     ) -> Optional[Locator]:
-        """element 가 hidden 이면 5단계로 visible 화 시도.
+        """공유 모듈 ``recording_service.visibility_heal`` 로 위임.
 
-        순서 (각 단계는 visible 되면 즉시 단축):
-          (1) `scroll_into_view_if_needed` — Intersection Observer 트리거 사이트.
-          (2) cascade ancestor hover — `_VISIBILITY_HEALER_JS` 가 추출한
-              hoverable 후보를 outermost → innermost 순서로 누적 hover. 다단
-              메뉴 (회사소개 > 회사연혁 > ~2013) 는 outer 부터 hover 해야 다음
-              level 이 visible 됨.
-          (3) page-level activator probe — `<header>`/`<nav>`/`<main>`/`<body>` hover.
-              사이트 전역 hover 이벤트로 menu 활성화하는 케이스.
-          (4) size-aware poll — bounding_box.height/width > 0 가 될 때까지
-              최대 2s 대기. 폰트/CSS 비동기 로딩으로 늦게 expand 되는 사이트.
-          (5) sibling swap — `filter(visible=True).first` 로 visible 매치 교체.
-
-        모든 단계 합산 한도 ~6s. 정상 visible element 에는 (0) 검사만 발생.
-
-        Returns:
-            visible 한 다른 형제 매치를 찾았으면 그 Locator. 그 외 None
-            (locator 자체를 그대로 사용해도 OK 임을 의미).
+        ``pre_actions_out`` 가 주어지면 통과시킨 hover / wait 시퀀스가 그 list 에
+        append 된다 — caller (`_try_initial_target`) 가 ``StepResult.pre_actions``
+        로 옮겨 regression_generator 가 회귀 .py 본 스텝 앞에 emit.
         """
-        try:
-            if locator.is_visible():
-                return None
-        except Exception:
-            return None  # locator 가 invalid 한 케이스는 후속 healer 가 처리
-
-        # ── (1) D — scroll_into_view ─────────────────────────────────────
-        # Playwright 가 viewport 에 element 를 가져옴. Intersection Observer
-        # 기반 lazy menu 가 펼쳐지는 케이스에 효과적. 0-size 도 위치만 있으면
-        # 동작. 실패는 silent (다음 단계로).
-        try:
-            locator.scroll_into_view_if_needed(timeout=1500)
-            page.wait_for_timeout(150)
-            if locator.is_visible():
-                log.info("[Step %s] visibility-healer 복구 — scroll_into_view", step_id)
-                return None
-        except Exception:
-            pass
-
-        # ── (2) cascade ancestor hover (outermost → innermost) ──────────
-        # `_VISIBILITY_HEALER_JS` 는 leaf 에서 위로 walk → candidates[0] 가
-        # leaf 에 가장 가깝고 [-1] 이 outermost. 다단 hover 메뉴 (예: ktds.com
-        # 의 회사소개 > 회사연혁 > ~2013) 는 outermost 부터 차례로 hover 해야
-        # 각 단계의 :hover 가 cascade 되어 다음 trigger 가 visible 해진다.
-        # 단일 ancestor hover 는 1-level 만 풀고 2-level+ 에서 실패.
-        # Playwright hover() 는 mouse 를 element 중심으로 이동 — 다음 hover 가
-        # descendant 라면 ancestor 의 :hover 는 자동 유지 (browser 동작).
-        try:
-            candidates = locator.evaluate(_VISIBILITY_HEALER_JS)
-        except Exception as e:  # noqa: BLE001
-            log.debug("[Step %s] visibility-healer evaluate 실패: %s", step_id, e)
-            candidates = []
-
-        chain = list(reversed(candidates))[:5]  # 최대 5단계 cascade
-        hovered_path: list[str] = []
-        for cand in chain:
-            sel = cand.get("path") or ""
-            reason = cand.get("reason") or "unknown"
-            if not sel:
-                continue
-            try:
-                ancestor = page.locator(sel).first
-                ancestor.hover(timeout=1500)
-                page.wait_for_timeout(150)  # 메뉴 transition
-                hovered_path.append(f"{sel}({reason})")
-                if locator.is_visible():
-                    log.info(
-                        "[Step %s] visibility-healer 복구 — cascade hover %s",
-                        step_id, " > ".join(hovered_path),
-                    )
-                    return None
-            except Exception:  # noqa: BLE001
-                continue
-
-        # ── (3) E — page-level activator probe ──────────────────────────
-        # 사이트 전체에 mousemove/hover 이벤트를 주어 사용자 상호작용 시작을
-        # 시뮬레이션. ktds.com 같이 GNB 가 lazy expand 되는 케이스에서 header
-        # 영역 hover 만으로 menu 가 펼쳐질 수 있다.
-        for activator_sel in ("header", "nav", "main", "body"):
-            try:
-                target = page.locator(activator_sel).first
-                if target.count() == 0:
-                    continue
-                target.hover(timeout=1000)
-                page.wait_for_timeout(200)
-                if locator.is_visible():
-                    log.info(
-                        "[Step %s] visibility-healer 복구 — page-level hover (%s)",
-                        step_id, activator_sel,
-                    )
-                    return None
-            except Exception:  # noqa: BLE001
-                continue
-
-        # ── (4) F — size-aware poll ─────────────────────────────────────
-        # bounding_box.height/width 가 > 0 이 될 때까지 최대 2s. 페이지 로드
-        # 직후 menu 가 점진적으로 expand 되는 transition (CSS/JS animation) 케이스.
-        try:
-            for _ in range(10):  # 200ms x 10 = 2s
-                page.wait_for_timeout(200)
-                if locator.is_visible():
-                    log.info("[Step %s] visibility-healer 복구 — size poll", step_id)
-                    return None
-        except Exception:  # noqa: BLE001
-            pass
-
-        # ── (5) C — 형제 매치 swap ───────────────────────────────────────
-        sibling = self._find_visible_sibling(locator, step_id)
-        if sibling is not None:
-            return sibling
-
-        log.debug(
-            "[Step %s] visibility-healer — 모든 전략 무력 (scroll/ancestor/page-hover/size-poll/sibling)",
-            step_id,
+        from recording_service.visibility_heal import heal_visibility
+        return heal_visibility(
+            page, locator, step_id, pre_actions_out=pre_actions_out,
         )
-        return None
 
     @staticmethod
     def _find_visible_sibling(locator: Locator, step_id) -> Optional[Locator]:
-        """Locator 가 다중 매치이고 ``.first`` 가 hidden 일 때 visible 한 형제 swap.
-
-        Playwright 1.36+ 의 ``filter(visible=True)`` 사용. ``.first`` 의 부모
-        scope (= 원래 매치 집합) 에서 visible 만 추려 그 첫 element 를 반환.
-        """
-        try:
-            visible = locator.filter(visible=True)
-            if visible.count() > 0:
-                first = visible.first
-                if first.is_visible():
-                    log.info(
-                        "[Step %s] visibility-healer — 형제 매치 swap (filter(visible=True).first)",
-                        step_id,
-                    )
-                    return first
-        except Exception:  # noqa: BLE001
-            pass
-        return None
+        """공유 모듈 ``recording_service.visibility_heal`` 로 위임."""
+        from recording_service.visibility_heal import find_visible_sibling
+        return find_visible_sibling(locator, step_id)
 
     # ── 스크린샷 ──
     @staticmethod
