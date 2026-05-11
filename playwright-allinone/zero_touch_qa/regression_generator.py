@@ -5,6 +5,10 @@ import time
 import logging
 
 from .executor import StepResult
+# name=<텍스트>, exact=true 같은 후미 옵션을 분리해 ``exact=`` kwarg 로 emit 하기
+# 위해 executor 의 resolver 와 동일 헬퍼 재사용. 자체 정의하면 두 곳에서 정규식이
+# 어긋날 위험.
+from .locator_resolver import _split_name_exact
 
 log = logging.getLogger(__name__)
 
@@ -184,16 +188,25 @@ def _emit_click(target, value, step, locator_code):
 
 
 def _emit_fill(target, value, step, locator_code):
-    # 한 글자씩 입력 — 검색창 자동완성처럼 keydown/keyup 이벤트에 의존하는 사이트는
-    # 한 번에 value 만 set 하는 ``fill()`` 만으로는 dropdown 이 트리거되지 않는다.
-    # executor 의 _do_fill 1순위 전략 (clear + per-keystroke type) 을 미러해서
-    # 회귀 .py 가 Replay UI 에서 돌 때도 동일 이벤트 시퀀스를 발사하게 한다.
-    # 회귀 generator 가 1줄 ``.fill(v)`` 만 emit 하던 시절엔 같은 시나리오가
-    # Recording UI 의 Play 에서는 통과해도 Replay UI 에서는 자동완성 안 떠 깨졌음
-    # (2026-05-11 사용자 보고).
+    # 한 글자씩 입력 + keyup dispatch + 자동완성 settle — executor _do_fill 1순위
+    # 전략 완전 미러. 빠뜨릴 경우 한국형 검색 자동완성 사이트가 dropdown 을 못
+    # 띄워 다음 step 의 추천어 click 이 5초 timeout 으로 깨짐 (2026-05-11 회귀).
+    #
+    # 단계 의미:
+    #   1) fill("") — 이전 값 제거 (codegen 이 빈 fill 로 clear 의도 캡처하는 패턴).
+    #   2) press_sequentially — 한 글자씩 native keydown/keyup 발사 (~80ms 간격).
+    #      한 번에 set 하는 fill(v) 은 input 이벤트만 발사해 자동완성 listener 미트리거.
+    #   3) JS evaluate — 추가 KeyboardEvent('keyup') dispatch. 일부 사이트 listener
+    #      가 native 이벤트가 아닌 dispatchEvent 로만 ajax 를 트리거함. JS try/catch
+    #      안에 두어 element detach 같은 race 도 swallow.
+    #   4) wait_for_timeout(300) — 자동완성 비동기 응답 settle. debounce 기본 250ms
+    #      + 짧은 네트워크 RTT 를 덮음. 다음 step 이 click 이면 click 의 5초 retry
+    #      안에 dropdown 이 떠야 매칭.
     return [
         f"            {locator_code}.fill(\"\")",
         f"            {locator_code}.press_sequentially({json.dumps(str(value))}, delay=80)",
+        f"            {locator_code}.evaluate(\"el => {{ try {{ el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}})); }} catch(e) {{}} }}\")",
+        "            page.wait_for_timeout(300)",
     ]
 
 
@@ -480,7 +493,15 @@ def _segment_to_playwright_code(seg: str, *, root: str, in_chain: bool = False) 
     m = re.match(r"role=(.+?),\s*name=(.+)", seg)
     if m:
         role = json.dumps(m.group(1).strip())
-        name = json.dumps(m.group(2).strip())
+        # name 끝의 ``, exact=true|false`` 는 modifier — name 안에 그대로 박히면
+        # Playwright 가 그 전체 문자열을 accessible name 으로 매칭해 사이트의 실
+        # 버튼을 못 찾고 timeout. executor 의 resolver 와 동일 의미로 분리.
+        # 2026-05-11 FLOW-USR-007 사례 — ``name="검색, exact=true"`` 가 그대로
+        # emit 되어 5초 timeout 으로 깨졌음.
+        name_pure, exact = _split_name_exact(m.group(2))
+        name = json.dumps(name_pure)
+        if exact:
+            return f"{root}.get_by_role({role}, name={name}, exact=True){suffix}"
         return f"{root}.get_by_role({role}, name={name}){suffix}"
 
     if seg.startswith("role="):
