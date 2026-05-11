@@ -8,12 +8,14 @@
 #
 # 사용:
 #   powershell -ExecutionPolicy Bypass -File install-monitor.ps1 `
-#       [-RegisterStartup] [-RegisterTask] [-Python <path>]
+#       [-Python <path>] [-NoRegisterStartup] [-NoStart]
 
 [CmdletBinding()]
 param(
     [switch]$RegisterStartup,
     [switch]$RegisterTask,
+    [switch]$NoRegisterStartup,
+    [switch]$NoStart,
     [string]$Python = "python"
 )
 
@@ -52,10 +54,97 @@ function Invoke-Playwright {
         throw "playwright $PwArgs 실패 (exit $code)"
     }
 }
+function Get-PythonMinor {
+    param([Parameter(Mandatory)][string]$PythonExe)
+    $ver = & $PythonExe -c "import sys; print('{}.{}'.format(sys.version_info[0], sys.version_info[1]))" 2>&1
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return ($ver | Select-Object -First 1).ToString().Trim()
+}
+function Test-Python311 {
+    param([Parameter(Mandatory)][string]$PythonExe)
+    return ((Get-PythonMinor $PythonExe) -eq "3.11")
+}
+function Resolve-Python311 {
+    param(
+        [Parameter(Mandatory)][string]$RequestedPython,
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$ScriptDir
+    )
+
+    $bundledPython = Join-Path $InstallRoot "python311\python.exe"
+    $candidates = @()
+    if ($RequestedPython -and $RequestedPython -ne "python") {
+        $candidates += $RequestedPython
+    }
+    $candidates += $bundledPython
+    $candidates += "py -3.11"
+    $candidates += "python"
+
+    foreach ($candidate in $candidates) {
+        try {
+            if ($candidate -eq "py -3.11") {
+                $resolved = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $resolved -and (Test-Python311 $resolved.Trim())) {
+                    return $resolved.Trim()
+                }
+            } elseif (Test-Path $candidate) {
+                if (Test-Python311 $candidate) { return $candidate }
+            } elseif ($candidate -eq "python") {
+                if (Test-Python311 $candidate) { return $candidate }
+            }
+        } catch {
+            # Try the next candidate.
+        }
+    }
+
+    if ($RequestedPython -and $RequestedPython -ne "python") {
+        throw "지정한 Python 이 3.11.x 가 아닙니다: $RequestedPython"
+    }
+
+    $installerDir = Join-Path $ScriptDir "python\win64"
+    $installer = Get-ChildItem -Path $installerDir -Filter "python-3.11.*-amd64.exe" -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        Select-Object -First 1
+    if (-not $installer) {
+        throw "Python 3.11.x 를 찾지 못했고, 동봉 Python installer 도 없습니다: $installerDir"
+    }
+
+    $targetDir = Split-Path -Parent $bundledPython
+    if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+    Write-Host "[install-monitor] Python 3.11 미탐지 — 동봉 installer 로 로컬 설치: $targetDir"
+    $args = @(
+        "/quiet",
+        "InstallAllUsers=0",
+        "PrependPath=0",
+        "Include_launcher=0",
+        "Include_pip=1",
+        "Include_tcltk=0",
+        "Include_test=0",
+        "Shortcuts=0",
+        "TargetDir=$targetDir"
+    )
+    $proc = Start-Process -FilePath $installer.FullName -ArgumentList $args -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        throw "동봉 Python 설치 실패 (exit $($proc.ExitCode))"
+    }
+    if (-not (Test-Python311 $bundledPython)) {
+        throw "동봉 Python 설치 후 검증 실패: $bundledPython"
+    }
+    return $bundledPython
+}
+function Test-ReplayUI {
+    try {
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18094/" -TimeoutSec 2
+        return ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500)
+    } catch {
+        return $false
+    }
+}
 
 $InstallRoot = if ($env:MONITOR_HOME) { $env:MONITOR_HOME } else { "$env:USERPROFILE\.dscore.ttc.monitor" }
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $OsTag = "win64"
+if (-not (Test-Path $InstallRoot)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
 
 # 소스 트리 레이아웃 감지: ScriptDir 가 .../playwright-allinone/monitor-build/ 인 경우
 # 부모 디렉토리에서 모듈을 직접 가져온다 (zip 빌드 없이도 동작).
@@ -69,17 +158,14 @@ $IsSourceTreeLayout = (
 Write-Host "[install-monitor] OS=Windows  OS_TAG=$OsTag  INSTALL_ROOT=$InstallRoot"
 Write-Host "[install-monitor] 레이아웃: $(if ($IsSourceTreeLayout) { '소스 트리 (playwright-allinone 안)' } else { 'monitor-runtime zip' })"
 
-# Python 검증 (3.11+).
+# Python 검증/부트스트랩. monitor-runtime wheels are built with
+# --python-version 3.11, so the interpreter must be Python 3.11.x.
 try {
-    $PyVer = & $Python -c "import sys; print('{}.{}'.format(sys.version_info[0], sys.version_info[1]))" 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "exit $LASTEXITCODE" }
-    $major, $minor = $PyVer -split '\.'
-    if ([int]$major -lt 3 -or ([int]$major -eq 3 -and [int]$minor -lt 11)) {
-        throw "Python 3.11+ 필요 — 현재 $PyVer"
-    }
+    $Python = Resolve-Python311 -RequestedPython $Python -InstallRoot $InstallRoot -ScriptDir $ScriptDir
+    $PyVer = Get-PythonMinor $Python
     Write-Host "[install-monitor] Python $PyVer OK"
 } catch {
-    Write-Error "Python 확인 실패: $_  (-Python <python.exe path> 옵션으로 명시 가능)"
+    Write-Error "Python 준비 실패: $_  (-Python <python.exe path> 옵션으로 명시 가능)"
     exit 1
 }
 
@@ -91,6 +177,13 @@ foreach ($d in @("venv", "chromium", "auth-profiles", "scenarios", "runs")) {
 
 # 2. venv.
 $VenvPy = Join-Path $InstallRoot "venv\Scripts\python.exe"
+if (Test-Path $VenvPy) {
+    $VenvVer = & $VenvPy -c "import sys; print('{}.{}'.format(sys.version_info[0], sys.version_info[1]))" 2>&1
+    if ($LASTEXITCODE -ne 0 -or $VenvVer -ne "3.11") {
+        Write-Host "[install-monitor] 기존 venv Python $VenvVer 는 cp311 wheels 와 불일치 — venv 재생성"
+        Remove-Item -Path (Join-Path $InstallRoot "venv") -Recurse -Force
+    }
+}
 if (-not (Test-Path $VenvPy)) {
     & $Python -m venv (Join-Path $InstallRoot "venv")
     Write-Host "[install-monitor] venv 생성"
@@ -146,12 +239,25 @@ foreach ($mod in @("replay_service", "monitor", "zero_touch_qa", "recording_serv
     }
 }
 
-# 6. startup task (사용자 권한, UAC 승격 없이).
-if ($RegisterStartup) {
+# 6. Replay UI launcher — startup task 와 즉시 실행이 같은 진입점을 사용한다.
+$LauncherPs1 = Join-Path $InstallRoot "start-replay-ui.ps1"
+@"
+`$ErrorActionPreference = "Stop"
+`$env:PLAYWRIGHT_BROWSERS_PATH = "$ChromiumDst"
+`$env:AUTH_PROFILES_DIR = "$InstallRoot\auth-profiles"
+`$env:MONITOR_HOME = "$InstallRoot"
+Set-Location "$InstallRoot"
+& "$VenvPy" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094 1>> "$InstallRoot\replay-ui.stdout.log" 2>> "$InstallRoot\replay-ui.stderr.log"
+"@ | Set-Content -Path $LauncherPs1 -Encoding UTF8
+Write-Host "[install-monitor] Replay UI launcher 생성: $LauncherPs1"
+
+# 7. startup task (기본 등록, 사용자 권한, UAC 승격 없이).
+$ShouldRegisterStartup = (-not $NoRegisterStartup) -or $RegisterStartup
+if ($ShouldRegisterStartup) {
     $TaskName = "DSCORE Replay UI"
     $action = New-ScheduledTaskAction `
-        -Execute (Join-Path $InstallRoot "venv\Scripts\python.exe") `
-        -Argument "-m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094" `
+        -Execute "powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$LauncherPs1`"" `
         -WorkingDirectory $InstallRoot
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
@@ -160,7 +266,26 @@ if ($RegisterStartup) {
     Write-Host "[install-monitor] 작업 스케줄러 등록 (At log on): $TaskName"
 }
 
-# 7. 30분 스케줄러 안내 (D17 — 단일 .py 흐름).
+# 8. Replay UI 즉시 실행.
+if (-not $NoStart) {
+    if (Test-ReplayUI) {
+        Write-Host "[install-monitor] Replay UI 이미 실행 중: http://127.0.0.1:18094"
+    } else {
+        Start-Process -FilePath "powershell.exe" `
+            -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $LauncherPs1) `
+            -WorkingDirectory $InstallRoot `
+            -WindowStyle Hidden
+        Write-Host "[install-monitor] Replay UI 시작 중: http://127.0.0.1:18094"
+        Start-Sleep -Seconds 3
+        if (Test-ReplayUI) {
+            Write-Host "[install-monitor] Replay UI 실행 확인 OK"
+        } else {
+            Write-Warning "Replay UI 응답 대기 중입니다. 잠시 후 http://127.0.0.1:18094 를 열어 보세요. 실패 시 $InstallRoot\replay-ui.stderr.log 확인"
+        }
+    }
+}
+
+# 9. 30분 스케줄러 안내 (D17 — 단일 .py 흐름).
 if ($RegisterTask) {
     Write-Host @"
 [install-monitor] 30분 주기 스케줄러 등록 안내 - 시나리오 .py 별로 한 번씩 만들어 주세요:
@@ -171,9 +296,10 @@ schtasks /create /sc minute /mo 30 /tn "Monitor Replay [시나리오이름]" /tr
 Write-Host @"
 
 [install-monitor] 셋업 완료 (D17 — .py 일원화).
-  Replay UI:   http://127.0.0.1:18094  (RegisterStartup 미사용 시 수동 기동)
-  단일 진입점 launcher (Recording UI 와 동등 패턴, 권장):
-    bash <repo>/playwright-allinone/run-replay-ui.sh restart
+  Replay UI:   http://127.0.0.1:18094
+  launcher:    $LauncherPs1
+  logs:        $InstallRoot\replay-ui.stdout.log
+               $InstallRoot\replay-ui.stderr.log
   CLI 실행:
     & '$InstallRoot\venv\Scripts\python.exe' -m monitor replay-script [시나리오.py] --out [결과폴더] [--profile <alias>] [--verify-url <URL>]
   CLI 로그인 등록:

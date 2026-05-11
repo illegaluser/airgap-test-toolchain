@@ -36,7 +36,7 @@
 녹화 PC 에서 만든 시나리오를 다른 PC 들에서 자동 실행하고 싶을 때:
 
 1. **녹화 PC** — Recording UI 의 결과 카드 → `Original Script` 또는 `셀프힐링 후` 카드의 `⬇ 다운로드` 클릭. 받는 `.py` 는 평문 자격증명 자동 sanitize (`auth_flow.sanitize_script`) 통과한 안전한 본문.
-2. **모니터링 PC (1회 설치)** — `monitor-runtime-<날짜시각>.zip` 을 풀고 `install-monitor` 한 번 실행 (Mac/Linux = `bash install-monitor.sh`, Windows = `install-monitor.ps1`).
+2. **모니터링 PC (1회 설치)** — `monitor-runtime-<날짜시각>.zip` 을 풀고 `install-monitor` 한 번 실행 (Mac/Linux = `bash install-monitor.sh`, Windows = `install-monitor.ps1`; Windows 는 실행까지 자동).
 3. **모니터링 PC (사용)** — <http://127.0.0.1:18094> 에서 (a) 로그인 프로파일 등록 (필요 시 — 비로그인 시나리오면 생략), (b) `시나리오 스크립트` 카드에 받아온 `.py` 업로드, (c) 적용할 프로파일 select (또는 *비로그인*) + verify URL 옵션 → `▶ 실행` → 스텝별 스크린샷 + HTML 리포트.
 
 ### monitor-runtime zip 만드는 법 (빌드 머신)
@@ -57,9 +57,9 @@ bash ../export-airgap.sh
 
 | 항목 | 내용 |
 |---|---|
-| 동봉되는 것 | Python wheels (양 OS), Playwright Chromium (양 OS), 소스 모듈, 설치 스크립트 (`.sh` + `.ps1`) |
+| 동봉되는 것 | Windows Python 3.11 installer, Python wheels (양 OS), Playwright Chromium (양 OS), 소스 모듈, 설치 스크립트 (`.sh` + `.ps1`) |
 | 대상 PC 인터넷 요구 | **없음** — pip 는 `--no-index --find-links wheels/<os>/`, Chromium 은 오프라인 복사 |
-| 대상 PC 의존성 | Python 3.11+ 만. 나머지는 zip 이 다 들고 옴 |
+| 대상 PC 의존성 | Windows 는 Python 선행 설치 불필요. Mac/Linux 는 Python 3.11.x 필요. monitor-runtime wheel 번들은 cp311 전용 |
 | 운반 매체 | USB / 외장 디스크 / 사내 공유 폴더 등 자유. zip 한 개 파일만 옮기면 됨 |
 | 멀티 OS 한 장 | win64 + macos-arm64 가 한 zip 안에 같이 들어가서, 같은 zip 으로 Mac · Windows 어디서나 설치 (대상 PC 가 자기 OS 분만 골라 씀) |
 

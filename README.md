@@ -127,9 +127,9 @@ bash export-airgap.sh --recording-only # tarball 만
 
 `monitor-runtime-<ts>.zip` 의 특성:
 
-- **완전 오프라인 설치** — Python wheels, Playwright Chromium, 소스 모듈, 설치 스크립트가 모두 zip 안에 동봉. 대상 PC 에서 PyPI / Playwright CDN 접근 0.
+- **완전 오프라인 설치** — Windows Python 3.11 installer, Python wheels, Playwright Chromium, 소스 모듈, 설치 스크립트가 모두 zip 안에 동봉. 대상 PC 에서 PyPI / Playwright CDN 접근 0.
 - **양 OS 동봉** — `wheels/win64/` + `wheels/macos-arm64/`, `chromium/win64/` + `chromium/macos-arm64/`. 한 zip 이 Mac 도 Windows 도 설치 가능. (특정 OS 만 작은 zip 으로 받으려면 `--target win64` 또는 `--target macos-arm64`.)
-- **호스트 요구** — Python 3.11+ 만. 그 외 의존성은 zip 이 다 들고 옵니다.
+- **호스트 요구** — Windows 는 Python 선행 설치 불필요. Mac/Linux 는 Python 3.11.x 필요. monitor-runtime wheel 번들은 cp311 전용입니다.
 - **USB 등 이동식 매체로 운반 가능** — zip 한 개 파일이라 자유롭게 이동. 단, 대상 PC 의 *로컬 디스크* 에 install-monitor 가 새 venv 를 만드는 모델이므로, "한 번 설치한 USB 를 다른 PC 에 그대로 꽂아 실행" 은 venv 의 절대경로 의존 때문에 안 됩니다.
 
 자세한 절차는 [playwright-allinone/README.md](playwright-allinone/README.md#모니터링-pc-로-시나리오-옮기기-replay-ui) + [playwright-allinone/docs/replay-ui-guide.md](playwright-allinone/docs/replay-ui-guide.md).

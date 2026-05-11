@@ -91,7 +91,7 @@ cat <<'HINT'
 
   Monitoring PC (Windows):
     Expand-Archive monitor-runtime-<ts>.zip ; cd monitor-runtime-*
-    powershell -ExecutionPolicy Bypass -File install-monitor.ps1 -RegisterStartup -RegisterTask
+    powershell -ExecutionPolicy Bypass -File install-monitor.ps1
 
   설치 끝나면 http://127.0.0.1:18094 — 대상 PC 내부에서만 접속 가능.
 HINT
