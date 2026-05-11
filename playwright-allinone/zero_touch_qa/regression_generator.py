@@ -217,8 +217,15 @@ def _emit_press(target, value, step, locator_code):
 
 
 def _emit_select(target, value, step, locator_code):
+    # ``combobox.nth(N)`` 같은 위치 기반 selector 는 ajax 로 늦게 로드되는 select
+    # 가 페이지에 *충분히 자리잡기 전* 에 select_option 이 호출되어 30s timeout
+    # 으로 깨지던 회귀 (2026-05-11 FLOW-USR-007 step 14). 명시적 wait_for(attached)
+    # 로 element 가 DOM 에 자리잡을 때까지 대기 후 select_option 호출.
+    val_json = json.dumps(str(value))
     return [
-        f"            {locator_code}.select_option(label={json.dumps(str(value))})"
+        f"            _sel = {locator_code}",
+        f"            _sel.wait_for(state='attached', timeout=15000)",
+        f"            _sel.select_option(label={val_json})",
     ]
 
 
