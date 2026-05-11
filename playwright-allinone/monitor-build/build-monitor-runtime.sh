@@ -55,7 +55,13 @@ declare -A PIP_PLATFORM=(
   [macos-arm64]="macosx_11_0_arm64"
 )
 
-REQS=(fastapi "uvicorn[standard]" pydantic playwright python-multipart wheel portalocker)
+# uvicorn 만 — [standard] extra 는 uvloop 를 끌어오는데 uvloop 는 Windows wheel
+# 미존재. pip download --platform win_amd64 가 *현재 호스트* marker (Linux/WSL2)
+# 로 dep 를 평가해서 uvloop 가 필요 dep 로 분류, win wheel 없음으로 ResolutionImpossible.
+# Replay UI 는 local dev tool 이라 [standard] 의 성능 향상 extra (httptools/
+# uvloop/...) 가 필요 없음. install-monitor 의 PACKAGES 도 `uvicorn` 만 사용 중.
+# 2026-05-11 WSL2 빌드 실패 회귀 차단.
+REQS=(fastapi uvicorn pydantic playwright python-multipart wheel portalocker)
 for t in "${TARGETS[@]}"; do
   out="$BUILD_DIR/wheels/$t"
   if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
