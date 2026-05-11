@@ -124,19 +124,20 @@ validate_chromium_payload() {
   local out="$2"
   case "$target" in
     win64)
-      if find "$out" -path '*/chrome-win/chrome.exe' -type f -print -quit | grep -q .; then
+      if find "$out" \( -path '*/chrome-win64/chrome.exe' -o -path '*/chrome-win/chrome.exe' \) -type f -print -quit | grep -q .; then
         return 0
       fi
       ;;
     macos-arm64)
-      if find "$out" -path '*/chrome-mac/Chromium.app/Contents/MacOS/Chromium' -type f -print -quit | grep -q .; then
+      if find "$out" \( \
+          -path '*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' \
+          -o -path '*/chrome-mac/Chromium.app/Contents/MacOS/Chromium' \
+        \) -type f -print -quit | grep -q .; then
         return 0
       fi
       ;;
   esac
-  echo "[build] ERROR — chromium payload가 target=$target 형식이 아님: $out" >&2
-  echo "[build]        해당 OS에서 빌드하거나, 이미 검증된 chromium/$target 캐시를 사용하세요." >&2
-  exit 1
+  return 1
 }
 
 # Windows target carries the official Python 3.11 installer so the monitoring PC
@@ -172,18 +173,24 @@ if [[ "$NO_CHROMIUM" != "1" ]]; then
   for t in "${TARGETS[@]}"; do
     out="$BUILD_DIR/chromium/$t"
     if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
-      validate_chromium_payload "$t" "$out"
-      echo "[build] chromium 캐시 재사용 — $out"
-      continue
+      if validate_chromium_payload "$t" "$out"; then
+        echo "[build] chromium 캐시 재사용 — $out"
+        continue
+      fi
+      echo "[build] WARN — chromium 캐시가 target=$t 형식이 아님. 대상 PC 설치 단계에서 playwright install chromium 수행."
+      rm -rf "$out"
     fi
     mkdir -p "$out"
     echo "[build] playwright install chromium → $out (target=$t)"
-    PLAYWRIGHT_BROWSERS_PATH="$out" "$PW_PYTHON" -m playwright install chromium
-    if [[ -z "$(find "$out" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
-      echo "[build] ERROR — chromium 산출물이 비어 있음: $out" >&2
-      exit 1
+    if ! PLAYWRIGHT_BROWSERS_PATH="$out" "$PW_PYTHON" -m playwright install chromium; then
+      echo "[build] WARN — chromium 다운로드 실패 (target=$t). 대상 PC 설치 단계에서 playwright install chromium 수행."
+      rm -rf "$out"
+      continue
     fi
-    validate_chromium_payload "$t" "$out"
+    if ! validate_chromium_payload "$t" "$out"; then
+      echo "[build] WARN — chromium payload가 target=$t 형식이 아님. 대상 PC 설치 단계에서 playwright install chromium 수행."
+      rm -rf "$out"
+    fi
   done
 fi
 

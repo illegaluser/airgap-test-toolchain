@@ -140,6 +140,17 @@ function Test-ReplayUI {
         return $false
     }
 }
+function Test-ChromiumPayload {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path $Path)) { return $false }
+    $chrome = Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -like "*\chrome-win64\chrome.exe" -or
+            $_.FullName -like "*\chrome-win\chrome.exe"
+        } |
+        Select-Object -First 1
+    return [bool]$chrome
+}
 
 $InstallRoot = if ($env:MONITOR_HOME) { $env:MONITOR_HOME } else { "$env:USERPROFILE\.dscore.ttc.monitor" }
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -215,11 +226,15 @@ Write-Host "[install-monitor] 패키지 설치 OK"
 # 4. Chromium — 오프라인 카피 우선, 없으면 playwright install (이미 받은 게 있으면 자동 SKIP).
 $ChromiumSrc = Join-Path $ScriptDir "chromium\$OsTag"
 $ChromiumDst = Join-Path $InstallRoot "chromium"
-if (Test-Path $ChromiumSrc) {
+if ((Test-Path $ChromiumSrc) -and (Test-ChromiumPayload $ChromiumSrc)) {
     Copy-Item -Path "$ChromiumSrc\*" -Destination $ChromiumDst -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "[install-monitor] Chromium 오프라인 배치 완료"
 } else {
-    Write-Host "[install-monitor] Chromium 다운로드 (playwright install — 이미 받은 게 있으면 SKIP)"
+    if (Test-Path $ChromiumSrc) {
+        Write-Host "[install-monitor] 동봉 Chromium 이 Windows 형식이 아님 — Windows 에서 Chromium 설치 진행"
+    } else {
+        Write-Host "[install-monitor] 동봉 Chromium 없음 — Windows 에서 Chromium 설치 진행"
+    }
     $env:PLAYWRIGHT_BROWSERS_PATH = $ChromiumDst
     Invoke-Playwright $VenvPy install chromium
 }
