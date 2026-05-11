@@ -48,8 +48,16 @@ class LocalHealer:
         self.page = page
         self.threshold = threshold
 
-    def try_heal(self, step: dict) -> Locator | None:
+    def try_heal(self, step: dict) -> tuple[Locator, str] | None:
         """step의 target과 유사한 요소를 DOM에서 검색한다.
+
+        Returns ``(locator, healed_selector_str) | None``.
+
+        ``healed_selector_str`` 은 매칭된 요소를 *다시 찾아낼 수 있는* DSL 표현
+        (``text=<t>`` / ``placeholder=<t>`` / ``label=<t>``) — regression_generator
+        가 그대로 Playwright 호출로 재컴파일할 수 있다. 매칭 attribute 가
+        ``value`` 처럼 DSL 표현 부재인 케이스는 빈 문자열 반환 (caller 가 원본
+        target 으로 fallback).
 
         T-C (P0.2) — target 이 ``frame=<sel> >> ...`` chain 으로 시작하면
         같은 FrameLocator 안에서만 fallback 을 시도해 frame 경계를 넘지 않는다.
@@ -65,7 +73,9 @@ class LocalHealer:
 
         scope, scope_label = self._frame_scope_for_target(target)
 
-        best_match = None
+        best_match: Locator | None = None
+        best_text = ""
+        best_source = ""
         highest_ratio = 0.0
 
         try:
@@ -78,20 +88,25 @@ class LocalHealer:
             # 100% 유사도로 재선택해 같은 timeout 을 또 발생시키는 패턴 차단.
             if self._is_disabled(el):
                 continue
-            text = self._extract_text(el)
+            text, source = self._extract_text(el)
             if not text:
                 continue
             ratio = difflib.SequenceMatcher(None, clean_target, text).ratio()
             if ratio > self.threshold and ratio > highest_ratio:
                 highest_ratio = ratio
                 best_match = el
+                best_text = text
+                best_source = source
 
-        if best_match:
-            log.info(
-                "  [로컬복구 성공] 유사도 %.0f%% 매칭 (scope=%s)",
-                highest_ratio * 100, scope_label,
-            )
-        return best_match
+        if best_match is None:
+            return None
+
+        healed_selector = self._build_healed_selector(best_text, best_source)
+        log.info(
+            "  [로컬복구 성공] 유사도 %.0f%% 매칭 (scope=%s, source=%s, healed=%r)",
+            highest_ratio * 100, scope_label, best_source, healed_selector,
+        )
+        return best_match, healed_selector
 
     def _frame_scope_for_target(self, target):
         """target 이 ``frame=<sel>`` 로 시작하면 해당 FrameLocator 반환, 아니면 page.
@@ -152,17 +167,53 @@ class LocalHealer:
         return s.strip()
 
     @staticmethod
-    def _extract_text(el) -> str:
+    def _extract_text(el) -> tuple[str, str]:
+        """매칭에 쓸 텍스트와 그 출처를 함께 반환.
+
+        Returns ``(text, source)`` — ``source`` ∈ ``{"text","placeholder","value","aria_label",""}``.
+        regression_generator 가 healed selector 를 DSL 형태로 재구성할 때
+        어느 attribute 가 매칭 근거였는지 알아야 ``text=`` / ``placeholder=``
+        / ``label=`` 중 옳은 것을 emit 할 수 있다 (이전엔 텍스트만 알고 출처를
+        몰라 selector 재구성이 아예 불가능했음).
+        """
         try:
-            return (
-                el.inner_text()
-                or el.get_attribute("placeholder")
-                or el.get_attribute("value")
-                or el.get_attribute("aria-label")
-                or ""
-            ).strip()
+            t = (el.inner_text() or "").strip()
+            if t:
+                return t, "text"
+            p = (el.get_attribute("placeholder") or "").strip()
+            if p:
+                return p, "placeholder"
+            v = (el.get_attribute("value") or "").strip()
+            if v:
+                return v, "value"
+            a = (el.get_attribute("aria-label") or "").strip()
+            if a:
+                return a, "aria_label"
         except Exception:
+            return "", ""
+        return "", ""
+
+    @staticmethod
+    def _build_healed_selector(text: str, source: str) -> str:
+        """매칭 element 의 (text, source) → DSL selector 문자열.
+
+        regression_generator 의 ``_target_to_playwright_code`` 가 이 prefix 들을
+        그대로 Playwright 호출로 변환한다.
+
+        - ``text``        → ``text=<t>``       (page.get_by_text)
+        - ``placeholder`` → ``placeholder=<t>``(page.get_by_placeholder)
+        - ``aria_label``  → ``label=<t>``      (page.get_by_label)
+        - ``value`` / 기타 → 빈 문자열 (DSL 표현 부재 — caller fallback)
+        """
+        if not text:
             return ""
+        if source == "text":
+            return f"text={text}"
+        if source == "placeholder":
+            return f"placeholder={text}"
+        if source == "aria_label":
+            return f"label={text}"
+        return ""
 
     @staticmethod
     def _is_disabled(el) -> bool:

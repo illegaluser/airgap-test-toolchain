@@ -60,14 +60,75 @@ def generate_regression_test(
         "        try:",
     ])
 
-    for step in scenario:
-        action = step["action"].lower()
-        target = step.get("target", "")
-        value = step.get("value", "")
-        desc = step.get("description", "")
+    for idx, step in enumerate(scenario):
+        r = results[idx] if idx < len(results) else None
 
+        # Healing-aware override (2026-05-11 수정) — fallback / alternative /
+        # local / dify 단계가 통과시킨 *실제 selector / action / value* 를
+        # 우선 채택해 회귀 .py 가 "녹화 시점 fragile selector" 가 아닌
+        # "최종 통과 selector" 를 들고 나가게 한다. r 값이 비어 있으면 원본
+        # scenario 값으로 fallback (PASS 그리고 navigate/wait 처럼 target 이
+        # 본래 빈 케이스 모두 동일하게 처리).
+        scen_action = step["action"].lower()
+        scen_target = step.get("target", "")
+        scen_value = step.get("value", "")
+        if r is not None:
+            action = ((r.action or scen_action) or "").lower()
+            target = r.target if r.target else scen_target
+            # scenario value 가 dict/list (mock_data) 면 보존 — StepResult.value 는
+            # 항상 str 이라 직렬화 손실이 발생함.
+            if isinstance(scen_value, (dict, list)):
+                value = scen_value
+            else:
+                value = r.value if r.value else scen_value
+            heal_stage = (r.heal_stage or "none")
+        else:
+            action = scen_action
+            target = scen_target
+            value = scen_value
+            heal_stage = "none"
+
+        desc = step.get("description", "")
         if desc:
             lines.append(f"            # {desc}")
+        # heal trace 주석 — 운영자가 회귀 .py 를 손볼 때 어디가 fragile 했는지
+        # 단서가 된다. selector 가 실제로 바뀐 경우에만 원본을 함께 노출.
+        if heal_stage != "none":
+            if scen_target and str(scen_target) != str(target):
+                lines.append(
+                    f"            # [HEALED via {heal_stage}] "
+                    f"original target: {scen_target!r}"
+                )
+            else:
+                lines.append(f"            # [HEALED via {heal_stage}]")
+
+        # visibility healer 가 통과시킨 사전 액션 시퀀스 — 본 스텝 *앞에* 그대로
+        # emit 해 같은 환경에서 같은 통과 시퀀스를 재현. Replay UI 의 raw wrapper
+        # 가 healing 안전망을 매번 다시 돌릴 필요 없음 (사용자 지적 2026-05-11).
+        if r is not None:
+            for pre in (getattr(r, "pre_actions", None) or []):
+                if not isinstance(pre, dict):
+                    continue
+                pre_action = str(pre.get("action", "")).lower()
+                pre_target = pre.get("target", "")
+                if pre_action == "hover" and pre_target:
+                    lines.append(
+                        f"            # [PRE] visibility heal — hover ancestor"
+                    )
+                    lines.append(
+                        f"            page.locator({json.dumps(str(pre_target))})"
+                        f".first.hover(timeout=1500)"
+                    )
+                    lines.append("            page.wait_for_timeout(150)")
+                elif pre_action == "wait" and pre_target:
+                    try:
+                        wait_ms = int(str(pre_target))
+                    except ValueError:
+                        wait_ms = 1000
+                    lines.append(
+                        f"            # [PRE] visibility heal — size poll"
+                    )
+                    lines.append(f"            page.wait_for_timeout({wait_ms})")
 
         locator_code = _target_to_playwright_code(target)
         lines.extend(_emit_step_code(action, target, value, step, locator_code))
@@ -123,7 +184,17 @@ def _emit_click(target, value, step, locator_code):
 
 
 def _emit_fill(target, value, step, locator_code):
-    return [f"            {locator_code}.fill({json.dumps(str(value))})"]
+    # 한 글자씩 입력 — 검색창 자동완성처럼 keydown/keyup 이벤트에 의존하는 사이트는
+    # 한 번에 value 만 set 하는 ``fill()`` 만으로는 dropdown 이 트리거되지 않는다.
+    # executor 의 _do_fill 1순위 전략 (clear + per-keystroke type) 을 미러해서
+    # 회귀 .py 가 Replay UI 에서 돌 때도 동일 이벤트 시퀀스를 발사하게 한다.
+    # 회귀 generator 가 1줄 ``.fill(v)`` 만 emit 하던 시절엔 같은 시나리오가
+    # Recording UI 의 Play 에서는 통과해도 Replay UI 에서는 자동완성 안 떠 깨졌음
+    # (2026-05-11 사용자 보고).
+    return [
+        f"            {locator_code}.fill(\"\")",
+        f"            {locator_code}.press_sequentially({json.dumps(str(value))}, delay=80)",
+    ]
 
 
 def _emit_press(target, value, step, locator_code):
@@ -347,8 +418,12 @@ def _target_to_playwright_code(target) -> str:
     if " >> " in base_str:
         return _chain_to_playwright_code(base_str, modifiers)
 
-    # 단일 segment — 기존 분기.
-    snippet = _segment_to_playwright_code(base_str, root="page")
+    # 단일 segment — modifier 가 있으면 .first 미부착 raw 로 emit (chain 경로와 동일).
+    # ``.first.nth(N)`` 은 Playwright 의미상 빈 매치라 N≥1 에서 timeout → 회귀 실패.
+    # locator_resolver._resolve_raw 와 같은 의도.
+    snippet = _segment_to_playwright_code(
+        base_str, root="page", in_chain=bool(modifiers)
+    )
     return _apply_modifier_suffix(snippet, modifiers)
 
 

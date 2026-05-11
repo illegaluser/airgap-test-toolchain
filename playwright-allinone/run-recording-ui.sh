@@ -9,7 +9,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_DIR="${DSCORE_AGENT_DIR:-$HOME/.dscore.ttc.playwright-agent}"
 HOST="${RECORDING_HOST:-127.0.0.1}"
 PORT="${RECORDING_PORT:-18092}"
-PYTHON_BIN="${RECORDING_PYTHON:-${VENV_PY:-python3}}"
+
+# Python: agent venv 우선, env override 가능. Windows venv (Git Bash 에서 보면
+# Scripts/python.exe) 와 POSIX venv (bin/python) 둘 다 자동 감지.
+# run-replay-ui.sh 와 동일 패턴 — Git Bash 의 `python3` 가 Windows Store stub
+# 으로 잡혀 launcher 가 실패하던 회귀 방지 (2026-05-11).
+if [ -x "$AGENT_DIR/venv/bin/python" ]; then
+  DEFAULT_PY="$AGENT_DIR/venv/bin/python"
+elif [ -x "$AGENT_DIR/venv/Scripts/python.exe" ]; then
+  DEFAULT_PY="$AGENT_DIR/venv/Scripts/python.exe"
+else
+  DEFAULT_PY="python3"
+fi
+PYTHON_BIN="${RECORDING_PYTHON:-${VENV_PY:-$DEFAULT_PY}}"
 PID_FILE="${RECORDING_SERVICE_PID:-$AGENT_DIR/recording-service.pid}"
 LOG_FILE="${RECORDING_SERVICE_LOG:-$AGENT_DIR/recording-service.log}"
 RECORDINGS_DIR="${RECORDING_HOST_ROOT:-$AGENT_DIR/recordings}"
@@ -35,6 +47,9 @@ Environment:
   RECORDING_SERVICE_LOG   Log file path
   RECORDING_SERVICE_PID   PID file path
   RECORDING_CONTAINER_NAME Docker container used for Stop & Convert (default in code: dscore.ttc.playwright)
+  AUTH_PROFILES_DIR       Login profile catalog dir (default: ~/ttc-allinone-data/auth-profiles).
+                          Point Recording UI and Replay UI to the same dir to share logins
+                          on a single host. See docs/replay-ui-guide.md §11.
 EOF
 }
 
@@ -61,6 +76,12 @@ export_runtime_env() {
   export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
   # Windows 콘솔 cp949 한글 깨짐 회귀 방지 — 자식 subprocess stdout/stderr UTF-8 강제.
   export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+  # auth-profiles 디렉토리 — Recording UI 기본은 ~/ttc-allinone-data/auth-profiles.
+  # 같은 호스트에서 Replay UI 와 로그인 프로파일을 공유하려면 두 launcher 를
+  # 같은 AUTH_PROFILES_DIR 로 띄우면 된다 (docs/replay-ui-guide.md §11 참조).
+  # 이전엔 export 가 빠져 사용자가 AUTH_PROFILES_DIR=... 로 띄워도 child python
+  # 에 전달이 안 되던 회귀 (2026-05-11) — 기본값은 동일, 사용자 사전 설정은 존중.
+  export AUTH_PROFILES_DIR="${AUTH_PROFILES_DIR:-$HOME/ttc-allinone-data/auth-profiles}"
 
   # Playwright installed in a venv exposes the `playwright` console script next
   # to python. recording_service.codegen_runner currently probes PATH.

@@ -28,6 +28,17 @@ def _make_pass_result(step: int, action: str, target: str = "", value: str = "")
     )
 
 
+def _make_healed_result(
+    step: int, action: str, healed_target: str, heal_stage: str,
+    value: str = "",
+) -> StepResult:
+    """힐링으로 통과한 스텝 — ``target`` 에 *실제로 통과한* selector 를 담는다."""
+    return StepResult(
+        step_id=step, action=action, target=healed_target, value=value,
+        description="", status="HEALED", heal_stage=heal_stage,
+    )
+
+
 def test_regression_test_compiles_to_valid_python(tmp_path: Path):
     """syntax check — 14대 액션 시나리오로 만든 regression_test.py 는
     compile() 으로 파싱 가능한 valid Python 이어야 한다."""
@@ -183,12 +194,75 @@ def test_regression_test_converts_shadow_chain_to_locator(tmp_path: Path):
     compile(src, output, "exec")
 
 
+def test_regression_test_emits_fill_as_press_sequentially(tmp_path: Path):
+    """검색창 자동완성 호환 — fill step 은 clear + press_sequentially 로 emit.
+
+    한 번에 value 만 set 하는 ``fill()`` 은 ``input`` 이벤트만 발사해서 keydown/keyup
+    listener (자동완성 dropdown) 가 안 떴음. 2026-05-11 사용자 보고 — Recording UI
+    의 ``_do_fill`` 1순위 전략 (clear + per-keystroke type) 을 regression 도
+    미러해야 Replay UI 가 돌리는 회귀 .py 에서도 자동완성이 트리거됨.
+    """
+    # ASCII value 로 검증 — json.dumps 가 비ASCII 를 \uXXXX 로 escape 하므로
+    # 한글 literal 비교는 환경 인코딩 의존성을 부른다. 별도 테스트에서 unicode
+    # 입력도 escape 후 들어가는지 확인.
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "fill", "target": "#search", "value": "hello"},
+    ]
+    results = [_make_pass_result(s["step"], s["action"]) for s in scenario]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+
+    # clear 가 먼저, 그 다음 press_sequentially.
+    assert '.fill("")' in src, "fill('') 로 입력창 비우는 단계가 없음"
+    assert '.press_sequentially("hello", delay=80)' in src, (
+        "press_sequentially 미적용 — 한 글자씩 입력이 안 됨\n" + src
+    )
+    # 옛 한 줄 ``.fill("hello")`` 패턴은 사라져야 함.
+    assert '.fill("hello")' not in src, (
+        "한 번에 set 하는 fill() 이 그대로 남아 자동완성 회귀 위험"
+    )
+    compile(src, output, "exec")
+
+
+def test_regression_test_fill_handles_unicode_value(tmp_path: Path):
+    """비-ASCII 값도 press_sequentially 인자로 들어가야 한다.
+
+    json.dumps 가 ensure_ascii=True (기본) 이므로 한글은 \\uXXXX 로 escape.
+    회귀 .py 는 모든 환경에서 안전한 ASCII 출력만 갖되, runtime 에 디코드되어
+    그대로 한 글자씩 입력된다.
+    """
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "fill", "target": "#search", "value": "요기요"},
+    ]
+    results = [_make_pass_result(s["step"], s["action"]) for s in scenario]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+
+    # json.dumps escape 된 형태 — 환경 인코딩 무관하게 안정.
+    assert "press_sequentially(\"\\uc694\\uae30\\uc694\", delay=80)" in src, (
+        f"unicode value 가 press_sequentially 로 안 들어감\n{src}"
+    )
+    compile(src, output, "exec")
+
+
 def test_regression_test_preserves_nth_modifier(tmp_path: Path):
-    """후미 modifier nth=N 이 .nth(N) 으로 변환."""
+    """후미 modifier nth=N 이 .nth(N) 으로 변환 + ``.first`` 선행 금지.
+
+    ``.first.nth(N)`` 은 Playwright 의미상 N≥1 에서 항상 빈 매치라 5s timeout 회귀
+    (2026-05-11 FLOW-USR-006 사례 — LLM 회귀본이 ``page.locator("button").first.nth(5)`` 로
+    emit 되어 Replay UI 에서 매번 timeout).
+    """
     scenario = [
         {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
         {"step": 2, "action": "click",
          "target": "role=link, name=Read more, nth=2", "value": ""},
+        {"step": 3, "action": "click", "target": "button, nth=5", "value": ""},
     ]
     results = [_make_pass_result(s["step"], s["action"]) for s in scenario]
 
@@ -196,4 +270,166 @@ def test_regression_test_preserves_nth_modifier(tmp_path: Path):
     assert output is not None
     src = Path(output).read_text(encoding="utf-8")
     assert ".nth(2)" in src
+    assert ".nth(5)" in src
+    assert ".first.nth(" not in src, (
+        ".first.nth(N) 은 Playwright 의미상 빈 매치 — modifier 경로에서 .first 부착 금지"
+    )
+    compile(src, output, "exec")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Healing-aware emit — 2026-05-11 수정 회귀
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_regression_test_emits_healed_locator_from_results(tmp_path: Path):
+    """힐링으로 통과한 스텝은 ``results[i].target`` 의 healed selector 가
+    회귀 .py 에 들어가야 한다 (원본 fragile selector 가 새지 않는다).
+
+    설계 의도: regression_test.py 는 셀프힐링을 거쳐 *최종 통과한* locator 의
+    스냅샷이다. 이전 구현은 ``scenario[i].target`` 만 봐서 원본만 emit 했음.
+    """
+    # 영문 healed target — ASCII 만 사용해 emit 포맷을 인코딩 의존성 없이 검증.
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "click", "target": "#userinintro", "value": ""},
+    ]
+    results = [
+        _make_pass_result(1, "navigate", target="", value="https://example.test"),
+        _make_healed_result(2, "click", healed_target="text=Switch to English",
+                            heal_stage="local"),
+    ]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+
+    # 원본 fragile selector (#userinintro) 는 본문 코드에 등장하면 안 된다 —
+    # 주석 (original target: ...) 에는 등장 가능.
+    assert "page.locator(\"#userinintro\")" not in src, (
+        "원본 selector 가 회귀 본문에 그대로 들어감 — healing-aware emit 미적용"
+    )
+    # healed selector 가 실제 Playwright 호출로 컴파일되어야 한다.
+    assert 'page.get_by_text("Switch to English")' in src, (
+        "healed text= selector 가 get_by_text 호출로 변환되지 않음"
+    )
+    # 주석에는 원본 target 가 노출되어 fragile 지점을 식별할 수 있어야 한다.
+    assert "'#userinintro'" in src
+    assert "[HEALED via local]" in src
+    compile(src, output, "exec")
+
+
+def test_regression_test_emits_heal_stage_comment(tmp_path: Path):
+    """힐링 케이스에서 ``# [HEALED via <stage>] original target: ...`` 주석이
+    스텝 직전에 emit 되어야 한다 — 운영자가 fragile 지점을 식별할 단서."""
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "click", "target": "#old-btn", "value": ""},
+        {"step": 3, "action": "click", "target": "#kept-btn", "value": ""},
+    ]
+    results = [
+        _make_pass_result(1, "navigate", target="", value="https://example.test"),
+        _make_healed_result(2, "click", healed_target="text=확인",
+                            heal_stage="dify"),
+        _make_pass_result(3, "click", target="#kept-btn"),
+    ]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+
+    # 힐링된 스텝에는 주석이 있어야 한다.
+    assert "[HEALED via dify]" in src
+    assert "'#old-btn'" in src, "original target 가 주석에 노출되어야 함"
+    # 힐링 안 거친 스텝 (#kept-btn) 의 *바로 앞* 비어있지 않은 줄이 HEALED
+    # 주석이면 안 된다 — 잘못 붙은 표식 차단.
+    lines = src.splitlines()
+    kept_line_idx = next(
+        i for i, ln in enumerate(lines) if "#kept-btn" in ln and "[HEALED" not in ln
+    )
+    # 바로 앞 비어있지 않은 줄 추적.
+    j = kept_line_idx - 1
+    while j >= 0 and not lines[j].strip():
+        j -= 1
+    assert j < 0 or "[HEALED" not in lines[j], (
+        f"PASS 스텝에 잘못 붙은 HEALED 주석 — 직전 라인: {lines[j]!r}"
+    )
+    compile(src, output, "exec")
+
+
+def test_regression_test_emits_visibility_heal_pre_actions(tmp_path: Path):
+    """visibility healer 가 cascade hover 로 통과시킨 케이스 — ``pre_actions``
+    가 본 스텝 click *앞에* hover + wait_for_timeout 시퀀스로 emit 되어야 한다.
+
+    설계 의도 (2026-05-11): Replay UI 의 raw wrapper 는 healing 안전망이 없다.
+    Recording UI executor 가 *통과시킨 시퀀스* 자체를 회귀 .py 에 박아 같은
+    환경에서 동등하게 통과시킨다 (안전망을 매번 다시 돌리지 않음).
+    """
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "click", "target": "#userinintro", "value": ""},
+    ]
+    results = [
+        _make_pass_result(1, "navigate", target="", value="https://example.test"),
+        StepResult(
+            step_id=2, action="click", target="#userinintro", value="",
+            description="", status="PASS", heal_stage="none",
+            pre_actions=[
+                {"action": "hover", "target": "#gnbBox > li:nth-of-type(3)"},
+                {"action": "hover", "target": "#gnbBox > li:nth-of-type(3) > a"},
+            ],
+        ),
+    ]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+
+    # 두 단계 hover 가 본 스텝 click 앞에 순서대로 emit 되어야 한다.
+    assert '#gnbBox > li:nth-of-type(3)' in src
+    assert '.hover(timeout=1500)' in src
+    assert 'wait_for_timeout(150)' in src
+    # 순서 검증 — hover 가 click 보다 앞에 있어야 한다.
+    hover_idx = src.index('#gnbBox > li:nth-of-type(3)')
+    click_idx = src.index('"#userinintro"')
+    assert hover_idx < click_idx, "hover 시퀀스가 본 스텝 click 뒤로 밀림"
+    # PRE 마커 주석으로 운영자가 식별 가능.
+    assert "[PRE] visibility heal — hover ancestor" in src
+    compile(src, output, "exec")
+
+
+def test_regression_test_no_pre_actions_when_step_passed_clean(tmp_path: Path):
+    """일반 PASS (visibility heal 작동 안 함) 케이스에는 pre_actions 가 없으니
+    회귀 .py 에도 [PRE] hover 가 들어가지 않아야 한다."""
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "click", "target": "#btn-clean", "value": ""},
+    ]
+    results = [
+        _make_pass_result(1, "navigate", target="", value="https://example.test"),
+        _make_pass_result(2, "click", target="#btn-clean"),
+    ]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    src = Path(output).read_text(encoding="utf-8")
+    assert "[PRE]" not in src
+    compile(src, output, "exec")
+
+
+def test_regression_test_falls_back_to_scenario_target_when_results_missing(
+    tmp_path: Path,
+):
+    """방어선 — results 가 scenario 보다 짧거나 r.target 이 비어 있으면
+    scenario 의 원본 target 으로 fallback (regression 안전망)."""
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {"step": 2, "action": "click", "target": "#fallback-btn", "value": ""},
+    ]
+    # results 가 일부러 짧음 — 인덱스 1 (두 번째 스텝) 결과 없음.
+    results = [_make_pass_result(1, "navigate", target="", value="https://example.test")]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+    assert "#fallback-btn" in src
     compile(src, output, "exec")
