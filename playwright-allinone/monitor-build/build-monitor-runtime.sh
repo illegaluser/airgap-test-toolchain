@@ -55,7 +55,7 @@ declare -A PIP_PLATFORM=(
   [macos-arm64]="macosx_11_0_arm64"
 )
 
-REQS=(fastapi "uvicorn[standard]" pydantic playwright python-multipart)
+REQS=(fastapi "uvicorn[standard]" pydantic playwright python-multipart wheel portalocker)
 for t in "${TARGETS[@]}"; do
   out="$BUILD_DIR/wheels/$t"
   if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
@@ -87,13 +87,29 @@ if [[ "$NO_CHROMIUM" != "1" ]]; then
   done
 fi
 
-# 소스 복사.
+# 소스 복사. rsync 우선, 없으면 cp -r fallback — Git Bash (MSYS2) 환경에서는
+# rsync 가 기본 미설치라 빌드가 깨지던 회귀 방지 (2026-05-11). 양쪽 결과 동등 —
+# __pycache__ / *.pyc 제외.
 mkdir -p "$BUILD_DIR/src"
 for src in "$SRC_REPLAY" "$SRC_MONITOR" "$SRC_ZTQ" "$SRC_RECORDING"; do
   base="$(basename "$src")"
-  rsync -a --delete \
-    --exclude '__pycache__' --exclude '*.pyc' \
-    "$src/" "$BUILD_DIR/src/$base/"
+  dst="$BUILD_DIR/src/$base"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+      --exclude '__pycache__' --exclude '*.pyc' \
+      "$src/" "$dst/"
+  else
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    # find + cp 로 __pycache__ / *.pyc 제외하며 복사.
+    (cd "$src" && find . \
+        -type d -name __pycache__ -prune -o \
+        -type f -name '*.pyc' -prune -o \
+        -type f -print | while read -r f; do
+      mkdir -p "$dst/$(dirname "$f")"
+      cp "$f" "$dst/$f"
+    done)
+  fi
 done
 echo "[build] 소스 복사 완료"
 
@@ -119,19 +135,43 @@ DSCORE 모니터링 PC 셋업 패키지 — monitor-runtime
 설치 후 Replay UI: http://127.0.0.1:18094
 EOF
 
-# zip.
+# zip. CLI `zip` 우선, 없으면 Python zipfile fallback — Git Bash (MSYS2) 환경
+# 에서는 zip 이 기본 미설치라 빌드가 깨지던 회귀 방지 (2026-05-11).
 ZIP_NAME="monitor-runtime-$TS.zip"
 ZIP_OUT="$ROOT/$ZIP_NAME"
 [[ "$NO_CHROMIUM" = "1" ]] && ZIP_OUT="$ROOT/monitor-runtime-no-chromium-$TS.zip"
-(cd "$BUILD_DIR_ROOT" && zip -qr "$ZIP_OUT" "$(basename "$BUILD_DIR")")
+if command -v zip >/dev/null 2>&1; then
+  (cd "$BUILD_DIR_ROOT" && zip -qr "$ZIP_OUT" "$(basename "$BUILD_DIR")")
+else
+  "$PYTHON" - "$BUILD_DIR_ROOT" "$(basename "$BUILD_DIR")" "$ZIP_OUT" <<'PYZIP'
+import os, sys, zipfile
+root, top, out = sys.argv[1], sys.argv[2], sys.argv[3]
+base = os.path.join(root, top)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for dirpath, dirnames, filenames in os.walk(base):
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root)  # top/ 부터 시작하는 경로로 압축.
+            z.write(full, rel)
+print(f"[build] python zipfile 로 zip 생성 완료: {out}")
+PYZIP
+fi
 echo "[build] zip 산출 — $ZIP_OUT ($(du -h "$ZIP_OUT" | cut -f1))"
 
-# sanity.
-if ! unzip -l "$ZIP_OUT" | grep -q "src/zero_touch_qa"; then
+# sanity. unzip CLI 우선, 없으면 python zipfile.
+if command -v unzip >/dev/null 2>&1; then
+  LIST_CMD="unzip -l"
+  list_output="$(unzip -l "$ZIP_OUT")"
+else
+  list_output="$("$PYTHON" -c "import sys,zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    print('\n'.join(z.namelist()))" "$ZIP_OUT")"
+fi
+if ! grep -q "src/zero_touch_qa" <<<"$list_output"; then
   echo "[build] ERROR — sanity 실패: zero_touch_qa 미포함"
   exit 1
 fi
-if ! unzip -l "$ZIP_OUT" | grep -q "install-monitor"; then
+if ! grep -q "install-monitor" <<<"$list_output"; then
   echo "[build] ERROR — sanity 실패: install-monitor 미포함"
   exit 1
 fi

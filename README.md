@@ -104,8 +104,39 @@ bash scripts/run-wsl2.sh
 
 ### 3. 오프라인 반출/복원 흐름
 
-- `playwright-allinone`: `build.sh` 로 이미지 tarball 생성 후 대상 머신에서 `docker load` + `docker run`, 이후 호스트 agent 연결
-- `code-AI-quality-allinone`: 온라인 준비 머신에서 플러그인/이미지/모델 반출 자산 준비 후, 대상 머신에서 `offline-load.sh` + `run-*.sh`
+폐쇄망 PC 에 인터넷 없이 설치할 때 — 빌드 머신(온라인)에서 산출물을 만들어 USB / 외장 디스크 / 사내 공유 폴더 등으로 옮긴 뒤, 대상 머신에서 설치합니다.
+
+#### `playwright-allinone` (녹화 PC + 모니터링 PC)
+
+두 종류의 산출물이 있습니다 — 두 PC 의 역할이 분리되어 있기 때문입니다.
+
+| 산출물 | 대상 PC | 만드는 명령 (빌드 머신) | 푸는 명령 (대상 PC) |
+|---|---|---|---|
+| `dscore.ttc.playwright-<ts>.tar.gz` | 녹화 PC (Docker 호스트) | `bash playwright-allinone/build.sh` | `docker load` 후 `build.sh --redeploy` |
+| `monitor-runtime-<ts>.zip` | 모니터링 PC (Replay UI) | `bash playwright-allinone/monitor-build/build-monitor-runtime.sh` | `unzip` 후 `install-monitor.sh` / `.ps1` |
+
+두 산출을 한 명령으로 같이 만들고 싶으면 저장소 루트의 wrapper 사용:
+
+```bash
+bash export-airgap.sh                  # 둘 다 (기본)
+bash export-airgap.sh --monitor-only   # monitor-runtime zip 만
+bash export-airgap.sh --recording-only # tarball 만
+```
+
+> **빌드 머신 OS** — export 측 스크립트는 bash 입니다. Mac / Linux / WSL2 Ubuntu / Windows 의 Git Bash 중 하나에서 실행하세요 (Windows 네이티브 PowerShell 에서 직접 실행 안 됨). 대상 PC 측 *설치* 는 OS 마다 대칭으로 — Mac/Linux 는 `install-monitor.sh`, Windows 는 `install-monitor.ps1` (PowerShell 네이티브) 로 진행합니다.
+
+`monitor-runtime-<ts>.zip` 의 특성:
+
+- **완전 오프라인 설치** — Python wheels, Playwright Chromium, 소스 모듈, 설치 스크립트가 모두 zip 안에 동봉. 대상 PC 에서 PyPI / Playwright CDN 접근 0.
+- **양 OS 동봉** — `wheels/win64/` + `wheels/macos-arm64/`, `chromium/win64/` + `chromium/macos-arm64/`. 한 zip 이 Mac 도 Windows 도 설치 가능. (특정 OS 만 작은 zip 으로 받으려면 `--target win64` 또는 `--target macos-arm64`.)
+- **호스트 요구** — Python 3.11+ 만. 그 외 의존성은 zip 이 다 들고 옵니다.
+- **USB 등 이동식 매체로 운반 가능** — zip 한 개 파일이라 자유롭게 이동. 단, 대상 PC 의 *로컬 디스크* 에 install-monitor 가 새 venv 를 만드는 모델이므로, "한 번 설치한 USB 를 다른 PC 에 그대로 꽂아 실행" 은 venv 의 절대경로 의존 때문에 안 됩니다.
+
+자세한 절차는 [playwright-allinone/README.md](playwright-allinone/README.md#모니터링-pc-로-시나리오-옮기기-replay-ui) + [playwright-allinone/docs/replay-ui-guide.md](playwright-allinone/docs/replay-ui-guide.md).
+
+#### `code-AI-quality-allinone`
+
+온라인 준비 머신에서 플러그인/이미지/모델 반출 자산 준비 후, 대상 머신에서 `offline-load.sh` + `run-*.sh`.
 
 `code-AI-quality-allinone` 의 경우 폐쇄망 운영 기준으로는 **반드시 tarball 2개**가 필요합니다.
 - `ttc-allinone-*`: Jenkins/Dify/SonarQube/PostgreSQL/Redis/Qdrant 통합 이미지
