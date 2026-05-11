@@ -90,7 +90,7 @@ Mac/Linux 는 `Python 3.11.x` 가 보이면 OK. `Python 3.12+`, `3.13+`, `3.14+`
 | GitHub Release | 운영팀이 미리 빌드해 둔 zip 을 Release 페이지에서 다운로드 |
 | 직접 빌드 | 빌드 머신에서 `bash playwright-allinone/monitor-build/build-monitor-runtime.sh` 실행 → 산출 zip 을 모니터링 PC 로 복사 |
 
-받은 zip 을 임시 폴더에 푼다. 압축 푼 폴더 안에 `install-monitor.sh` (Mac/Linux) 또는 `install-monitor.ps1` (Windows) 가 있어야 한다.
+받은 zip 을 임시 폴더에 푼다. 압축 푼 폴더 안에 `install-monitor.sh` (Mac/Linux) 또는 `install-monitor.cmd` / `install-monitor.ps1` (Windows) 가 있어야 한다.
 
 ### 4.2 Mac / Linux 설치
 
@@ -114,10 +114,10 @@ bash install-monitor.sh --register-startup --register-task
 PowerShell 을 일반 사용자로 (관리자 권한 X) 열고, 압축 푼 폴더로 이동 후:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install-monitor.ps1
+.\install-monitor.cmd
 ```
 
-Windows 는 이 한 번으로 Python 3.11 준비, venv/패키지/Chromium/모듈 설치, 로그인 시 자동시작 등록, 현재 세션의 Replay UI 실행까지 처리한다.
+Windows 는 이 한 번으로 Python 3.11 준비, venv/패키지/Chromium/모듈 설치, 로그인 시 자동시작 등록, 현재 세션의 Replay UI 실행까지 처리한다. `install-monitor.cmd` 는 PowerShell 실행 정책에 막히지 않도록 `install-monitor.ps1` 을 `-ExecutionPolicy Bypass` 로 호출하는 얇은 래퍼다.
 필요할 때만 `-NoRegisterStartup`, `-NoStart`, `-RegisterTask` 옵션을 추가한다.
 
 ### 4.4 설치가 만든 것
@@ -407,7 +407,7 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 | 로그인 했는데 매번 만료 알람 | verify URL 이 잘못 — 로그인 페이지로 잡혀 있으면 항상 만료로 판정. Replay UI 카드의 verify URL 입력에 *이미 로그인된 페이지* 의 URL 을 직접 명시 (또는 비워서 프로파일 카탈로그 fallback 사용) |
 | 사이트가 1시간 만에 매번 만료 | 사이트 정책상 세션이 짧다. 일정 주기로 사람이 `[↻ 다시 로그인]` 하는 게 정상 동작. 자동 재로그인 안 한다 ([§1.2](#12-자동-재로그인은-안-한다)) |
 | 같은 LAN 의 다른 PC 에서 접속 안 됨 | 의도된 보안 정책. 결과만 공유하려면 `[📥 HTML 리포트]` 받아서 이메일 / 메신저로 |
-| Windows 에서 `[↻ 다시 로그인]` 시 브라우저가 안 열림 | Replay UI 가 OS 서비스로 잘못 등록된 상태. `install-monitor.ps1` 로 재설치 → 작업 스케줄러에 사용자 권한으로 다시 등록 |
+| Windows 에서 `[↻ 다시 로그인]` 시 브라우저가 안 열림 | Replay UI 가 OS 서비스로 잘못 등록된 상태. `install-monitor.cmd` 로 재설치 → 작업 스케줄러에 사용자 권한으로 다시 등록 |
 | `python -m monitor` 가 `ModuleNotFoundError` | 시스템 Python 을 쓰고 있다. [§7](#7-명령줄-cli-사용) 의 가상환경 Python 경로 사용 |
 
 ---
