@@ -21,6 +21,8 @@ BUILD_DIR_ROOT="${BUILD_DIR_ROOT:-$ROOT/.monitor-runtime-cache}"
 PYTHON_WINDOWS_VERSION="${PYTHON_WINDOWS_VERSION:-3.11.9}"
 PYTHON_WINDOWS_INSTALLER="python-$PYTHON_WINDOWS_VERSION-amd64.exe"
 PYTHON_WINDOWS_URL="${PYTHON_WINDOWS_URL:-https://www.python.org/ftp/python/$PYTHON_WINDOWS_VERSION/$PYTHON_WINDOWS_INSTALLER}"
+HOST_OS="$(uname -s)"
+PW_PYTHON=""
 
 TARGET="all"
 NO_CHROMIUM=0
@@ -89,6 +91,53 @@ for t in "${TARGETS[@]}"; do
     "${reqs[@]}"
 done
 
+# Playwright browser download uses the build host's Python environment. Keep the
+# required CLI in an isolated helper venv so a bare /usr/bin/python3 can still
+# produce a complete monitor-runtime zip.
+ensure_playwright_cli() {
+  if "$PYTHON" -c 'import playwright' >/dev/null 2>&1; then
+    PW_PYTHON="$PYTHON"
+    return
+  fi
+
+  local tool_dir="$BUILD_DIR_ROOT/.build-tools/playwright-cli-venv"
+  local tool_py="$tool_dir/bin/python"
+  if [[ "$HOST_OS" =~ MINGW|MSYS|CYGWIN ]]; then
+    tool_py="$tool_dir/Scripts/python.exe"
+  fi
+  if [[ ! -x "$tool_py" ]]; then
+    echo "[build] build helper venv 생성 — playwright CLI 준비"
+    "$PYTHON" -m venv "$tool_dir"
+    "$tool_py" -m pip install --upgrade pip
+    "$tool_py" -m pip install playwright
+  fi
+  if ! "$tool_py" -c 'import playwright' >/dev/null 2>&1; then
+    echo "[build] ERROR — playwright CLI 준비 실패: $tool_py" >&2
+    exit 1
+  fi
+  PW_PYTHON="$tool_py"
+}
+
+validate_chromium_payload() {
+  local target="$1"
+  local out="$2"
+  case "$target" in
+    win64)
+      if find "$out" -path '*/chrome-win/chrome.exe' -type f -print -quit | grep -q .; then
+        return 0
+      fi
+      ;;
+    macos-arm64)
+      if find "$out" -path '*/chrome-mac/Chromium.app/Contents/MacOS/Chromium' -type f -print -quit | grep -q .; then
+        return 0
+      fi
+      ;;
+  esac
+  echo "[build] ERROR — chromium payload가 target=$target 형식이 아님: $out" >&2
+  echo "[build]        해당 OS에서 빌드하거나, 이미 검증된 chromium/$target 캐시를 사용하세요." >&2
+  exit 1
+}
+
 # Windows target carries the official Python 3.11 installer so the monitoring PC
 # can be provisioned offline without a preinstalled interpreter.
 for t in "${TARGETS[@]}"; do
@@ -118,16 +167,22 @@ done
 
 # Chromium.
 if [[ "$NO_CHROMIUM" != "1" ]]; then
+  ensure_playwright_cli
   for t in "${TARGETS[@]}"; do
     out="$BUILD_DIR/chromium/$t"
     if [[ "$REUSE_CACHE" = "1" && -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
+      validate_chromium_payload "$t" "$out"
       echo "[build] chromium 캐시 재사용 — $out"
       continue
     fi
     mkdir -p "$out"
     echo "[build] playwright install chromium → $out (target=$t)"
-    PLAYWRIGHT_BROWSERS_PATH="$out" "$PYTHON" -m playwright install chromium \
-      || echo "[build] WARN — chromium 다운로드 실패 (target=$t). 빌드 계속."
+    PLAYWRIGHT_BROWSERS_PATH="$out" "$PW_PYTHON" -m playwright install chromium
+    if [[ -z "$(find "$out" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+      echo "[build] ERROR — chromium 산출물이 비어 있음: $out" >&2
+      exit 1
+    fi
+    validate_chromium_payload "$t" "$out"
   done
 fi
 
