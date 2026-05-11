@@ -39,6 +39,32 @@
 2. **모니터링 PC (1회 설치)** — `monitor-runtime-<날짜시각>.zip` 을 풀고 `install-monitor` 한 번 실행 (Mac/Linux = `bash install-monitor.sh`, Windows = `install-monitor.ps1`).
 3. **모니터링 PC (사용)** — <http://127.0.0.1:18094> 에서 (a) 로그인 프로파일 등록 (필요 시 — 비로그인 시나리오면 생략), (b) `시나리오 스크립트` 카드에 받아온 `.py` 업로드, (c) 적용할 프로파일 select (또는 *비로그인*) + verify URL 옵션 → `▶ 실행` → 스텝별 스크린샷 + HTML 리포트.
 
+### monitor-runtime zip 만드는 법 (빌드 머신)
+
+`monitor-runtime-<날짜시각>.zip` 은 빌드 머신 (Mac/Linux/WSL2/Git Bash) 에서 다음 중 하나로 만든다.
+
+```bash
+# 모니터링 PC 패키지만:
+bash monitor-build/build-monitor-runtime.sh
+
+# 녹화 PC tarball + 모니터링 PC zip 을 한 번에:
+bash ../export-airgap.sh
+```
+
+옵션: `--target win64` / `--target macos-arm64` (둘 중 한 OS 만 담아 zip 작게), `--no-chromium` (이미 받은 Chromium 재활용), `--reuse-cache`.
+
+산출되는 zip 의 특성:
+
+| 항목 | 내용 |
+|---|---|
+| 동봉되는 것 | Python wheels (양 OS), Playwright Chromium (양 OS), 소스 모듈, 설치 스크립트 (`.sh` + `.ps1`) |
+| 대상 PC 인터넷 요구 | **없음** — pip 는 `--no-index --find-links wheels/<os>/`, Chromium 은 오프라인 복사 |
+| 대상 PC 의존성 | Python 3.11+ 만. 나머지는 zip 이 다 들고 옴 |
+| 운반 매체 | USB / 외장 디스크 / 사내 공유 폴더 등 자유. zip 한 개 파일만 옮기면 됨 |
+| 멀티 OS 한 장 | win64 + macos-arm64 가 한 zip 안에 같이 들어가서, 같은 zip 으로 Mac · Windows 어디서나 설치 (대상 PC 가 자기 OS 분만 골라 씀) |
+
+대상 PC 에서 **한 번 설치한 USB 를 다른 PC 에 그대로 꽂아 실행** 은 venv 의 절대경로 의존 때문에 안 된다. 항상 대상 PC 에서 한 번씩 `install-monitor` 를 새로 돌려 그 PC 의 로컬 디스크에 venv 가 생성된다.
+
 | 도구 | 위치 |
 | --- | --- |
 | Replay UI | <http://127.0.0.1:18094> (모니터링 PC 자기 자신만 접속, LAN 노출 X) |

@@ -103,7 +103,14 @@ $Packages = @("fastapi", "uvicorn", "pydantic", "playwright", "python-multipart"
 $WheelsDir = Join-Path $ScriptDir "wheels\$OsTag"
 if (Test-Path $WheelsDir) {
     Write-Host "[install-monitor] 오프라인 wheels 사용: $WheelsDir"
-    Invoke-Pip $VenvPy install --no-index --find-links $WheelsDir --upgrade pip wheel
+    # pip / wheel 자체 업그레이드는 best-effort — wheels 디렉토리에 wheel 패키지가
+    # 없는 빌드 (pip download 의 기본 REQS 에서 빠진 경우) 에서도 본 설치는 진행돼야
+    # 함. Mac/Linux install-monitor.sh 의 `|| echo skip` 대칭 (2026-05-11).
+    try {
+        Invoke-Pip $VenvPy install --no-index --find-links $WheelsDir --upgrade pip wheel
+    } catch {
+        Write-Host "[install-monitor] pip/wheel 업그레이드 skip — $($_.Exception.Message)"
+    }
     Invoke-Pip $VenvPy install --no-index --find-links $WheelsDir @Packages
 } else {
     Write-Host "[install-monitor] 온라인 PyPI 사용 (오프라인 wheels 없음)"
