@@ -151,8 +151,10 @@ def _parse_playwright_line(line: str) -> dict | None:
 
     target = _extract_target(line)
 
-    # fill
-    m = re.search(r'\.fill\(["\'](.+?)["\']\)', line)
+    # fill / press_sequentially / type — 모두 fill action 으로 매핑.
+    # 회귀 .py 의 press_sequentially 호출이 시나리오에서 사라지던 회귀 방지
+    # (2026-05-11 FLOW-USR-007). type 은 옛 alias.
+    m = re.search(r'\.(?:fill|press_sequentially|type)\(["\'](.+?)["\']', line)
     if m:
         return {
             "action": "fill", "target": target, "value": m.group(1),

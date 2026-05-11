@@ -621,7 +621,11 @@ class _AstConverter(ast.NodeVisitor):
                 "action": "click", "target": target, "value": "",
                 "description": "클릭",
             }
-        if method == "fill":
+        # fill / press_sequentially / type — 모두 *값 입력* 의미. 회귀 .py 가
+        # 이전에 ``press_sequentially`` 로 emit 한 입력을 다시 import 했을 때
+        # 시나리오에서 통째로 빠지던 회귀 방지 (2026-05-11 FLOW-USR-007 사례 —
+        # 빈 fill 만 시나리오에 남고 typing 단계 소실). type 은 옛 alias.
+        if method in ("fill", "press_sequentially", "type"):
             value = self._literal_str(args[0]) if args else ""
             return {
                 "action": "fill", "target": target, "value": value,

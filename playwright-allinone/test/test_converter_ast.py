@@ -707,6 +707,56 @@ def test_strip_ime_noise_keeps_empty_fill_for_different_target():
     assert len(out) == 2
 
 
+def test_press_sequentially_converts_to_fill_action(tmp_path):
+    """``press_sequentially("값", delay=80)`` 호출도 ``fill`` action 으로 변환.
+
+    2026-05-11 FLOW-USR-007 회귀 — 이전 회귀 .py 가 fill 대신 press_sequentially
+    로 emit 된 형태였는데 converter 가 인식 못 해 typing 단계가 시나리오에서
+    통째로 소실. 빈 fill 만 남고 자동완성 트리거 실패.
+    """
+    src = tmp_path / "regression.py"
+    src.write_text(
+        "from playwright.sync_api import Playwright, sync_playwright\n"
+        "def run(playwright: Playwright) -> None:\n"
+        "    browser = playwright.chromium.launch()\n"
+        "    context = browser.new_context()\n"
+        "    page = context.new_page()\n"
+        "    page.goto('https://example.test')\n"
+        "    page.get_by_role('textbox', name='Q').first.click()\n"
+        "    page.get_by_role('textbox', name='Q').first.fill('')\n"
+        "    page.get_by_role('textbox', name='Q').first.press_sequentially('hello', delay=80)\n"
+        "    page.get_by_role('button', name='hello world').first.click()\n"
+        "with sync_playwright() as playwright:\n"
+        "    run(playwright)\n",
+        encoding="utf-8",
+    )
+    out = convert_via_ast(str(src), str(tmp_path))
+    actions_values = [(s["action"], s.get("value", "")) for s in out]
+    # 빈 fill 은 strip_ime_noise 가 drop, press_sequentially("hello") 가 fill step 으로 등장.
+    assert ("fill", "hello") in actions_values, (
+        f"press_sequentially 가 fill action 으로 변환 안 됨: {actions_values}"
+    )
+    # 빈 fill 은 drop 됨 (직후 non-empty fill 있어서).
+    assert ("fill", "") not in actions_values, (
+        f"빈 fill 이 IME noise drop 안 됨: {actions_values}"
+    )
+
+
+def test_line_fallback_converts_press_sequentially_to_fill(tmp_path):
+    """line 기반 fallback 도 press_sequentially 인식 (AST 실패 시 안전망)."""
+    from zero_touch_qa.converter import _convert_via_lines
+    src = tmp_path / "regression.py"
+    src.write_text(
+        "page.goto('https://example.test')\n"
+        "page.get_by_role('textbox', name='Q').first.press_sequentially('hello', delay=80)\n",
+        encoding="utf-8",
+    )
+    out = _convert_via_lines(str(src), str(tmp_path))
+    fills = [s for s in out if s["action"] == "fill"]
+    assert len(fills) >= 1, f"line fallback 이 press_sequentially 를 fill 로 변환 안 함: {out}"
+    assert fills[0]["value"] == "hello"
+
+
 def test_strip_ime_noise_combined_d13ea6c9320c_pattern():
     """실제 d13ea6c9320c 케이스 — click → 빈 fill → CapsLock → Unidentified → 'fill 버스'.
     → click → fill 버스 만 남음.
