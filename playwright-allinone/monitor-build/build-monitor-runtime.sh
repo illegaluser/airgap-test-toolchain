@@ -152,6 +152,7 @@ echo "[build] 소스 복사 완료"
 # 설치 스크립트 + plist 템플릿.
 cp "$ROOT/playwright-allinone/monitor-build/install-monitor.sh" "$BUILD_DIR/"
 cp "$ROOT/playwright-allinone/monitor-build/install-monitor.ps1" "$BUILD_DIR/"
+cp "$ROOT/playwright-allinone/monitor-build/install-monitor.cmd" "$BUILD_DIR/"
 cp "$ROOT/playwright-allinone/monitor-build/dscore.replay-ui.plist.template" "$BUILD_DIR/"
 chmod +x "$BUILD_DIR/install-monitor.sh"
 
@@ -166,7 +167,7 @@ DSCORE 모니터링 PC 셋업 패키지 — monitor-runtime
   bash install-monitor.sh --register-startup --register-task
 
 설치 (Windows):
-  powershell -ExecutionPolicy Bypass -File install-monitor.ps1
+  install-monitor.cmd
 
 설치 후 Replay UI: http://127.0.0.1:18094
 EOF
