@@ -161,10 +161,26 @@ if (-not (Test-Path $InstallRoot)) { New-Item -ItemType Directory -Path $Install
 # 부모 디렉토리에서 모듈을 직접 가져온다 (zip 빌드 없이도 동작).
 $ParentDir = Split-Path -Parent $ScriptDir
 $IsSourceTreeLayout = (
-    (Test-Path (Join-Path $ParentDir "replay_service")) -and
-    (Test-Path (Join-Path $ParentDir "monitor")) -and
-    (Test-Path (Join-Path $ParentDir "zero_touch_qa"))
+    (Test-Path (Join-Path $ParentDir "replay-ui\replay_service")) -and
+    (Test-Path (Join-Path $ParentDir "replay-ui\monitor")) -and
+    (Test-Path (Join-Path $ParentDir "shared\zero_touch_qa"))
 )
+
+# 모듈명 → 소스 경로 매핑. 소스 트리 모드에선 recording-ui/, replay-ui/, shared/
+# 세 부모로 분산. zip 모드에선 build-monitor-runtime.sh 가 src/ 아래로 평평하게 모음.
+function Resolve-ModSrc {
+    param([string]$Mod)
+    if ($IsSourceTreeLayout) {
+        switch ($Mod) {
+            "replay_service"    { return (Join-Path $ParentDir "replay-ui\replay_service") }
+            "monitor"           { return (Join-Path $ParentDir "replay-ui\monitor") }
+            "zero_touch_qa"     { return (Join-Path $ParentDir "shared\zero_touch_qa") }
+            "recording_shared"  { return (Join-Path $ParentDir "shared\recording_shared") }
+            "recording_service" { return (Join-Path $ParentDir "recording-ui\recording_service") }
+        }
+    }
+    return (Join-Path $ScriptDir "src\$Mod")
+}
 
 Write-Host "[install-monitor] OS=Windows  OS_TAG=$OsTag  INSTALL_ROOT=$InstallRoot"
 Write-Host "[install-monitor] 레이아웃: $(if ($IsSourceTreeLayout) { '소스 트리 (playwright-allinone 안)' } else { 'monitor-runtime zip' })"
@@ -241,9 +257,8 @@ if ((Test-Path $ChromiumSrc) -and (Test-ChromiumPayload $ChromiumSrc)) {
 
 # 5. 프로젝트 모듈 — 항상 최신본으로 덮어쓴다 (재실행 시 모듈 갱신 보장).
 $SitePkg = (& $VenvPy -c 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])').Trim()
-$ModulesRoot = if ($IsSourceTreeLayout) { $ParentDir } else { (Join-Path $ScriptDir "src") }
-foreach ($mod in @("replay_service", "monitor", "zero_touch_qa", "recording_service")) {
-    $src = Join-Path $ModulesRoot $mod
+foreach ($mod in @("replay_service", "monitor", "zero_touch_qa", "recording_shared", "recording_service")) {
+    $src = Resolve-ModSrc $mod
     if (Test-Path $src) {
         $dst = Join-Path $SitePkg $mod
         if (Test-Path $dst) { Remove-Item -Path $dst -Recurse -Force }

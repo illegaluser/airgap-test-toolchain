@@ -39,9 +39,24 @@ done
 # 소스 트리 레이아웃 감지: SCRIPT_DIR 가 .../playwright-allinone/monitor-build/ 인 경우
 # 부모 디렉토리에서 모듈을 직접 가져온다 (zip 빌드 없이도 동작).
 IS_SOURCE_TREE=0
-if [[ -d "$PARENT_DIR/replay_service" && -d "$PARENT_DIR/monitor" && -d "$PARENT_DIR/zero_touch_qa" ]]; then
+if [[ -d "$PARENT_DIR/replay-ui/replay_service" && -d "$PARENT_DIR/replay-ui/monitor" && -d "$PARENT_DIR/shared/zero_touch_qa" ]]; then
   IS_SOURCE_TREE=1
 fi
+
+# 모듈명 → 소스 경로 매핑. 소스 트리 모드에선 recording-ui/, replay-ui/, shared/
+# 세 부모로 분산. zip 모드에선 build-monitor-runtime.sh 가 src/ 아래로 평평하게 모음.
+resolve_mod_src() {
+  local mod="$1"
+  if [[ "$IS_SOURCE_TREE" = "1" ]]; then
+    case "$mod" in
+      replay_service|monitor)            echo "$PARENT_DIR/replay-ui/$mod" ;;
+      zero_touch_qa|recording_shared)    echo "$PARENT_DIR/shared/$mod" ;;
+      recording_service)                 echo "$PARENT_DIR/recording-ui/$mod" ;;
+    esac
+  else
+    echo "$SCRIPT_DIR/src/$mod"
+  fi
+}
 
 OS="$(uname -s)"
 case "$OS" in
@@ -125,13 +140,8 @@ fi
 
 # 5. 프로젝트 모듈 — 항상 최신본으로 덮어쓴다.
 SP="$("$VENV_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
-if [[ "$IS_SOURCE_TREE" = "1" ]]; then
-  MODULES_ROOT="$PARENT_DIR"
-else
-  MODULES_ROOT="$SCRIPT_DIR/src"
-fi
-for mod in replay_service monitor zero_touch_qa recording_service; do
-  src="$MODULES_ROOT/$mod"
+for mod in replay_service monitor zero_touch_qa recording_shared recording_service; do
+  src="$(resolve_mod_src "$mod")"
   if [[ -d "$src" ]]; then
     rm -rf "$SP/$mod"
     cp -R "$src" "$SP/"
@@ -187,7 +197,7 @@ cat <<DONE
 [install-monitor] 셋업 완료 (D17 — .py 일원화).
   Replay UI:   http://127.0.0.1:18094  (--register-startup 안 했으면 수동 기동)
   단일 진입점 launcher (Recording UI 와 동등 패턴, 권장):
-    bash <repo>/playwright-allinone/run-replay-ui.sh restart
+    bash <repo>/playwright-allinone/replay-ui/run-replay-ui.sh restart
   CLI 실행:        $INSTALL_ROOT/venv/bin/python -m monitor replay-script <시나리오.py> --out <결과폴더> [--profile <alias>] [--verify-url <URL>]
   로그인 프로파일: $INSTALL_ROOT/venv/bin/python -m monitor profile seed <이름> --target <사이트URL>
 DONE
