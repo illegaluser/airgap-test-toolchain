@@ -113,18 +113,18 @@ def main():
     try:
         scenario = _prepare_scenario(args, config, target_url, srs_text, api_docs)
     except DifyConnectionError as e:
-        log.error("Dify 연결 실패: %s", e)
+        log.exception("Dify 연결 실패")
         _generate_error_report(config.artifacts_dir, str(e))
         sys.exit(1)
     except ScenarioValidationError as e:
-        log.error("시나리오 구조 검증 실패: %s", e)
+        log.exception("시나리오 구조 검증 실패")
         _generate_error_report(
             config.artifacts_dir,
             f"시나리오 구조 검증 실패: {e}",
         )
         sys.exit(1)
-    except FileNotFoundError as e:
-        log.error("%s", e)
+    except FileNotFoundError:
+        log.exception("파일 없음")
         sys.exit(1)
 
     if not scenario:
@@ -210,9 +210,10 @@ class ScenarioValidationError(ValueError):
 
 
 # [표준 액션] — 14 standard actions (Planner 가 emit) + 보조 액션
-# (auth_login, reset_state). 보조 액션은 LLM 이 emit 하지 않고 사용자가 작성한
-# 시나리오에 직접 들어오므로 dify-chatflow.yaml Planner prompt 와 동기화하지
-# 않는다 (executor 만 처리).
+# (auth_login, reset_state) + Sprint 6 측정 액션 (dialog_choose, storage_read,
+# cookie_verify, performance, visual_diff). 보조/측정 액션은 LLM 이 emit
+# 하지 않고 사용자가 작성한 시나리오에 직접 들어오므로 dify-chatflow.yaml
+# Planner prompt 와 동기화하지 않는다 (executor 만 처리).
 _VALID_ACTIONS = frozenset(
     {
         "navigate",
@@ -231,6 +232,11 @@ _VALID_ACTIONS = frozenset(
         "mock_data",
         "auth_login",
         "reset_state",
+        "dialog_choose",
+        "storage_read",
+        "cookie_verify",
+        "performance",
+        "visual_diff",
     }
 )
 
@@ -258,7 +264,7 @@ _VALID_VERIFY_CONDITIONS = frozenset(
 )
 
 
-_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state")
+_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state", "dialog_choose")
 # auth_login: target=mode (form/totp/oauth) 필수, value=credential alias 필수.
 # reset_state: target 무시, value=scope (cookie/storage/indexeddb/all) 필수.
 _VALUE_REQUIRED_ACTIONS = frozenset(
@@ -545,7 +551,7 @@ def _prepare_scenario(
                 )
                 time.sleep(backoff)
             else:
-                log.error("[Dify] 3 회 시도 모두 실패. 마지막 오류: %s", e)
+                log.exception("[Dify] 3 회 시도 모두 실패")
                 raise
 
 
@@ -749,10 +755,10 @@ def _auth_handle_seed(args, ap_module) -> int:
             notes=args.notes,
             timeout_sec=args.timeout_sec,
         )
-    except AuthProfileError as e:
-        log.error("[auth seed] 실패 — %s", e)
+    except AuthProfileError:
+        log.exception("[auth seed] 실패")
         return 1
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         log.exception("[auth seed] 예기치 못한 오류")
         return 1
     print(f"# ✅ 시드 완료 — name={prof.name}")
@@ -801,8 +807,8 @@ def _auth_handle_verify(args, ap_module) -> int:
             naver_probe=not args.no_naver_probe,
             timeout_sec=args.timeout_sec,
         )
-    except AuthProfileError as e:
-        log.error("[auth verify] %s", e)
+    except AuthProfileError:
+        log.exception("[auth verify] 실패")
         return 1
     except Exception:  # noqa: BLE001
         log.exception("[auth verify] 예기치 못한 오류")
@@ -826,8 +832,8 @@ def _auth_handle_delete(args, ap_module) -> int:
     # ProfileNotFoundError 가 AuthProfileError 의 서브클래스라 한 번에 처리.
     try:
         ap_module.delete_profile(args.name)
-    except AuthProfileError as e:
-        log.error("[auth delete] %s", e)
+    except AuthProfileError:
+        log.exception("[auth delete] 실패")
         return 1
     print(f"# 삭제 완료 — name={args.name}")
     return 0

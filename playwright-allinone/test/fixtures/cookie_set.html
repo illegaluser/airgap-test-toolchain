@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cookie set fixture</title>
+</head>
+<body>
+  <h1>Cookie set fixture</h1>
+  <button id="set-cookie" type="button">Set cookie</button>
+  <p id="status">idle</p>
+  <script>
+    document.getElementById("set-cookie").addEventListener("click", () => {
+      // file:// 에서는 cookie 가 설정되지 않으므로 테스트는
+      // context.add_cookies() 로 직접 주입한다. 이 픽스처는
+      // 단순 *페이지 로드용* 더미.
+      document.cookie = "session_id=abc123; path=/";
+      document.getElementById("status").textContent = "set";
+    });
+  </script>
+</body>
+</html>
