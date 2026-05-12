@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Confirm dialog fixture</title>
+</head>
+<body>
+  <h1>Confirm dialog fixture</h1>
+  <button id="trigger" type="button">Trigger confirm</button>
+  <p id="result">none</p>
+  <script>
+    document.getElementById("trigger").addEventListener("click", () => {
+      const ok = confirm("Are you sure?");
+      document.getElementById("result").textContent = ok ? "accepted" : "dismissed";
+    });
+  </script>
+</body>
+</html>
