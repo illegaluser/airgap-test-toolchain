@@ -71,7 +71,11 @@ PY
 
 export_runtime_env() {
   ensure_dirs
-  export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
+  # PYTHONPATH 구분자: Windows native python.exe 는 `;` 만 인식. Git Bash 에서
+  # 띄울 때도 동일 — `:` 로 합치면 두 경로가 한 경로로 잘못 해석된다.
+  local pysep=":"
+  [[ "${OS:-}" == "Windows_NT" ]] && pysep=";"
+  export PYTHONPATH="$ROOT_DIR${pysep}$ROOT_DIR/shared${pysep}${PYTHONPATH:-}"
   export RECORDING_HOST_ROOT="$RECORDINGS_DIR"
   export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
   # Windows 콘솔 cp949 한글 깨짐 회귀 방지 — 자식 subprocess stdout/stderr UTF-8 강제.
