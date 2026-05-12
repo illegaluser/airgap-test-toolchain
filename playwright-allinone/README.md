@@ -271,6 +271,8 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 | [docs/reference.md](docs/reference.md) | 포트 / 볼륨 / 환경변수 / 데이터 구조 / DSL 액션 14종 / API 계약 |
 | [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md) | 자주 발생하는 녹화·재생 에러 모음 |
 | [docs/](docs/) | 결정 문서 (PLAN_*.md) — 설계 배경 / 트레이드오프 / 검증 |
+| [docs/PLAN_DSL_COVERAGE.md](docs/PLAN_DSL_COVERAGE.md) | DSL 표현력 정량 분석 — 임의 웹사이트의 ~70~75% 동작 커버, 미커버 영역 명시 |
+| [docs/PLAN_EXTERNAL_TRUST.md](docs/PLAN_EXTERNAL_TRUST.md) | 외부 신뢰성 강화 패키지 — 호환성 진단(트랙 3) + 측정 액션 확장(트랙 2 Phase B1) 의사결정 |
 | [`.githooks/README.md`](../.githooks/README.md) | 휴대용 자산 자동 갱신 hook 설정 (개발자, opt-in) |
 
 ## Recording UI 의 핵심 능력 (요약)
@@ -282,6 +284,51 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 - **🎬 Recording** — Playwright codegen 으로 사용자 조작 녹화 → 14-DSL 변환.
 - **▶️ Play & more** — 두 가지 재생 모드 (codegen 자가 치유 / Dify LLM 치유).
 - **자동 정리** — 중복 click 압축, IME 노이즈 키 제거 (CapsLock/Unidentified), popup race fallback, transient alert skip 등 codegen 부산물을 자동으로 정리해 시나리오가 깨지지 않게 한다.
+
+## SUT 호환성 사전 진단 (`compat-diag`)
+
+테스트 대상 사이트가 본 솔루션으로 자동화 가능한지 *시도 전*에 알 수 있다.
+도메인 URL 한 줄 입력 → DOM 스캔 → 60초 안에 5종 카테고리 판정 리포트.
+
+```bash
+# CLI (모니터링 PC)
+python -m monitor compat-diag https://target.example.com --output report.html
+
+# Replay UI 카드 → "호환성 진단" → URL 입력 → JSON + HTML 결과
+# 또는 직접 호출
+POST /api/compat-diag  {"url": "https://target.example.com"}
+```
+
+### 판정 카테고리
+
+| Verdict | 의미 | CLI exit |
+| --- | --- | --- |
+| `compatible` | DSL 커버 영역 안 | 0 |
+| `limited` | 일부 동작 별 트랙 필요 (WebSocket / Dialog / canvas-heavy) | 0 |
+| `incompatible:closed-shadow` | closed Shadow DOM (브라우저 정책상 자동화 불가) | 2 |
+| `incompatible:captcha` | reCAPTCHA / hCaptcha / Turnstile 감지 | 2 |
+| `unknown` | 페이지 로드 실패 또는 timeout | 2 |
+
+감지 신호: closed/open shadow root 카운트, iframe 도메인 목록, WebSocket /
+EventSource 호출, 페이지 로드 중 dialog 호출, canvas/SVG 면적 비율, 프레임워크
+핑거프린트(React / Vue / Lit / Angular). 자세한 동작은
+[shared/zero_touch_qa/compat_diag.py](shared/zero_touch_qa/compat_diag.py).
+
+설계 의사결정은 [docs/PLAN_EXTERNAL_TRUST.md §3](docs/PLAN_EXTERNAL_TRUST.md) 참조.
+
+## 외부 SUT 벤치마크 (트랙 2 Phase B2 — pending)
+
+DSL 표현력의 임의 사이트 일반화 데이터를 확보하는 트랙. 공개 안정 사이트 10개에
+시나리오 80개를 작성하고 매일 cron 실행해 flake rate 시계열 dashboard 산출.
+
+- **상태**: pending — 별 사이클. 측정 액션 5개 확장(`feat/dsl-action-dialog-choose`)
+  머지 후 `feat/external-bench` 브랜치에서 진행 예정.
+- **포함 사이트** (선정 완료): playwright.dev / todomvc / the-internet.herokuapp /
+  demoqa / saucedemo / practicesoftwaretesting / news.ycombinator / wikipedia /
+  Salesforce Trailhead (closed shadow 검증용) / Naver 메인.
+
+DSL 표현력 범위는 [docs/PLAN_DSL_COVERAGE.md](docs/PLAN_DSL_COVERAGE.md) 에 정량
+기록 — Sprint 6 측정 액션 추가로 임의 웹사이트의 ~70~75% 동작 표현 가능.
 
 ## 자주 묻는 것
 
