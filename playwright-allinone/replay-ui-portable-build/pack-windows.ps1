@@ -180,6 +180,27 @@ Write-Host ""
 Write-Host "[pack-windows] 자산 채우기 완료 — $ReplayUiDir"
 Write-Host "  반출 zip 은 'zip -r replay-ui.zip replay-ui' 한 줄로 만들거나 -MakeZip 옵션을 쓰세요."
 
+# 자산 source SHA 를 stamp 로 기록 — pre-push hook 의 stale 검출 기준.
+# OS 무관 일관성 위해 git rev-parse 의 tree object id 들을 LF 없이 concat 후 SHA256.
+try {
+    Push-Location $RepoRoot
+    $ids = & git rev-parse `
+        "HEAD:playwright-allinone/shared" `
+        "HEAD:playwright-allinone/replay-ui/replay_service" `
+        "HEAD:playwright-allinone/replay-ui/monitor" `
+        "HEAD:playwright-allinone/replay-ui-portable-build/templates"
+    $concat = ($ids -join "")
+    $sha = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($concat)
+        )
+    ).Replace("-", "").ToLower()
+    Set-Content -Path (Join-Path $ReplayUiDir ".pack-stamp") -Value $sha -NoNewline
+    Write-Host "[pack-windows] .pack-stamp = $($sha.Substring(0, 12))..."
+} finally {
+    Pop-Location
+}
+
 # 9. (옵션) zip 압축. replay-ui/ 폴더를 통째로 zip 으로.
 if ($MakeZip) {
     if (-not (Test-Path $BuildOutDir)) { New-Item -ItemType Directory -Path $BuildOutDir -Force | Out-Null }
