@@ -11,6 +11,14 @@ Lint 오류 — NON-NEGOTIABLE
 - 누적 금지 — "나중에 일괄 정리" 는 신호 대비 잡음을 키운다. 발견 즉시.
 - 비활성 정책에 새로 추가하려면 이유를 commit 메시지나 PR 설명에 남길 것.
 
+구독형 LLM 자동화 금지 — NON-NEGOTIABLE
+
+Claude Max·ChatGPT Plus/Pro·Gemini Advanced 등 소비자 구독을 프로그래매틱·자동화 백엔드로 쓰는 것은 3사 모두 약관상 금지. 본 저장소의 자동화(Jenkins job, provision 스크립트, eval runner 등) 백엔드로 소비자 구독을 끼우자는 제안이 나오면 즉시 차단할 것.
+
+- 합법 경로는 API 키뿐. 비용이 부담이면 로컬 모델(Ollama 계열) 업그레이드가 정공법.
+- 위반 시 계정 정지·구독 취소·환불 의무 없음 — 기술적 가능 여부와 약관 허용 여부는 별개.
+- 근거: Anthropic Consumer Terms §3, Google ToS "automated means" 조항, OpenAI Usage Policy.
+
 0. Read Docs First — NON-NEGOTIABLE
 
 Before implementing, modifying, restarting services, or changing structure on **any** part of this repo, you MUST consult the project's own documentation. Speaking or coding from your own assumptions about the architecture is forbidden.
@@ -83,3 +91,46 @@ For multi-step tasks, state a brief plan:
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
 These guidelines are working if: fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+5. 팀 공통 기술 사실 노트
+
+이 절은 코드/git history 만으로 빠르게 파악하기 어려운, 한 번 잘못 짚으면 시간을 크게 잃는 사실만 모았다. 변경 시 같이 갱신할 것.
+
+### Dify 1.13 plugin-based model provider 등록
+
+Dify 1.13 에서 Ollama 같은 model provider 는 **플러그인 기반**이다. provision 순서는 고정:
+
+1. 플러그인 설치: `POST /console/api/workspaces/current/plugin/upload/pkg` (multipart `pkg=@xxx.difypkg`) → `unique_identifier` → `POST /plugin/install/pkg` 로 설치 (비동기 task_id).
+2. provider 존재 확인: `GET /console/api/workspaces/current/model-providers` 의 `data[].provider` 에 `langgenius/ollama/ollama` 노출 시 설치 완료.
+3. **커스텀 모델 등록**: `POST /workspaces/current/model-providers/langgenius/ollama/ollama/models/credentials` with `{model, model_type, credentials, name}`.
+4. workspace 기본 모델 지정: `POST /workspaces/current/default-model` — high_quality Dataset 생성 전 필수.
+
+**함정**: `/models` 엔드포인트(끝에 `/credentials` 없음)는 **load-balancing 전용**. 200 `{"result":"success"}` 를 돌려주지만 실제 모델 등록은 안 된다. embedding 이 "등록됐는데도" `Default model not found for text-embedding` 이 나는 사고의 실제 원인이 이것이었다.
+
+구현체: [code-AI-quality-allinone/scripts/provision.sh](code-AI-quality-allinone/scripts/provision.sh) 의 `dify_install_ollama_plugin` / `dify_register_ollama_provider`.
+
+### tree-sitter-languages 버전 핀
+
+[code-AI-quality-allinone/Dockerfile](code-AI-quality-allinone/Dockerfile) 의 Phase 1 AST 청킹 의존성은 `tree-sitter<0.22` + `tree-sitter-languages==1.10.2` 로 핀돼 있다. `tree-sitter-languages==1.10.2` 의 native C 바인딩이 `tree-sitter<0.22` 용으로 빌드돼 있어서, 최신 `tree-sitter==0.25.x` 를 같이 설치하면 `get_parser('python')` 호출 시 `TypeError: __init__() takes exactly 1 argument (2 given)` 로 즉시 실패한다.
+
+**조용한 실패**: `repo_context_builder.py` 가 files=0 chunks=0 으로 통과해 JSONL 이 생성되지 않고 doc_processor 가 legacy MD 폴백을 타기 때문에 P1 Job 은 SUCCESS 인데 RAG 데이터는 단일 MD 1건뿐인 상태가 된다. 발견이 매우 어렵다.
+
+Phase 1.5 이후 버전업이 필요해지면 `tree-sitter-languages` 를 `tree-sitter-language-pack` (신규 API 지원) 로 교체할 것.
+
+### pre-commit E2E 슈트 자동 실행
+
+저장소 루트의 [.githooks/pre-commit](.githooks/pre-commit) 이 staged 변경이 특정 영역(`recording_service/`, `zero_touch_qa/{auth_profiles,executor,__main__,url_discovery}.py`, 매칭되는 test 파일)을 건드리면 다음 e2e 슈트를 **자동으로 모두 실행**한다. 회귀 시 commit 차단.
+
+| 슈트 | 포트 | 영역 |
+|---|---|---|
+| `test/test_recording_ui_e2e.py` | 18093 | Recording UI 회귀 |
+| `test/test_auth_profile_api_e2e.py` | 18094 | Auth Profile HTTP API |
+| `test/test_auth_profile_ui_e2e.py` | 18095 | Auth Profile UI |
+| `test/test_discover_api_e2e.py` | 18096 | Discover URLs API |
+
+포트 충돌 감지 루프는 18093~18097 까지 보고 있다 (18097 은 차후 슈트용 예약).
+
+- 설치: `bash playwright-allinone/scripts/install-git-hooks.sh` 1회.
+- 일시 우회: `git commit --no-verify` — 사용자가 명시 요청한 경우 외 금지.
+
+**새 슈트 추가 체크리스트**: 사용 포트가 18093~18097 과 겹치지 않게 다음 번호 할당 → `.githooks/pre-commit` 의 `RELEVANT_PATTERN` 에 신규 모듈/테스트 정규식 추가 → 포트 충돌 감지 루프와 실행 루프 양쪽 모두 추가 → 헤더 코멘트의 슈트 번호/포트 표 갱신.

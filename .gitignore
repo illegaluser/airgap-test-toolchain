@@ -20,8 +20,9 @@ playwright-allinone/artifacts/
 __pycache__/
 *.py[cod]
 
-# Claude Code 로컬 세션 상태
-.claude/
+# Claude Code 로컬 개인 설정 — 팀 공통 .claude/{settings.json,README.md,agents/,skills/,commands/} 는 커밋,
+# 개인 권한 allowlist (settings.local.json) 만 무시.
+.claude/settings.local.json
 
 # code-AI-quality-allinone: playwright-allinone 와 동일 정책으로
 # 플러그인 번들은 레포에 포함한다 (airgap 편의성 > 레포 크기).
