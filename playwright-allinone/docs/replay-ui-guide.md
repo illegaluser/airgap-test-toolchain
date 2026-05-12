@@ -162,20 +162,20 @@ http://127.0.0.1:18094
 
 ```bash
 # 저장소 안에서:
-./playwright-allinone/run-replay-ui.sh restart
+./playwright-allinone/replay-ui/run-replay-ui.sh restart
 
 # 다른 서브커맨드:
-./playwright-allinone/run-replay-ui.sh start     # 백그라운드 기동
-./playwright-allinone/run-replay-ui.sh stop      # 중지
-./playwright-allinone/run-replay-ui.sh status    # health 점검 + PID
-./playwright-allinone/run-replay-ui.sh logs      # 로그 follow
-./playwright-allinone/run-replay-ui.sh foreground  # 현재 터미널에서 실행 (디버그)
-./playwright-allinone/run-replay-ui.sh doctor    # python 모듈 확인
+./playwright-allinone/replay-ui/run-replay-ui.sh start     # 백그라운드 기동
+./playwright-allinone/replay-ui/run-replay-ui.sh stop      # 중지
+./playwright-allinone/replay-ui/run-replay-ui.sh status    # health 점검 + PID
+./playwright-allinone/replay-ui/run-replay-ui.sh logs      # 로그 follow
+./playwright-allinone/replay-ui/run-replay-ui.sh foreground  # 현재 터미널에서 실행 (디버그)
+./playwright-allinone/replay-ui/run-replay-ui.sh doctor    # python 모듈 확인
 ```
 
 env 는 launcher 가 자동 export — `PLAYWRIGHT_BROWSERS_PATH` / `AUTH_PROFILES_DIR` / `MONITOR_HOME` / `PYTHONPATH` 를 사용자가 직접 박을 필요 없음. `MONITOR_HOME` env 만 override 하면 다른 install_root 도 가능.
 
-`./run-replay-ui.sh status` 가 `health: ok` 와 PID 를 찍으면 OK. 다시 브라우저로 접속해 본다.
+`./replay-ui/run-replay-ui.sh status` 가 `health: ok` 와 PID 를 찍으면 OK. 다시 브라우저로 접속해 본다.
 
 문제가 계속되면 [§9 자주 막히는 곳](#9-자주-막히는-곳) 으로.
 
@@ -403,7 +403,7 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| 브라우저에서 `http://127.0.0.1:18094` 가 안 뜸 | [§4.6](#46-안-떴을-때--수동-기동) 의 `./run-replay-ui.sh restart` 시도 → 그래도 안 뜨면 `~/.dscore.ttc.monitor/replay-ui.stderr.log` 확인 |
+| 브라우저에서 `http://127.0.0.1:18094` 가 안 뜸 | [§4.6](#46-안-떴을-때--수동-기동) 의 `./replay-ui/run-replay-ui.sh restart` 시도 → 그래도 안 뜨면 `~/.dscore.ttc.monitor/replay-ui.stderr.log` 확인 |
 | 업로드 후 `▶ 실행` 412 (프로파일 등록 필요) | 적용할 로그인 프로파일 select 에 입력한 alias 가 카탈로그에 없음. §5.1 부터 다시 또는 *비로그인* 으로 비워둠 |
 | 로그인 했는데 매번 만료 알람 | verify URL 이 잘못 — 로그인 페이지로 잡혀 있으면 항상 만료로 판정. Replay UI 카드의 verify URL 입력에 *이미 로그인된 페이지* 의 URL 을 직접 명시 (또는 비워서 프로파일 카탈로그 fallback 사용) |
 | 사이트가 1시간 만에 매번 만료 | 사이트 정책상 세션이 짧다. 일정 주기로 사람이 `[↻ 다시 로그인]` 하는 게 정상 동작. 자동 재로그인 안 한다 ([§1.2](#12-자동-재로그인은-안-한다)) |
@@ -445,7 +445,7 @@ export AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
 
 # 그 다음 두 UI 띄우기 (어느 쪽이든 같은 env 가 적용됨)
 ./playwright-allinone/recording-ui/run-recording-ui.sh restart
-./playwright-allinone/run-replay-ui.sh restart
+./playwright-allinone/replay-ui/run-replay-ui.sh restart
 ```
 
 **Windows (PowerShell)**
@@ -454,7 +454,7 @@ export AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
 $env:AUTH_PROFILES_DIR = "$HOME\ttc-allinone-data\auth-profiles"
 
 bash playwright-allinone/recording-ui/run-recording-ui.sh restart
-bash playwright-allinone/run-replay-ui.sh restart
+bash playwright-allinone/replay-ui/run-replay-ui.sh restart
 ```
 
 위와 같이 띄운 뒤 Recording UI 에서 `dpg-qa` 로 시드하면, Replay UI 의 `🔐 로그인

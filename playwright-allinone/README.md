@@ -68,7 +68,7 @@ bash ../export-airgap.sh
 | 도구 | 위치 |
 | --- | --- |
 | Replay UI | <http://127.0.0.1:18094> (모니터링 PC 자기 자신만 접속, LAN 노출 X) |
-| 단일 진입점 launcher | `./run-replay-ui.sh {start\|stop\|restart\|status\|logs\|foreground\|doctor}` |
+| 단일 진입점 launcher | `./replay-ui/run-replay-ui.sh {start\|stop\|restart\|status\|logs\|foreground\|doctor}` |
 | CLI 실행 | `python -m monitor replay-script <script.py> --out <결과 폴더> [--profile <alias>] [--verify-url <URL>]` |
 | CLI 로그인 등록 | `python -m monitor profile seed <프로파일이름> --target <사이트 URL>` |
 
@@ -237,7 +237,7 @@ Jenkins Pipeline 의 LLM 단계 (시나리오 생성 / 치유) 가 호스트 Oll
 **Q. Replay UI 만 재기동하려면?**
 
 ```bash
-./run-replay-ui.sh restart
+./replay-ui/run-replay-ui.sh restart
 ```
 
 Recording UI launcher 와 동등 패턴 — env 자동 셋업 (PYTHONPATH / PLAYWRIGHT_BROWSERS_PATH / AUTH_PROFILES_DIR / MONITOR_HOME) + nohup detach + PID 관리. macOS / WSL2 / Linux / Windows(Git Bash) 모두 동작. `start` / `stop` / `restart` / `status` / `logs` / `foreground` / `doctor` 서브커맨드 지원.
