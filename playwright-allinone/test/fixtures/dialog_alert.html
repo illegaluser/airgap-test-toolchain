@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Alert dialog fixture</title>
+</head>
+<body>
+  <h1>Alert dialog fixture</h1>
+  <button id="trigger" type="button">Trigger alert</button>
+  <p id="after">before</p>
+  <script>
+    document.getElementById("trigger").addEventListener("click", () => {
+      alert("This is an alert");
+      document.getElementById("after").textContent = "after";
+    });
+  </script>
+</body>
+</html>

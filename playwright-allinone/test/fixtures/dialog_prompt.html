@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Prompt dialog fixture</title>
+</head>
+<body>
+  <h1>Prompt dialog fixture</h1>
+  <button id="trigger" type="button">Trigger prompt</button>
+  <p id="result">none</p>
+  <script>
+    document.getElementById("trigger").addEventListener("click", () => {
+      const v = prompt("Your name?", "");
+      document.getElementById("result").textContent = v === null ? "dismissed" : `hello ${v}`;
+    });
+  </script>
+</body>
+</html>

@@ -210,9 +210,9 @@ class ScenarioValidationError(ValueError):
 
 
 # [표준 액션] — 14 standard actions (Planner 가 emit) + 보조 액션
-# (auth_login, reset_state). 보조 액션은 LLM 이 emit 하지 않고 사용자가 작성한
-# 시나리오에 직접 들어오므로 dify-chatflow.yaml Planner prompt 와 동기화하지
-# 않는다 (executor 만 처리).
+# (auth_login, reset_state, dialog_choose). 보조 액션은 LLM 이 emit 하지 않고
+# 사용자가 작성한 시나리오에 직접 들어오므로 dify-chatflow.yaml Planner prompt
+# 와 동기화하지 않는다 (executor 만 처리).
 _VALID_ACTIONS = frozenset(
     {
         "navigate",
@@ -231,6 +231,7 @@ _VALID_ACTIONS = frozenset(
         "mock_data",
         "auth_login",
         "reset_state",
+        "dialog_choose",
     }
 )
 
@@ -258,7 +259,7 @@ _VALID_VERIFY_CONDITIONS = frozenset(
 )
 
 
-_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state")
+_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state", "dialog_choose")
 # auth_login: target=mode (form/totp/oauth) 필수, value=credential alias 필수.
 # reset_state: target 무시, value=scope (cookie/storage/indexeddb/all) 필수.
 _VALUE_REQUIRED_ACTIONS = frozenset(

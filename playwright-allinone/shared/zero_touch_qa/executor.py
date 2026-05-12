@@ -302,6 +302,11 @@ class QAExecutor:
         # Dify healer 호출 시 LLM 컨텍스트로 주입 → "selector 만 바꾸면 같은 timeout"
         # 같은 정보를 LLM 이 알 수 있게 한다.
         self._latest_strategy_trace: list[_StrategyAttempt] = []
+        # dialog_choose 액션이 등록한 *다음 한 번* 의 dialog 응답.
+        # tuple = (type_filter, response). type_filter ∈ {"any","alert","confirm","prompt","beforeunload"}.
+        # response ∈ {"accept","dismiss"} 또는 prompt 응답 텍스트.
+        # _on_dialog closure 가 매치 시 1회 적용하고 None 으로 리셋한다.
+        self._dialog_choice: Optional[tuple[str, str]] = None
 
     def execute(
         self,
@@ -410,8 +415,23 @@ class QAExecutor:
             def _on_dialog(dlg):
                 try:
                     dialog_buffer.append(f"[{dlg.type}] {dlg.message}")
-                    # accept 가 아닌 dismiss — confirm/beforeunload 의 OK 폭주 방지.
-                    dlg.dismiss()
+                    # dialog_choose 액션이 *직전*에 등록한 응답이 있으면 그걸 우선 적용.
+                    # type_filter 가 "any" 거나 dlg.type 과 일치할 때만 매치 — 매치 후
+                    # one-shot 으로 리셋해 다음 dialog 부터는 다시 기본 dismiss.
+                    choice = self._dialog_choice
+                    if choice and choice[0] in ("any", dlg.type):
+                        self._dialog_choice = None
+                        resp = choice[1]
+                        if resp == "accept":
+                            dlg.accept()
+                        elif resp == "dismiss":
+                            dlg.dismiss()
+                        else:
+                            # prompt 응답 텍스트 — accept(prompt_text) 로 전달.
+                            dlg.accept(resp)
+                    else:
+                        # 기본: accept 가 아닌 dismiss (confirm/beforeunload OK 폭주 방지).
+                        dlg.dismiss()
                 except Exception:  # noqa: BLE001
                     pass
             def _hook_dialog(p):
@@ -945,6 +965,8 @@ class QAExecutor:
             return self._execute_auth_login(page, step, artifacts)
         if action == "reset_state":
             return self._execute_reset_state(page, step, artifacts)
+        if action == "dialog_choose":
+            return self._execute_dialog_choose(page, step, artifacts)
         return None
 
     def _execute_navigate(
@@ -2026,6 +2048,50 @@ class QAExecutor:
         return StepResult(
             step_id, "reset_state", "", scope, desc,
             "PASS", screenshot_path=ss,
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # dialog_choose (Sprint 5 / B5-measure)
+    # ─────────────────────────────────────────────────────────────────
+
+    _DIALOG_TYPES = {"any", "alert", "confirm", "prompt", "beforeunload"}
+
+    def _execute_dialog_choose(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """dialog_choose 액션 — *다음* dialog 의 응답을 미리 등록.
+
+        DSL 형태::
+
+            {"action": "dialog_choose", "target": "confirm", "value": "accept"}
+            {"action": "dialog_choose", "target": "alert",   "value": "dismiss"}
+            {"action": "dialog_choose", "target": "prompt",  "value": "내 응답"}
+            {"action": "dialog_choose", "target": "any",     "value": "dismiss"}
+
+        - ``target``: dialog 유형 필터 (``any`` 면 모든 유형 매치).
+        - ``value``: ``accept`` / ``dismiss`` / prompt 응답 텍스트 (그 외 문자열).
+
+        등록만 하고 *즉시 PASS* — 실제 dialog 는 후속 step (click 등) 에서
+        뜬다. 한 번 매치 응답하면 자동으로 등록 해제 (one-shot).
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target = str(step.get("target", "")).strip().lower() or "any"
+        value = step.get("value", "dismiss")
+        if not isinstance(value, str) or not value:
+            value = "dismiss"
+        if target not in self._DIALOG_TYPES:
+            raise ValueError(
+                f"dialog_choose: 알 수 없는 target {target!r} — "
+                f"허용: {sorted(self._DIALOG_TYPES)}"
+            )
+        self._dialog_choice = (target, value)
+        log.info(
+            "[Step %s] dialog_choose target=%s value=%r -> PASS (등록, one-shot)",
+            step_id, target, value,
+        )
+        return StepResult(
+            step_id, "dialog_choose", target, value, desc, "PASS",
         )
 
     # ─────────────────────────────────────────────────────────────────
