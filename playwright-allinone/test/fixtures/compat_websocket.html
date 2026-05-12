@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebSocket fixture</title>
+</head>
+<body>
+  <h1>WebSocket compat fixture</h1>
+  <p id="ws-status">init</p>
+  <script>
+    try {
+      const ws = new WebSocket("wss://echo.example.invalid/");
+      ws.onerror = () => { document.getElementById("ws-status").textContent = "error"; };
+      ws.onopen = () => { document.getElementById("ws-status").textContent = "open"; };
+    } catch (e) {
+      document.getElementById("ws-status").textContent = "throw";
+    }
+  </script>
+</body>
+</html>
