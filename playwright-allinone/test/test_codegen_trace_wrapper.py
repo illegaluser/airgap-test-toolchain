@@ -1,7 +1,7 @@
 """codegen_trace_wrapper 통합 테스트 — 진짜 Chromium 실행으로 trace.zip 생성 검증.
 
 local file:// fixture HTML 한 페이지를 navigate 하는 최소 original.py 를 만들고,
-``python -m recording_service.codegen_trace_wrapper`` 로 실행한 뒤 trace.zip 이
+``python -m recording_shared.codegen_trace_wrapper`` 로 실행한 뒤 trace.zip 이
 생성됐는지 확인한다. headless 로 돌려야 CI 환경에서도 통과.
 """
 
@@ -24,7 +24,7 @@ def test_inject_auth_and_fingerprint_applies_storage_state_from_env(monkeypatch)
     회귀 가드: 이 주입이 빠지면 imported tour script 가 빈 컨텍스트로 시작해
     로그인 필요 페이지가 모두 로그인 안내로 바운스된다 (사용자 보고 사례).
     """
-    from recording_service.codegen_trace_wrapper import _inject_auth_and_fingerprint
+    from recording_shared.codegen_trace_wrapper import _inject_auth_and_fingerprint
 
     monkeypatch.setenv("AUTH_STORAGE_STATE_IN", "/tmp/dpg.storage.json")
     kwargs: dict = {}
@@ -34,7 +34,7 @@ def test_inject_auth_and_fingerprint_applies_storage_state_from_env(monkeypatch)
 
 def test_inject_auth_and_fingerprint_does_not_override_user_storage_state(monkeypatch):
     """사용자가 직접 명시한 ``storage_state`` 는 env 로 덮어쓰지 않음 (의도 보존)."""
-    from recording_service.codegen_trace_wrapper import _inject_auth_and_fingerprint
+    from recording_shared.codegen_trace_wrapper import _inject_auth_and_fingerprint
 
     monkeypatch.setenv("AUTH_STORAGE_STATE_IN", "/tmp/from-env.json")
     kwargs = {"storage_state": "/user/explicit.json"}
@@ -44,7 +44,7 @@ def test_inject_auth_and_fingerprint_does_not_override_user_storage_state(monkey
 
 def test_inject_auth_and_fingerprint_applies_viewport_locale_timezone(monkeypatch):
     """fingerprint env 4종이 그대로 매핑된다."""
-    from recording_service.codegen_trace_wrapper import _inject_auth_and_fingerprint
+    from recording_shared.codegen_trace_wrapper import _inject_auth_and_fingerprint
 
     monkeypatch.setenv("PLAYWRIGHT_VIEWPORT", "1280x800")
     monkeypatch.setenv("PLAYWRIGHT_LOCALE", "ko-KR")
@@ -72,7 +72,7 @@ def test_install_launch_overrides_injects_slow_mo(monkeypatch):
     monkeypatch.setenv("CODEGEN_SLOW_MO_MS", "1500")
     monkeypatch.delenv("CODEGEN_HEADLESS", raising=False)
 
-    from recording_service.codegen_trace_wrapper import _install_launch_overrides
+    from recording_shared.codegen_trace_wrapper import _install_launch_overrides
     _install_launch_overrides()
 
     # 패치 후 launch 호출 — 우리 패치가 fake_launch 를 감싸 slow_mo 주입.
@@ -94,7 +94,7 @@ def test_install_launch_overrides_respects_user_slow_mo(monkeypatch):
     monkeypatch.setenv("CODEGEN_SLOW_MO_MS", "9999")
     monkeypatch.delenv("CODEGEN_HEADLESS", raising=False)
 
-    from recording_service.codegen_trace_wrapper import _install_launch_overrides
+    from recording_shared.codegen_trace_wrapper import _install_launch_overrides
     _install_launch_overrides()
     BrowserType.launch(None, slow_mo=200)
     assert captured["slow_mo"] == 200
@@ -108,14 +108,14 @@ def test_install_launch_overrides_skips_when_no_env(monkeypatch):
     monkeypatch.delenv("CODEGEN_SLOW_MO_MS", raising=False)
 
     real_launch = BrowserType.launch
-    from recording_service.codegen_trace_wrapper import _install_launch_overrides
+    from recording_shared.codegen_trace_wrapper import _install_launch_overrides
     _install_launch_overrides()
     assert BrowserType.launch is real_launch
 
 
 def test_inject_auth_and_fingerprint_skips_when_no_env(monkeypatch):
     """관련 env 가 없으면 kwargs 를 변형하지 않음."""
-    from recording_service.codegen_trace_wrapper import _inject_auth_and_fingerprint
+    from recording_shared.codegen_trace_wrapper import _inject_auth_and_fingerprint
 
     for k in ("AUTH_STORAGE_STATE_IN", "PLAYWRIGHT_VIEWPORT", "PLAYWRIGHT_LOCALE",
              "PLAYWRIGHT_TIMEZONE", "PLAYWRIGHT_COLOR_SCHEME"):
@@ -157,7 +157,7 @@ def test_wrapper_generates_trace_zip(tmp_path: Path):
     env["CODEGEN_SCRIPT"] = "original.py"
 
     proc = subprocess.run(
-        [VENV_PY, "-m", "recording_service.codegen_trace_wrapper"],
+        [VENV_PY, "-m", "recording_shared.codegen_trace_wrapper"],
         env=env, capture_output=True, timeout=60,
     )
     assert proc.returncode == 0, (

@@ -7,7 +7,7 @@
 
       1. 인증 fixture 사이트(test/_authn_fixture_site.py) 시드 → storage_state dump
       2. 두 URL 을 codegen 패턴 tour 스크립트로 직접 작성 (server.py 의 템플릿 호출)
-      3. ``recording_service.codegen_trace_wrapper`` 로 실 실행
+      3. ``recording_shared.codegen_trace_wrapper`` 로 실 실행
       4. trace.zip → run_log.jsonl 변환 결과 step PASS 라인 단언
 
     네트워크 의존성 없음 (로컬 fixture 사이트). ~10~15s.
@@ -120,7 +120,7 @@ def test_tour_codegen_pattern_runs_end_to_end_with_authn(
     if not _HEADED:
         env["CODEGEN_HEADLESS"] = "1"
     proc = subprocess.run(
-        [VENV_PY, "-m", "recording_service.codegen_trace_wrapper"],
+        [VENV_PY, "-m", "recording_shared.codegen_trace_wrapper"],
         env=env, capture_output=True, timeout=90,
     )
     if proc.returncode != 0:
@@ -193,7 +193,7 @@ def test_tour_continues_after_first_failure(authn_site: str, tmp_path: Path):
     if not _HEADED:
         env["CODEGEN_HEADLESS"] = "1"
     proc = subprocess.run(
-        [VENV_PY, "-m", "recording_service.codegen_trace_wrapper"],
+        [VENV_PY, "-m", "recording_shared.codegen_trace_wrapper"],
         env=env, capture_output=True, timeout=60,
     )
     # 두 번째 URL 까지 도달했는지 — trace 에 good_url 캡처 확인. rc 는 0 이거나

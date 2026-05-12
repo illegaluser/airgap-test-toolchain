@@ -1136,7 +1136,7 @@ def get_session_report(sid: str):
     하나라도 있으면 두 섹션을 모두 포함한 단일 HTML 본문 + 스크린샷 base64
     임베드. 받는 쪽은 단일 파일만 더블클릭하면 됨. 둘 다 없으면 404.
     """
-    from recording_service import report_export
+    from recording_shared import report_export
 
     sess = _registry.get(sid)
     if sess is None:

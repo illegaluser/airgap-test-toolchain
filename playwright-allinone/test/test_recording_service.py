@@ -1381,7 +1381,7 @@ def test_play_codegen_invokes_python_on_original(monkeypatch, tmp_path):
     assert res.returncode == 0
     assert captured["cmd"][0] == "/fake/python"
     assert captured["cmd"][1] == "-m"
-    assert captured["cmd"][2] == "recording_service.codegen_trace_wrapper"
+    assert captured["cmd"][2] == "recording_shared.codegen_trace_wrapper"
     assert captured["cwd"] == str(tmp_path)
     assert captured["env"]["CODEGEN_SESSION_DIR"] == str(tmp_path)
     assert captured["env"]["CODEGEN_SCRIPT"] == "original.py"

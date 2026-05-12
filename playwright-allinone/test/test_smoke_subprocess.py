@@ -10,7 +10,7 @@
     - argparse 가 새 인자(`--slow-mo`, `--storage-state-in`, `--headless`) 를 정상 수용
     - Config(frozen) 와의 상호작용에서 deprecated assign 회귀 없음
     - executor 가 최소 시나리오를 실행하고 정상 종료
-    - codegen wrapper(``recording_service.codegen_trace_wrapper``) 가 _install_*
+    - codegen wrapper(``recording_shared.codegen_trace_wrapper``) 가 _install_*
       patch + 사용자 스크립트 실행 흐름이 깨지지 않음
 
 빠른 회귀 가드만 목표 — 깊은 동작 검증은 별도 e2e 가 담당.
@@ -94,7 +94,7 @@ def test_zero_touch_qa_executor_subprocess_runs_with_minimal_scenario(
 def test_codegen_trace_wrapper_subprocess_runs_minimal_script(
     tmp_path: Path, authn_site: str,
 ):
-    """``recording_service.codegen_trace_wrapper`` 가 1 step 짜리 codegen 스크립트를 실행.
+    """``recording_shared.codegen_trace_wrapper`` 가 1 step 짜리 codegen 스크립트를 실행.
 
     회귀 가드: wrapper 의 ``_install_launch_overrides`` / 트레이싱 patch 사슬이
     깨지면 즉시 fail. tour 스크립트의 codegen 패턴(``def run(playwright):``) 도 동일
@@ -126,7 +126,7 @@ def test_codegen_trace_wrapper_subprocess_runs_minimal_script(
     env["CODEGEN_HEADLESS"] = "1"
 
     proc = subprocess.run(
-        [VENV_PY, "-m", "recording_service.codegen_trace_wrapper"],
+        [VENV_PY, "-m", "recording_shared.codegen_trace_wrapper"],
         env=env, capture_output=True, timeout=60,
     )
     if proc.returncode != 0:
