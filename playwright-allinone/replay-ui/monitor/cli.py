@@ -6,6 +6,7 @@ Usage::
     python -m monitor profile list
     python -m monitor profile seed <alias> --target <url>
     python -m monitor profile delete <alias>
+    python -m monitor compat-diag <url> [--output report.html]
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import profile_cmd, replay_cmd
+from . import compat_diag_cmd, profile_cmd, replay_cmd
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
 
     replay_cmd.register_script(sub)
     profile_cmd.register(sub)
+    compat_diag_cmd.register(sub)
 
     args = parser.parse_args(argv)
     return args.func(args)

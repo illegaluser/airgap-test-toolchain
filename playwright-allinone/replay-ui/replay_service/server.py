@@ -651,6 +651,49 @@ def api_run_report(run_id: str):
     )
 
 
+# --- /api/compat-diag --------------------------------------------------------
+#
+# SUT 호환성 사전 진단 — closed shadow / WebSocket / Dialog / canvas 등
+# 14-DSL 표현 불가 패턴을 페이지 진입 한 번으로 감지. CLI ``python -m monitor
+# compat-diag`` 와 동일 로직.
+
+
+class CompatDiagReq(BaseModel):
+    url: str
+    timeout_ms: int = 30000
+    settle_ms: int = 2000
+
+
+class CompatDiagResp(BaseModel):
+    url: str
+    verdict: str
+    reasons: list[str]
+    signals: dict
+
+
+@app.post(
+    "/api/compat-diag",
+    response_model=CompatDiagResp,
+    responses={500: {"description": "compat-diag 실행 실패"}},
+)
+def api_compat_diag(req: CompatDiagReq):
+    from zero_touch_qa.compat_diag import scan_dom
+    try:
+        report = scan_dom(
+            req.url,
+            timeout_ms=req.timeout_ms,
+            settle_ms=req.settle_ms,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"compat-diag 실패: {exc}")
+    return CompatDiagResp(
+        url=report.url,
+        verdict=report.verdict,
+        reasons=report.reasons,
+        signals=report.signals,
+    )
+
+
 # --- 정적 파일 (UI) ---------------------------------------------------------
 
 _WEB_DIR = Path(__file__).parent / "web"
