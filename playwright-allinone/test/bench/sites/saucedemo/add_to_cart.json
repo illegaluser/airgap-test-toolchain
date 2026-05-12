@@ -1,0 +1,8 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://www.saucedemo.com/", "description": "진입"},
+  {"step": 2, "action": "fill",     "target": "#user-name", "value": "standard_user", "description": "로그인"},
+  {"step": 3, "action": "fill",     "target": "#password", "value": "secret_sauce", "description": "pw"},
+  {"step": 4, "action": "click",    "target": "#login-button", "value": "", "description": "로그인"},
+  {"step": 5, "action": "click",    "target": "button[data-test='add-to-cart-sauce-labs-backpack']", "value": "", "description": "backpack 카트 추가"},
+  {"step": 6, "action": "verify",   "target": ".shopping_cart_badge", "value": "1", "condition": "text", "description": "카트 배지 = 1"}
+]

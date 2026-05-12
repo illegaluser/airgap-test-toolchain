@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/tables", "description": "Tables 페이지"},
+  {"step": 2, "action": "verify",   "target": "#table1 tbody tr:first-child td:nth-child(1)", "value": "Smith", "condition": "text", "description": "첫 행 Last Name = Smith"},
+  {"step": 3, "action": "click",    "target": "#table1 thead th.last-name", "value": "", "description": "Last Name 정렬 토글"},
+  {"step": 4, "action": "verify",   "target": "#table1 tbody tr:first-child td:nth-child(1)", "value": "Bach", "condition": "text", "description": "정렬 후 첫 행 = Bach"}
+]

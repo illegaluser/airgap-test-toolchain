@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://www.saucedemo.com/", "description": "saucedemo 진입"},
+  {"step": 2, "action": "fill",     "target": "#user-name", "value": "locked_out_user", "description": "locked_out_user"},
+  {"step": 3, "action": "fill",     "target": "#password", "value": "secret_sauce", "description": "공개 데모 password"},
+  {"step": 4, "action": "click",    "target": "#login-button", "value": "", "description": "로그인 시도"},
+  {"step": 5, "action": "verify",   "target": "[data-test='error']", "value": "locked out", "condition": "contains_text", "description": "locked out 에러 메시지"}
+]

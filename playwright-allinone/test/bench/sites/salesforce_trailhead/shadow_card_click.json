@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://trailhead.salesforce.com/", "description": "Trailhead 메인"},
+  {"step": 2, "action": "wait",     "target": "", "value": "3000", "description": "SPA + Lightning 컴포넌트 로드 대기"},
+  {"step": 3, "action": "click",    "target": "lightning-card button, .module-card a", "value": "", "description": "모듈 카드 클릭 — closed shadow 안 → 매치 실패 예상 (FAIL 자체가 데이터)"},
+  {"step": 4, "action": "verify",   "target": "h1", "value": "", "condition": "visible", "description": "전환 후 새 페이지 h1"}
+]

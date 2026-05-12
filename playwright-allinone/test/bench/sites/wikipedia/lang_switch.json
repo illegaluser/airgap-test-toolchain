@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://en.wikipedia.org/wiki/Web_browser", "description": "Web browser 영문 article"},
+  {"step": 2, "action": "click",    "target": "a[lang='ko'], a:has-text('한국어')", "value": "", "description": "한국어 언어 링크"},
+  {"step": 3, "action": "wait",     "target": "", "value": "1500", "description": "한국어 페이지 로드"},
+  {"step": 4, "action": "verify",   "target": "", "value": "ko.wikipedia.org", "condition": "url_contains", "description": "ko.wikipedia.org 진입"}
+]

@@ -1,0 +1,9 @@
+[
+  {"step": 1, "action": "navigate",      "target": "", "value": "https://the-internet.herokuapp.com/javascript_alerts", "description": "JS Alerts 페이지"},
+  {"step": 2, "action": "dialog_choose", "target": "alert", "value": "accept", "description": "다음 alert 수락 등록"},
+  {"step": 3, "action": "click",         "target": "button[onclick='jsAlert()']", "value": "", "description": "JS Alert 트리거"},
+  {"step": 4, "action": "verify",        "target": "#result", "value": "You successfully clicked an alert", "condition": "text", "description": "alert 처리 결과 텍스트"},
+  {"step": 5, "action": "dialog_choose", "target": "confirm", "value": "dismiss", "description": "다음 confirm 거부"},
+  {"step": 6, "action": "click",         "target": "button[onclick='jsConfirm()']", "value": "", "description": "JS Confirm 트리거"},
+  {"step": 7, "action": "verify",        "target": "#result", "value": "You clicked: Cancel", "condition": "text", "description": "Cancel 결과"}
+]

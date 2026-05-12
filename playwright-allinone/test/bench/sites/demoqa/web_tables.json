@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/webtables", "description": "Web Tables 페이지"},
+  {"step": 2, "action": "fill",     "target": "#searchBox", "value": "Cierra", "description": "Cierra 조회"},
+  {"step": 3, "action": "wait",     "target": "", "value": "500", "description": "필터 적용 대기"},
+  {"step": 4, "action": "verify",   "target": ".rt-tbody .rt-tr-group:first-child", "value": "Cierra", "condition": "contains_text", "description": "필터링된 첫 행에 Cierra"}
+]

@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/dynamic_controls", "description": "Dynamic Controls 페이지"},
+  {"step": 2, "action": "click",    "target": "button[onclick='swapCheckbox()']", "value": "", "description": "Remove 버튼 클릭"},
+  {"step": 3, "action": "wait",     "target": "", "value": "3000", "description": "비동기 제거 대기"},
+  {"step": 4, "action": "verify",   "target": "#message", "value": "gone", "condition": "contains_text", "description": "결과 메시지에 gone 포함"}
+]

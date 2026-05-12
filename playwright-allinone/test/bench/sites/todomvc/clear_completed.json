@@ -1,0 +1,11 @@
+[
+  {"step": 1,  "action": "navigate", "target": "", "value": "https://demo.playwright.dev/todomvc/", "description": "TodoMVC 진입"},
+  {"step": 2,  "action": "fill",     "target": ".new-todo", "value": "keep", "description": "keep"},
+  {"step": 3,  "action": "press",    "target": ".new-todo", "value": "Enter", "description": "추가"},
+  {"step": 4,  "action": "fill",     "target": ".new-todo", "value": "remove", "description": "remove"},
+  {"step": 5,  "action": "press",    "target": ".new-todo", "value": "Enter", "description": "추가"},
+  {"step": 6,  "action": "click",    "target": ".todo-list li:nth-child(2) .toggle", "value": "", "description": "remove 완료"},
+  {"step": 7,  "action": "click",    "target": ".clear-completed", "value": "", "description": "Clear completed 버튼"},
+  {"step": 8,  "action": "verify",   "target": ".todo-count strong", "value": "1", "condition": "text", "description": "남은 항목 1"},
+  {"step": 9,  "action": "verify",   "target": ".todo-list li", "value": "keep", "condition": "text", "description": "keep 만 남음"}
+]
