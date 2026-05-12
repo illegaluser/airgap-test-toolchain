@@ -75,7 +75,11 @@ PY
 export_runtime_env() {
   ensure_dirs
   # 소스 우선 — venv site-packages 미설치 환경에서도 동작.
-  export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
+  # PYTHONPATH 구분자: Windows native python.exe 는 `;` 만 인식. Git Bash 에서
+  # 띄울 때도 동일 — `:` 로 합치면 두 경로가 한 경로로 잘못 해석된다.
+  local pysep=":"
+  [[ "${OS:-}" == "Windows_NT" ]] && pysep=";"
+  export PYTHONPATH="$ROOT_DIR${pysep}$ROOT_DIR/shared${pysep}${PYTHONPATH:-}"
   export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
   # Windows 콘솔 default codec (cp949) 가 UTF-8 byte 를 garbage 로 디코딩하는
   # 회귀 방지 — 자식 subprocess (monitor replay-script / codegen_trace_wrapper /
