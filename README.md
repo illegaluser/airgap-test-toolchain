@@ -158,6 +158,7 @@ bash export-airgap.sh --recording-only # 녹화 tarball 만
 온라인 준비 머신에서 플러그인/이미지/모델 반출 자산 준비 후, 대상 머신에서 `offline-load.sh` + `run-*.sh`.
 
 `code-AI-quality-allinone` 의 경우 폐쇄망 운영 기준으로는 **반드시 tarball 2개**가 필요합니다.
+
 - `ttc-allinone-*`: Jenkins/Dify/SonarQube/PostgreSQL/Redis/Qdrant 통합 이미지
 - `gitlab-*`: compose 로 함께 기동되는 별도 GitLab 런타임 이미지
 
