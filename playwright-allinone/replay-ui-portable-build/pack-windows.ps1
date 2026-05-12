@@ -90,7 +90,13 @@ foreach ($name in $ToClean) {
     $p = Join-Path $ReplayUiDir $name
     if (Test-Path $p) {
         Write-Host "[pack-windows] Clean previous -> $p"
-        Remove-Item -Path $p -Recurse -Force
+        # in-use 파일(IDE indexer, 떠있는 embedded python 등) 만나도 throw 하지 말고
+        # 가능한 만큼만 비우고 진행. 후속 단계가 -Force 로 덮어쓴다 — 자산이 일부
+        # 잔존해도 최종 상태는 동일.
+        Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $p) {
+            Write-Warning "[pack-windows] 일부 파일이 잠겨 있어 부분 잔존: $p (덮어쓰기 모드로 진행)"
+        }
     }
 }
 foreach ($f in @("Launch-ReplayUI.bat", "Stop-ReplayUI.bat", "README.txt")) {
@@ -105,12 +111,16 @@ Write-Host "[pack-windows] Extracting embedded Python -> embedded-python/"
 Expand-Archive -Path $PythonEmbedZip -DestinationPath $EmbeddedPyDir -Force
 
 # 2. python311._pth — replay-ui/ 자체 + site-packages 검색 경로 + import site.
+# pywin32 의 win32/win32\lib 도 명시 추가 — embed python 에서는 .pth 파일이
+# 자동 처리되지 않아 pywin32.pth 의 효과가 살지 않음 (E2E 회귀 검출, plan G.3).
 $PthFile = Join-Path $EmbeddedPyDir "python311._pth"
 @"
 python311.zip
 .
 ..\
 ..\site-packages
+..\site-packages\win32
+..\site-packages\win32\lib
 import site
 "@ | Set-Content -Path $PthFile -Encoding ASCII
 
@@ -138,6 +148,19 @@ python -m pip install `
 $pipExit = $LASTEXITCODE
 $ErrorActionPreference = $prevEAP
 if ($pipExit -ne 0) { throw "pip install --target 실패 (exit $pipExit)" }
+
+# 3b. pywin32 portable fix — pywin32_postinstall.py 가 embed python 에서 자동
+# 실행되지 않아 pywintypes311.dll/pythoncom311.dll 이 sys.path 의 DLL search
+# 경로에 안 잡힘. pywin32_system32/ 의 DLL 을 embedded-python/ 으로 카피해
+# 표준 postinstall 결과를 재현 (E2E 회귀 검출, plan G.3).
+$Pywin32Sys32 = Join-Path $SitePkgDir "pywin32_system32"
+if (Test-Path $Pywin32Sys32) {
+    Get-ChildItem -Path $Pywin32Sys32 -Filter "*.dll" -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination $EmbeddedPyDir -Force
+            Write-Host "[pack-windows] pywin32 DLL -> embedded-python/$($_.Name)"
+        }
+}
 
 # 4. chromium/ 복사.
 if (Test-Path $ChromiumSrcDir) {
