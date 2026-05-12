@@ -1,0 +1,41 @@
+@echo off
+setlocal
+set "ROOT=%~dp0"
+set "PYTHONHOME="
+set "PYTHONPATH=%ROOT%;%ROOT%site-packages"
+set "PLAYWRIGHT_BROWSERS_PATH=%ROOT%chromium"
+set "MONITOR_HOME=%ROOT%data"
+set "AUTH_PROFILES_DIR=%ROOT%data\auth-profiles"
+set "PYTHONIOENCODING=utf-8"
+
+REM 데이터 디렉토리 사전 생성.
+if not exist "%ROOT%data" mkdir "%ROOT%data" >nul 2>&1
+if not exist "%ROOT%data\auth-profiles" mkdir "%ROOT%data\auth-profiles" >nul 2>&1
+if not exist "%ROOT%data\scenarios"     mkdir "%ROOT%data\scenarios" >nul 2>&1
+if not exist "%ROOT%data\scripts"       mkdir "%ROOT%data\scripts" >nul 2>&1
+if not exist "%ROOT%data\runs"          mkdir "%ROOT%data\runs" >nul 2>&1
+
+REM 포트 충돌 — 기존 인스턴스가 이미 18094 를 잡고 있으면 그 쪽으로 연결.
+netstat -ano | findstr ":18094 " | findstr "LISTENING" >nul
+if not errorlevel 1 (
+  echo [Replay UI] Port 18094 is already in use - opening existing instance.
+  start "" "http://127.0.0.1:18094/"
+  exit /b 0
+)
+
+REM Replay UI 백그라운드 기동.
+start "ReplayUI" /min "%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
+
+REM 준비될 때까지 폴링 후 브라우저 오픈.
+for /l %%i in (1,1,15) do (
+  >nul 2>&1 powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18094/ -TimeoutSec 1).StatusCode } catch { exit 1 }"
+  if not errorlevel 1 goto :open
+  >nul timeout /t 1 /nobreak
+)
+
+echo [Replay UI] Service did not come up within 15s. See "%ROOT%data\runs" for logs.
+exit /b 1
+
+:open
+start "" "http://127.0.0.1:18094/"
+endlocal
