@@ -1,0 +1,8 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://playwright.dev/", "description": "Playwright 공식 문서 진입"},
+  {"step": 2, "action": "verify",   "target": "h1", "value": "", "condition": "visible", "description": "h1 visible — 페이지 로드 확인"},
+  {"step": 3, "action": "click",    "target": "button[type='button']:has-text('Search')", "value": "", "description": "검색 버튼 클릭"},
+  {"step": 4, "action": "fill",     "target": "input.DocSearch-Input", "value": "page object", "description": "'page object' 검색어 입력"},
+  {"step": 5, "action": "wait",     "target": "", "value": "1500", "description": "검색 결과 렌더 대기"},
+  {"step": 6, "action": "verify",   "target": ".DocSearch-Hits", "value": "", "condition": "visible", "description": "hits 컨테이너 표시"}
+]

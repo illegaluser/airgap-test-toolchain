@@ -1,0 +1,11 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demo.playwright.dev/todomvc/", "description": "TodoMVC 진입"},
+  {"step": 2, "action": "fill",     "target": ".new-todo", "value": "buy milk", "description": "할 일 입력"},
+  {"step": 3, "action": "press",    "target": ".new-todo", "value": "Enter", "description": "엔터 — 추가"},
+  {"step": 4, "action": "verify",   "target": ".todo-list li", "value": "buy milk", "condition": "text", "description": "추가된 항목 텍스트 검증"},
+  {"step": 5, "action": "click",    "target": ".todo-list li .toggle", "value": "", "description": "완료 토글"},
+  {"step": 6, "action": "verify",   "target": ".todo-list li.completed", "value": "", "condition": "visible", "description": "completed 클래스 적용 확인"},
+  {"step": 7, "action": "hover",    "target": ".todo-list li", "value": "", "description": "삭제 버튼 노출 hover"},
+  {"step": 8, "action": "click",    "target": ".todo-list li .destroy", "value": "", "description": "삭제 클릭"},
+  {"step": 9, "action": "verify",   "target": ".new-todo", "value": "", "condition": "value", "description": "입력 박스 초기화 상태 (엔터 후 자동 비워짐)"}
+]
