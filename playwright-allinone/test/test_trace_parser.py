@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from recording_service.trace_parser import parse_trace, _save_screenshot
+from recording_shared.trace_parser import parse_trace, _save_screenshot
 
 
 def _build_trace_zip(

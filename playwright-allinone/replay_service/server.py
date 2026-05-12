@@ -636,7 +636,7 @@ def api_run_report(run_id: str):
     if not sess_dir.is_dir():
         raise HTTPException(status_code=404, detail="run 미존재")
     try:
-        from recording_service.report_export import build_self_contained_report
+        from recording_shared.report_export import build_self_contained_report
     except Exception:
         raise HTTPException(status_code=500, detail="리포트 모듈 미사용 가능")
     body = build_self_contained_report(sess_dir)

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 # 모듈 위치는 monitor-runtime zip 에 동봉된 src/ 와 동일하므로 절대 import 가능.
-from recording_service import trace_parser
+from recording_shared import trace_parser
 from zero_touch_qa import auth_profiles
 
 
@@ -143,7 +143,7 @@ def _run_script_wrapper(
     if storage_path:
         env["AUTH_STORAGE_STATE_IN"] = storage_path
     env.update(fingerprint_env or {})
-    cmd = [sys.executable, "-m", "recording_service.codegen_trace_wrapper"]
+    cmd = [sys.executable, "-m", "recording_shared.codegen_trace_wrapper"]
     try:
         result = subprocess.run(
             cmd,

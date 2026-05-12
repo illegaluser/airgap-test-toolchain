@@ -260,7 +260,7 @@ def run_codegen_replay(
 ) -> PlayResult:
     """codegen 원본 ``original.py`` 를 호스트에서 그대로 실행 (기본 headed).
 
-    내부적으로는 ``recording_service.codegen_trace_wrapper`` 를 통해 실행하여
+    내부적으로는 ``recording_shared.codegen_trace_wrapper`` 를 통해 실행하여
     Playwright tracing 을 자동 주입한다. subprocess 종료 후 ``trace.zip`` 을
     파싱해 LLM 모드와 같은 형식의 ``codegen_run_log.jsonl`` +
     ``codegen_screenshots/`` 를 생성 — Run Log 카드가 두 모드를 동등하게
@@ -288,7 +288,7 @@ def run_codegen_replay(
         raise ReplayProxyError(f"실행 대상 .py 없음: {script}")
 
     py = _resolve_venv_py(venv_py)
-    cmd = [py, "-m", "recording_service.codegen_trace_wrapper"]
+    cmd = [py, "-m", "recording_shared.codegen_trace_wrapper"]
 
     # 래퍼는 CODEGEN_SESSION_DIR / CODEGEN_SCRIPT env 로 실행 대상을 받는다.
     # auth-profile env (P4.3) 도 동일하게 전달.
@@ -335,7 +335,7 @@ def run_codegen_replay(
     # subprocess 종료 후 trace.zip → codegen_run_log.jsonl + 스크린샷 변환.
     # 파싱 실패는 silent — codegen 재생 자체 결과(returncode/stdout)에 영향 없음.
     try:
-        from recording_service import trace_parser
+        from recording_shared import trace_parser
         trace_zip = sess_dir / "trace.zip"
         if trace_zip.is_file():
             n = trace_parser.parse_trace(

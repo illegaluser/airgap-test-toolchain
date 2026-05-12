@@ -352,7 +352,7 @@ class TestDiscoverTourScript:
 
     # NOTE: tour 가 codegen 산출물 패턴으로 전환되면서 ``CONTENT_SETTLE`` /
     # ``_wait_dom_stable`` / SETTLE_TIMEOUT_MS 같은 스크립트-측 settle 로직은
-    # codegen wrapper(`recording_service.codegen_trace_wrapper`) 측으로 이전됨.
+    # codegen wrapper(`recording_shared.codegen_trace_wrapper`) 측으로 이전됨.
     # 옛 content_settle 옵션은 TourScriptReq 호환을 위해 시그니처에 남아 있지만
     # 새 템플릿에서 사용되지 않음. 관련 회귀 검증은 wrapper 단위 테스트로 이전 (후속).
 

@@ -5,7 +5,7 @@
     CODEGEN_SESSION_DIR=<host_session_dir>
     CODEGEN_SCRIPT=<original.py | original_annotated.py>   # optional, 기본
                                                              original.py
-    python -m recording_service.codegen_trace_wrapper
+    python -m recording_shared.codegen_trace_wrapper
 
 동작:
     1. ``BrowserContext.__init__`` (sync) 를 monkey-patch — context 생성 직후
