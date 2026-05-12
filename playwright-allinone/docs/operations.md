@@ -117,12 +117,12 @@ curl -sS -u admin:password "http://localhost:18080/computer/$NODE/api/json" \
 Recording UI는 호스트에서 도는 FastAPI 서비스다.
 
 ```bash
-./run-recording-ui.sh start
-./run-recording-ui.sh status
-./run-recording-ui.sh doctor
-./run-recording-ui.sh logs
-./run-recording-ui.sh restart
-./run-recording-ui.sh stop
+./recording-ui/run-recording-ui.sh start
+./recording-ui/run-recording-ui.sh status
+./recording-ui/run-recording-ui.sh doctor
+./recording-ui/run-recording-ui.sh logs
+./recording-ui/run-recording-ui.sh restart
+./recording-ui/run-recording-ui.sh stop
 ```
 
 무엇부터 볼지 모르겠으면 `doctor`로 의존성을 확인하고, `status`로 실행 상태를 본다.
@@ -140,9 +140,9 @@ Recording UI는 호스트에서 도는 FastAPI 서비스다.
 환경변수:
 
 ```bash
-RECORDING_PORT=18192 ./run-recording-ui.sh start
-RECORDING_PYTHON=~/.dscore.ttc.playwright-agent/venv/bin/python3 ./run-recording-ui.sh start
-RECORDING_HOST_ROOT=/path/to/recordings ./run-recording-ui.sh start
+RECORDING_PORT=18192 ./recording-ui/run-recording-ui.sh start
+RECORDING_PYTHON=~/.dscore.ttc.playwright-agent/venv/bin/python3 ./recording-ui/run-recording-ui.sh start
+RECORDING_HOST_ROOT=/path/to/recordings ./recording-ui/run-recording-ui.sh start
 ```
 
 R-Plus 기능은 `done` 상태 세션에서 기본 활성화된다. Replay, Generate Doc, Compare with Doc-DSL은 `/experimental/*` API를 사용한다.

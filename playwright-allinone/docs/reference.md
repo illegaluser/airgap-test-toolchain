@@ -144,7 +144,7 @@ Recording UI session 예:
 | `build.sh` | 예 | 이미지 빌드, tarball 생성, 선택적으로 redeploy |
 | `mac-agent-setup.sh` | 예 | macOS 호스트 agent + Recording UI 준비 |
 | `wsl-agent-setup.sh` | 예 | WSL2 호스트 agent + Recording UI 준비 |
-| `run-recording-ui.sh` | 예 | Recording UI daemon 독립 운영 |
+| `recording-ui/run-recording-ui.sh` | 예 | Recording UI daemon 독립 운영 |
 | `backup-volume.sh` | 예 | `dscore-data` 백업 |
 | `restore-volume.sh` | 예 | `dscore-data` 복원 |
 | `entrypoint.sh` | 아니오 | 컨테이너 PID 1, seed/provision/supervisord |
