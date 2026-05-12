@@ -2,9 +2,11 @@ import json
 import os
 import random
 import re
+import shutil
 import time
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
@@ -967,6 +969,8 @@ class QAExecutor:
             return self._execute_reset_state(page, step, artifacts)
         if action == "dialog_choose":
             return self._execute_dialog_choose(page, step, artifacts)
+        if action in ("storage_read", "cookie_verify", "performance", "visual_diff"):
+            return self._dispatch_measurement(action, page, step, artifacts)
         return None
 
     def _execute_navigate(
@@ -2092,6 +2096,375 @@ class QAExecutor:
         )
         return StepResult(
             step_id, "dialog_choose", target, value, desc, "PASS",
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # 측정 액션 공통 dispatch — VerificationAssertionError 를 FAIL StepResult
+    # 로 변환. measurement 는 selector 변경으로 치유 불가능하므로 healing 체인
+    # (fallback / local_healer / dify) 거치지 않고 즉시 FAIL 마감.
+    # ─────────────────────────────────────────────────────────────────
+
+    def _dispatch_measurement(
+        self, action: str, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        handlers = {
+            "storage_read": self._execute_storage_read,
+            "cookie_verify": self._execute_cookie_verify,
+            "performance": self._execute_performance,
+            "visual_diff": self._execute_visual_diff,
+        }
+        try:
+            return handlers[action](page, step, artifacts)
+        except VerificationAssertionError as e:
+            step_id = step.get("step", "-")
+            desc = step.get("description", "")
+            target = str(step.get("target", ""))
+            value = str(step.get("value", ""))
+            try:
+                ss = self._screenshot(page, artifacts, step_id, "fail")
+            except Exception:  # noqa: BLE001 — 측정 실패 후 스크린샷도 실패면 그대로
+                ss = None
+            log.error("[Step %s] %s FAIL — %s", step_id, action, e)
+            return StepResult(
+                step_id, action, target, value, desc, "FAIL",
+                screenshot_path=ss,
+            )
+
+    # ─────────────────────────────────────────────────────────────────
+    # storage_read (Sprint 6 / 측정 액션 2/5)
+    # ─────────────────────────────────────────────────────────────────
+
+    _STORAGE_SCOPES = {"local", "session"}
+
+    def _execute_storage_read(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """storage_read 액션 — localStorage/sessionStorage 의 값을 fetch + 비교.
+
+        DSL 형태::
+
+            {"action": "storage_read", "target": "local:cart_id", "value": "abc123"}
+            {"action": "storage_read", "target": "session:flow",   "value": ""}   # 존재만
+
+        - ``target``: ``"<scope>:<key>"`` 형식. scope ∈ {local, session}. scope 생략 시 local.
+        - ``value``: 기대 값. 빈 문자열이면 *키 존재 (non-null)* 만 검증.
+
+        IndexedDB read 는 본 Sprint 6 OUT — 별 트랙. ``reset_state`` 가 IDB clear
+        는 지원하지만 read 는 schema 의존이라 더 복잡.
+
+        실패 시 ``VerificationAssertionError`` (verify 와 동일 — healing 대상 X).
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        raw_target = str(step.get("target", "")).strip()
+        expected = str(step.get("value", ""))
+
+        if ":" in raw_target:
+            scope, key = raw_target.split(":", 1)
+            scope = scope.strip().lower()
+            key = key.strip()
+        else:
+            scope = "local"
+            key = raw_target
+
+        if scope not in self._STORAGE_SCOPES:
+            raise ValueError(
+                f"storage_read: 알 수 없는 scope {scope!r} — 허용: {sorted(self._STORAGE_SCOPES)}"
+            )
+        if not key:
+            raise ValueError("storage_read: key 가 비어있음")
+
+        store = "localStorage" if scope == "local" else "sessionStorage"
+        try:
+            actual = page.evaluate(
+                f"(k) => {{ try {{ return {store}.getItem(k); }} catch (e) {{ return null; }} }}",
+                key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise VerificationAssertionError(
+                f"storage_read {scope}:{key} 평가 실패: {exc}"
+            ) from exc
+
+        if expected == "":
+            if actual is None:
+                raise VerificationAssertionError(
+                    f"storage_read {scope}:{key} — 키 미존재 (expected: 존재)"
+                )
+        else:
+            if actual != expected:
+                raise VerificationAssertionError(
+                    f"storage_read {scope}:{key} — 값 불일치 "
+                    f"(actual={actual!r}, expected={expected!r})"
+                )
+
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        log.info("[Step %s] storage_read %s:%s -> PASS", step_id, scope, key)
+        return StepResult(
+            step_id, "storage_read", raw_target, expected, desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # cookie_verify (Sprint 6 / 측정 액션 3/5)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _execute_cookie_verify(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """cookie_verify 액션 — 특정 cookie 존재/값 검증.
+
+        DSL 형태::
+
+            {"action": "cookie_verify", "target": "session_id",            "value": "abc123"}
+            {"action": "cookie_verify", "target": "session_id@.example.com","value": ""}
+
+        - ``target``: ``NAME`` 또는 ``NAME@DOMAIN``. domain 명시 시 leading dot 허용
+          (``.example.com`` ↔ ``example.com`` 동등 매치).
+        - ``value``: 기대 값. 빈 문자열이면 *cookie 존재* 만 검증.
+
+        실패 시 ``VerificationAssertionError``.
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        raw_target = str(step.get("target", "")).strip()
+        expected = str(step.get("value", ""))
+
+        if "@" in raw_target:
+            name, domain_filter = raw_target.split("@", 1)
+            name = name.strip()
+            domain_filter = domain_filter.strip().lstrip(".")
+        else:
+            name = raw_target
+            domain_filter = ""
+        if not name:
+            raise ValueError("cookie_verify: cookie name 이 비어있음")
+
+        cookies = page.context.cookies()
+        candidates = [
+            c for c in cookies
+            if c.get("name") == name
+            and (
+                not domain_filter
+                or (c.get("domain") or "").lstrip(".") == domain_filter
+            )
+        ]
+        if not candidates:
+            raise VerificationAssertionError(
+                f"cookie_verify {raw_target!r} — cookie 미존재 "
+                f"(검사 cookie 수: {len(cookies)})"
+            )
+
+        if expected != "":
+            actual_values = [c.get("value", "") for c in candidates]
+            if expected not in actual_values:
+                raise VerificationAssertionError(
+                    f"cookie_verify {raw_target!r} — 값 불일치 "
+                    f"(actual={actual_values!r}, expected={expected!r})"
+                )
+
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        log.info("[Step %s] cookie_verify %s -> PASS", step_id, raw_target)
+        return StepResult(
+            step_id, "cookie_verify", raw_target, expected, desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # performance (Sprint 6 / 측정 액션 4/5)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _execute_performance(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """performance 액션 — page load time 측정 + 임계값 비교.
+
+        DSL 형태::
+
+            {"action": "performance", "target": "", "value": "3000"}    # ≤ 3000ms PASS
+
+        - ``value``: 임계 ms (정수 또는 정수 문자열). 측정값이 이하면 PASS.
+
+        측정값 = ``performance.timing.loadEventEnd - performance.timing.navigationStart``
+        (legacy API). 단일 메트릭만 지원 — FCP/LCP/Lighthouse 는 Sprint 7.
+        SPA 라우트 변경은 측정 못 함 (timing 은 *최초* page load 기준).
+
+        실패 시 ``VerificationAssertionError``.
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        raw_value = str(step.get("value", "")).strip()
+        try:
+            threshold_ms = int(raw_value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"performance: value 가 ms 정수 아님: {raw_value!r}"
+            ) from e
+        if threshold_ms <= 0:
+            raise ValueError(f"performance: value 는 양의 정수여야 함 (={threshold_ms})")
+
+        try:
+            elapsed = page.evaluate(
+                """() => {
+                    const t = performance.timing;
+                    if (!t || !t.navigationStart) return -1;
+                    if (!t.loadEventEnd) return -1;
+                    return t.loadEventEnd - t.navigationStart;
+                }"""
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise VerificationAssertionError(
+                f"performance 측정 실패: {exc}"
+            ) from exc
+
+        elapsed_int = int(elapsed) if isinstance(elapsed, (int, float)) else -1
+        if elapsed_int < 0:
+            raise VerificationAssertionError(
+                "performance: navigation timing 미가용 — 페이지가 아직 load 되지 않았거나 "
+                "PerformanceTiming API 미지원"
+            )
+        if elapsed_int > threshold_ms:
+            raise VerificationAssertionError(
+                f"performance — load time {elapsed_int}ms > 임계 {threshold_ms}ms"
+            )
+
+        ss = self._screenshot(page, artifacts, step_id, "pass")
+        log.info(
+            "[Step %s] performance load=%dms ≤ %dms -> PASS",
+            step_id, elapsed_int, threshold_ms,
+        )
+        return StepResult(
+            step_id, "performance", "", f"{elapsed_int}ms/{threshold_ms}ms", desc,
+            "PASS", screenshot_path=ss,
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # visual_diff (Sprint 6 / 측정 액션 5/5)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _execute_visual_diff(
+        self, page: Page, step: dict, artifacts: str,
+    ) -> StepResult:
+        """visual_diff 액션 — 현재 viewport 와 기준(golden) 이미지의 픽셀 diff.
+
+        DSL 형태::
+
+            {"action": "visual_diff", "target": "fixtures/golden/home.png", "value": "1.0"}
+            {"action": "visual_diff", "target": "fixtures/golden/home.png", "value": "auto"}
+
+        - ``target``: 기준 이미지 경로 (상대=artifacts_dir 기준, 절대도 허용).
+        - ``value``: 임계 픽셀 % (기본 ``"1.0"`` = 1%). ``"auto"`` 면 기준 이미지가 없을
+          때 *현재를 기준으로 저장* (golden 초기화 모드 — PASS).
+
+        구현: PIL ``ImageChops.difference`` → bbox 비어있지 않으면 모든 픽셀 비교.
+        diff pixel count / total > 임계 면 FAIL.
+
+        Sprint 6 한계: viewport 1280x720 고정. 페이지 일부 region 비교는 후속.
+        anti-aliasing 미세 차이는 임계로 흡수 (기본 1%).
+
+        실패 시 ``VerificationAssertionError``.
+        """
+        step_id = step.get("step", "-")
+        desc = step.get("description", "")
+        target = str(step.get("target", "")).strip()
+        raw_value = str(step.get("value", "1.0")).strip().lower()
+        if not target:
+            raise ValueError("visual_diff: target (기준 이미지 경로) 필수")
+
+        # 절대 경로면 그대로, 상대 경로면 artifacts_dir 기준.
+        golden_path = Path(target)
+        if not golden_path.is_absolute():
+            golden_path = Path(artifacts) / target
+
+        # value 파싱을 screenshot 전에 — 잘못된 입력은 페이지 spawn 비용 없이 즉시 reject.
+        if raw_value == "auto":
+            threshold_pct = 1.0
+            auto_mode = True
+        else:
+            auto_mode = False
+            try:
+                threshold_pct = float(raw_value)
+            except ValueError as e:
+                raise ValueError(
+                    f"visual_diff: value 가 숫자 또는 'auto' 아님: {raw_value!r}"
+                ) from e
+            if threshold_pct < 0 or threshold_pct > 100:
+                raise ValueError(
+                    f"visual_diff: value 는 0~100 사이여야 함 (={threshold_pct})"
+                )
+
+        try:
+            from PIL import Image, ImageChops
+        except ImportError as e:  # pragma: no cover — pillow 는 requirements.txt 명시
+            raise VerificationAssertionError(
+                f"visual_diff: PIL/Pillow 미설치 — {e}"
+            ) from e
+
+        current_png = self._screenshot(page, artifacts, step_id, "visual_diff_current")
+        if not current_png:
+            raise VerificationAssertionError(
+                "visual_diff: 현재 viewport 스크린샷 실패"
+            )
+
+        # auto 모드 + golden 없음 → 현재를 기준으로 저장 + PASS.
+        if auto_mode and not golden_path.is_file():
+            golden_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(current_png, golden_path)
+            log.info(
+                "[Step %s] visual_diff auto — golden 신규 생성 %s -> PASS",
+                step_id, golden_path,
+            )
+            return StepResult(
+                step_id, "visual_diff", target, "auto:new", desc,
+                "PASS", screenshot_path=current_png,
+            )
+        if not golden_path.is_file():
+            raise VerificationAssertionError(
+                f"visual_diff: 기준 이미지 미존재 — {golden_path}"
+            )
+
+        # 비교 — 이미지 크기 다르면 즉시 FAIL.
+        with Image.open(golden_path) as g_img, Image.open(current_png) as c_img:
+            g = g_img.convert("RGB")
+            c = c_img.convert("RGB")
+            if g.size != c.size:
+                raise VerificationAssertionError(
+                    f"visual_diff: 이미지 크기 불일치 (golden={g.size}, current={c.size})"
+                )
+            diff = ImageChops.difference(g, c)
+            bbox = diff.getbbox()
+            if bbox is None:
+                diff_pct = 0.0
+            else:
+                # bbox 안의 픽셀 중 차이가 있는 픽셀 비율.
+                total = g.size[0] * g.size[1]
+                # 빠른 추정 — bbox 면적이 임계 위반의 상한.
+                bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if bbox_area / total * 100 < threshold_pct:
+                    diff_pct = bbox_area / total * 100
+                else:
+                    # bbox 면적 자체가 임계 넘으면 픽셀 단위 정확 카운트.
+                    # tobytes() — RGB 이미지를 (R,G,B,R,G,B,...) byte 시퀀스로.
+                    # 3바이트가 모두 0 이면 동일 픽셀, 하나라도 0 아니면 차이 픽셀.
+                    data = diff.tobytes()
+                    nonzero = sum(
+                        1 for i in range(0, len(data), 3)
+                        if data[i] | data[i + 1] | data[i + 2]
+                    )
+                    diff_pct = nonzero / total * 100
+
+        if diff_pct > threshold_pct:
+            raise VerificationAssertionError(
+                f"visual_diff — 차이 {diff_pct:.2f}% > 임계 {threshold_pct:.2f}% "
+                f"(golden={golden_path.name})"
+            )
+
+        log.info(
+            "[Step %s] visual_diff %.2f%% ≤ %.2f%% -> PASS",
+            step_id, diff_pct, threshold_pct,
+        )
+        return StepResult(
+            step_id, "visual_diff", target, f"{diff_pct:.2f}%/{threshold_pct:.2f}%", desc,
+            "PASS", screenshot_path=current_png,
         )
 
     # ─────────────────────────────────────────────────────────────────

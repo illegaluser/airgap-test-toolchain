@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Storage set fixture</title>
+</head>
+<body>
+  <h1>Storage set fixture</h1>
+  <button id="set-local" type="button">Set localStorage</button>
+  <button id="set-session" type="button">Set sessionStorage</button>
+  <p id="status">idle</p>
+  <script>
+    document.getElementById("set-local").addEventListener("click", () => {
+      localStorage.setItem("cart_id", "abc123");
+      document.getElementById("status").textContent = "local set";
+    });
+    document.getElementById("set-session").addEventListener("click", () => {
+      sessionStorage.setItem("flow", "checkout");
+      document.getElementById("status").textContent = "session set";
+    });
+  </script>
+</body>
+</html>
