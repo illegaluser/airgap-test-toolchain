@@ -31,50 +31,117 @@
 
 두 경로는 같은 14대 DSL 시나리오 형식을 공유하므로 한쪽에서 만든 결과를 다른 쪽이 그대로 받을 수 있다.
 
-## 모니터링 PC 로 시나리오 옮기기 (Replay UI)
+## 폴더 구조 (한눈에)
 
-녹화 PC 에서 만든 시나리오를 다른 PC 들에서 자동 실행하고 싶을 때:
+```text
+playwright-allinone/
+├── recording-ui/                ← Recording UI 본체 (호스트 데몬, 18092)
+│   ├── recording_service/
+│   └── run-recording-ui.sh
+├── replay-ui/                   ← Replay UI 본체 (모니터링 PC 데몬, 18094)
+│   ├── replay_service/
+│   ├── monitor/                 ← 명령줄 도구 (python -m monitor)
+│   └── run-replay-ui.sh
+├── shared/                      ← 두 UI 가 함께 쓰는 공용 코드
+│   ├── recording_shared/        ← trace 분석 · 실행 래퍼 · 보고서
+│   └── zero_touch_qa/           ← 시나리오 엔진 · 자가 치유 · locator
+├── monitor-build/               ← 모니터링 PC 1회-설치형 패키지 빌드
+├── replay-ui-portable-build/    ← Replay UI 휴대용 zip 빌드 도구
+├── build.sh                     ← 녹화 PC Docker 이미지 빌드
+├── mac-agent-setup.sh
+├── wsl-agent-setup.sh
+└── docs/
+```
 
-1. **녹화 PC** — Recording UI 의 결과 카드 → `Original Script` 또는 `셀프힐링 후` 카드의 `⬇ 다운로드` 클릭. 받는 `.py` 는 평문 자격증명 자동 sanitize (`auth_flow.sanitize_script`) 통과한 안전한 본문.
-2. **모니터링 PC (1회 설치)** — `monitor-runtime-<날짜시각>.zip` 을 풀고 `install-monitor` 한 번 실행 (Mac/Linux = `bash install-monitor.sh`, Windows = `install-monitor.cmd`; Windows 는 실행까지 자동).
-3. **모니터링 PC (사용)** — <http://127.0.0.1:18094> 에서 (a) 로그인 프로파일 등록 (필요 시 — 비로그인 시나리오면 생략), (b) `시나리오 스크립트` 카드에 받아온 `.py` 업로드, (c) 적용할 프로파일 select (또는 *비로그인*) + verify URL 옵션 → `▶ 실행` → 스텝별 스크린샷 + HTML 리포트.
+## 모니터링 PC 로 시나리오 옮기기
 
-### monitor-runtime zip 만드는 법 (빌드 머신)
+녹화 PC 에서 만든 `.py` 시나리오를 다른 PC 들에서 자동 실행하고 싶을 때 — 두 가지 모델 중 하나를 선택.
 
-`monitor-runtime-<날짜시각>.zip` 은 빌드 머신 (Mac/Linux/WSL2/Git Bash) 에서 다음 중 하나로 만든다.
+### 모델 비교
+
+| | 1회 설치형 (`monitor-runtime`) | 휴대용 (`replay-ui-portable`) |
+|---|---|---|
+| **받는 사람의 한 줄 액션** | `install-monitor` 한 번 실행 (~2분) → 이후 launcher 데몬 운영 | `Launch-ReplayUI.bat` (또는 `.command`) 더블클릭 |
+| **설치 / 관리자 권한** | 처음 한 번 설치 단계 | 불필요 |
+| **데이터 위치** | `~/.dscore.ttc.monitor/` (사용자 홈) | zip 폴더 안 `data/` (폴더 이동 시 데이터 같이 따라감) |
+| **장기 운영** | 적합 — 데몬 형식, 시스템 startup 등록 가능 | 가능하지만 임시·휴대 용도 더 자연스러움 |
+| **USB 한 개로 여러 PC** | 불가 (venv 절대경로 의존) | 가능 (zip 풀린 폴더 자체가 독립) |
+| **빌드 산출** | `monitor-runtime-<ts>.zip` (양 OS 동봉) | `replay-ui-portable-<ts>.zip` (OS 별 분리) |
+
+### 공통 사용 흐름
+
+1. **녹화 PC** — Recording UI 의 결과 카드 → `Original Script` 또는 `셀프힐링 후` 카드의 `⬇ 다운로드`. 받는 `.py` 는 평문 자격증명 자동 sanitize (`auth_flow.sanitize_script`) 통과.
+2. **모니터링 PC** — 위 모델 중 하나로 Replay UI 가동 후 <http://127.0.0.1:18094> 접속 → (a) 로그인 프로파일 등록 (비로그인 시나리오면 생략) → (b) `시나리오 스크립트` 카드에 `.py` 업로드 → (c) 프로파일 + verify URL 선택 → `▶ 실행` → 스텝별 스크린샷 + HTML 리포트.
+
+### A. 1회 설치형 빌드 (`monitor-runtime`)
+
+빌드 머신 (Mac/Linux/WSL2/Git Bash) 에서:
 
 ```bash
 # 모니터링 PC 패키지만:
 bash monitor-build/build-monitor-runtime.sh
 
-# 녹화 PC tarball + 모니터링 PC zip 을 한 번에:
+# 녹화 PC tarball + 모니터링 PC zip 한 번에:
 bash ../export-airgap.sh
 ```
 
-옵션: `--target win64` / `--target macos-arm64` (둘 중 한 OS 만 담아 zip 작게), `--no-chromium` (이미 받은 Chromium 재활용), `--reuse-cache`.
+주요 옵션: `--target win64` / `--target macos-arm64` (OS 한 쪽만 담아 zip 작게), `--no-chromium`, `--reuse-cache`, `--no-package` (wheels/chromium 캐시만 준비, zip 산출 생략 — 휴대용 빌드가 이 캐시를 재사용).
 
-산출되는 zip 의 특성:
+대상 PC 에서:
 
-| 항목 | 내용 |
-|---|---|
-| 동봉되는 것 | Windows Python 3.11 installer, Python wheels (양 OS), Playwright Chromium (양 OS), 소스 모듈, 설치 스크립트 (`.sh` + `.ps1`) |
-| 대상 PC 인터넷 요구 | **없음** — pip 는 `--no-index --find-links wheels/<os>/`, Chromium 은 오프라인 복사 |
-| 대상 PC 의존성 | Windows 는 Python 선행 설치 불필요. Mac/Linux 는 Python 3.11.x 필요. monitor-runtime wheel 번들은 cp311 전용 |
-| 운반 매체 | USB / 외장 디스크 / 사내 공유 폴더 등 자유. zip 한 개 파일만 옮기면 됨 |
-| 멀티 OS 한 장 | win64 + macos-arm64 가 한 zip 안에 같이 들어가서, 같은 zip 으로 Mac · Windows 어디서나 설치 (대상 PC 가 자기 OS 분만 골라 씀) |
+```bash
+# Mac / Linux
+unzip monitor-runtime-<ts>.zip && cd monitor-runtime-build-<ts>
+bash install-monitor.sh
 
-대상 PC 에서 **한 번 설치한 USB 를 다른 PC 에 그대로 꽂아 실행** 은 venv 의 절대경로 의존 때문에 안 된다. 항상 대상 PC 에서 한 번씩 `install-monitor` 를 새로 돌려 그 PC 의 로컬 디스크에 venv 가 생성된다.
+# Windows (PowerShell 네이티브)
+unzip monitor-runtime-<ts>.zip && cd monitor-runtime-build-<ts>
+install-monitor.cmd
+```
+
+설치 후 일상 기동:
+
+```bash
+bash <repo>/playwright-allinone/replay-ui/run-replay-ui.sh restart
+```
+
+### B. 휴대용 빌드 (`replay-ui-portable`)
+
+빌드 머신에서 자산을 `playwright-allinone/replay-ui/` 폴더 안에 직접 채워 넣은 뒤, 그 폴더를 통째로 zip 으로 압축한다.
+
+```powershell
+# Windows 빌드 머신 (PowerShell)
+pwsh playwright-allinone/replay-ui-portable-build/pack-windows.ps1 -ReuseCache -MakeZip
+```
+
+```bash
+# Mac 빌드 머신
+bash playwright-allinone/replay-ui-portable-build/pack-macos.sh --reuse-cache --make-zip
+```
+
+산출: `playwright-allinone/replay-ui-portable-build/build-out/DSCORE-ReplayUI-portable-{win64|macos-arm64}-<ts>.zip`. 받는 사람은 zip 풀고 `Launch-ReplayUI.bat` / `Launch-ReplayUI.command` 더블클릭만.
+
+**자동 갱신 hook (개발자 PC, 권장)** — 본 저장소 안의 소스가 바뀐 채로 git push 하려고 하면, push 직전에 휴대용 자산이 자동으로 다시 채워진다. 한 번만 설정:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+자세한 동작은 [`.githooks/README.md`](../.githooks/README.md).
+
+### Replay UI 진입 요약
 
 | 도구 | 위치 |
 | --- | --- |
 | Replay UI | <http://127.0.0.1:18094> (모니터링 PC 자기 자신만 접속, LAN 노출 X) |
-| 단일 진입점 launcher | `./replay-ui/run-replay-ui.sh {start\|stop\|restart\|status\|logs\|foreground\|doctor}` |
+| 단일 진입점 launcher (1회 설치형) | `./replay-ui/run-replay-ui.sh {start\|stop\|restart\|status\|logs\|foreground\|doctor}` |
+| 휴대용 실행 | zip 폴더 안 `Launch-ReplayUI.bat` 또는 `Launch-ReplayUI.command` |
 | CLI 실행 | `python -m monitor replay-script <script.py> --out <결과 폴더> [--profile <alias>] [--verify-url <URL>]` |
 | CLI 로그인 등록 | `python -m monitor profile seed <프로파일이름> --target <사이트 URL>` |
 
 > 2026-05-11 D17 일원화 — 이전 `bundle.zip` 흐름은 폐기됐다. 한 시나리오 = 한 `.py`. 적용할 로그인 프로파일과 verify URL 은 받는 쪽 Replay UI 에서 사용자가 명시 (또는 *비로그인* 으로 비워둠). 자세한 결정은 [PLAN_AUTH_PROFILE_NAVER_OAUTH.md §2 D17](docs/PLAN_AUTH_PROFILE_NAVER_OAUTH.md#2-의사결정-로그).
 
-처음 보는 사용자가 따라할 수 있게 단계별로 정리한 문서는 [docs/replay-ui-guide.md](docs/replay-ui-guide.md). 통합 테스트 매트릭스는 [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md). 설계 결정 배경은 `.claude/plans/squishy-wishing-emerson.md`.
+처음 보는 사용자가 따라할 수 있게 단계별로 정리한 문서는 [docs/replay-ui-guide.md](docs/replay-ui-guide.md). 통합 테스트 매트릭스는 [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md).
 
 ## 가장 짧은 시작
 
@@ -199,11 +266,12 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 | [docs/quickstart.md](docs/quickstart.md) | **처음 한 번 성공시키기** — 사전 요구사항, 빌드, 기동 확인, 첫 Pipeline, 첫 녹화·재생 |
 | [docs/recording-ui.md](docs/recording-ui.md) | Recording UI 의 6개 카드 (Login Profile / Discover / Recording / Play / 결과 / 세션) 카드별 사용법 |
 | [docs/operations.md](docs/operations.md) | 재배포 / 백업·복원 / 모델 변경 / Recording UI 서비스 재기동 / 장애 대응 |
-| [docs/replay-ui-guide.md](docs/replay-ui-guide.md) | **모니터링 PC 운영자 / 테스터 용 — Replay UI 설치 + 사용 가이드** |
+| [docs/replay-ui-guide.md](docs/replay-ui-guide.md) | **모니터링 PC 운영자 / 테스터 용 — Replay UI 설치 + 사용 가이드** (1회 설치형 + 휴대용 양쪽) |
 | [docs/replay-ui-integration-tests.md](docs/replay-ui-integration-tests.md) | Replay UI · 모니터링 PC bundle 흐름 통합 테스트 매트릭스 (자동 22 + 수동 20) |
 | [docs/reference.md](docs/reference.md) | 포트 / 볼륨 / 환경변수 / 데이터 구조 / DSL 액션 14종 / API 계약 |
 | [docs/recording-troubleshooting.md](docs/recording-troubleshooting.md) | 자주 발생하는 녹화·재생 에러 모음 |
 | [docs/](docs/) | 결정 문서 (PLAN_*.md) — 설계 배경 / 트레이드오프 / 검증 |
+| [`.githooks/README.md`](../.githooks/README.md) | 휴대용 자산 자동 갱신 hook 설정 (개발자, opt-in) |
 
 ## Recording UI 의 핵심 능력 (요약)
 

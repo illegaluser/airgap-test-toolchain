@@ -1,4 +1,4 @@
-# Auth Profile 사용 가이드 — 네이버 OAuth 연동 서비스 E2E 테스트
+﻿# Auth Profile 사용 가이드 — 네이버 OAuth 연동 서비스 E2E 테스트
 
 > 이 문서는 **네이버로 로그인되는 외부 서비스** (예: 사내 예약 시스템, 커머스 등)
 > 를 E2E 테스트할 때 *사람이 1회 통과한 네이버 로그인 결과를 storageState 로
@@ -516,8 +516,8 @@ playwright-allinone/scripts/install-git-hooks.sh
 이후 `git commit` 시 변경 영역이 매치되면 e2e 슈트 자동 실행. 회귀 시 commit 차단.
 
 **트리거 영역**:
-- `recording_service/*`
-- `zero_touch_qa/{auth_profiles,executor,__main__}.py`
+- `recording-ui/recording_service/*`
+- `shared/zero_touch_qa/{auth_profiles,executor,__main__}.py`
 - `test/test_recording_(ui_e2e|service).py`
 - `test/test_auth_profile_*.py`
 - `test/test_(post_process|replay_proxy_auth|executor_fingerprint_env|auth_profiles|auth_cli)*.py`

@@ -1,4 +1,4 @@
-# Dynamic annotator sandbox 의 asyncio loop 격리
+﻿# Dynamic annotator sandbox 의 asyncio loop 격리
 
 ## 배경
 
@@ -42,7 +42,7 @@ WARNING [annotate dynamic] sandbox 실패 → static fallback:
 
 | # | 파일 | 변경 |
 |---|---|---|
-| 1 | `recording_service/annotator.py` | `_run_dynamic_pass` 을 thread wrapper 로 변경. 본체는 `_run_dynamic_pass_inproc` 로 rename. |
+| 1 | `recording-ui/recording_service/annotator.py` | `_run_dynamic_pass` 을 thread wrapper 로 변경. 본체는 `_run_dynamic_pass_inproc` 로 rename. |
 
 코드 줄 수: 추가 ~30줄, 수정 ~5줄.
 

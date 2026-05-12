@@ -1,4 +1,4 @@
-# Popup 시 active page 식별 정합화 (codegen → scenario → executor)
+﻿# Popup 시 active page 식별 정합화 (codegen → scenario → executor)
 
 ## 배경
 
@@ -107,9 +107,9 @@ popup-트리거 click 식별:
 
 | 파일 | 변경 |
 |---|---|
-| `zero_touch_qa/converter_ast.py` | step build 시 `step["page"] = receiver_root`. `_handle_with` + `_handle_assign` 으로 `popup_to` resolve. |
-| `zero_touch_qa/executor.py` | `pages: dict[str, Page]` 도입. `_execute_step` 호출부에서 step 메타로 page 선택. 기존 자동전환 블록 제거. popup_to 처리 (`expect_popup`). |
-| `zero_touch_qa/dify_client.py` (또는 `config.py`) | default `DIFY_BASE_URL` → `http://localhost:18081/v1`. |
+| `shared/zero_touch_qa/converter_ast.py` | step build 시 `step["page"] = receiver_root`. `_handle_with` + `_handle_assign` 으로 `popup_to` resolve. |
+| `shared/zero_touch_qa/executor.py` | `pages: dict[str, Page]` 도입. `_execute_step` 호출부에서 step 메타로 page 선택. 기존 자동전환 블록 제거. popup_to 처리 (`expect_popup`). |
+| `shared/zero_touch_qa/dify_client.py` (또는 `config.py`) | default `DIFY_BASE_URL` → `http://localhost:18081/v1`. |
 | `test/test_converter_ast.py` | 02_popup_chain 의 step 들에 `page` 메타 + popup_to 검증. |
 | `test/fixtures/codegen_corpus/05_popup_then_back_to_main.py` (신규) | 5e1e5a6f141a 패턴 — popup 열고 원본 page 에서 후속. |
 | `test/test_converter_ast.py` (신규 케이스) | 새 픽스처가 후속 step 들에 `page="page"` 부여 검증. |
@@ -144,8 +144,8 @@ popup fix 검증 재실행에서 step 6 가 PASS 였으나 실은 **`get_by_role
 
 | 파일 | 변경 |
 |---|---|
-| `zero_touch_qa/converter_ast.py` | `_segments_to_target` 의 `get_by_role` 분기에서 `exact=True` kwarg 발견 시 target 끝에 `, exact=true` modifier emit. `exact=False` 는 default 라 emit 안 함. |
-| `zero_touch_qa/locator_resolver.py` | `_split_name_exact` helper 추가 — name= 끝의 `, exact=true|false` 분리. `_resolve_role` / `_raw_role` / `_apply_chain_segment` 3곳에서 `get_by_role(role, name=name, exact=exact)` 로 native 호출. |
+| `shared/zero_touch_qa/converter_ast.py` | `_segments_to_target` 의 `get_by_role` 분기에서 `exact=True` kwarg 발견 시 target 끝에 `, exact=true` modifier emit. `exact=False` 는 default 라 emit 안 함. |
+| `shared/zero_touch_qa/locator_resolver.py` | `_split_name_exact` helper 추가 — name= 끝의 `, exact=true|false` 분리. `_resolve_role` / `_raw_role` / `_apply_chain_segment` 3곳에서 `get_by_role(role, name=name, exact=exact)` 로 native 호출. |
 | `test/fixtures/codegen_corpus/11_exact_match.py` (신규) | exact=True 보존 회귀 픽스처. |
 | `test/test_converter_ast.py` | `test_exact_kwarg_preserved_in_target` 추가. |
 | `test/test_locator_resolver_unit.py` (신규) | `_split_name_exact` parametrize 단위 테스트 (10 케이스). |

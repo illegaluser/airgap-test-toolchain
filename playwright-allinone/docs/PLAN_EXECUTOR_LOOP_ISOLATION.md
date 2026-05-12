@@ -1,4 +1,4 @@
-# QAExecutor.execute 의 asyncio loop 격리
+﻿# QAExecutor.execute 의 asyncio loop 격리
 
 ## 배경
 
@@ -6,7 +6,7 @@
 `PLAN_ANNOTATOR_LOOP_ISOLATION.md` 후속 — annotator 격리 검증 중 `test_auth.py::test_auth_login_form_success` 등도 동일 패턴으로 실패.
 
 ```
-File "zero_touch_qa/executor.py:341" in execute
+File "shared/zero_touch_qa/executor.py:341" in execute
   with sync_playwright() as p:
 playwright._impl._errors.Error: It looks like you are using Playwright Sync API
   inside the asyncio loop.
@@ -57,7 +57,7 @@ def execute(self, scenario, headed=True, storage_state_in=None, storage_state_ou
 
 | # | 파일 | 변경 |
 |---|---|---|
-| 1 | `zero_touch_qa/executor.py` | `execute` 를 thread wrapper 로 변환, 기존 본체는 `_execute_inproc` 로 rename. |
+| 1 | `shared/zero_touch_qa/executor.py` | `execute` 를 thread wrapper 로 변환, 기존 본체는 `_execute_inproc` 로 rename. |
 
 코드 줄 수: 추가 ~25줄, rename 1곳.
 

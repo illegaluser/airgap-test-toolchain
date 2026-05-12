@@ -1,4 +1,4 @@
-# Dynamic annotator — codegen replay 의 dropdown/menu hover 자동 보정
+﻿# Dynamic annotator — codegen replay 의 dropdown/menu hover 자동 보정
 
 ## 배경
 
@@ -18,7 +18,7 @@ returncode: 1
 같은 시나리오를 `zero_touch_qa --mode execute` (healing 모드) 로 돌리면 9/9 PASS — step 2 / step 5 가 LocalHealer 의 동적 ancestor hover 로 HEALED.
 
 ### 문제
-[recording_service/annotator.py](../recording_service/annotator.py) 의 `annotate_script` 는 **정적 분석** 만:
+[recording-ui/recording_service/annotator.py](../recording_service/annotator.py) 의 `annotate_script` 는 **정적 분석** 만:
 - 입력: codegen `.py` 의 selector chain 문자열
 - 판단: `_seg_looks_like_hover_trigger(seg)` — `nav` / `menu` / `dropdown` / `gnb` 같은 패턴 매칭
 - 한계: chain 이 단일 segment (`page.get_by_role("button", name="사용신청 관리")`) 면 ancestor 정보 없어 추정 불가 → hover 주입 0
@@ -125,15 +125,15 @@ attached element 자체가 없으면 trigger 식별 불가 → 정적 annotator 
 
 | 파일 | 변경 |
 |---|---|
-| `recording_service/annotator.py` | `annotate_script_dynamic()` 신규 + `_DynamicAnnotator` class. 기존 `annotate_script` / `AnnotateResult` 보존. |
-| `recording_service/annotator.py` (helper 추출) | `_extract_actions_from_ast(tree, source) -> list[_Action]` — replay 용 dataclass. dst chain target 재구성에 converter_ast helper 활용. |
-| `recording_service/server.py` | `/annotate` endpoint (또는 동등) 에 `dynamic` flag + `storage_state_in` 옵션. 미존재면 신규 추가. |
-| `zero_touch_qa/executor.py` | `_VISIBILITY_HEALER_JS` 를 module-level export 로 노출 (이미 module 변수, import 만 가능). 변경 없을 수도. |
+| `recording-ui/recording_service/annotator.py` | `annotate_script_dynamic()` 신규 + `_DynamicAnnotator` class. 기존 `annotate_script` / `AnnotateResult` 보존. |
+| `recording-ui/recording_service/annotator.py` (helper 추출) | `_extract_actions_from_ast(tree, source) -> list[_Action]` — replay 용 dataclass. dst chain target 재구성에 converter_ast helper 활용. |
+| `recording-ui/recording_service/server.py` | `/annotate` endpoint (또는 동등) 에 `dynamic` flag + `storage_state_in` 옵션. 미존재면 신규 추가. |
+| `shared/zero_touch_qa/executor.py` | `_VISIBILITY_HEALER_JS` 를 module-level export 로 노출 (이미 module 변수, import 만 가능). 변경 없을 수도. |
 | `test/test_annotator_dynamic.py` (신규) | dropdown 픽스처 HTML + dynamic annotator 가 hover line 을 정확히 prepend 하는지 검증. |
 | `test/fixtures/dropdown_menu.html` (신규) | nav/dropdown 패턴 — `사용신청 관리` 가 hover trigger 하위에 hidden. |
 
 ### 비변경
-- `zero_touch_qa/executor.py` 의 healing 흐름 — 그대로.
+- `shared/zero_touch_qa/executor.py` 의 healing 흐름 — 그대로.
 - `converter_ast.py` — annotator 가 helper 만 import.
 - recording UI — 내부적으로 dynamic 옵션 켤지 default 결정 (별도 노출 vs 항상 dynamic) 은 후속.
 

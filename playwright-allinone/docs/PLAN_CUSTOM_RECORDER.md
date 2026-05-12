@@ -1,4 +1,4 @@
-# PLAN — Custom Recorder (R-Phase) — codegen 의존 제거
+﻿# PLAN — Custom Recorder (R-Phase) — codegen 의존 제거
 
 브랜치: 본 PLAN 은 설계 단계. 단기 hotfix
 ([`PLAN_TITLE_DIFY_SCROLL_FIXES.md`](PLAN_TITLE_DIFY_SCROLL_FIXES.md)) 와 분리
@@ -103,7 +103,7 @@ codegen Inspector 동등 기능:
 
 **범위**:
 
-- `recording_service/recorder/` 신규 모듈
+- `recording-ui/recording_service/recorder/` 신규 모듈
   - `runner.py` — chromium launch + init_script 부착 + 종료 시 시나리오 저장
   - `inpage.js` — DOM listener + selector 후보 산출 (in-page 코드)
   - `selector_ranker.py` — 후보 ranking

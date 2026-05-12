@@ -1,4 +1,4 @@
-# PLAN — `get_by_title` 변환 / Dify 연결 진단 / 스크롤 step 위치 지정 (단기 hotfix)
+﻿# PLAN — `get_by_title` 변환 / Dify 연결 진단 / 스크롤 step 위치 지정 (단기 hotfix)
 
 브랜치: 본 변경 묶음용 신규 작업.
 
@@ -70,7 +70,7 @@
    screencast-frame, waitForEventInfo]`. wheel/scroll 이벤트 없음. trace.zip 은
    `original.py` 재실행을 기록하는 것이라 user 의 codegen 중 wheel 은 처음부터
    포착 대상이 아님. codegen .py output 에도 wheel 이 emit 되지 않음
-   ([recording_service/server.py:1197](../recording_service/server.py#L1197) 주석
+   ([recording-ui/recording_service/server.py:1197](../recording_service/server.py#L1197) 주석
    에 명시).
 
 ## A — `get_by_title` 변환 지원

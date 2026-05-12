@@ -1,4 +1,4 @@
-# Tour 스크립트의 codegen 산출물 패턴 통합
+﻿# Tour 스크립트의 codegen 산출물 패턴 통합
 
 ## 배경
 
@@ -78,9 +78,9 @@ executor 의 `verify` 액션 처리부에 위 세 condition 키워드를 새로 
 
 | 파일 | 변경 |
 |---|---|
-| `zero_touch_qa/executor.py` | `verify` 액션에 `url_contains` / `url_not_contains` / `min_text_length` condition 추가 |
-| `zero_touch_qa/converter_ast.py` | `_handle_stmt` 에 `ast.Assert` 분기 + `_assert_to_url_membership` / `_assert_to_min_text_length` 헬퍼 |
-| `recording_service/server.py` | `_TOUR_SCRIPT_TEMPLATE` 재작성 (codegen-style + assert 보조). pytest / fixture / pytest.main / tour_results / tour_screenshots 제거 |
+| `shared/zero_touch_qa/executor.py` | `verify` 액션에 `url_contains` / `url_not_contains` / `min_text_length` condition 추가 |
+| `shared/zero_touch_qa/converter_ast.py` | `_handle_stmt` 에 `ast.Assert` 분기 + `_assert_to_url_membership` / `_assert_to_min_text_length` 헬퍼 |
+| `recording-ui/recording_service/server.py` | `_TOUR_SCRIPT_TEMPLATE` 재작성 (codegen-style + assert 보조). pytest / fixture / pytest.main / tour_results / tour_screenshots 제거 |
 | `test/test_recording_service.py` | 새 verify condition / converter assert 매핑 단위 테스트 |
 | `test/test_discover_api_e2e.py` | tour 골격 검증 마커를 codegen 패턴 키워드로 교체 |
 
