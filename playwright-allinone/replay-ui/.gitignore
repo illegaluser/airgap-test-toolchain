@@ -1,0 +1,22 @@
+# 휴대용 자산은 빌드 도구가 채워넣는다. 코드 저장소에는 포함하지 않음.
+# `playwright-allinone/replay-ui-portable-build/pack-windows.ps1` 또는
+# `pack-macos.sh` 가 이 폴더에 직접 채워넣은 뒤 폴더 자체를 zip 으로 압축한다.
+
+embedded-python/
+site-packages/
+chromium/
+python/
+data/
+
+# 빌드 도구가 shared/ 에서 카피해 채워넣는 패키지 — 코드 저장소에는 shared/ 한 곳에만 보관.
+recording_shared/
+zero_touch_qa/
+
+Launch-ReplayUI.bat
+Stop-ReplayUI.bat
+Launch-ReplayUI.command
+Stop-ReplayUI.command
+README.txt
+
+__pycache__/
+*.pyc
