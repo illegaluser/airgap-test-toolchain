@@ -316,16 +316,31 @@ EventSource 호출, 페이지 로드 중 dialog 호출, canvas/SVG 면적 비율
 
 설계 의사결정은 [docs/PLAN_EXTERNAL_TRUST.md §3](docs/PLAN_EXTERNAL_TRUST.md) 참조.
 
-## 외부 SUT 벤치마크 (트랙 2 Phase B2 — pending)
+## 외부 SUT 벤치마크 (트랙 2 Phase B2)
 
-DSL 표현력의 임의 사이트 일반화 데이터를 확보하는 트랙. 공개 안정 사이트 10개에
-시나리오 80개를 작성하고 매일 cron 실행해 flake rate 시계열 dashboard 산출.
+DSL 표현력의 임의 사이트 일반화 데이터를 확보하는 트랙. 공개 안정 사이트 9개에
+시나리오 50개를 작성하고 N회 반복 실행해 flake rate 측정.
 
-- **상태**: pending — 별 사이클. 측정 액션 5개 확장(`feat/dsl-action-dialog-choose`)
-  머지 후 `feat/external-bench` 브랜치에서 진행 예정.
-- **포함 사이트** (선정 완료): playwright.dev / todomvc / the-internet.herokuapp /
-  demoqa / saucedemo / practicesoftwaretesting / news.ycombinator / wikipedia /
-  Salesforce Trailhead (closed shadow 검증용) / Naver 메인.
+```bash
+cd playwright-allinone
+PYTHONPATH=shared:recording-ui:replay-ui:test \
+  python -m bench.flake_runner --runs 10
+
+PYTHONPATH=shared:recording-ui:replay-ui:test \
+  python -m bench.dashboard
+# 결과: test/bench/dashboards/index.html
+```
+
+baseline 1회 (2026-05-13): 50 시나리오 중 PASS 30 / FAIL 20 (첫 그린 60%).
+
+- **상위 안정**: TodoMVC 100% / herokuapp 80% / saucedemo 75% / practicesoftwaretesting 80%
+- **하위**: demoqa / wikipedia / hackernews / playwright_dev — 외부 사이트 selector 변동성
+- **Salesforce Trailhead**: closed shadow 의도적 FAIL (호환성 진단 도구 검증 데이터)
+
+정기 실행 (daily cron 시계열 누적) 은 **추후 별도 서비스 내부 구현**으로 대체.
+본 레포는 *실행 인프라 + 시나리오 50개* 만 자산화. 자세한 설계는
+[test/bench/README.md](test/bench/README.md), 의사결정은
+[docs/PLAN_EXTERNAL_TRUST.md §5](docs/PLAN_EXTERNAL_TRUST.md).
 
 DSL 표현력 범위는 [docs/PLAN_DSL_COVERAGE.md](docs/PLAN_DSL_COVERAGE.md) 에 정량
 기록 — Sprint 6 측정 액션 추가로 임의 웹사이트의 ~70~75% 동작 표현 가능.
