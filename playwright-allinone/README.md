@@ -229,7 +229,7 @@ Jenkins Pipeline 의 LLM 단계 (시나리오 생성 / 치유) 가 호스트 Oll
 **Q. Recording UI 만 재기동하려면?**
 
 ```bash
-./run-recording-ui.sh restart
+./recording-ui/run-recording-ui.sh restart
 ```
 
 호스트 venv 의 코드만 바꾼 경우 (executor / scenario validator 등) 컨테이너 재빌드 없이 이거면 충분.

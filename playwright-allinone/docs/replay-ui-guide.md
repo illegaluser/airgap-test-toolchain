@@ -444,7 +444,7 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 export AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
 
 # 그 다음 두 UI 띄우기 (어느 쪽이든 같은 env 가 적용됨)
-./playwright-allinone/run-recording-ui.sh restart
+./playwright-allinone/recording-ui/run-recording-ui.sh restart
 ./playwright-allinone/run-replay-ui.sh restart
 ```
 
@@ -453,7 +453,7 @@ export AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
 ```powershell
 $env:AUTH_PROFILES_DIR = "$HOME\ttc-allinone-data\auth-profiles"
 
-bash playwright-allinone/run-recording-ui.sh restart
+bash playwright-allinone/recording-ui/run-recording-ui.sh restart
 bash playwright-allinone/run-replay-ui.sh restart
 ```
 
