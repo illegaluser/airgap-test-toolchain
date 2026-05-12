@@ -4,7 +4,7 @@ Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, us
 
 Lint 오류 — NON-NEGOTIABLE
 
-작업 중 발견되는 모든 lint 오류(markdownlint / ruff / eslint / 기타)는 같은 작업 단위 안에서 해결한다. 사람·에이전트 모두 적용.
+파일 작성·편집·**조회** 중 발견되는 모든 lint 오류(markdownlint / ruff / eslint / 기타)는 같은 작업 단위 안에서 해결한다. 사람·에이전트 모두 적용. "내가 편집한 영역 외" / "기존 거라 무관" 같은 핑계 금지.
 
 - 코드 lint 는 가능하면 `--fix` 자동 수정 후 남는 것은 수동 수정.
 - 한국어 산문 문서는 MD013(80자) 같은 라인 길이 규칙이 부적합하므로 repo 루트 `.markdownlint.json` 으로 정책 차단 (이미 적용됨). 새 규칙을 끄거나 켤 때는 거기서.
