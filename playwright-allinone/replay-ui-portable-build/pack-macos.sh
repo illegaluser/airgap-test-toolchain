@@ -154,12 +154,21 @@ echo "[pack-macos] pip install --target site-packages (offline wheels)"
   "${PACKAGES[@]}"
 
 # 3. Chromium 복사.
+CHROMIUM_DST="$REPLAYUI_DIR/chromium"
 if [[ -d "$CHROMIUM_SRC" ]]; then
-  CHROMIUM_DST="$REPLAYUI_DIR/chromium"
   mkdir -p "$CHROMIUM_DST"
   echo "[pack-macos] Copying Chromium -> chromium/"
   cp -R "$CHROMIUM_SRC"/* "$CHROMIUM_DST/"
 fi
+
+# 3b. chromium revision 보정 — cache 의 chromium 과 site-packages 의 playwright 가
+# 기대하는 revision 이 일치하지 않을 수 있음 (build-monitor-runtime.sh 의 helper
+# venv 가 다른 playwright 버전을 갖고 받은 경우). relocatable python 으로 한 번 더
+# install 호출해서 누락 revision 만 보충 (E2E 회귀 검출).
+mkdir -p "$CHROMIUM_DST"
+PLAYWRIGHT_BROWSERS_PATH="$CHROMIUM_DST" \
+  "$REPLAYUI_DIR/python/bin/python3" -m playwright install chromium \
+  || echo "[pack-macos] WARN — playwright install chromium 실패. 받는 사람 PC 가 첫 실행 시 받아야 할 수 있음."
 
 # 4. 공용 코드 패키지 카피 (shared/ → replay-ui/ 루트로).
 copy_module() {

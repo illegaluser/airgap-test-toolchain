@@ -163,11 +163,27 @@ if (Test-Path $Pywin32Sys32) {
 }
 
 # 4. chromium/ 복사.
+$ChromiumDstDir = Join-Path $ReplayUiDir "chromium"
 if (Test-Path $ChromiumSrcDir) {
-    $ChromiumDstDir = Join-Path $ReplayUiDir "chromium"
     New-Item -ItemType Directory -Path $ChromiumDstDir -Force | Out-Null
     Write-Host "[pack-windows] Copying Chromium -> chromium/"
     Copy-Item -Path (Join-Path $ChromiumSrcDir "*") -Destination $ChromiumDstDir -Recurse -Force
+} else {
+    Write-Host "[pack-windows] Skip Chromium copy (cache missing)"
+}
+
+# 4b. chromium revision 보정 — cache 의 chromium 과 site-packages 의 playwright 가
+# 기대하는 revision 이 일치하지 않을 수 있음 (build-monitor-runtime.sh 의 helper
+# venv 가 다른 playwright 버전을 갖고 받은 경우). embedded python 으로 한 번 더
+# install 호출해서 누락 revision 만 보충 (E2E 회귀 검출, plan G.3).
+$env:PLAYWRIGHT_BROWSERS_PATH = $ChromiumDstDir
+$prevEAP2 = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $EmbeddedPy -m playwright install chromium
+$pwInstallExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP2
+if ($pwInstallExit -ne 0) {
+    Write-Warning "playwright install chromium 실패 (exit $pwInstallExit) — 받는 사람 PC 가 첫 실행 시 받아야 할 수 있음"
 }
 
 # 5. 공용 코드 패키지 카피 (shared/ → replay-ui/ 루트로).
