@@ -6,6 +6,7 @@
 # 옵션:
 #   --target <win64|macos-arm64|all>  기본 all (양쪽 OS 다 포함)
 #   --no-chromium                     Chromium 제외 (이미 설치된 모니터링 PC 용 작은 패키지)
+#   --no-package                      zip 산출 생략 — wheels/chromium 캐시만 준비 (다른 패키저가 재사용)
 #   --reuse-cache                     wheels/chromium 캐시 재사용
 #   --python <path>                   pip download 에 쓸 호스트 python (기본 python3)
 
@@ -13,10 +14,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ALLINONE="$ROOT/playwright-allinone"
-SRC_RECORDING="$ALLINONE/recording_service"
-SRC_REPLAY="$ALLINONE/replay_service"
-SRC_MONITOR="$ALLINONE/monitor"
-SRC_ZTQ="$ALLINONE/zero_touch_qa"
+SRC_RECORDING="$ALLINONE/recording-ui/recording_service"
+SRC_REPLAY="$ALLINONE/replay-ui/replay_service"
+SRC_MONITOR="$ALLINONE/replay-ui/monitor"
+SRC_ZTQ="$ALLINONE/shared/zero_touch_qa"
+SRC_RECORDING_SHARED="$ALLINONE/shared/recording_shared"
 BUILD_DIR_ROOT="${BUILD_DIR_ROOT:-$ROOT/.monitor-runtime-cache}"
 PYTHON_WINDOWS_VERSION="${PYTHON_WINDOWS_VERSION:-3.11.9}"
 PYTHON_WINDOWS_INSTALLER="python-$PYTHON_WINDOWS_VERSION-amd64.exe"
@@ -26,6 +28,7 @@ PW_PYTHON=""
 
 TARGET="all"
 NO_CHROMIUM=0
+NO_PACKAGE=0
 REUSE_CACHE=0
 PYTHON="python3"
 
@@ -33,6 +36,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)       TARGET="$2"; shift 2 ;;
     --no-chromium)  NO_CHROMIUM=1; shift ;;
+    --no-package)   NO_PACKAGE=1; REUSE_CACHE=1; shift ;;
     --reuse-cache)  REUSE_CACHE=1; shift ;;
     --python)       PYTHON="$2"; shift 2 ;;
     -h|--help)
@@ -198,7 +202,7 @@ fi
 # rsync 가 기본 미설치라 빌드가 깨지던 회귀 방지 (2026-05-11). 양쪽 결과 동등 —
 # __pycache__ / *.pyc 제외.
 mkdir -p "$BUILD_DIR/src"
-for src in "$SRC_REPLAY" "$SRC_MONITOR" "$SRC_ZTQ" "$SRC_RECORDING"; do
+for src in "$SRC_REPLAY" "$SRC_MONITOR" "$SRC_ZTQ" "$SRC_RECORDING_SHARED" "$SRC_RECORDING"; do
   base="$(basename "$src")"
   dst="$BUILD_DIR/src/$base"
   if command -v rsync >/dev/null 2>&1; then
@@ -243,6 +247,12 @@ DSCORE 모니터링 PC 셋업 패키지 — monitor-runtime
 설치 후 Replay UI: http://127.0.0.1:18094
 EOF
 
+if [[ "$NO_PACKAGE" = "1" ]]; then
+  echo "[build] --no-package — wheels/chromium 캐시만 준비. zip 산출 생략."
+  echo "[build] 캐시 위치 — $BUILD_DIR"
+  exit 0
+fi
+
 # zip. CLI `zip` 우선, 없으면 Python zipfile fallback — Git Bash (MSYS2) 환경
 # 에서는 zip 이 기본 미설치라 빌드가 깨지던 회귀 방지 (2026-05-11).
 ZIP_NAME="monitor-runtime-$TS.zip"
@@ -277,6 +287,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 fi
 if ! grep -q "src/zero_touch_qa" <<<"$list_output"; then
   echo "[build] ERROR — sanity 실패: zero_touch_qa 미포함"
+  exit 1
+fi
+if ! grep -q "src/recording_shared" <<<"$list_output"; then
+  echo "[build] ERROR — sanity 실패: recording_shared 미포함"
   exit 1
 fi
 if ! grep -q "install-monitor" <<<"$list_output"; then
