@@ -44,10 +44,11 @@ PYTHONPATH=shared:recording-ui:replay-ui \
 python -m test.bench.flake_runner --site playwright_dev --runs 5
 ```
 
-### CI (GitHub Actions)
+### 정기 실행
 
-[`.github/workflows/bench.yml`](../../../.github/workflows/bench.yml) — daily cron.
-`runs=3` 권장 (CI 시간 절약).
+사용자 결정 (2026-05-13): 정기 cron 누적은 *추후 별도 서비스 내부 구현* 으로
+대체. 본 디렉토리는 *시나리오 50개 + 실행 인프라* 만 자산화. 외부 서비스에서
+`flake_runner` 와 `dashboard` 를 호출해 시계열 누적을 운영한다.
 
 ## 시나리오 JSON 포맷
 
@@ -57,24 +58,24 @@ python -m test.bench.flake_runner --site playwright_dev --runs 5
 각 step 필수 키: `step` / `action` / `target` / `value` / `description`.
 `verify` 액션은 `condition` 추가 (visible/hidden/text/contains/url_contains 등).
 
-## 사이트 선정 기준
+## 사이트 선정 + 현재 상태
 
-[PLAN_EXTERNAL_TRUST.md §5.2](../../docs/PLAN_EXTERNAL_TRUST.md) 의 10개 사이트:
+[PLAN_EXTERNAL_TRUST.md §5.2](../../docs/PLAN_EXTERNAL_TRUST.md) 의 9개 사이트
+(Naver 메인은 사용자 결정으로 제외):
 
-| 사이트 | 시나리오 유형 | 현재 |
+| 사이트 | 시나리오 유형 | 작성 |
 | --- | --- | --- |
-| playwright.dev | 검색 / 문서 네비게이션 | ✅ search.json |
-| TodoMVC (demo.playwright.dev/todomvc) | CRUD | ✅ crud.json |
-| the-internet.herokuapp.com | 폼 인증 / 모달 / iframe | ✅ form_auth.json |
-| demoqa.com | UI 컴포넌트 광범위 | 후속 |
-| saucedemo.com | 로그인 → 상품 → 결제 | 후속 |
-| practicesoftwaretesting.com | 검색 → 카트 | 후속 |
-| news.ycombinator.com | 읽기 전용 (검색, 페이징) | 후속 |
-| wikipedia.org | 읽기 전용 (검색) | 후속 |
-| Salesforce Trailhead | closed shadow 검증용 (의도적 ❌) | 후속 |
-| Naver 메인 | 한국어 읽기 전용 | 후속 |
+| playwright.dev | 검색 / 문서 네비게이션 | 5 |
+| TodoMVC (demo.playwright.dev/todomvc) | CRUD | 5 |
+| the-internet.herokuapp.com | 폼 / 모달 / dialog (dialog_choose 회귀 포함) | 10 |
+| demoqa.com | UI 컴포넌트 광범위 | 8 |
+| saucedemo.com | 로그인 → 상품 → 결제 | 8 |
+| practicesoftwaretesting.com | 검색 → 카트 | 5 |
+| news.ycombinator.com | 읽기 전용 (검색, 페이징) | 3 |
+| wikipedia.org | 읽기 전용 (검색) | 3 |
+| Salesforce Trailhead | closed shadow 검증용 (의도적 ❌) | 3 |
 
-목표: 10 사이트 × 평균 8 시나리오 = **80 시나리오**.
+총 **50 시나리오**.
 
 ## flake rate 임계
 

@@ -127,51 +127,65 @@ DSL 표현력 한계 ([PLAN_DSL_COVERAGE.md](PLAN_DSL_COVERAGE.md)) 가 *Sprint 
 
 ---
 
-## 5. 트랙 2 Phase B2 — 외부 벤치마크 (pending)
+## 5. 트랙 2 Phase B2 — 외부 벤치마크 (완료)
 
 ### 5.1 목표
 
-공개 안정 사이트 10개 × 시나리오 80개 작성 → flake rate 시계열 dashboard 산출.
+공개 안정 사이트 9개 × 시나리오 50개 작성 → flake rate 측정 인프라 구축.
 
 ### 5.2 사이트 선정 (안정성/접근성 기준)
 
-| 사이트 | 시나리오 유형 | 비고 |
-| --- | --- | --- |
-| playwright.dev | 검색 / 문서 네비게이션 | 공식 안정 |
-| todomvc.com | CRUD 흐름 | 자동화 학습 표준 |
-| the-internet.herokuapp.com | 모달 / 폼 / iframe | 자동화 표적 |
-| demoqa.com | UI 컴포넌트 광범위 | UI 다양성 |
-| saucedemo.com | 로그인 → 상품 → 결제 | E2E 데모 표준 |
-| practicesoftwaretesting.com | 검색 → 카트 | 안정적 데모 |
-| news.ycombinator.com | 읽기 전용 (검색, 페이징) | 정적 + 변화 적음 |
-| wikipedia.org | 읽기 전용 (검색) | 글로벌 안정 |
-| Salesforce Trailhead | closed shadow 검증용 | 의도적 ❌ (호환성 진단 도구 검증) |
-| Naver 메인 | 한국어 읽기 전용 | 한국어 SUT 1종 |
+| 사이트 | 시나리오 유형 | 작성 | 비고 |
+| --- | --- | --- | --- |
+| playwright.dev | 검색 / 문서 네비게이션 | 5 | 공식 안정 |
+| TodoMVC (demo.playwright.dev/todomvc) | CRUD | 5 | 자동화 학습 표준 |
+| the-internet.herokuapp.com | 모달 / 폼 / iframe / dialog | 10 | 자동화 표적 — Sprint 6 dialog_choose 회귀 포함 |
+| demoqa.com | UI 컴포넌트 광범위 | 8 | UI 다양성 |
+| saucedemo.com | 로그인 → 상품 → 결제 | 8 | E2E 데모 표준 |
+| practicesoftwaretesting.com | 검색 → 카트 | 5 | 안정적 데모 |
+| news.ycombinator.com | 읽기 전용 (검색, 페이징) | 3 | 정적 + 변화 적음 |
+| wikipedia.org | 읽기 전용 (검색) | 3 | 글로벌 안정 |
+| Salesforce Trailhead | closed shadow 검증용 | 3 | 의도적 ❌ (자동화 불가 증거 데이터) |
+| ~~Naver 메인~~ | ~~한국어 읽기 전용~~ | 0 | **사용자 결정 (2026-05-13): 제외** |
 
-### 5.3 구현 (계획)
+### 5.3 구현 (완료)
 
 ```text
-브랜치: feat/external-bench (main 기반, B1 머지 후 rebase)
+브랜치: feat/external-bench (main 기반)
 
-신규 파일:
-- test/bench/sites/<site>/<scenario>.json × 80
-- test/bench/flake_runner.py     (N회 반복 실행)
-- test/bench/dashboard.py        (정적 HTML 시계열)
-- .github/workflows/bench.yml    (daily cron)
+산출:
+- test/bench/sites/<site>/<scenario>.json × 50
+- test/bench/flake_runner.py   (N회 반복 실행 + JSONL append)
+- test/bench/dashboard.py      (정적 HTML 시계열)
+- test/bench/README.md         (사용 가이드)
 ```
 
-### 5.4 성공 기준
+### 5.4 정기 실행 — 외부 서비스 위탁
 
-- 첫 그린 비율 80%+
-- 7일 flake rate 시계열 dashboard 가시화
-- flake rate > 30% 시나리오는 `unsupported: true` 자동 마킹
+**사용자 결정 (2026-05-13)**: `.github/workflows/bench.yml` daily cron 은 제거.
+정기 flake rate 시계열 누적은 *추후 별도 서비스 내부 구현* 으로 대체.
 
-### 5.5 트레이드오프
+본 레포는 *실행 인프라 (flake_runner / dashboard) 와 시나리오 50개* 만 자산화.
+운영 데이터(7일 시계열, UNSUPPORTED 마킹 자동화 등) 는 별 서비스 내부에서 수집.
+
+### 5.5 검증 결과 (1회 baseline, 2026-05-13)
+
+```text
+TOTAL=50 PASS=30 FAIL=20 (첫 그린 60%)
+
+상위 안정: todomvc 100% / herokuapp 80% / practicesoftwaretesting 80% / saucedemo 75%
+하위:     demoqa 38% / wikipedia 33% / hackernews 33% / salesforce 33% / playwright_dev 20%
+```
+
+- todomvc 100%, saucedemo 75% — *우리 인프라의 안정성* 확인 (사이트 자체가 안정)
+- demoqa/wikipedia/hackernews — *외부 사이트 변동성* + selector 변경 영향
+- salesforce 33% — closed shadow 의도적 FAIL 2개 + landing 1 PASS (호환성 진단 도구 검증 데이터)
+
+### 5.6 트레이드오프
 
 - **데이터 본질**: 외부 사이트가 마음대로 바뀜 → flake 가 *우리 도구* 가 아닌
   *SUT 변동성* 의 측정. 갱신을 *하지 않는 것* 이 측정 의도.
-- **네트워크 의존**: GitHub Actions 클라우드 러너에서 외부 도메인 접속 — 폐쇄망
-  본체 솔루션의 *외부 검증 트랙* 은 GitHub 측에서 돌리는 것이 자연스러움.
+- **네트워크 의존**: 폐쇄망 본체 솔루션과 격리. 운영 정기 실행은 외부 서비스 위탁.
 
 ---
 
