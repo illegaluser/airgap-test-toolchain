@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://playwright.dev/", "description": "Playwright 진입"},
+  {"step": 2, "action": "click",    "target": "a.navbar__link:has-text('Community')", "value": "", "description": "Community 메뉴 클릭"},
+  {"step": 3, "action": "verify",   "target": "", "value": "/community/", "condition": "url_contains", "description": "URL community 포함"},
+  {"step": 4, "action": "verify",   "target": "h1", "value": "", "condition": "visible", "description": "Community 페이지 h1"}
+]

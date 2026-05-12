@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://news.ycombinator.com/", "description": "HN 진입"},
+  {"step": 2, "action": "scroll",   "target": ".morelink", "value": "into_view", "description": "More 링크까지 스크롤"},
+  {"step": 3, "action": "click",    "target": ".morelink", "value": "", "description": "More 클릭 — 2페이지"},
+  {"step": 4, "action": "verify",   "target": "", "value": "?p=2", "condition": "url_contains", "description": "p=2 URL"}
+]

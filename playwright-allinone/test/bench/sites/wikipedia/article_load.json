@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://en.wikipedia.org/wiki/Hyperlink", "description": "Hyperlink article 직접 진입"},
+  {"step": 2, "action": "verify",   "target": "h1#firstHeading", "value": "Hyperlink", "condition": "contains_text", "description": "제목에 Hyperlink"},
+  {"step": 3, "action": "click",    "target": "#mw-content-text a[href*='/wiki/']:first-of-type", "value": "", "description": "본문 첫 내부 위키 링크"},
+  {"step": 4, "action": "verify",   "target": "h1#firstHeading", "value": "", "condition": "visible", "description": "이동 후 새 article 헤더"}
+]

@@ -1,0 +1,10 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demo.playwright.dev/todomvc/", "description": "TodoMVC 진입"},
+  {"step": 2, "action": "fill",     "target": ".new-todo", "value": "first", "description": "첫 항목"},
+  {"step": 3, "action": "press",    "target": ".new-todo", "value": "Enter", "description": "추가"},
+  {"step": 4, "action": "fill",     "target": ".new-todo", "value": "second", "description": "두 번째 항목"},
+  {"step": 5, "action": "press",    "target": ".new-todo", "value": "Enter", "description": "추가"},
+  {"step": 6, "action": "fill",     "target": ".new-todo", "value": "third", "description": "세 번째 항목"},
+  {"step": 7, "action": "press",    "target": ".new-todo", "value": "Enter", "description": "추가"},
+  {"step": 8, "action": "verify",   "target": ".todo-count strong", "value": "3", "condition": "text", "description": "카운터 = 3"}
+]

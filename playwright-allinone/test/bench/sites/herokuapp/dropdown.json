@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/dropdown", "description": "Dropdown 페이지"},
+  {"step": 2, "action": "select",   "target": "#dropdown", "value": "Option 1", "description": "Option 1 선택"},
+  {"step": 3, "action": "verify",   "target": "#dropdown", "value": "1", "condition": "value", "description": "value=1 확인"},
+  {"step": 4, "action": "select",   "target": "#dropdown", "value": "Option 2", "description": "Option 2 선택"},
+  {"step": 5, "action": "verify",   "target": "#dropdown", "value": "2", "condition": "value", "description": "value=2 확인"}
+]

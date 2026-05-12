@@ -1,0 +1,9 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/login", "description": "Form Auth 페이지 진입"},
+  {"step": 2, "action": "fill",     "target": "#username", "value": "tomsmith", "description": "공개 데모 username"},
+  {"step": 3, "action": "fill",     "target": "#password", "value": "SuperSecretPassword!", "description": "공개 데모 password (placeholder 치환 대상 아님 — 공식 데모 값)"},
+  {"step": 4, "action": "click",    "target": "button[type='submit']", "value": "", "description": "로그인 클릭"},
+  {"step": 5, "action": "verify",   "target": ".flash.success", "value": "logged into", "condition": "contains", "description": "성공 flash 메시지 확인"},
+  {"step": 6, "action": "click",    "target": "a[href='/logout']", "value": "", "description": "로그아웃 클릭"},
+  {"step": 7, "action": "verify",   "target": ".flash.success", "value": "logged out", "condition": "contains", "description": "로그아웃 flash 메시지 확인"}
+]

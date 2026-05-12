@@ -1,0 +1,10 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://www.saucedemo.com/", "description": "진입"},
+  {"step": 2, "action": "fill",     "target": "#user-name", "value": "standard_user", "description": "로그인"},
+  {"step": 3, "action": "fill",     "target": "#password", "value": "secret_sauce", "description": "pw"},
+  {"step": 4, "action": "click",    "target": "#login-button", "value": "", "description": "로그인"},
+  {"step": 5, "action": "click",    "target": "#react-burger-menu-btn", "value": "", "description": "햄버거 메뉴"},
+  {"step": 6, "action": "wait",     "target": "", "value": "500", "description": "메뉴 전개 대기"},
+  {"step": 7, "action": "click",    "target": "#logout_sidebar_link", "value": "", "description": "로그아웃 링크"},
+  {"step": 8, "action": "verify",   "target": "#login-button", "value": "", "condition": "visible", "description": "로그아웃 후 로그인 버튼 표시"}
+]

@@ -1,0 +1,5 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/inputs", "description": "Inputs 페이지"},
+  {"step": 2, "action": "fill",     "target": "input[type='number']", "value": "42", "description": "숫자 입력 42"},
+  {"step": 3, "action": "verify",   "target": "input[type='number']", "value": "42", "condition": "value", "description": "value=42 확인"}
+]

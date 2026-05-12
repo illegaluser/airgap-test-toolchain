@@ -1,0 +1,5 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/select-menu", "description": "Select Menu 페이지"},
+  {"step": 2, "action": "select",   "target": "#oldSelectMenu", "value": "Blue", "description": "Blue 선택"},
+  {"step": 3, "action": "verify",   "target": "#oldSelectMenu", "value": "2", "condition": "value", "description": "value=2 (Blue)"}
+]

@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://practicesoftwaretesting.com/", "description": "메인 진입"},
+  {"step": 2, "action": "wait",     "target": "", "value": "1500", "description": "카탈로그 + 필터 로드 대기"},
+  {"step": 3, "action": "check",    "target": "input[type='checkbox']:first-of-type", "value": "true", "description": "첫 번째 브랜드/카테고리 체크"},
+  {"step": 4, "action": "wait",     "target": "", "value": "1500", "description": "필터 적용 후 결과 갱신"},
+  {"step": 5, "action": "verify",   "target": ".card", "value": "", "condition": "visible", "description": "필터 후에도 결과 카드 visible"}
+]

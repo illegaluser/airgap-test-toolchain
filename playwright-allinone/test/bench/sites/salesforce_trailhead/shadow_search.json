@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://trailhead.salesforce.com/", "description": "Trailhead 메인"},
+  {"step": 2, "action": "wait",     "target": "", "value": "3000", "description": "SPA 로드"},
+  {"step": 3, "action": "click",    "target": "lightning-button-icon[icon-name='utility:search'], button[aria-label*='Search' i]", "value": "", "description": "검색 버튼 — closed shadow 안 매치 실패 예상"},
+  {"step": 4, "action": "fill",     "target": "input[type='search'], lightning-input input", "value": "Apex", "description": "검색 입력 — closed shadow"},
+  {"step": 5, "action": "verify",   "target": ".search-results, [data-key='search-results']", "value": "", "condition": "visible", "description": "결과 영역"}
+]

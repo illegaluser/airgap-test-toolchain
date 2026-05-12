@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://www.saucedemo.com/", "description": "saucedemo 진입"},
+  {"step": 2, "action": "fill",     "target": "#user-name", "value": "standard_user", "description": "standard_user (공개 데모)"},
+  {"step": 3, "action": "fill",     "target": "#password", "value": "secret_sauce", "description": "공개 데모 password"},
+  {"step": 4, "action": "click",    "target": "#login-button", "value": "", "description": "로그인 버튼"},
+  {"step": 5, "action": "verify",   "target": "", "value": "/inventory.html", "condition": "url_contains", "description": "inventory 페이지 진입"}
+]

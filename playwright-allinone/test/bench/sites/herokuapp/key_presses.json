@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/key_presses", "description": "Key Presses 페이지"},
+  {"step": 2, "action": "click",    "target": "#target", "value": "", "description": "타겟에 포커스"},
+  {"step": 3, "action": "press",    "target": "#target", "value": "A", "description": "A 키 입력"},
+  {"step": 4, "action": "verify",   "target": "#result", "value": "You entered: A", "condition": "text", "description": "A 입력 결과"}
+]

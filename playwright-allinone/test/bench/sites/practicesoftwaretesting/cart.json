@@ -1,0 +1,9 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://practicesoftwaretesting.com/", "description": "메인 진입"},
+  {"step": 2, "action": "wait",     "target": "", "value": "1500", "description": "카탈로그 로드"},
+  {"step": 3, "action": "click",    "target": ".card:first-of-type", "value": "", "description": "첫 상품 진입"},
+  {"step": 4, "action": "wait",     "target": "", "value": "1500", "description": "상세 로드"},
+  {"step": 5, "action": "click",    "target": "[data-test='add-to-cart'], button:has-text('Add to cart')", "value": "", "description": "카트 추가"},
+  {"step": 6, "action": "wait",     "target": "", "value": "1000", "description": "카트 업데이트"},
+  {"step": 7, "action": "verify",   "target": "[data-test='cart-quantity'], .cart-count", "value": "", "condition": "visible", "description": "카트 카운트 visible"}
+]

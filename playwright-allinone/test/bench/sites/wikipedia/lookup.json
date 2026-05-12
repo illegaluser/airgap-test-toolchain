@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://en.wikipedia.org/", "description": "English Wikipedia"},
+  {"step": 2, "action": "fill",     "target": "#searchInput", "value": "Playwright (software)", "description": "쿼리 입력"},
+  {"step": 3, "action": "click",    "target": "button[type='submit'][form='searchform'], #searchform button", "value": "", "description": "검색 제출"},
+  {"step": 4, "action": "wait",     "target": "", "value": "1500", "description": "결과 페이지 로드"},
+  {"step": 5, "action": "verify",   "target": "h1", "value": "Playwright", "condition": "contains_text", "description": "h1 에 Playwright 포함"}
+]
