@@ -1,4 +1,4 @@
-# verify_profile 강화 + tour 첫 실패 abort 보강
+﻿# verify_profile 강화 + tour 첫 실패 abort 보강
 
 ## 배경
 
@@ -63,10 +63,10 @@
 
 | 파일 | 내용 |
 |---|---|
-| `zero_touch_qa/auth_profiles.py` | `_storage_alive_cookie_count_for_host` / `_body_looks_unauthenticated` / `_check_status_and_host` / `_evaluate_service_response` 헬퍼 추가. `verify_profile` 시작에 cookie expiry pre-check. `_verify_service_side` 본문을 헬퍼 호출로 단순화 (기존 cognitive complexity 27 → 분할). |
-| `zero_touch_qa/converter_ast.py` | `_handle_stmt` 에 `ast.Try` 분기 — body 만 재귀. |
-| `recording_service/server.py` | `_format_tour_steps_block` 가 각 URL 을 try/except 로 감싼 출력 생성. |
-| `recording_service/annotator.py` | `_seg_looks_like_hover_trigger` 함수명 변경 (snake_case) 따라가는 import + 호출 갱신. |
+| `shared/zero_touch_qa/auth_profiles.py` | `_storage_alive_cookie_count_for_host` / `_body_looks_unauthenticated` / `_check_status_and_host` / `_evaluate_service_response` 헬퍼 추가. `verify_profile` 시작에 cookie expiry pre-check. `_verify_service_side` 본문을 헬퍼 호출로 단순화 (기존 cognitive complexity 27 → 분할). |
+| `shared/zero_touch_qa/converter_ast.py` | `_handle_stmt` 에 `ast.Try` 분기 — body 만 재귀. |
+| `recording-ui/recording_service/server.py` | `_format_tour_steps_block` 가 각 URL 을 try/except 로 감싼 출력 생성. |
+| `recording-ui/recording_service/annotator.py` | `_seg_looks_like_hover_trigger` 함수명 변경 (snake_case) 따라가는 import + 호출 갱신. |
 | `test/test_auth_profiles.py` | C.5 단위 테스트 13건 (cookie alive count 6 + body heuristic 5 + 부수 2). |
 | `test/test_converter_ast.py` | C.6 회귀 가드 1건 (`test_try_except_body_is_recursed_for_extraction`). |
 | `test/test_recording_service.py` | float 동등 비교 보정, commented-code 오해 회피 표현. |

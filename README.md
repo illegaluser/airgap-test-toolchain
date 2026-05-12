@@ -17,14 +17,24 @@
 ```text
 airgap-test-toolchain/
 ├── README.md
+├── .githooks/                      ← 개발자용 git hook (자산 stale 자동 갱신, opt-in)
 ├── playwright-allinone/
-│   ├── README.md
-│   ├── Dockerfile
-│   ├── build.sh
-│   ├── mac-agent-setup.sh
-│   ├── wsl-agent-setup.sh
-│   ├── zero_touch_qa/
-│   └── test/
+│   ├── README.md                   ← Zero-Touch QA 운영 기준 문서
+│   ├── Dockerfile · build.sh
+│   ├── mac-agent-setup.sh · wsl-agent-setup.sh
+│   ├── recording-ui/               ← Recording UI (호스트 데몬, 18092)
+│   │   ├── recording_service/
+│   │   └── run-recording-ui.sh
+│   ├── replay-ui/                  ← Replay UI (모니터링 PC 데몬, 18094)
+│   │   ├── replay_service/
+│   │   ├── monitor/                ← 명령줄 도구 (`python -m monitor`)
+│   │   └── run-replay-ui.sh
+│   ├── shared/                     ← 두 UI 가 함께 쓰는 공용 코드
+│   │   ├── recording_shared/       ← trace 분석·실행 래퍼·보고서
+│   │   └── zero_touch_qa/          ← 시나리오 엔진, 자가 치유, locator 등
+│   ├── monitor-build/              ← 모니터링 PC 1회-설치형 패키지 빌드
+│   ├── replay-ui-portable-build/   ← Replay UI 휴대용 zip 빌드 도구
+│   └── docs/
 └── code-AI-quality-allinone/
     ├── README.md
     ├── Dockerfile
@@ -106,33 +116,42 @@ bash scripts/run-wsl2.sh
 
 폐쇄망 PC 에 인터넷 없이 설치할 때 — 빌드 머신(온라인)에서 산출물을 만들어 USB / 외장 디스크 / 사내 공유 폴더 등으로 옮긴 뒤, 대상 머신에서 설치합니다.
 
-#### `playwright-allinone` (녹화 PC + 모니터링 PC)
+#### `playwright-allinone` — 녹화 PC + 모니터링 PC
 
-두 종류의 산출물이 있습니다 — 두 PC 의 역할이 분리되어 있기 때문입니다.
+녹화 PC 용 산출물 1종, 모니터링 PC 용 산출물 2종 (두 모델 중 택일).
 
-| 산출물 | 대상 PC | 만드는 명령 (빌드 머신) | 푸는 명령 (대상 PC) |
-|---|---|---|---|
-| `dscore.ttc.playwright-<ts>.tar.gz` | 녹화 PC (Docker 호스트) | `bash playwright-allinone/build.sh` | `docker load` 후 `build.sh --redeploy` |
-| `monitor-runtime-<ts>.zip` | 모니터링 PC (Replay UI) | `bash playwright-allinone/monitor-build/build-monitor-runtime.sh` | `unzip` 후 `install-monitor.sh` / `.ps1` |
+| # | 산출물 | 대상 PC | 만드는 명령 (빌드 머신) | 받는 사람이 하는 일 |
+|---|---|---|---|---|
+| 1 | `dscore.ttc.playwright-<ts>.tar.gz` | 녹화 PC (Docker 호스트) | `bash playwright-allinone/build.sh` | `docker load` → `build.sh --redeploy` |
+| 2-A | `monitor-runtime-<ts>.zip` | 모니터링 PC (Replay UI) — **1회 설치형** | `bash playwright-allinone/monitor-build/build-monitor-runtime.sh` | `unzip` → `install-monitor.sh` / `install-monitor.cmd` 한 번 |
+| 2-B | `replay-ui-portable-<ts>.zip` | 모니터링 PC (Replay UI) — **휴대용** | `pwsh playwright-allinone/replay-ui-portable-build/pack-windows.ps1 -MakeZip` (또는 `bash pack-macos.sh --make-zip`) | `unzip` → `Launch-ReplayUI.bat` 더블클릭. **설치 없음**. |
 
-두 산출을 한 명령으로 같이 만들고 싶으면 저장소 루트의 wrapper 사용:
+녹화 + 모니터링 두 산출을 한 번에 묶고 싶으면 저장소 루트 wrapper:
 
 ```bash
-bash export-airgap.sh                  # 둘 다 (기본)
+bash export-airgap.sh                  # 녹화 tarball + monitor-runtime zip
 bash export-airgap.sh --monitor-only   # monitor-runtime zip 만
-bash export-airgap.sh --recording-only # tarball 만
+bash export-airgap.sh --recording-only # 녹화 tarball 만
 ```
 
-> **빌드 머신 OS** — export 측 스크립트는 bash 입니다. Mac / Linux / WSL2 Ubuntu / Windows 의 Git Bash 중 하나에서 실행하세요 (Windows 네이티브 PowerShell 에서 직접 실행 안 됨). 대상 PC 측 *설치* 는 OS 마다 대칭으로 — Mac/Linux 는 `install-monitor.sh`, Windows 는 `install-monitor.ps1` (PowerShell 네이티브) 로 진행합니다.
+> **빌드 머신 OS** — export 측 스크립트는 bash 입니다. Mac / Linux / WSL2 Ubuntu / Windows 의 Git Bash 중 하나에서 실행하세요 (Windows 네이티브 PowerShell 에서 직접 실행 안 됨). 휴대용 zip 의 `pack-windows.ps1` 만 PowerShell 네이티브.
 
-`monitor-runtime-<ts>.zip` 의 특성:
+**1회 설치형 (2-A `monitor-runtime-<ts>.zip`)**:
 
 - **완전 오프라인 설치** — Windows Python 3.11 installer, Python wheels, Playwright Chromium, 소스 모듈, 설치 스크립트가 모두 zip 안에 동봉. 대상 PC 에서 PyPI / Playwright CDN 접근 0.
-- **양 OS 동봉** — `wheels/win64/` + `wheels/macos-arm64/`, `chromium/win64/` + `chromium/macos-arm64/`. 한 zip 이 Mac 도 Windows 도 설치 가능. (특정 OS 만 작은 zip 으로 받으려면 `--target win64` 또는 `--target macos-arm64`.)
-- **호스트 요구** — Windows 는 Python 선행 설치 불필요. Mac/Linux 는 Python 3.11.x 필요. monitor-runtime wheel 번들은 cp311 전용입니다.
-- **USB 등 이동식 매체로 운반 가능** — zip 한 개 파일이라 자유롭게 이동. 단, 대상 PC 의 *로컬 디스크* 에 install-monitor 가 새 venv 를 만드는 모델이므로, "한 번 설치한 USB 를 다른 PC 에 그대로 꽂아 실행" 은 venv 의 절대경로 의존 때문에 안 됩니다.
+- **양 OS 동봉** — `wheels/win64/` + `wheels/macos-arm64/`, `chromium/win64/` + `chromium/macos-arm64/`. 한 zip 이 Mac 도 Windows 도 설치 가능 (특정 OS 만 작은 zip 으로 받으려면 `--target win64` 또는 `--target macos-arm64`).
+- **호스트 요구** — Windows 는 Python 선행 설치 불필요. Mac/Linux 는 Python 3.11.x 필요. monitor-runtime wheel 번들은 cp311 전용.
+- 설치 후 운영은 `~/.dscore.ttc.monitor/` 의 venv 와 데이터 디렉토리 사용. 데몬 형식 (`run-replay-ui.sh start|stop|status|...`).
+- **모델 특성**: 대상 PC 별로 한 번씩 설치 필요 (USB 한 개로 여러 PC 돌려쓰기는 venv 절대경로 의존상 불가).
 
-자세한 절차는 [playwright-allinone/README.md](playwright-allinone/README.md#모니터링-pc-로-시나리오-옮기기-replay-ui) + [playwright-allinone/docs/replay-ui-guide.md](playwright-allinone/docs/replay-ui-guide.md).
+**휴대용 (2-B `replay-ui-portable-<ts>.zip`)**:
+
+- **설치·관리자 권한·인터넷 모두 불필요** — embeddable Python · 의존 패키지 · Chromium · 실행파일이 폴더 안에 다 들어가 있어 더블클릭만으로 동작.
+- zip 풀린 폴더 안 `data/` 가 사용자 상태 보관 위치. 폴더를 USB 로 옮기면 데이터까지 같이 따라감.
+- 빌드 머신만 인터넷 + 패키징 도구 (PowerShell 또는 bash + python3) 필요. 받는 사람은 인터넷 0.
+- **모델 특성**: 빠른 배포 / 임시 사용에 적합. 운영용 PC 에 영구 설치하려면 1회 설치형(2-A)을 권장.
+
+자세한 절차는 [playwright-allinone/README.md](playwright-allinone/README.md#모니터링-pc-로-시나리오-옮기기) + [playwright-allinone/docs/replay-ui-guide.md](playwright-allinone/docs/replay-ui-guide.md).
 
 #### `code-AI-quality-allinone`
 
@@ -154,7 +173,7 @@ bash export-airgap.sh --recording-only # tarball 만
 
 ### 1. Playwright Zero-Touch QA
 
-- 핵심 엔진은 `zero_touch_qa/` 패키지입니다.
+- 핵심 엔진은 `playwright-allinone/shared/zero_touch_qa/` 패키지입니다 (Recording UI · Replay UI 양쪽이 공유).
 - 실행 모드는 `chat`, `doc`, `convert`, `execute` 네 가지입니다.
 - `chat`: 자연어 요구사항(`SRS_TEXT`)을 입력으로 받아 Dify가 테스트 시나리오를 생성하고 실행합니다.
 - `doc`: 기획서/PDF 같은 문서에서 텍스트를 추출해 그 내용을 바탕으로 테스트 시나리오를 생성하고 실행합니다.

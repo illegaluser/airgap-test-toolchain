@@ -285,3 +285,21 @@ python3 -m pytest --collect-only -q test
 | 빌드 디스크 부족 | Docker disk usage 확인 | `docker builder prune -a -f` |
 
 더 깊은 원인 분석이 필요하면 [reference.md](reference.md)의 로그와 파일 위치를 확인한다.
+
+## 11. Replay UI (모니터링 PC) 운영
+
+Recording UI 와 짝을 이루는 *재생 전용* UI. 같은 호스트에서 동시에 띄울 수 있고, 별도 모니터링 PC 에 분리 배포할 수도 있다. 운영 절차는 별도 문서 [replay-ui-guide.md](replay-ui-guide.md) 참조. 핵심만 요약:
+
+```bash
+# 일상 기동 (1회 설치형 — install-monitor 로 venv 준비된 PC)
+./replay-ui/run-replay-ui.sh restart    # 18094 에서 가동
+./replay-ui/run-replay-ui.sh status
+./replay-ui/run-replay-ui.sh doctor
+
+# CLI 만으로 시나리오 1회 실행 (Replay UI 안 띄우고)
+python -m monitor replay-script <scenario.py> --out <결과폴더> [--profile <alias>]
+```
+
+배포 산출은 두 가지 모델 중 택일:
+- **1회 설치형** `monitor-runtime-<ts>.zip` — `monitor-build/build-monitor-runtime.sh` → 대상 PC 에서 `install-monitor` 한 번 → venv 운영.
+- **휴대용** `replay-ui-portable-<ts>.zip` — `replay-ui-portable-build/pack-windows.ps1` 또는 `pack-macos.sh` → 받는 사람은 `Launch-ReplayUI.bat` 더블클릭만 (설치 없음).

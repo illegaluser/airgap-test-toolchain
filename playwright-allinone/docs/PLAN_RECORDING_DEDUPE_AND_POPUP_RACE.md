@@ -1,4 +1,4 @@
-# PLAN — 녹화 중복 click 정리 & popup 캡처 race 회피
+﻿# PLAN — 녹화 중복 click 정리 & popup 캡처 race 회피
 
 ## 배경 — 사례 ddb7dad1fc7d → e89d0fe245aa
 
@@ -32,7 +32,7 @@ dpg 포털의 "페르소나 ChatBot" 카드를 한 번 클릭한 시나리오에
 
 ### 결정 1 — 변환기에서 동일-타깃 연속 click dedupe
 
-**위치** — [zero_touch_qa/converter_ast.py](../zero_touch_qa/converter_ast.py)
+**위치** — [shared/zero_touch_qa/converter_ast.py](../zero_touch_qa/converter_ast.py)
 의 `convert_via_ast` post-processing 단계 (steps 직렬화 직전).
 
 **규칙** — 연속한 두 click step (i, i+1) 이 다음을 모두 만족하면 i 또는 i+1 중
@@ -56,7 +56,7 @@ dpg 포털의 "페르소나 ChatBot" 카드를 한 번 클릭한 시나리오에
 
 ### 결정 2 — popup 캡처 pages-diff fallback
 
-**위치** — [zero_touch_qa/executor.py](../zero_touch_qa/executor.py) 의
+**위치** — [shared/zero_touch_qa/executor.py](../zero_touch_qa/executor.py) 의
 `_run_step_maybe_capture_popup`.
 
 **현재 동작** — `with active_page.expect_popup(timeout=10000)` wrap. timeout

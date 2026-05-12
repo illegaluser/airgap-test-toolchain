@@ -1,4 +1,4 @@
-# Navigation/Terminal step 분리 — segment 기반 시나리오 실행
+﻿# Navigation/Terminal step 분리 — segment 기반 시나리오 실행
 
 ## 배경
 
@@ -125,11 +125,11 @@ for el in candidates:
 
 | # | 파일 | 변경 |
 |---|---|---|
-| 1 | `zero_touch_qa/converter_ast.py` | emit 시 `kind` 분류 함수 호출 |
-| 2 | `zero_touch_qa/converter.py` | line-based parser 도 동일 분류 |
-| 3 | `zero_touch_qa/executor.py` | scenario for-loop → segment loop. helper `is_target_actionable`, `is_target_disabled`, `_build_segments` |
-| 4 | `zero_touch_qa/local_healer.py` | candidate disabled skip |
-| 5 | `zero_touch_qa/helpers/scenarios.py` | 테스트 빌더에 `kind` 인자 (default `terminal`) |
+| 1 | `shared/zero_touch_qa/converter_ast.py` | emit 시 `kind` 분류 함수 호출 |
+| 2 | `shared/zero_touch_qa/converter.py` | line-based parser 도 동일 분류 |
+| 3 | `shared/zero_touch_qa/executor.py` | scenario for-loop → segment loop. helper `is_target_actionable`, `is_target_disabled`, `_build_segments` |
+| 4 | `shared/zero_touch_qa/local_healer.py` | candidate disabled skip |
+| 5 | `shared/zero_touch_qa/helpers/scenarios.py` | 테스트 빌더에 `kind` 인자 (default `terminal`) |
 | 6 | `tests/test_executor_full_dsl.py` | 새 회귀 케이스: carousel-disabled scenario |
 
 코드 줄 수 예상: 추가 ~150 줄, 수정 ~30 줄.

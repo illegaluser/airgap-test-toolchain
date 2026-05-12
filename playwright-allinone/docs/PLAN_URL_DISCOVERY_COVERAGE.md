@@ -89,10 +89,10 @@
 
 | 파일 | 신규/수정 | 목적 |
 |---|---|---|
-| `playwright-allinone/zero_touch_qa/url_discovery.py` | 수정 | `DiscoverConfig` 5개 옵션 + `source` 필드 + sitemap fetch 헬퍼 + request capture hook + SPA 셀렉터 + 쿼리 무시 정규화 분기 + 서브도메인 매칭 분기 |
-| `playwright-allinone/recording_service/server.py` | 수정 | `DiscoverReq` 5개 옵션 + worker 패스스루 + CSV `source` 컬럼 + meta.json 옵션 기록. `TourScriptReq` 매칭에 `ignore_query` 파생 정규화 동일 적용 |
-| `playwright-allinone/recording_service/web/index.html` | 수정 | discover 폼에 고급 옵션 `<details>` 추가 (체크박스 5개) |
-| `playwright-allinone/recording_service/web/app.js` | 수정 | 폼 → 페이로드, 표에 `source` 컬럼 추가 |
+| `playwright-allinone/shared/zero_touch_qa/url_discovery.py` | 수정 | `DiscoverConfig` 5개 옵션 + `source` 필드 + sitemap fetch 헬퍼 + request capture hook + SPA 셀렉터 + 쿼리 무시 정규화 분기 + 서브도메인 매칭 분기 |
+| `playwright-allinone/recording-ui/recording_service/server.py` | 수정 | `DiscoverReq` 5개 옵션 + worker 패스스루 + CSV `source` 컬럼 + meta.json 옵션 기록. `TourScriptReq` 매칭에 `ignore_query` 파생 정규화 동일 적용 |
+| `playwright-allinone/recording-ui/recording_service/web/index.html` | 수정 | discover 폼에 고급 옵션 `<details>` 추가 (체크박스 5개) |
+| `playwright-allinone/recording-ui/recording_service/web/app.js` | 수정 | 폼 → 페이로드, 표에 `source` 컬럼 추가 |
 | `playwright-allinone/test/test_url_discovery.py` | 수정 | 5개 옵션의 단위 회귀 케이스 추가 (fixture HTML/sitemap/handler 확장) |
 | `playwright-allinone/test/test_discover_api_e2e.py` | 수정 | 5개 옵션이 페이로드 → worker → 결과까지 전달되는지 1~2개 통합 케이스 추가 |
 

@@ -79,9 +79,19 @@ Mac/Linux 는 `Python 3.11.x` 가 보이면 OK. `Python 3.12+`, `3.13+`, `3.14+`
 
 ---
 
-## 4. 설치 — 한 번만
+## 4. 설치 — 두 모델 중 하나
 
-### 4.1 설치 패키지 받기
+배포 모델이 두 가지다. 사용 케이스에 맞춰 골라 받는다.
+
+| | 1회 설치형 (`monitor-runtime`) | 휴대용 (`replay-ui-portable`) |
+|---|---|---|
+| **언제 어울리나** | 모니터링 PC 1대를 *영구 운영* (스케줄러 등록, startup 자동기동) | 임시·휴대 사용, USB 한 개로 여러 PC 돌리기, 시범 데모 |
+| **받는 사람의 한 줄** | `install-monitor.sh` / `install-monitor.cmd` 한 번 실행 (~2분) | `Launch-ReplayUI.bat` / `Launch-ReplayUI.command` 더블클릭 |
+| **설치 / 관리자 권한** | 처음 1회 | 불필요 |
+| **데이터 위치** | `~/.dscore.ttc.monitor/` | zip 폴더 안 `data/` |
+| **자세히** | §4.1 ~ §4.6 (이번 장) | §4.7 (이번 장 마지막) |
+
+### 4.1 설치 패키지 받기 (1회 설치형)
 
 `monitor-runtime-<날짜시각>.zip` 을 받는다. 받는 곳은 두 군데 중 하나:
 
@@ -178,6 +188,52 @@ env 는 launcher 가 자동 export — `PLAYWRIGHT_BROWSERS_PATH` / `AUTH_PROFIL
 `./replay-ui/run-replay-ui.sh status` 가 `health: ok` 와 PID 를 찍으면 OK. 다시 브라우저로 접속해 본다.
 
 문제가 계속되면 [§9 자주 막히는 곳](#9-자주-막히는-곳) 으로.
+
+### 4.7 휴대용 모델 — 설치 없이 더블클릭
+
+이 모델은 설치 단계가 없다. 받는 사람 입장에서:
+
+1. `replay-ui-portable-<OS>-<날짜시각>.zip` 을 임의 폴더에 풀기.
+2. 폴더 안의 실행파일 더블클릭:
+   - Windows: `Launch-ReplayUI.bat`
+   - macOS: `Launch-ReplayUI.command` ([최초 1회 Gatekeeper 우회 필요](#mac-gatekeeper))
+3. 잠시 후 기본 브라우저에 <http://127.0.0.1:18094/> 가 자동으로 뜬다.
+4. 종료는 `Stop-ReplayUI.bat` / `Stop-ReplayUI.command` 또는 콘솔 창 닫기.
+
+**데이터 위치** — 폴더 안 `data/auth-profiles/`, `data/scenarios/`, `data/scripts/`, `data/runs/`. 폴더 자체를 USB 로 옮기면 데이터까지 같이 따라감.
+
+**Mac Gatekeeper** — 사내 비공식 배포 (Apple notarization 없음) 의 경우 첫 실행 시 macOS 가 차단한다. 한 번만:
+- Finder 에서 `Launch-ReplayUI.command` 를 우클릭(또는 Control-클릭) → "열기" → 경고 다이얼로그에서 "열기".
+- 또는 터미널에서: `xattr -dr com.apple.quarantine /path/to/풀린-폴더`
+
+**휴대용 zip 만드는 법 (빌드 머신)**:
+
+```powershell
+# Windows 빌드 머신 (PowerShell)
+pwsh playwright-allinone/replay-ui-portable-build/pack-windows.ps1 -ReuseCache -MakeZip
+```
+
+```bash
+# macOS arm64 빌드 머신
+bash playwright-allinone/replay-ui-portable-build/pack-macos.sh --reuse-cache --make-zip
+```
+
+산출: `playwright-allinone/replay-ui-portable-build/build-out/DSCORE-ReplayUI-portable-{win64|macos-arm64}-<ts>.zip` (~200-250MB).
+
+**전제 조건** — `monitor-runtime` 빌드 캐시 (`.monitor-runtime-cache/`) 의 wheels/chromium 이 채워져 있어야 한다. 한 번도 빌드해 본 적 없으면 먼저:
+
+```bash
+bash playwright-allinone/monitor-build/build-monitor-runtime.sh --target win64 --no-package
+# 또는 macos-arm64 / all
+```
+
+**자동 갱신 hook (개발자, 권장)** — 본 저장소의 코드가 바뀐 채로 git push 하면 자동으로 자산을 재채워 준다. 한 번만:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+설치 후 `git push` 시 stale 검출 + `pack-*` 자동 호출. 실패해도 push 자체는 차단 안 함 (개발 흐름 보호). 자세한 동작은 `.githooks/README.md`.
 
 ---
 

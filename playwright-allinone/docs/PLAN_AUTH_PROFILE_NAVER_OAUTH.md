@@ -1,4 +1,4 @@
-# PLAN — Auth Profile (Naver-OAuth 연동 서비스 E2E 테스트)
+﻿# PLAN — Auth Profile (Naver-OAuth 연동 서비스 E2E 테스트)
 
 > **Status**: v3 (post-review fix 반영, 2026-04-29) · P1~P5 + 3-tier e2e 마감
 > **Scope**: Recording UI / `zero_touch_qa` 에 인증 프로파일(auth-profile) 도입.
@@ -411,9 +411,9 @@ IP 변경 또는 서비스 자체 세션 만료).
 
 | 파일 | 변경 |
 |---|---|
-| `recording_service/web/index.html` | "새 녹화 시작" 카드에 "인증 (선택)" 블록 + 시드 모달 + 만료 모달 + 머신 불일치 모달 마크업 추가 |
-| `recording_service/web/app.js` | 드롭다운 채우기, 시드 시작/폴링, verify, 재시드 모달, 머신 일치 검사 |
-| `recording_service/web/style.css` | 인증 블록 + 모달 스타일 (기존 `.card` 패턴 재사용) |
+| `recording-ui/recording_service/web/index.html` | "새 녹화 시작" 카드에 "인증 (선택)" 블록 + 시드 모달 + 만료 모달 + 머신 불일치 모달 마크업 추가 |
+| `recording-ui/recording_service/web/app.js` | 드롭다운 채우기, 시드 시작/폴링, verify, 재시드 모달, 머신 일치 검사 |
+| `recording-ui/recording_service/web/style.css` | 인증 블록 + 모달 스타일 (기존 `.card` 패턴 재사용) |
 
 ### 4.2 수정되는 카드 1개 — "새 녹화 시작"
 
@@ -523,7 +523,7 @@ auth-profiles/
 ### 5.3 신규 파일
 
 ```
-zero_touch_qa/auth_profiles.py             ~320 LOC
+shared/zero_touch_qa/auth_profiles.py             ~320 LOC
 test/test_auth_profiles.py                 ~300 LOC
 docs/auth-profile-usage.md                 ~250 LOC
 ```
@@ -532,23 +532,23 @@ docs/auth-profile-usage.md                 ~250 LOC
 
 | 파일 | LOC | 역할 |
 |---|---:|---|
-| `zero_touch_qa/__main__.py` | ~60 | `auth seed/list/verify/delete` 서브커맨드 |
-| `zero_touch_qa/executor.py` | ~25 | env 기반 viewport/locale/timezone/color_scheme override |
-| `recording_service/server.py` | ~140 | `/auth/profiles*` 엔드포인트 5~6개 + `/recording/start` 인자 + verify 게이트 + extra_args glue |
-| `recording_service/codegen_runner.py` | ~5 | (`extra_args` 그대로 — glue 만 server 측) |
-| `recording_service/replay_proxy.py` | ~30 | `run_llm_play` / `run_codegen_replay` 가 metadata.json 읽고 storage + fingerprint env 주입 |
-| `recording_service/converter_proxy.py` | ~25 | `original.py` storage 경로 → env var 치환 (D3) |
-| `recording_service/storage.py` | ~10 | metadata.json 에 auth_profile 필드 추가 |
-| `recording_service/web/index.html` | ~50 | 인증 블록 + 모달 4개 |
-| `recording_service/web/app.js` | ~220 | 드롭다운/시드/verify/모달 + 머신 일치 검사 |
-| `recording_service/web/style.css` | ~50 | 스타일 |
+| `shared/zero_touch_qa/__main__.py` | ~60 | `auth seed/list/verify/delete` 서브커맨드 |
+| `shared/zero_touch_qa/executor.py` | ~25 | env 기반 viewport/locale/timezone/color_scheme override |
+| `recording-ui/recording_service/server.py` | ~140 | `/auth/profiles*` 엔드포인트 5~6개 + `/recording/start` 인자 + verify 게이트 + extra_args glue |
+| `recording-ui/recording_service/codegen_runner.py` | ~5 | (`extra_args` 그대로 — glue 만 server 측) |
+| `recording-ui/recording_service/replay_proxy.py` | ~30 | `run_llm_play` / `run_codegen_replay` 가 metadata.json 읽고 storage + fingerprint env 주입 |
+| `recording-ui/recording_service/converter_proxy.py` | ~25 | `original.py` storage 경로 → env var 치환 (D3) |
+| `recording-ui/recording_service/storage.py` | ~10 | metadata.json 에 auth_profile 필드 추가 |
+| `recording-ui/recording_service/web/index.html` | ~50 | 인증 블록 + 모달 4개 |
+| `recording-ui/recording_service/web/app.js` | ~220 | 드롭다운/시드/verify/모달 + 머신 일치 검사 |
+| `recording-ui/recording_service/web/style.css` | ~50 | 스타일 |
 | `requirements.txt` | ~1 | `playwright>=1.54` (D14) |
 
 **총 약 1200~1400 LOC**. 단일 PR.
 
 ### 5.5 핵심 함수 시그니처 (v2)
 
-`zero_touch_qa/auth_profiles.py`:
+`shared/zero_touch_qa/auth_profiles.py`:
 ```python
 ROOT = Path(os.environ.get("AUTH_PROFILES_DIR", "~/ttc-allinone-data/auth-profiles")).expanduser()
 
@@ -686,7 +686,7 @@ def _dump_storage_state(context, path: Path) -> None:
     1.51+ 에서 indexed_db 지원."""
 ```
 
-`zero_touch_qa/__main__.py` (CLI 진입점):
+`shared/zero_touch_qa/__main__.py` (CLI 진입점):
 
 ```bash
 # 시드
@@ -914,7 +914,7 @@ if color_env:
 
 | ID | 작업 | 파일 | 추가/변경 | 단위 테스트 | 통과 기준 | 의존 |
 |---|---|---|---|---|---|---|
-| **P1.1** | 디렉토리/스키마 헬퍼 + 이름 sanitize + index 락 | `zero_touch_qa/auth_profiles.py` (신규) | `ROOT`, `_index_path`, `_storage_path(name)`, `_load_index`, `_save_index` (`fcntl.flock`), `_validate_name` | 빈 index round-trip / 동시 쓰기 / sanitize 케이스 6개 | `pytest -k "index or sanitize"` PASS | — |
+| **P1.1** | 디렉토리/스키마 헬퍼 + 이름 sanitize + index 락 | `shared/zero_touch_qa/auth_profiles.py` (신규) | `ROOT`, `_index_path`, `_storage_path(name)`, `_load_index`, `_save_index` (`fcntl.flock`), `_validate_name` | 빈 index round-trip / 동시 쓰기 / sanitize 케이스 6개 | `pytest -k "index or sanitize"` PASS | — |
 | **P1.2** | Dataclass 정의 + 직렬화 | 동상 | `FingerprintProfile`, `NaverProbeSpec`, `VerifySpec`, `AuthProfile` + `to_dict`/`from_dict` | round-trip 동등성 + 부분 dict 로드 | `pytest -k "dataclass"` PASS | P1.1 |
 | **P1.3** | CRUD (list/get/delete) | 동상 | `list_profiles`, `get_profile(name)`, `delete_profile(name)` | 빈/단일/다중, 없는 name 삭제 | `pytest -k "crud"` PASS | P1.2 |
 | **P1.4** | 머신 ID + Playwright 버전 헬퍼 | 동상 | `current_machine_id()`, `current_playwright_version()`, `chips_supported_by_runtime()` | 같은 호스트 안정 / 1.54/1.57/1.50 mock | `pytest -k "machine or chips"` PASS | P1.1 |
@@ -928,7 +928,7 @@ if color_env:
 
 | ID | 작업 | 파일 | 추가/변경 | 단위 테스트 | 통과 기준 | 의존 |
 |---|---|---|---|---|---|---|
-| **P2.1** | `auth` 서브파서 추가 | `zero_touch_qa/__main__.py` | argparse subparser `auth` + 4개 sub-sub (`seed`/`list`/`verify`/`delete`) | argparse 스모크 — `--help` rc=0 | help 출력 정상 | P1.3 |
+| **P2.1** | `auth` 서브파서 추가 | `shared/zero_touch_qa/__main__.py` | argparse subparser `auth` + 4개 sub-sub (`seed`/`list`/`verify`/`delete`) | argparse 스모크 — `--help` rc=0 | help 출력 정상 | P1.3 |
 | **P2.2** | `auth seed` 와이어 | 동상 | `seed` 핸들러 — `seed_profile()` 호출 + 로그 | (사람이 직접 시드 — 모킹 단위 테스트는 P1.7 이미 커버) | 수동 스모크 1회 통과 | P1.7 P2.1 |
 | **P2.3** | `auth list/verify/delete` 와이어 | 동상 | 3개 핸들러 + 사람 친화 출력 (last_verified_at 상대시간 등) | argparse 스모크 + verify mock | rc=0 / 0/N개 출력 정확성 | P1.3 P1.6 P2.1 |
 | **P2.4** | `auth verify --json` 옵션 | 동상 | JSON 출력 모드 (스크립트 통합용) | snapshot test | JSON shape 안정 | P2.3 |
@@ -939,16 +939,16 @@ if color_env:
 
 | ID | 작업 | 파일 | 추가/변경 | 단위 테스트 | 통과 기준 | 의존 |
 |---|---|---|---|---|---|---|
-| **P3.1** | `_start_codegen_impl` 시그니처 확장 — `extra_args` 받아 `start_codegen` 으로 전달 | `recording_service/server.py:83` | `def _start_codegen_impl(target_url, output_path, *, timeout_sec, extra_args=None)` + 기존 호출부 갱신 | 기존 recording-e2e 테스트 + 신규 argv assert | argv 에 extra_args 들어감 | — |
+| **P3.1** | `_start_codegen_impl` 시그니처 확장 — `extra_args` 받아 `start_codegen` 으로 전달 | `recording-ui/recording_service/server.py:83` | `def _start_codegen_impl(target_url, output_path, *, timeout_sec, extra_args=None)` + 기존 호출부 갱신 | 기존 recording-e2e 테스트 + 신규 argv assert | argv 에 extra_args 들어감 | — |
 | **P3.2** | `GET /auth/profiles` 엔드포인트 | 동상 | 카탈로그 → JSON (last_verified_at 상대시간 포함) | API e2e | 200 + 빈 list / 단일 / 다중 | P1.3 |
 | **P3.3** | `POST /auth/profiles/seed` + 진행 폴링 | 동상 + 신규 in-memory `seed_registry` | 시드 subprocess 시작 + sub-session id 반환. state 머신: `waiting_user → verifying → ready / error` | API e2e (subprocess 모킹) | 폴링으로 모든 state 관찰됨 | P1.7 |
 | **P3.4** | `GET /auth/profiles/seed/{seed_sid}` | 동상 | seed 진행 상태 반환 | 동상 | 상태 정확 + done 시 profile name 반환 | P3.3 |
 | **P3.5** | `POST /auth/profiles/{name}/verify` | 동상 | `verify_profile()` → JSON | API e2e | ok/fail/detail | P1.6 |
 | **P3.6** | `DELETE /auth/profiles/{name}` | 동상 | `delete_profile()` | API e2e | 204 / 404 | P1.3 |
 | **P3.7** | `RecordingStartReq.auth_profile` 필드 + verify 게이트 + extra_args 빌드 + machine_id 검사 | 동상 | `recording_start()` 변경 — 만료 시 409, 머신 불일치 시 200 + `X-Auth-Machine-Mismatch` 헤더 | API e2e (정상/만료/불일치) | 모든 케이스 커버 | P3.1 P1.6 |
-| **P3.8** | session metadata.json 에 `auth_profile` 필드 (D15) | `recording_service/storage.py` + `server.py` 호출부 | `save_metadata` 호출 시 `auth_profile` 포함, scenario.json 은 변경 없음 | round-trip 테스트 | metadata 에는 있고 scenario 에는 없음 | P3.7 |
-| **P3.9** | `original.py` 경로 치환 (D3) | `recording_service/converter_proxy.py` (또는 신규 `post_process.py`) | `portabilize_storage_path(py_path)` — regex + import os 보장 | 합성 codegen 출력 4종 (storage_state 있음/없음/이미 env 사용/multi-line) | 정규식 정확성 | — |
-| **P3.10** | 변환 흐름에 P3.9 hook | `recording_service/converter_proxy.py` 호출부 (server.py 의 변환 후) | convert 성공 후 portabilize 호출 | 통합 테스트 | original.py 가 env 형태로 변환됨 | P3.9 |
+| **P3.8** | session metadata.json 에 `auth_profile` 필드 (D15) | `recording-ui/recording_service/storage.py` + `server.py` 호출부 | `save_metadata` 호출 시 `auth_profile` 포함, scenario.json 은 변경 없음 | round-trip 테스트 | metadata 에는 있고 scenario 에는 없음 | P3.7 |
+| **P3.9** | `original.py` 경로 치환 (D3) | `recording-ui/recording_service/converter_proxy.py` (또는 신규 `post_process.py`) | `portabilize_storage_path(py_path)` — regex + import os 보장 | 합성 codegen 출력 4종 (storage_state 있음/없음/이미 env 사용/multi-line) | 정규식 정확성 | — |
+| **P3.10** | 변환 흐름에 P3.9 hook | `recording-ui/recording_service/converter_proxy.py` 호출부 (server.py 의 변환 후) | convert 성공 후 portabilize 호출 | 통합 테스트 | original.py 가 env 형태로 변환됨 | P3.9 |
 
 **P3 마감 기준**: API 통합 테스트 모두 PASS + 손으로 한 번 시드 → 녹화 → metadata.json 확인.
 
@@ -956,8 +956,8 @@ if color_env:
 
 | ID | 작업 | 파일 | 추가/변경 | 단위 테스트 | 통과 기준 | 의존 |
 |---|---|---|---|---|---|---|
-| **P4.1** | `executor.execute` 에 env override 추가 | `zero_touch_qa/executor.py:241+` | env 4종 (`PLAYWRIGHT_VIEWPORT/_LOCALE/_TIMEZONE/_COLOR_SCHEME`) → context_kwargs override (없으면 기존 기본값) | env 있음/없음/일부 — context_kwargs assert | 기존 회귀 통과 + 신규 매칭 | — |
-| **P4.2** | `replay_proxy.run_llm_play` — metadata.json → storage + env | `recording_service/replay_proxy.py:156` | meta 로드 → auth_profile → verify → cmd `--storage-state-in` + env 주입 | 합성 세션 디렉토리 fixture | argv + env assert | P1.6 P3.8 P4.1 |
+| **P4.1** | `executor.execute` 에 env override 추가 | `shared/zero_touch_qa/executor.py:241+` | env 4종 (`PLAYWRIGHT_VIEWPORT/_LOCALE/_TIMEZONE/_COLOR_SCHEME`) → context_kwargs override (없으면 기존 기본값) | env 있음/없음/일부 — context_kwargs assert | 기존 회귀 통과 + 신규 매칭 | — |
+| **P4.2** | `replay_proxy.run_llm_play` — metadata.json → storage + env | `recording-ui/recording_service/replay_proxy.py:156` | meta 로드 → auth_profile → verify → cmd `--storage-state-in` + env 주입 | 합성 세션 디렉토리 fixture | argv + env assert | P1.6 P3.8 P4.1 |
 | **P4.3** | `replay_proxy.run_codegen_replay` — env 주입 | 동상 (`run_codegen_replay`) | meta 로드 → `AUTH_STORAGE_STATE_IN` + fingerprint env | 동상 | env assert | P3.9 P4.2 |
 | **P4.4** | LLM 재생 만료 처리 | 동상 | verify 실패 시 `ReplayProxyError` + UI 가 만료 모달로 핸들 | 통합 테스트 (만료된 세션 재생) | 4xx 가 UI 까지 전달 | P4.2 |
 
@@ -967,8 +967,8 @@ if color_env:
 
 | ID | 작업 | 파일 | 추가/변경 | 검증 | 통과 기준 | 의존 |
 |---|---|---|---|---|---|---|
-| **P5.1** | 인증 블록 + 모달 4개 마크업 | `recording_service/web/index.html` | `<fieldset.auth-block>` + 4 dialog | HTML lint, console error 없음 | 시각 검수 | — |
-| **P5.2** | 드롭다운 채우기 + 상태 라벨 | `recording_service/web/app.js` | `loadAuthProfiles()` — `GET /auth/profiles` → select / status | 수동 검수 | 시드된 프로파일 노출 | P3.2 P5.1 |
+| **P5.1** | 인증 블록 + 모달 4개 마크업 | `recording-ui/recording_service/web/index.html` | `<fieldset.auth-block>` + 4 dialog | HTML lint, console error 없음 | 시각 검수 | — |
+| **P5.2** | 드롭다운 채우기 + 상태 라벨 | `recording-ui/recording_service/web/app.js` | `loadAuthProfiles()` — `GET /auth/profiles` → select / status | 수동 검수 | 시드된 프로파일 노출 | P3.2 P5.1 |
 | **P5.3** | ↻ verify 버튼 동작 | 동상 | `POST /auth/profiles/{name}/verify` → 상태 업데이트 | 수동 검수 | 통과/실패 라벨 변경 | P3.5 P5.2 |
 | **P5.4** | 시드 입력 모달 + 시작 | 동상 + `web/style.css` | `openSeedDialog()` → `POST /auth/profiles/seed` → 진행 모달로 전환 | 수동 검수 | 폼 검증 + 잘못 입력시 인라인 에러 | P3.3 P5.1 |
 | **P5.5** | 시드 진행 폴링 | 동상 | 1초 폴링 → state 따라 안내 변경 → ready/error 처리 | 수동 검수 | 모든 state 시각화 | P3.4 P5.4 |

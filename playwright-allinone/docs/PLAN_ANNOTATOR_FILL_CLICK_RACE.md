@@ -1,4 +1,4 @@
-# Dynamic annotator — fill→click 자동완성 dropdown race 보강
+﻿# Dynamic annotator — fill→click 자동완성 dropdown race 보강
 
 ## 배경
 
@@ -71,7 +71,7 @@ class _WaitVisibleMarker:
 
 | # | 파일 | 변경 |
 |---|---|---|
-| 1 | `recording_service/annotator.py` | `_WaitVisibleMarker` 추가, `_probe_click_trigger` 보강, `_run_dynamic_pass_inproc` 의 prev_action 추적, `_write_annotated_with_triggers` 의 marker 분기 |
+| 1 | `recording-ui/recording_service/annotator.py` | `_WaitVisibleMarker` 추가, `_probe_click_trigger` 보강, `_run_dynamic_pass_inproc` 의 prev_action 추적, `_write_annotated_with_triggers` 의 marker 분기 |
 | 2 | `test/fixtures/fill_dropdown_race.html` | 신규 — input fill 후 setTimeout 으로 dropdown 표시 |
 | 3 | `test/test_annotator_dynamic.py` | 신규 케이스 추가 |
 

@@ -1,4 +1,4 @@
-# playwright-allinone_REFERENCE
+﻿# playwright-allinone_REFERENCE
 
 이 문서는 운영 중 정확한 값을 확인하기 위한 참조 문서다. 처음부터 따라 하는 문서가 아니다. 설치 절차는 [quickstart.md](quickstart.md), 반복 운영 절차는 [operations.md](operations.md), Recording UI 카드별 사용법은 [recording-ui.md](recording-ui.md) 를 본다.
 
@@ -137,6 +137,38 @@ Recording UI session 예:
 └── play-llm.log
 ```
 
+모니터링 PC (Replay UI, 1회 설치형) 디렉토리:
+
+```text
+~/.dscore.ttc.monitor/
+├── venv/
+├── chromium/             ← PLAYWRIGHT_BROWSERS_PATH
+├── auth-profiles/        ← Replay UI 와 Recording UI 가 공유 가능
+├── scenarios/            ← .py 시나리오 업로드 위치
+├── scripts/
+├── runs/                 ← 실행 결과 (trace.zip, 보고서, 로그)
+├── replay-ui.pid
+└── replay-ui.stdout.log
+```
+
+휴대용 zip 풀린 디렉토리 (Replay UI portable):
+
+```text
+DSCORE-ReplayUI-portable-<os>-<ts>/
+├── Launch-ReplayUI.bat            ← Windows: 더블클릭
+├── Launch-ReplayUI.command        ← macOS: 더블클릭
+├── Stop-ReplayUI.*
+├── README.txt
+├── embedded-python/  (Windows)    ← 또는 python/ (macOS)
+├── site-packages/                 ← fastapi · uvicorn · playwright · pywin32 ...
+├── chromium/                      ← Playwright Chromium 동봉
+├── replay_service/  monitor/                ← Replay UI 소스 (zip 안에서는 평평)
+├── recording_shared/  zero_touch_qa/        ← 공용 코드 카피
+├── data/
+│   ├── auth-profiles/  scenarios/  scripts/  runs/
+└── .pack-stamp                    ← 자산 source SHA (자동 갱신 stamp)
+```
+
 ## 5. 주요 스크립트
 
 | 파일 | 사용자가 실행? | 역할 |
@@ -144,7 +176,12 @@ Recording UI session 예:
 | `build.sh` | 예 | 이미지 빌드, tarball 생성, 선택적으로 redeploy |
 | `mac-agent-setup.sh` | 예 | macOS 호스트 agent + Recording UI 준비 |
 | `wsl-agent-setup.sh` | 예 | WSL2 호스트 agent + Recording UI 준비 |
-| `recording-ui/run-recording-ui.sh` | 예 | Recording UI daemon 독립 운영 |
+| `recording-ui/run-recording-ui.sh` | 예 | Recording UI 데몬 독립 운영 (18092) |
+| `replay-ui/run-replay-ui.sh` | 예 | Replay UI 데몬 독립 운영 (18094, 모니터링 PC) |
+| `monitor-build/build-monitor-runtime.sh` | 예 | 모니터링 PC 용 1회-설치형 zip 빌드 |
+| `monitor-build/install-monitor.{sh,ps1,cmd}` | 예 | 모니터링 PC 설치 (1회) |
+| `replay-ui-portable-build/pack-windows.ps1` | 예 | Replay UI 휴대용 zip 빌드 (Windows) |
+| `replay-ui-portable-build/pack-macos.sh` | 예 | Replay UI 휴대용 zip 빌드 (macOS arm64) |
 | `backup-volume.sh` | 예 | `dscore-data` 백업 |
 | `restore-volume.sh` | 예 | `dscore-data` 복원 |
 | `entrypoint.sh` | 아니오 | 컨테이너 PID 1, seed/provision/supervisord |
