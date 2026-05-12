@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://practicesoftwaretesting.com/", "description": "메인 진입"},
+  {"step": 2, "action": "fill",     "target": "input[type='search'], input[placeholder*='Search' i]", "value": "Pliers", "description": "Pliers 입력"},
+  {"step": 3, "action": "click",    "target": "button:has-text('Search')", "value": "", "description": "Search 버튼"},
+  {"step": 4, "action": "wait",     "target": "", "value": "1500", "description": "결과 로드 대기"},
+  {"step": 5, "action": "verify",   "target": ".card", "value": "Pliers", "condition": "contains_text", "description": "결과 카드에 Pliers 포함"}
+]

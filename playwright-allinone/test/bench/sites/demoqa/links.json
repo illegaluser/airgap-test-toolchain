@@ -1,0 +1,5 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/links", "description": "Links 페이지"},
+  {"step": 2, "action": "click",    "target": "#created", "value": "", "description": "Created API link 클릭"},
+  {"step": 3, "action": "verify",   "target": "#linkResponse", "value": "201", "condition": "contains_text", "description": "201 응답 표시"}
+]

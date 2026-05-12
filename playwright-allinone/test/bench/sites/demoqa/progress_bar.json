@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/progress-bar", "description": "Progress Bar 페이지"},
+  {"step": 2, "action": "click",    "target": "#startStopButton", "value": "", "description": "Start 버튼"},
+  {"step": 3, "action": "wait",     "target": "", "value": "2500", "description": "2.5초 진행 대기"},
+  {"step": 4, "action": "click",    "target": "#startStopButton", "value": "", "description": "Stop 버튼"},
+  {"step": 5, "action": "verify",   "target": ".progress-bar", "value": "", "condition": "visible", "description": "Progress bar visible"}
+]

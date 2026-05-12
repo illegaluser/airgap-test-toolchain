@@ -1,0 +1,10 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demo.playwright.dev/todomvc/", "description": "TodoMVC 진입"},
+  {"step": 2, "action": "fill",     "target": ".new-todo", "value": "a", "description": "a"},
+  {"step": 3, "action": "press",    "target": ".new-todo", "value": "Enter", "description": "추가"},
+  {"step": 4, "action": "fill",     "target": ".new-todo", "value": "b", "description": "b"},
+  {"step": 5, "action": "press",    "target": ".new-todo", "value": "Enter", "description": "추가"},
+  {"step": 6, "action": "click",    "target": ".todo-list li:first-child .toggle", "value": "", "description": "a 완료"},
+  {"step": 7, "action": "click",    "target": "a:has-text('Active')", "value": "", "description": "Active 필터"},
+  {"step": 8, "action": "verify",   "target": ".todo-count strong", "value": "1", "condition": "text", "description": "Active = 1"}
+]

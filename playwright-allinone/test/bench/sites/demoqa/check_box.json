@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/checkbox", "description": "Check Box 페이지"},
+  {"step": 2, "action": "click",    "target": "button[aria-label='Expand all']", "value": "", "description": "전체 트리 펼치기"},
+  {"step": 3, "action": "click",    "target": "label[for='tree-node-home'] span.rct-checkbox", "value": "", "description": "Home 체크"},
+  {"step": 4, "action": "verify",   "target": "#result", "value": "home", "condition": "contains_text", "description": "결과에 home 포함"}
+]

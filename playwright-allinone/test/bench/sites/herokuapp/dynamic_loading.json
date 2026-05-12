@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/dynamic_loading/2", "description": "Dynamic Loading example 2"},
+  {"step": 2, "action": "click",    "target": "div#start button", "value": "", "description": "Start 버튼 클릭"},
+  {"step": 3, "action": "wait",     "target": "", "value": "6000", "description": "6초 대기 (페이지가 5초 sleep)"},
+  {"step": 4, "action": "verify",   "target": "#finish h4", "value": "Hello World!", "condition": "text", "description": "Hello World 결과 텍스트"}
+]

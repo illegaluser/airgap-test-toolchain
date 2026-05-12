@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://practicesoftwaretesting.com/", "description": "메인 진입"},
+  {"step": 2, "action": "wait",     "target": "", "value": "1500", "description": "카탈로그 로드 대기"},
+  {"step": 3, "action": "verify",   "target": ".card", "value": "", "condition": "visible", "description": "상품 카드 visible"},
+  {"step": 4, "action": "verify",   "target": "h4", "value": "", "condition": "visible", "description": "상품명 h4 visible"}
+]

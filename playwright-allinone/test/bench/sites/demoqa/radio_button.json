@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/radio-button", "description": "Radio Button 페이지"},
+  {"step": 2, "action": "click",    "target": "label[for='yesRadio']", "value": "", "description": "Yes 라디오"},
+  {"step": 3, "action": "verify",   "target": ".text-success", "value": "Yes", "condition": "text", "description": "Yes 선택 결과"},
+  {"step": 4, "action": "click",    "target": "label[for='impressiveRadio']", "value": "", "description": "Impressive 라디오"},
+  {"step": 5, "action": "verify",   "target": ".text-success", "value": "Impressive", "condition": "text", "description": "Impressive 선택 결과"}
+]

@@ -1,0 +1,8 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/text-box", "description": "Text Box 페이지"},
+  {"step": 2, "action": "fill",     "target": "#userName", "value": "alice", "description": "이름 입력"},
+  {"step": 3, "action": "fill",     "target": "#userEmail", "value": "alice@example.com", "description": "이메일 입력"},
+  {"step": 4, "action": "fill",     "target": "#currentAddress", "value": "Seoul", "description": "현재 주소"},
+  {"step": 5, "action": "click",    "target": "#submit", "value": "", "description": "Submit"},
+  {"step": 6, "action": "verify",   "target": "#name", "value": "alice", "condition": "contains_text", "description": "결과에 이름 포함"}
+]

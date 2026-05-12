@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://the-internet.herokuapp.com/checkboxes", "description": "Checkboxes 페이지"},
+  {"step": 2, "action": "check",    "target": "form#checkboxes input:first-of-type", "value": "true", "description": "1번 checkbox 체크"},
+  {"step": 3, "action": "verify",   "target": "form#checkboxes input:first-of-type", "value": "true", "condition": "checked", "description": "체크 상태 확인"},
+  {"step": 4, "action": "check",    "target": "form#checkboxes input:nth-of-type(2)", "value": "false", "description": "2번 checkbox 해제"},
+  {"step": 5, "action": "verify",   "target": "form#checkboxes input:nth-of-type(2)", "value": "false", "condition": "checked", "description": "해제 상태 확인"}
+]

@@ -1,0 +1,7 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://practicesoftwaretesting.com/", "description": "메인 진입"},
+  {"step": 2, "action": "wait",     "target": "", "value": "1500", "description": "카탈로그 로드"},
+  {"step": 3, "action": "click",    "target": ".card:first-of-type", "value": "", "description": "첫 상품 카드"},
+  {"step": 4, "action": "wait",     "target": "", "value": "1500", "description": "상세 페이지 로드"},
+  {"step": 5, "action": "verify",   "target": "[data-test='product-name'], h1", "value": "", "condition": "visible", "description": "상품명 visible"}
+]

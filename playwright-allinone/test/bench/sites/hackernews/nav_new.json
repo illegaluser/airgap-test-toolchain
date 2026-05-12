@@ -1,0 +1,6 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://news.ycombinator.com/", "description": "HN 진입"},
+  {"step": 2, "action": "click",    "target": "a:has-text('new'):not(:has-text('newest'))", "value": "", "description": "new 링크"},
+  {"step": 3, "action": "verify",   "target": "", "value": "/newest", "condition": "url_contains", "description": "/newest URL"},
+  {"step": 4, "action": "verify",   "target": ".athing", "value": "", "condition": "visible", "description": "신규 글 아이템 visible"}
+]

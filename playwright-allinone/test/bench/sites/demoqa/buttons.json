@@ -1,0 +1,5 @@
+[
+  {"step": 1, "action": "navigate", "target": "", "value": "https://demoqa.com/buttons", "description": "Buttons 페이지"},
+  {"step": 2, "action": "click",    "target": "button:has-text('Click Me')", "value": "", "description": "Click Me 버튼"},
+  {"step": 3, "action": "verify",   "target": "#dynamicClickMessage", "value": "dynamic click", "condition": "contains_text", "description": "dynamic click 메시지"}
+]
