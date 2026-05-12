@@ -2,6 +2,15 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 
 Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
+Lint 오류 — NON-NEGOTIABLE
+
+작업 중 발견되는 모든 lint 오류(markdownlint / ruff / eslint / 기타)는 같은 작업 단위 안에서 해결한다. 사람·에이전트 모두 적용.
+
+- 코드 lint 는 가능하면 `--fix` 자동 수정 후 남는 것은 수동 수정.
+- 한국어 산문 문서는 MD013(80자) 같은 라인 길이 규칙이 부적합하므로 repo 루트 `.markdownlint.json` 으로 정책 차단 (이미 적용됨). 새 규칙을 끄거나 켤 때는 거기서.
+- 누적 금지 — "나중에 일괄 정리" 는 신호 대비 잡음을 키운다. 발견 즉시.
+- 비활성 정책에 새로 추가하려면 이유를 commit 메시지나 PR 설명에 남길 것.
+
 0. Read Docs First — NON-NEGOTIABLE
 
 Before implementing, modifying, restarting services, or changing structure on **any** part of this repo, you MUST consult the project's own documentation. Speaking or coding from your own assumptions about the architecture is forbidden.
