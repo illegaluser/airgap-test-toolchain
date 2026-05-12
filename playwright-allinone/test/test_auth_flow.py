@@ -1,221 +1,167 @@
-"""단위 테스트 — recording_service.auth_flow.
+"""auth_flow 회귀 — D17 (2026-05-11) .py 일원화 이후의 *현재 살아있는* 보안 게이트.
 
-검증 범위 (계획 §18):
-- pack/unpack round-trip
-- script.py 포함 + sanitize 동작
-- *.storage.json 미포함
-- script.py 안 password/secret 0 매칭 (sanitize 후)
-- README 동적 생성 (alias / verify_url 포함)
-- script_provenance metadata 정확성 (codegen / llm_healed 두 케이스)
-- sess_dir 에 .py 여러 개일 때 명시 누락 시 ScriptSourceAmbiguousError
-- Login Profile 미적용 + sanitize 후 잔존 + consent 없음 → PlainCredentialDetectedError
-- Login Profile 적용 + 잔존 → PlainCredentialDetectedError (위양성 의심)
-- Login Profile 미적용 + consent=True → 통과
-- zip-slip (.. 또는 절대경로) 거부
+- ``sanitize_script(text)`` — fill(password) 패턴을 placeholder 로 치환
+- ``grep_credential_residue(text)`` — sanitize 후 잔존 자격증명 의심 라인 탐지
+- ``select_script_source(sess_dir, requested)`` — .py 선택 (모호/부재 분기)
+
+D17 이전의 ``pack_bundle / unpack_bundle / render_readme`` 는 제거됨 — bundle.zip
+흐름 폐기, .py 일원화. 본 테스트는 *현재 면* 의 정상/엣지 분기만 커버한다.
 """
 
 from __future__ import annotations
 
-import io
-import json
-import sys
-import zipfile
 from pathlib import Path
 
 import pytest
 
-# playwright-allinone/ 을 sys.path 에 추가 (test/ 의 부모).
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from recording_service import auth_flow  # noqa: E402
-
-
-# --- helpers -----------------------------------------------------------------
+from recording_service.auth_flow import (
+    ScriptSourceAmbiguousError,
+    ScriptSourceMissingError,
+    grep_credential_residue,
+    sanitize_script,
+    select_script_source,
+)
 
 
-def _make_session(
-    tmp_path: Path,
-    *,
-    with_regression: bool = False,
-    with_password_fill: bool = False,
-    extra_body: str = "",
-    login_profile_applied: bool = True,
-) -> Path:
-    sess = tmp_path / "sess"
-    sess.mkdir()
-    metadata: dict = {"id": "sess", "target_url": "https://ex.com/login"}
-    if login_profile_applied:
-        metadata["auth_profile"] = "demo-profile"
-    (sess / "metadata.json").write_text(json.dumps(metadata))
+PLACEHOLDER = "__REPLACED_BY_BUNDLE_SANITIZER__"
 
-    body = (
-        "from playwright.sync_api import sync_playwright\n"
-        "with sync_playwright() as p:\n"
-        "    browser = p.chromium.launch()\n"
-        "    context = browser.new_context()\n"
-        "    page = context.new_page()\n"
-        '    page.goto("https://ex.com/login")\n'
+
+# ─────────────────────────────────────────────────────────────────────────
+# sanitize_script
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_sanitize_replaces_password_fill():
+    src = 'page.get_by_label("password").fill("secret123")'
+    out, diffs = sanitize_script(src)
+    assert "secret123" not in out
+    assert PLACEHOLDER in out
+    assert len(diffs) == 2  # - before / + after pair
+    assert diffs[0].startswith("- ")
+    assert diffs[1].startswith("+ ")
+
+
+def test_sanitize_replaces_pw_passwd_secret_variants():
+    """selector 안에 pw / passwd / secret 단어가 있으면 매치."""
+    src = (
+        'page.locator("input[name=pw]").fill("p1")\n'
+        'page.get_by_placeholder("passwd").fill("p2")\n'
+        'page.get_by_role("textbox", name="secret").fill("p3")\n'
     )
-    if with_password_fill:
-        body += '    page.get_by_label("password").fill("hunter2")\n'
-        body += '    page.get_by_label("username").fill("alice")\n'
-    body += '    page.click("text=Login")\n'
-    if extra_body:
-        body += extra_body
-    (sess / "original.py").write_text(body)
-
-    if with_regression:
-        body2 = body + "# llm-healed marker\n"
-        (sess / "regression_test.py").write_text(body2)
-
-    (sess / "scenario.json").write_text(
-        json.dumps([{"action": "goto", "url": "https://ex.com/login"}])
-    )
-    return sess
+    out, diffs = sanitize_script(src)
+    for v in ("p1", "p2", "p3"):
+        assert f'"{v}"' not in out, f"{v!r} 잔존"
+    assert out.count(PLACEHOLDER) == 3
+    assert len(diffs) == 6  # 3 fills × (before+after)
 
 
-def _list_zip(zip_bytes: bytes) -> list[str]:
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        return sorted(z.namelist())
+def test_sanitize_leaves_unrelated_fills_intact():
+    """username/email fill 은 보호 대상 아님 — 치환되면 안 됨."""
+    src = 'page.get_by_label("username").fill("alice")'
+    out, _ = sanitize_script(src)
+    assert out == src
+    assert "alice" in out
 
 
-def _read_zip_text(zip_bytes: bytes, name: str) -> str:
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        return z.read(name).decode("utf-8")
+def test_sanitize_idempotent_on_already_placeholder():
+    """이미 placeholder 인 값은 다시 변경 없음 (diff 0)."""
+    src = f'page.get_by_label("password").fill("{PLACEHOLDER}")'
+    out, diffs = sanitize_script(src)
+    assert out == src
+    assert diffs == []
 
 
-# --- 테스트 -------------------------------------------------------------------
+def test_sanitize_handles_empty_input():
+    out, diffs = sanitize_script("")
+    assert out == ""
+    assert diffs == []
 
 
-def test_pack_unpack_round_trip(tmp_path: Path) -> None:
-    sess = _make_session(tmp_path, with_password_fill=True)
-    zb = auth_flow.pack_bundle(
-        sess, alias="packaged", verify_url="https://ex.com/dashboard"
-    )
-    assert len(zb) > 0
-
-    out = tmp_path / "out"
-    info = auth_flow.unpack_bundle(zb, out)
-    assert info["alias"] == "packaged"
-    assert info["verify_url"] == "https://ex.com/dashboard"
-    assert info["script_path"].is_file()
-    assert info["script_provenance"]["source_kind"] == "codegen"
+# ─────────────────────────────────────────────────────────────────────────
+# grep_credential_residue
+# ─────────────────────────────────────────────────────────────────────────
 
 
-def test_zip_does_not_contain_storage_state(tmp_path: Path) -> None:
-    sess = _make_session(tmp_path)
-    # storage.json 류를 sess_dir 에 둬도 zip 에 안 들어가는지 단언.
-    (sess / "storage.json").write_text('{"cookies": []}')
-    (sess / "auth.storage.json").write_text('{"cookies": []}')
-    zb = auth_flow.pack_bundle(sess, alias="p", verify_url="https://x")
-    names = _list_zip(zb)
-    assert not any("storage" in n.lower() for n in names), names
+def test_residue_detects_plaintext_assignment():
+    """variable = "value" 패턴은 sanitize 가 못 잡으므로 residue 가 잡아야."""
+    text = 'password = "leaked-secret"\nuser = "alice"\n'
+    out = grep_credential_residue(text)
+    assert len(out) == 1
+    line_no, line_text = out[0]
+    assert line_no == 1
+    assert "password" in line_text
 
 
-def test_script_py_password_sanitized(tmp_path: Path) -> None:
-    """fill(password=...) 패턴이 placeholder 로 치환됨."""
-    sess = _make_session(tmp_path, with_password_fill=True)
-    zb = auth_flow.pack_bundle(sess, alias="p", verify_url="https://x")
-    script_text = _read_zip_text(zb, "script.py")
-    assert "hunter2" not in script_text
-    assert "__REPLACED_BY_BUNDLE_SANITIZER__" in script_text
+def test_residue_ignores_placeholder_substituted_lines():
+    """sanitize 가 채워둔 placeholder 가 있는 라인은 *그 부분 빼고* 검사 — 오탐 방지."""
+    text = f'page.get_by_label("password").fill("{PLACEHOLDER}")\n'
+    out = grep_credential_residue(text)
+    assert out == []
 
 
-def test_provenance_codegen_vs_llm_healed(tmp_path: Path) -> None:
-    sess = _make_session(tmp_path, with_regression=True)
-
-    zb1 = auth_flow.pack_bundle(
-        sess, alias="p", verify_url="https://x", script_source="original.py"
-    )
-    meta1 = json.loads(_read_zip_text(zb1, "metadata.json"))
-    assert meta1["script_provenance"]["source_file"] == "original.py"
-    assert meta1["script_provenance"]["source_kind"] == "codegen"
-
-    zb2 = auth_flow.pack_bundle(
-        sess, alias="p", verify_url="https://x", script_source="regression_test.py"
-    )
-    meta2 = json.loads(_read_zip_text(zb2, "metadata.json"))
-    assert meta2["script_provenance"]["source_file"] == "regression_test.py"
-    assert meta2["script_provenance"]["source_kind"] == "llm_healed"
+def test_residue_returns_1_based_line_numbers():
+    text = "line1\nline2\npassword='x'\n"
+    out = grep_credential_residue(text)
+    assert out == [(3, "password='x'")]
 
 
-def test_ambiguous_script_source_raises(tmp_path: Path) -> None:
-    """sess_dir 에 .py 가 여러 개고 호출자가 명시 안 하면 422."""
-    sess = _make_session(tmp_path, with_regression=True)
-    with pytest.raises(auth_flow.ScriptSourceAmbiguousError):
-        auth_flow.pack_bundle(sess, alias="p", verify_url="https://x")
+# ─────────────────────────────────────────────────────────────────────────
+# select_script_source
+# ─────────────────────────────────────────────────────────────────────────
 
 
-def test_missing_script_source_raises(tmp_path: Path) -> None:
-    sess = _make_session(tmp_path)
-    with pytest.raises(auth_flow.ScriptSourceMissingError):
-        auth_flow.pack_bundle(
-            sess, alias="p", verify_url="https://x", script_source="no-such.py"
-        )
+def test_select_single_py_returns_that_path(tmp_path: Path):
+    (tmp_path / "original.py").write_text("# pw")
+    result = select_script_source(tmp_path, requested=None)
+    assert result == tmp_path / "original.py"
 
 
-def test_plain_credential_without_login_profile_raises(tmp_path: Path) -> None:
-    """Login Profile 미적용 + sanitize 패턴에 안 잡히는 평문 → consent 없으면 거부."""
-    sess = _make_session(
-        tmp_path,
-        login_profile_applied=False,
-        extra_body='password = "topsecret123"\n',
-    )
-    with pytest.raises(auth_flow.PlainCredentialDetectedError) as ei:
-        auth_flow.pack_bundle(sess, alias="p", verify_url="https://x")
-    assert ei.value.diff_lines
+def test_select_multiple_py_without_request_raises(tmp_path: Path):
+    (tmp_path / "original.py").write_text("a")
+    (tmp_path / "regression_test.py").write_text("b")
+    with pytest.raises(ScriptSourceAmbiguousError):
+        select_script_source(tmp_path, requested=None)
 
 
-def test_plain_credential_with_consent_passes(tmp_path: Path) -> None:
-    """Login Profile 미적용 + consent=True → 통과 (사용자 책임)."""
-    sess = _make_session(
-        tmp_path,
-        login_profile_applied=False,
-        extra_body='password = "topsecret123"\n',
-    )
-    zb = auth_flow.pack_bundle(
-        sess,
-        alias="p",
-        verify_url="https://x",
-        consent_plain_pw=True,
-    )
-    script_text = _read_zip_text(zb, "script.py")
-    assert "topsecret123" in script_text
+def test_select_with_explicit_request_returns_match(tmp_path: Path):
+    (tmp_path / "original.py").write_text("a")
+    (tmp_path / "regression_test.py").write_text("b")
+    result = select_script_source(tmp_path, requested="regression_test.py")
+    assert result == tmp_path / "regression_test.py"
 
 
-def test_login_profile_applied_with_residue_raises(tmp_path: Path) -> None:
-    """Login Profile 적용 녹화이지만 평문이 남으면 위양성 의심으로 422 (consent 무시)."""
-    sess = _make_session(
-        tmp_path,
-        login_profile_applied=True,
-        extra_body='password = "topsecret123"\n',
-    )
-    with pytest.raises(auth_flow.PlainCredentialDetectedError):
-        auth_flow.pack_bundle(
-            sess,
-            alias="p",
-            verify_url="https://x",
-            consent_plain_pw=True,
-        )
+def test_select_explicit_request_missing_raises(tmp_path: Path):
+    (tmp_path / "original.py").write_text("a")
+    with pytest.raises(ScriptSourceMissingError):
+        select_script_source(tmp_path, requested="not_there.py")
 
 
-def test_readme_contains_alias_and_verify_url(tmp_path: Path) -> None:
-    sess = _make_session(tmp_path)
-    zb = auth_flow.pack_bundle(
-        sess, alias="my-alias", verify_url="https://yo.example.com/dash"
-    )
-    text = _read_zip_text(zb, "README.txt")
-    assert "my-alias" in text
-    assert "https://yo.example.com/dash" in text
+def test_select_no_py_files_raises(tmp_path: Path):
+    with pytest.raises(ScriptSourceMissingError):
+        select_script_source(tmp_path, requested=None)
 
 
-def test_zip_slip_rejected(tmp_path: Path) -> None:
-    """unpack_bundle 가 ../ 또는 절대경로 entry 를 거부."""
-    target = tmp_path / "safe"
-    bogus = io.BytesIO()
-    with zipfile.ZipFile(bogus, "w") as z:
-        z.writestr("../escape.py", "pass")
-    with pytest.raises(auth_flow.BundleError):
-        auth_flow.unpack_bundle(bogus.getvalue(), target)
+# ─────────────────────────────────────────────────────────────────────────
+# 추가 경계 케이스 — fill 패턴 변형 + residue 더 많은 패턴
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_residue_detects_secret_assignment():
+    """variable 이름이 ``secret`` 인 경우도 plaintext 패턴으로 잡아야."""
+    text = 'secret = "leaked-value"\n'
+    out = grep_credential_residue(text)
+    assert len(out) == 1
+    assert "secret" in out[0][1].lower()
+
+
+def test_residue_case_insensitive():
+    """``Password:`` 같은 대소문자 변형도 매치 — IGNORECASE 동작 확인."""
+    text = 'Password: "leaked"\n'
+    out = grep_credential_residue(text)
+    assert len(out) == 1
+
+
+def test_residue_returns_empty_for_clean_text():
+    """credential 의심 키워드 없으면 빈 list."""
+    out = grep_credential_residue('page.goto("https://x")\nuser = "alice"\n')
+    assert out == []

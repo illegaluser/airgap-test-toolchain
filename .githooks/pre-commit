@@ -49,7 +49,9 @@ done
 #    운영 기본은 headed (D9 — fingerprint 안정성). 본 hook 안에서만 한정 override.
 echo "[pre-commit] 통합 E2E 실행 (pytest -m e2e, headless chromium)..."
 START=$(date +%s)
-PYTHONPATH=. AUTH_PROFILE_VERIFY_HEADLESS=1 "$VENV_PY" -m pytest \
+# PYTHONPATH — zero_touch_qa(shared) + recording_service(recording-ui) +
+# replay_service(replay-ui) 모두 import 가능해야 conftest 가 동작.
+PYTHONPATH=shared:recording-ui:replay-ui AUTH_PROFILE_VERIFY_HEADLESS=1 "$VENV_PY" -m pytest \
     test -m e2e -q --tb=short -p no:cacheprovider
 RC=$?
 ELAPSED=$(( $(date +%s) - START ))

@@ -233,13 +233,16 @@ def e2e_daemon(e2e_root):
         pass
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def e2e_browser(e2e_chromium, e2e_daemon):
     """공유 Chromium browser (conftest.e2e_chromium 위임).
 
     한 프로세스에서 ``with sync_playwright()`` 를 두 번 열면 두 번째가 asyncio
     loop 충돌을 일으키므로, 본 fixture 는 conftest 의 단일 인스턴스를 그대로
-    파이프한다. 여전히 e2e_daemon 의존성으로 daemon 시작 후 사용 보장."""
+    파이프한다. 여전히 e2e_daemon 의존성으로 daemon 시작 후 사용 보장.
+
+    scope=module — conftest.e2e_chromium 도 module 이라 ScopeMismatch 방지.
+    e2e_daemon 은 session-scope 유지 (subprocess 재시작 비용 회피)."""
     yield e2e_chromium
 
 
