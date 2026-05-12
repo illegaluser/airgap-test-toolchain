@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# pre-push — Replay UI 휴대용 자산 stale 검출 + 자동 갱신.
+#
+# 자산이 .gitignore 라 push 자체에는 안 실리지만, 이 PC 의 replay-ui/ 폴더가
+# 항상 최신이도록 유지 → 출시 직전 'zip -r' 한 줄로 신뢰할 수 있는 반출 zip.
+#
+# 동작:
+#   1. 자산 source (shared/, replay-ui/replay_service, replay-ui/monitor,
+#      replay-ui-portable-build/templates) 의 현재 commit tree SHA 산출.
+#   2. replay-ui/.pack-stamp 와 비교.
+#   3. 다르면 OS 자동 감지해 pack-windows.ps1 또는 pack-macos.sh 실행.
+#   4. cache 부족 / 인터넷 부재 등으로 실패해도 push 는 차단하지 않음 (경고만).
+#
+# 설치 (개발자 PC 1회):
+#   git config core.hooksPath .githooks
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+REPLAYUI_DIR="$REPO_ROOT/playwright-allinone/replay-ui"
+BUILD_DIR="$REPO_ROOT/playwright-allinone/replay-ui-portable-build"
+STAMP_FILE="$REPLAYUI_DIR/.pack-stamp"
+
+# 자산 source 가 이 repo 에 없으면 (다른 브랜치 등) skip.
+[[ -d "$REPLAYUI_DIR" && -d "$BUILD_DIR" ]] || exit 0
+
+# git ls-tree → 자산 source 의 현재 commit 기준 tree SHA.
+if command -v sha256sum >/dev/null 2>&1; then
+  HASH_CMD="sha256sum"
+else
+  HASH_CMD="shasum -a 256"
+fi
+CURRENT_SHA="$(cd "$REPO_ROOT" && git rev-parse \
+  HEAD:playwright-allinone/shared \
+  HEAD:playwright-allinone/replay-ui/replay_service \
+  HEAD:playwright-allinone/replay-ui/monitor \
+  HEAD:playwright-allinone/replay-ui-portable-build/templates \
+  2>/dev/null | tr -d '\n' | $HASH_CMD | awk '{print $1}')"
+
+if [[ -z "$CURRENT_SHA" ]]; then
+  # git ls-tree 실패 — 새 repo 또는 추적 안 됨. skip.
+  exit 0
+fi
+
+if [[ -f "$STAMP_FILE" ]] && [[ "$(cat "$STAMP_FILE" 2>/dev/null)" == "$CURRENT_SHA" ]]; then
+  # 자산 최신 — 그대로 push.
+  exit 0
+fi
+
+if [[ ! -f "$STAMP_FILE" ]]; then
+  echo "[pre-push] Replay UI 휴대용 자산이 아직 채워지지 않았습니다." >&2
+else
+  echo "[pre-push] Replay UI 휴대용 자산이 stale (source 변경 감지)." >&2
+fi
+echo "[pre-push] 자동 갱신 시도 중 — 1~2분 소요될 수 있습니다." >&2
+
+OS="$(uname -s)"
+PACK_OK=0
+case "$OS" in
+  Darwin)
+    if bash "$BUILD_DIR/pack-macos.sh" --reuse-cache >&2; then
+      PACK_OK=1
+    fi
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    if command -v powershell >/dev/null 2>&1; then
+      if powershell -NoProfile -ExecutionPolicy Bypass \
+         -File "$BUILD_DIR/pack-windows.ps1" -ReuseCache >&2; then
+        PACK_OK=1
+      fi
+    else
+      echo "[pre-push] powershell 미발견 — Windows 자산 갱신 스킵." >&2
+    fi
+    ;;
+  Linux)
+    echo "[pre-push] Linux 개발 환경 — Linux 용 pack 스크립트 없음. 출시 시점에 Win/Mac 빌드 머신에서 수동 갱신." >&2
+    ;;
+  *)
+    echo "[pre-push] 알 수 없는 OS=$OS — 자산 갱신 스킵." >&2
+    ;;
+esac
+
+if [[ "$PACK_OK" = "1" ]]; then
+  echo "[pre-push] 자산 갱신 완료. push 를 계속 진행합니다." >&2
+else
+  echo "[pre-push] WARN — 자산 갱신 실패 또는 스킵 (cache 부족·의존성 부재·OS 미지원)." >&2
+  echo "[pre-push]        출시 직전에 수동으로 pack-* 한 줄을 실행하세요." >&2
+  echo "[pre-push]        push 자체는 자산을 싣지 않으므로 그대로 진행합니다." >&2
+fi
+
+exit 0

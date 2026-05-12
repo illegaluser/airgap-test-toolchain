@@ -203,6 +203,19 @@ echo
 echo "[pack-macos] 자산 채우기 완료 — $REPLAYUI_DIR"
 echo "  반출 zip 은 'zip -r replay-ui.zip replay-ui' 한 줄로 만들거나 --make-zip 옵션을 쓰세요."
 
+# 자산 source SHA 를 stamp 로 기록 — pre-push hook 의 stale 검출 기준.
+# OS 무관 일관성 위해 git rev-parse 의 tree object id 들을 LF 없이 concat 후 SHA256.
+STAMP_SHA="$(cd "$REPO_ROOT" && git rev-parse \
+  HEAD:playwright-allinone/shared \
+  HEAD:playwright-allinone/replay-ui/replay_service \
+  HEAD:playwright-allinone/replay-ui/monitor \
+  HEAD:playwright-allinone/replay-ui-portable-build/templates \
+  | tr -d '\n' \
+  | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } \
+  | awk '{print $1}')"
+echo -n "$STAMP_SHA" > "$REPLAYUI_DIR/.pack-stamp"
+echo "[pack-macos] .pack-stamp = ${STAMP_SHA:0:12}..."
+
 # 8. (옵션) zip 압축. POSIX 실행 권한 보존.
 if [[ "$MAKE_ZIP" = "1" ]]; then
   mkdir -p "$BUILD_OUT_DIR"

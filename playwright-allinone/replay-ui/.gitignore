@@ -12,6 +12,9 @@ data/
 recording_shared/
 zero_touch_qa/
 
+# pre-push hook 이 stale 감지에 쓰는 stamp — pack-* 가 매번 갱신.
+.pack-stamp
+
 Launch-ReplayUI.bat
 Stop-ReplayUI.bat
 Launch-ReplayUI.command
