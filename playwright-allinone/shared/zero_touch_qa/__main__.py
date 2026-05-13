@@ -237,6 +237,9 @@ _VALID_ACTIONS = frozenset(
         "cookie_verify",
         "performance",
         "visual_diff",
+        # 녹화 중 사용자가 명시적으로 닫은 탭/창 — converter_ast 가 emit, executor 가
+        # 안전 close 수행 (commit 0e59953). target/value 모두 빈 값.
+        "close",
     }
 )
 
@@ -264,7 +267,7 @@ _VALID_VERIFY_CONDITIONS = frozenset(
 )
 
 
-_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state", "dialog_choose")
+_TARGET_OPTIONAL_ACTIONS = ("navigate", "wait", "press", "reset_state", "dialog_choose", "close")
 # auth_login: target=mode (form/totp/oauth) 필수, value=credential alias 필수.
 # reset_state: target 무시, value=scope (cookie/storage/indexeddb/all) 필수.
 _VALUE_REQUIRED_ACTIONS = frozenset(
