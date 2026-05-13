@@ -234,15 +234,15 @@ def _emit_wait(target, value, step, locator_code, page_var="page"):
 
 
 def _emit_click(target, value, step, locator_code, page_var="page"):
-    # click 은 직전 step (popup close / modal 닫기 등) 직후 페이지 reflow 와 겹쳐 5s
-    # 안에 visible 못 잡히는 flaky 사례가 발견됨. executor 는 Playwright 기본
-    # timeout (30s) + locator_resolver 의 재시도/healing 을 거치므로 더 관대.
-    # 회귀 .py 는 healing 없는 raw 실행이라 명시 wait + 충분한 timeout 으로 보강.
-    return [
-        f"            _loc = {locator_code}",
-        f"            _loc.wait_for(state='visible', timeout=15000)",
-        f"            _loc.click(timeout=15000)",
-    ]
+    # Playwright 의 ``Locator.click`` 자체가 actionable wait + auto-scroll +
+    # 재시도를 포함. ``wait_for(state='visible')`` 를 앞에 두면 *viewport 안*
+    # 가시성을 요구해 off-viewport 요소(visibility-healer 의 phase 1 scroll
+    # 케이스) 가 timeout 으로 깨진다 (2026-05-13 사용자 보고, session 6802f8a6faef
+    # step 17 — "모두의 AI 실험실").
+    #
+    # 옛 5s timeout 은 사이트 응답 지연에 너무 짧아 flaky FAIL → 15s 로 상향만
+    # 하고 wait_for 제거. click 의 auto-wait/auto-scroll 에 모든 안전망 위임.
+    return [f"            {locator_code}.click(timeout=15000)"]
 
 
 def _emit_fill(target, value, step, locator_code, page_var="page"):
