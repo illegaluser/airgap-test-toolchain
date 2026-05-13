@@ -54,6 +54,11 @@ def generate_regression_test(
     # 옵트인 (env var ``REGRESSION_HEADLESS=1`` 또는 pre-commit 슈트에서 강제).
     # 설계 근거: orchestrator.py:128 (D9 — 운영 기본은 headed) +
     # replay_proxy.py:325-329 (wrapper monkey-patch 와 동일 의도).
+    #
+    # native dialog (alert / confirm / beforeunload / prompt) 자동 dismiss —
+    # executor.py:412-446 와 동기화. 사이트가 외부 이동 confirm 등 native dialog
+    # 띄우면 핸들러 없을 시 raw .py 가 dialog 위에 가려져 후속 selector 가 못
+    # 잡히거나 click 자체가 멈추는 회귀 (2026-05-13 사용자 보고 — aebc6756b737).
     lines.extend([
         "",
         "",
@@ -68,7 +73,15 @@ def generate_regression_test(
         '            viewport={"width": 1440, "height": 900},',
         '            locale="ko-KR",',
         "        )",
+        "        # 모든 page(메인 + popup) 에 dialog auto-dismiss 핸들러 등록.",
+        "        # executor 와 동일 의미 — Playwright 기본 동작이 'no-op + 멈춤' 이라",
+        "        # 명시적 dismiss 가 없으면 confirm/alert 가 흐름을 막는다.",
+        "        def _auto_dismiss_dialog(d):",
+        "            try: d.dismiss()",
+        "            except Exception: pass",
+        "        context.on('page', lambda _p: _p.on('dialog', _auto_dismiss_dialog))",
         "        page = context.new_page()",
+        "        page.on('dialog', _auto_dismiss_dialog)",
         "        try:",
     ])
 
@@ -221,7 +234,15 @@ def _emit_wait(target, value, step, locator_code, page_var="page"):
 
 
 def _emit_click(target, value, step, locator_code, page_var="page"):
-    return [f"            {locator_code}.click(timeout=5000)"]
+    # click 은 직전 step (popup close / modal 닫기 등) 직후 페이지 reflow 와 겹쳐 5s
+    # 안에 visible 못 잡히는 flaky 사례가 발견됨. executor 는 Playwright 기본
+    # timeout (30s) + locator_resolver 의 재시도/healing 을 거치므로 더 관대.
+    # 회귀 .py 는 healing 없는 raw 실행이라 명시 wait + 충분한 timeout 으로 보강.
+    return [
+        f"            _loc = {locator_code}",
+        f"            _loc.wait_for(state='visible', timeout=15000)",
+        f"            _loc.click(timeout=15000)",
+    ]
 
 
 def _emit_fill(target, value, step, locator_code, page_var="page"):
