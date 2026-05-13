@@ -408,15 +408,29 @@ def _emit_press(target, value, step, locator_code, page_var="page"):
 
 
 def _emit_select(target, value, step, locator_code, page_var="page"):
-    # ``combobox.nth(N)`` 같은 위치 기반 selector 는 ajax 로 늦게 로드되는 select
-    # 가 페이지에 *충분히 자리잡기 전* 에 select_option 이 호출되어 30s timeout
-    # 으로 깨지던 회귀 (2026-05-11 FLOW-USR-007 step 14). 명시적 wait_for(attached)
-    # 로 element 가 DOM 에 자리잡을 때까지 대기 후 select_option 호출.
+    # executor _do_select 의 3-전략 미러 (positional → value= → label=).
+    # 시나리오 value 가 옵션 value("01") 인지 라벨("본인 활용") 인지 generator
+    # 시점에 알 수 없으므로 executor 가 PASS 시킨 것과 동일한 순서로 폴백.
+    # label= 만 emit 하던 이전 구현은 옵션 value 인 케이스에서 항상 fail (2026-05-14).
+    #
+    # combobox.nth(N) 같은 위치 기반 selector 는 ajax 로 늦게 로드되는 select 가
+    # 페이지에 자리잡기 전 select_option 이 호출되어 깨지던 회귀(2026-05-11 FLOW-USR-007
+    # step 14) 가 있어 wait_for(attached) 도 유지.
     val_json = json.dumps(str(value))
     return [
         f"            _sel = {locator_code}",
         f"            _sel.wait_for(state='attached', timeout=_action_timeout_ms)",
-        f"            _sel.select_option(label={val_json})",
+        "            _last_err = None",
+        f"            for _kw in ({{}}, {{'value': {val_json}}}, {{'label': {val_json}}}):",
+        "                try:",
+        f"                    if _kw: _sel.select_option(**_kw, timeout=5000)",
+        f"                    else: _sel.select_option({val_json}, timeout=5000)",
+        "                    _last_err = None",
+        "                    break",
+        "                except Exception as _e:",
+        "                    _last_err = _e",
+        "            if _last_err is not None:",
+        "                raise _last_err",
     ]
 
 
