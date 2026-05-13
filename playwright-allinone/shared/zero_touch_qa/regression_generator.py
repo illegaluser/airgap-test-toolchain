@@ -127,6 +127,11 @@ def generate_regression_test(
     # 를 보존해 회귀 .py 가 원본의 다중 탭 흐름을 재현하게 한다. popup_to 가 박힌
     # step 은 ``with <page_var>.expect_popup() as <popup_to>_info:`` 로 wrap.
     known_pages: set[str] = {"page"}
+    # 직전 step 이 popup 을 새로 띄웠다면 그 popup 의 var 이름을 기록.
+    # 다음 step 이 *다른* page (보통 원본 page) 대상이면 bring_to_front 로
+    # focus 회복 — popup 이 띄워진 직후 본 page 가 background 상태라
+    # hover/click 이 1500ms 안에 못 끝나고 timeout 되는 케이스 대응.
+    last_popup_created: str | None = None
     for idx, step in enumerate(scenario):
         r = results[idx] if idx < len(results) else None
 
@@ -165,6 +170,18 @@ def generate_regression_test(
         page_var = (step.get("page") or "page")
         popup_to = step.get("popup_to") or None
 
+        # popup 직후 본 page focus 회복 — 직전 step 이 popup 을 생성했고,
+        # 이 step 이 그 popup 이 아닌 다른 page (보통 원본 page) 를 대상으로
+        # 하면 bring_to_front 로 활성화. background page 의 hover 가 timeout
+        # 되는 케이스 차단.
+        if last_popup_created and page_var != last_popup_created:
+            lines.append(
+                f"            # [PRE] popup 직후 본 page focus 회복"
+            )
+            lines.append(f"            {page_var}.bring_to_front()")
+            lines.append(f"            {page_var}.wait_for_timeout(200)")
+        last_popup_created = None
+
         desc = step.get("description", "")
         if desc:
             lines.append(f"            # {desc}")
@@ -194,7 +211,7 @@ def generate_regression_test(
                     )
                     lines.append(
                         f"            {page_var}.locator({json.dumps(str(pre_target))})"
-                        f".first.hover(timeout=1500)"
+                        f".first.hover(timeout=5000)"
                     )
                     lines.append(f"            {page_var}.wait_for_timeout(150)")
                 elif pre_action == "wait" and pre_target:
@@ -227,6 +244,7 @@ def generate_regression_test(
             # popup 생성 직후 — 새 page 의 networkidle 까지 대기. expect_popup
             # 자체가 새 page 등장을 보장하므로 추가 lookahead wait 은 emit 안 함.
             lines.append(f"            _settle({popup_to})")
+            last_popup_created = popup_to
         else:
             lines.extend(step_lines)
             # action 직후 active page 의 networkidle 까지 동적 대기 (한도 내).
