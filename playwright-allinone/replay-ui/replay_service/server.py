@@ -651,6 +651,24 @@ def api_run_report(run_id: str):
     )
 
 
+@app.delete("/api/runs/{run_id}")
+def api_delete_run(run_id: str):
+    """실행 결과 1건 삭제 — 메모리 레코드 + 디스크 폴더 모두 제거.
+
+    진행 중(state=running) 인 run 은 부작용 방지를 위해 409 로 거절.
+    """
+    run_id = _safe_name(run_id)
+    with _run_lock:
+        rec = _runs.get(run_id)
+        if rec is not None and rec.get("state") == "running":
+            raise HTTPException(status_code=409, detail=f"진행중인 run 은 삭제 불가: {run_id}")
+        _runs.pop(run_id, None)
+    out_dir = _runs_dir() / run_id
+    if out_dir.is_dir():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    return Response(status_code=204)
+
+
 # --- /api/compat-diag --------------------------------------------------------
 #
 # SUT 호환성 사전 진단 — closed shadow / WebSocket / Dialog / canvas 등

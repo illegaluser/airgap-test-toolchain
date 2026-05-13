@@ -210,6 +210,11 @@ let _availableProfiles = [];  // GET /api/profiles 결과 (storage=ok 만). load
 
 let _currentEventSource = null;
 
+// 자동 새로고침(5~10초)이 tbody 를 다시 그리는 동안 사용자가 막 체크한 선택이
+// 사라지지 않도록, 선택을 클라이언트측 Set 으로 보존하고 렌더 시 복원.
+const _selectedScripts = new Set();  // script 파일명
+const _selectedRuns = new Set();     // run_id
+
 // --- Results -----------------------------------------------------------------
 
 async function loadRuns() {
@@ -222,24 +227,106 @@ async function loadRuns() {
   }
   const tbody = $("#runs-tbody");
   tbody.innerHTML = "";
+  // 목록에 더 이상 존재하지 않는 run_id 는 선택 Set 에서도 제거.
+  const presentRuns = new Set((data || []).map((r) => r.run_id));
+  for (const id of Array.from(_selectedRuns)) {
+    if (!presentRuns.has(id)) _selectedRuns.delete(id);
+  }
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 실행 결과 없음 —</td></tr>';
+    tbody.innerHTML = '<tr class="muted"><td colspan="6">— 실행 결과 없음 —</td></tr>';
+    syncBulkDeleteRunsState();
     return;
   }
   for (const run of data) {
     const tr = document.createElement("tr");
     const result = renderResult(run);
+    const running = run.state === "running";
+    const checked = (!running && _selectedRuns.has(run.run_id)) ? "checked" : "";
+    const checkCell = running
+      ? `<td class="col-check" title="진행중 — 삭제 불가"><input type="checkbox" class="run-check" data-run="${escapeHtml(run.run_id)}" disabled /></td>`
+      : `<td class="col-check"><input type="checkbox" class="run-check" data-run="${escapeHtml(run.run_id)}" ${checked} /></td>`;
+    const delBtn = running
+      ? `<button class="del-run-btn ghost" data-run="${escapeHtml(run.run_id)}" disabled title="진행중 — 삭제 불가">🗑</button>`
+      : `<button class="del-run-btn ghost" data-run="${escapeHtml(run.run_id)}">🗑</button>`;
     tr.innerHTML = `
+      ${checkCell}
       <td>${fmtTime(run.started_at)}</td>
       <td>${escapeHtml(run.script || run.bundle || "-")}</td>
       <td>${escapeHtml(run.alias || "(비로그인)")}</td>
       <td>${result}</td>
-      <td><button class="detail-btn ghost" data-run="${escapeHtml(run.run_id)}">상세 →</button></td>`;
+      <td>
+        <button class="detail-btn ghost" data-run="${escapeHtml(run.run_id)}">상세 →</button>
+        ${delBtn}
+      </td>`;
     tbody.appendChild(tr);
   }
   $$(".detail-btn").forEach((b) => {
     b.addEventListener("click", () => openDetail(b.dataset.run));
   });
+  $$(".del-run-btn").forEach((b) => {
+    if (b.disabled) return;
+    b.addEventListener("click", async () => {
+      if (!confirm(`실행 결과 '${b.dataset.run}' 을 삭제할까요?\n(스크린샷·trace·리포트 산출물이 모두 제거됩니다.)`)) return;
+      const r = await fetch(`/api/runs/${encodeURIComponent(b.dataset.run)}`, { method: "DELETE" });
+      if (r.ok) {
+        _selectedRuns.delete(b.dataset.run);
+        loadRuns();
+      } else {
+        const body = await r.json().catch(() => ({}));
+        alert(`삭제 실패: HTTP ${r.status} — ${body.detail || ""}`);
+      }
+    });
+  });
+  $$(".run-check").forEach((c) => {
+    c.addEventListener("change", () => {
+      if (c.checked) _selectedRuns.add(c.dataset.run);
+      else _selectedRuns.delete(c.dataset.run);
+      syncBulkDeleteRunsState();
+    });
+  });
+  syncBulkDeleteRunsState();
+}
+
+function syncBulkDeleteRunsState() {
+  const checks = $$(".run-check:not([disabled])");
+  const checked = Array.from(checks).filter((c) => c.checked);
+  const btn = $("#btn-bulk-delete-runs");
+  if (btn) {
+    btn.disabled = checked.length === 0;
+    btn.textContent = checked.length === 0
+      ? "🗑 선택 삭제"
+      : `🗑 선택 삭제 (${checked.length})`;
+  }
+  const selectAll = $("#runs-select-all");
+  if (selectAll) {
+    selectAll.checked = checks.length > 0 && checked.length === checks.length;
+    selectAll.indeterminate = checked.length > 0 && checked.length < checks.length;
+  }
+}
+
+async function bulkDeleteRuns() {
+  const ids = Array.from($$(".run-check:not([disabled])"))
+    .filter((c) => c.checked)
+    .map((c) => c.dataset.run);
+  if (ids.length === 0) return;
+  const sample = ids.slice(0, 5).join(", ") + (ids.length > 5 ? ` 외 ${ids.length - 5}개` : "");
+  if (!confirm(`선택한 실행 결과 ${ids.length}개를 삭제할까요?\n(스크린샷·trace·리포트 산출물이 모두 제거됩니다.)\n${sample}`)) return;
+  const btn = $("#btn-bulk-delete-runs");
+  if (btn) btn.disabled = true;
+  const failed = [];
+  for (const id of ids) {
+    try {
+      const r = await fetch(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!r.ok && r.status !== 404) failed.push(id);
+      else _selectedRuns.delete(id);
+    } catch {
+      failed.push(id);
+    }
+  }
+  if (failed.length > 0) {
+    alert(`다음 실행 결과 삭제 실패:\n${failed.join("\n")}`);
+  }
+  loadRuns();
 }
 
 function renderResult(run) {
@@ -313,6 +400,16 @@ document.addEventListener("click", (ev) => {
 
 $("#btn-refresh-profiles")?.addEventListener("click", loadProfiles);
 $("#btn-refresh-runs")?.addEventListener("click", loadRuns);
+$("#btn-bulk-delete-runs")?.addEventListener("click", bulkDeleteRuns);
+$("#runs-select-all")?.addEventListener("change", (ev) => {
+  const on = ev.target.checked;
+  $$(".run-check:not([disabled])").forEach((c) => {
+    c.checked = on;
+    if (on) _selectedRuns.add(c.dataset.run);
+    else _selectedRuns.delete(c.dataset.run);
+  });
+  syncBulkDeleteRunsState();
+});
 
 $("#btn-add-alias")?.addEventListener("click", () => openSeedInput());
 
@@ -370,13 +467,21 @@ async function loadScripts() {
   if (!tbody) return;
   tbody.innerHTML = "";
   refreshScriptProfileSelect();
+  // 목록에 더 이상 존재하지 않는 이름은 선택 Set 에서도 제거.
+  const present = new Set((data || []).map((s) => s.name));
+  for (const n of Array.from(_selectedScripts)) {
+    if (!present.has(n)) _selectedScripts.delete(n);
+  }
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="4">— 등록된 스크립트 없음 —</td></tr>';
+    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 스크립트 없음 —</td></tr>';
+    syncBulkDeleteState();
     return;
   }
   for (const s of data) {
     const tr = document.createElement("tr");
+    const checked = _selectedScripts.has(s.name) ? "checked" : "";
     tr.innerHTML = `
+      <td class="col-check"><input type="checkbox" class="script-check" data-name="${escapeHtml(s.name)}" ${checked} /></td>
       <td><strong>${escapeHtml(s.name)}</strong></td>
       <td>${fmtTime(s.uploaded_at)}</td>
       <td>${fmtBytes(s.size)}</td>
@@ -393,9 +498,62 @@ async function loadScripts() {
     b.addEventListener("click", async () => {
       if (!confirm(`스크립트 '${b.dataset.name}' 을 삭제할까요?`)) return;
       const r = await fetch(`/api/scripts/${encodeURIComponent(b.dataset.name)}`, { method: "DELETE" });
-      if (r.ok) loadScripts();
+      if (r.ok) {
+        _selectedScripts.delete(b.dataset.name);
+        loadScripts();
+      }
     });
   });
+  $$(".script-check").forEach((c) => {
+    c.addEventListener("change", () => {
+      if (c.checked) _selectedScripts.add(c.dataset.name);
+      else _selectedScripts.delete(c.dataset.name);
+      syncBulkDeleteState();
+    });
+  });
+  syncBulkDeleteState();
+}
+
+function syncBulkDeleteState() {
+  const checks = $$(".script-check");
+  const checked = Array.from(checks).filter((c) => c.checked);
+  const btn = $("#btn-bulk-delete-scripts");
+  if (btn) {
+    btn.disabled = checked.length === 0;
+    btn.textContent = checked.length === 0
+      ? "🗑 선택 삭제"
+      : `🗑 선택 삭제 (${checked.length})`;
+  }
+  const selectAll = $("#scripts-select-all");
+  if (selectAll) {
+    selectAll.checked = checks.length > 0 && checked.length === checks.length;
+    selectAll.indeterminate = checked.length > 0 && checked.length < checks.length;
+  }
+}
+
+async function bulkDeleteScripts() {
+  const names = Array.from($$(".script-check"))
+    .filter((c) => c.checked)
+    .map((c) => c.dataset.name);
+  if (names.length === 0) return;
+  const sample = names.slice(0, 5).join(", ") + (names.length > 5 ? ` 외 ${names.length - 5}개` : "");
+  if (!confirm(`선택한 스크립트 ${names.length}개를 삭제할까요?\n${sample}`)) return;
+  const btn = $("#btn-bulk-delete-scripts");
+  if (btn) btn.disabled = true;
+  const failed = [];
+  for (const name of names) {
+    try {
+      const r = await fetch(`/api/scripts/${encodeURIComponent(name)}`, { method: "DELETE" });
+      if (!r.ok && r.status !== 404) failed.push(name);
+      else _selectedScripts.delete(name);
+    } catch {
+      failed.push(name);
+    }
+  }
+  if (failed.length > 0) {
+    alert(`다음 스크립트 삭제 실패:\n${failed.join("\n")}`);
+  }
+  loadScripts();
 }
 
 async function uploadScript(file, overwrite = false) {
@@ -513,6 +671,16 @@ $("#script-file")?.addEventListener("change", (ev) => {
   ev.target.value = "";
 });
 $("#btn-refresh-scripts")?.addEventListener("click", loadScripts);
+$("#btn-bulk-delete-scripts")?.addEventListener("click", bulkDeleteScripts);
+$("#scripts-select-all")?.addEventListener("change", (ev) => {
+  const on = ev.target.checked;
+  $$(".script-check").forEach((c) => {
+    c.checked = on;
+    if (on) _selectedScripts.add(c.dataset.name);
+    else _selectedScripts.delete(c.dataset.name);
+  });
+  syncBulkDeleteState();
+});
 
 // 슬로모 체크박스 ↔ 숫자 입력 활성화 토글 (Recording UI 와 동일 패턴).
 (function _wireScriptSlowmoToggle() {

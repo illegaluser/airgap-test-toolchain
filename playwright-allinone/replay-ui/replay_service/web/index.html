@@ -50,6 +50,8 @@
       <input type="file" id="script-file" accept=".py" hidden />
       <button id="btn-upload-script" type="button">⬆ 업로드 (.py)</button>
       <button id="btn-refresh-scripts" type="button" class="ghost">↻ 새로고침</button>
+      <button id="btn-bulk-delete-scripts" type="button" class="ghost" disabled
+              title="체크된 스크립트를 한 번에 삭제합니다.">🗑 선택 삭제</button>
       <span class="card-actions-spacer"></span>
       <label class="inline-label">
         <span>적용할 로그인 프로파일</span>
@@ -77,11 +79,13 @@
     <table id="scripts-table" class="data-table">
       <thead>
         <tr>
+          <th class="col-check"><input type="checkbox" id="scripts-select-all"
+                                       title="전체 선택 / 해제" /></th>
           <th>스크립트</th><th>등록일</th><th>크기</th><th>액션</th>
         </tr>
       </thead>
       <tbody id="scripts-tbody">
-        <tr class="muted"><td colspan="4">— 로딩 중 —</td></tr>
+        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
       </tbody>
     </table>
   </section>
@@ -99,15 +103,19 @@
     <h2>📊 결과</h2>
     <div class="card-actions">
       <button id="btn-refresh-runs" type="button" class="ghost">↻ 새로고침</button>
+      <button id="btn-bulk-delete-runs" type="button" class="ghost" disabled
+              title="체크된 실행 결과를 한 번에 삭제합니다 (디스크 폴더까지 제거).">🗑 선택 삭제</button>
     </div>
     <table id="runs-table" class="data-table">
       <thead>
         <tr>
+          <th class="col-check"><input type="checkbox" id="runs-select-all"
+                                       title="전체 선택 / 해제" /></th>
           <th>시간</th><th>시나리오</th><th>프로파일 이름</th><th>결과</th><th></th>
         </tr>
       </thead>
       <tbody id="runs-tbody">
-        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+        <tr class="muted"><td colspan="6">— 로딩 중 —</td></tr>
       </tbody>
     </table>
   </section>
