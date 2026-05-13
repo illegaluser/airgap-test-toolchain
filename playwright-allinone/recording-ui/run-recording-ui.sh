@@ -96,6 +96,19 @@ export_runtime_env() {
   # 에 전달이 안 되던 회귀 (2026-05-11) — 기본값은 동일, 사용자 사전 설정은 존중.
   export AUTH_PROFILES_DIR="${AUTH_PROFILES_DIR:-$HOME/ttc-allinone-data/auth-profiles}"
 
+  # 호스트 Ollama 가 실제 보유한 모델로 OLLAMA_MODEL 자동 셋. 이전엔 launcher
+  # 에 없어 enricher / regression 비교 LLM 등이 하드코딩 default ``gemma4:26b``
+  # 를 호출 — Windows/WSL2 호스트에서는 ``qwen3.5:9b`` 만 있어 404 회귀
+  # (사용자 보고 2026-05-13). build.sh:124-128 와 동일 분기.
+  if [ -z "${OLLAMA_MODEL:-}" ]; then
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+      Darwin) export OLLAMA_MODEL="gemma4:26b" ;;
+      *)      export OLLAMA_MODEL="qwen3.5:9b" ;;
+    esac
+  else
+    export OLLAMA_MODEL
+  fi
+
   # Playwright installed in a venv exposes the `playwright` console script next
   # to python. recording_service.codegen_runner currently probes PATH.
   local py_dir
