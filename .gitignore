@@ -12,6 +12,7 @@ monitor-runtime-*.zip
 
 # 시나리오 실행 산출물 — 스크린샷/리포트/로그. 실행마다 새로 생기는 임시물.
 playwright-allinone/artifacts/
+artifacts/
 
 # pytest cache
 .pytest_cache/
