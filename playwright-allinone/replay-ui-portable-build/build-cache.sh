@@ -93,7 +93,13 @@ done
 # required CLI in an isolated helper venv so a bare /usr/bin/python3 can still
 # produce a complete cache.
 ensure_playwright_cli() {
-  if "$PYTHON" -c 'import playwright' >/dev/null 2>&1; then
+  # 호스트 python 의 playwright 가 핀과 *일치* 할 때만 그대로 사용.
+  # 일치하지 않으면 helper venv 를 만들어 핀 버전으로 격리 (chromium revision
+  # 표류 차단). 호스트 playwright 가 다른 버전이면 그 버전의 chromium 을
+  # 받게 되어 wheels 의 playwright 와 mismatch 가 발생한다 (실측 회귀).
+  local host_version
+  host_version="$("$PYTHON" -m pip show playwright 2>/dev/null | awk '/^Version:/ {print $2}')"
+  if [[ "$host_version" = "$PLAYWRIGHT_VERSION" ]]; then
     PW_PYTHON="$PYTHON"
     return
   fi
@@ -174,27 +180,22 @@ PYPY
 done
 
 # Chromium.
+# 매번 `playwright install chromium` 을 호출한다 — 이미 받은 revision 은 skip,
+# 핀 (1.59.0) 기준 새 revision 이 캐시에 없으면 그 revision 만 추가로 받음 (idempotent).
+# validate 분기로 "cache 있으면 skip" 처리하던 이전 동작은, 호스트 playwright 가
+# 다른 버전으로 한 번 받아둔 캐시가 있으면 핀 revision 을 영영 못 받는 회귀를
+# 일으켜 제거. 캐시에 옛 revision 폴더가 잔존해도 무해 (사용은 핀 기준만 됨).
 ensure_playwright_cli
 for t in "${TARGETS[@]}"; do
   out="$BUILD_DIR/chromium/$t"
-  if [[ -d "$out" && -n "$(ls -A "$out" 2>/dev/null)" ]]; then
-    if validate_chromium_payload "$t" "$out"; then
-      echo "[build-cache] chromium 캐시 재사용 — $out"
-      continue
-    fi
-    echo "[build-cache] WARN — chromium 캐시가 target=$t 형식이 아님. 다시 받음."
-    rm -rf "$out"
-  fi
   mkdir -p "$out"
   echo "[build-cache] playwright install chromium → $out (target=$t)"
   if ! PLAYWRIGHT_BROWSERS_PATH="$out" "$PW_PYTHON" -m playwright install chromium; then
     echo "[build-cache] WARN — chromium 다운로드 실패 (target=$t). pack-* 단계에서 보충 시도."
-    rm -rf "$out"
     continue
   fi
   if ! validate_chromium_payload "$t" "$out"; then
     echo "[build-cache] WARN — chromium payload가 target=$t 형식이 아님. pack-* 단계에서 보충 시도."
-    rm -rf "$out"
   fi
 done
 
