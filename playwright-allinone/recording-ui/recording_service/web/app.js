@@ -284,6 +284,13 @@ function showActivePanel(session) {
   $("#active-url").textContent = session.target_url;
   setStatePill("#active-state", session.state);
 
+  // 녹화 중에는 Start Recording 버튼을 비활성 (회색) — Stop & Convert 후 자동
+  // 재활성. CSS button:disabled 가 회색 처리를 담당, 클릭 자체도 차단되어
+  // 중복 Start 호출 방지. 폼 submit 핸들러의 finally 가 success 경로에서는
+  // _state.activeSid 가 살아 있으니 본 상태를 덮어쓰지 않는다.
+  const btn = $("#btn-start");
+  if (btn) btn.disabled = true;
+
   // 폴링 + 경과 시간
   if (_state.pollTimer) clearInterval(_state.pollTimer);
   _state.pollTimer = setInterval(() => pollActive(session.id), 2000);
@@ -298,6 +305,9 @@ function hideActivePanel() {
   _state.startedAt = null;
   if (_state.pollTimer) { clearInterval(_state.pollTimer); _state.pollTimer = null; }
   if (_state.elapsedTimer) { clearInterval(_state.elapsedTimer); _state.elapsedTimer = null; }
+  // 녹화 종료 — Start Recording 버튼 재활성.
+  const btn = $("#btn-start");
+  if (btn) btn.disabled = false;
 }
 
 async function pollActive(sid) {
@@ -500,7 +510,8 @@ $("#start-form").addEventListener("submit", async (e) => {
   } catch (err) {
     alert("Start 실패: " + err.message);
   } finally {
-    $("#btn-start").disabled = false;
+    // success 경로에선 showActivePanel 이 비활성 상태를 잡고 있으니 덮어쓰지 않음.
+    if (!_state.activeSid) $("#btn-start").disabled = false;
   }
 });
 
@@ -1839,7 +1850,8 @@ $("#start-form").addEventListener("submit", async (e) => {
       alert("Start 실패: " + err.message);
     }
   } finally {
-    $("#btn-start").disabled = false;
+    // success 경로에선 showActivePanel 이 비활성 상태를 잡고 있으니 덮어쓰지 않음.
+    if (!_state.activeSid) $("#btn-start").disabled = false;
   }
 }, true);  // capture 로 먼저 처리
 
