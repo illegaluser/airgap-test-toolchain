@@ -50,12 +50,20 @@ def generate_regression_test(
             "    generate_totp_code, parse_auth_target, resolve_credential,\n"
             ")"
         )
+    # 운영 원칙: 화면 띄움(headed) 이 기본. 헤드리스는 사용자가 명시적으로
+    # 옵트인 (env var ``REGRESSION_HEADLESS=1`` 또는 pre-commit 슈트에서 강제).
+    # 설계 근거: orchestrator.py:128 (D9 — 운영 기본은 headed) +
+    # replay_proxy.py:325-329 (wrapper monkey-patch 와 동일 의도).
     lines.extend([
         "",
         "",
+        "import os",
+        "",
+        "",
         "def test_regression():",
+        '    _headless = os.environ.get("REGRESSION_HEADLESS", "").lower() in ("1", "true", "yes")',
         '    with sync_playwright() as p:',
-        "        browser = p.chromium.launch(headless=True)",
+        "        browser = p.chromium.launch(headless=_headless)",
         "        context = browser.new_context(",
         '            viewport={"width": 1440, "height": 900},',
         '            locale="ko-KR",',
