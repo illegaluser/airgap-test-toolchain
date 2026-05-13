@@ -46,8 +46,10 @@ class DifyClient:
     def __init__(self, config: Config):
         self.base_url = config.dify_base_url
         self.headers = {"Authorization": f"Bearer {config.dify_api_key}"}
-        self.heal_timeout_sec = getattr(config, "heal_timeout_sec", 60)
-        self.scenario_timeout_sec = getattr(config, "scenario_timeout_sec", 300)
+        # 기본 None = 무제한. env (HEAL_TIMEOUT_SEC / SCENARIO_TIMEOUT_SEC) 양의
+        # 정수일 때만 한도 적용. 운영 원칙 — timeout 강제중단은 사용자 명시 옵트인.
+        self.heal_timeout_sec = getattr(config, "heal_timeout_sec", None)
+        self.scenario_timeout_sec = getattr(config, "scenario_timeout_sec", None)
         # 파싱 실패 시 raw 응답 덤프 경로 (사후 진단)
         self.artifacts_dir = getattr(config, "artifacts_dir", None)
         self.llm_calls_path = (
@@ -136,7 +138,9 @@ class DifyClient:
                 headers=self.headers,
                 files={"file": (filename, file_bytes, "application/pdf")},
                 data={"user": "mac-agent"},
-                timeout=60,
+                # 파일 업로드 단일 timeout — 큰 PDF 대비 무제한 (env 미설정 시).
+                # 같은 운영 원칙: timeout 강제중단은 사용자 명시 옵트인.
+                timeout=self.scenario_timeout_sec,
             )
             res.raise_for_status()
         except requests.RequestException as e:

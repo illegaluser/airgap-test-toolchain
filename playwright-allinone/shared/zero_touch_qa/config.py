@@ -1,6 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from .dify_token import fetch_token_from_container
 
@@ -33,8 +34,8 @@ class Config:
     step_interval_min_ms: int
     step_interval_max_ms: int
     heal_threshold: float
-    heal_timeout_sec: int
-    scenario_timeout_sec: int
+    heal_timeout_sec: Optional[int]
+    scenario_timeout_sec: Optional[int]
     dom_snapshot_limit: int
 
     @classmethod
@@ -55,7 +56,11 @@ class Config:
             - ``STEP_INTERVAL_MIN_MS`` / ``STEP_INTERVAL_MAX_MS`` → ``800`` / ``1500``
               (DSL 스텝 간 random sleep, 0 이면 비활성)
             - ``HEAL_THRESHOLD`` → ``0.8``
-            - ``HEAL_TIMEOUT_SEC`` → ``60`` (Dify LLM 치유 호출 단일 timeout, 재시도 없음)
+            - ``HEAL_TIMEOUT_SEC`` → 무제한 (env 양수 지정 시 그 값으로 제한).
+              운영 원칙: timeout 강제중단은 사용자 명시 옵트인. healing 호출은
+              DOM 크기·LLM 응답 복잡도에 따라 30s~수분 변동 — 강제중단으로 정상
+              실행을 끊는 회귀 (커밋 da82ced 의 replay timeout 과 동일류) 방지.
+            - ``SCENARIO_TIMEOUT_SEC`` → 무제한 (env 양수 지정 시 한도). 동일 원칙.
             - ``DOM_SNAPSHOT_LIMIT`` → ``10000``
 
         Returns:
@@ -85,7 +90,19 @@ class Config:
             step_interval_min_ms=int(os.getenv("STEP_INTERVAL_MIN_MS", "800")),
             step_interval_max_ms=int(os.getenv("STEP_INTERVAL_MAX_MS", "1500")),
             heal_threshold=float(os.getenv("HEAL_THRESHOLD", "0.8")),
-            heal_timeout_sec=int(os.getenv("HEAL_TIMEOUT_SEC", "60")),
-            scenario_timeout_sec=int(os.getenv("SCENARIO_TIMEOUT_SEC", "300")),
+            heal_timeout_sec=_optional_positive_int(os.getenv("HEAL_TIMEOUT_SEC", "")),
+            scenario_timeout_sec=_optional_positive_int(os.getenv("SCENARIO_TIMEOUT_SEC", "")),
             dom_snapshot_limit=int(os.getenv("DOM_SNAPSHOT_LIMIT", "10000")),
         )
+
+
+def _optional_positive_int(raw: str) -> Optional[int]:
+    """env 값이 양의 정수면 그 값, 아니면 None (= 무제한)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        return None
+    return n if n > 0 else None
