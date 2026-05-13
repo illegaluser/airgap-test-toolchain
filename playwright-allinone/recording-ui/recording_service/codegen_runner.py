@@ -163,15 +163,64 @@ def _kill_process_tree_windows(pid: int) -> None:
         log.warning("[codegen] taskkill tree 실패 (PID=%d): %s", pid, e)
 
 
+def _list_descendants_posix(pid: int) -> list[int]:
+    """POSIX: ``pgrep -P`` 로 PID 의 자식·손자 PID 전체를 수집해 반환.
+
+    macOS / Linux 모두 ``pgrep -P <ppid>`` 가 즉시 자식 PID 들을 한 줄씩 stdout
+    으로 출력. BFS 로 손자까지 누적. pgrep 미설치 환경(드물게)이면 빈 list.
+
+    **Why**: ``os.killpg`` 만으로 codegen 의 process group 전체를 잡지만, Chromium
+    의 헬퍼 프로세스가 자체 setsid 로 별도 group 을 만든 경우 group 종료를
+    빠져나갈 수 있다. 후손 PID 를 별도로 보존했다가 group 종료 후에도 살아
+    있으면 명시적으로 SIGKILL 보내 잔재를 정리.
+    """
+    out: list[int] = []
+    queue = [pid]
+    seen: set[int] = {pid}
+    while queue:
+        cur = queue.pop()
+        try:
+            r = subprocess.run(
+                ["pgrep", "-P", str(cur)],
+                capture_output=True, text=True, timeout=2,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            break
+        for line in r.stdout.splitlines():
+            try:
+                child = int(line.strip())
+            except ValueError:
+                continue
+            if child in seen:
+                continue
+            seen.add(child)
+            out.append(child)
+            queue.append(child)
+    return out
+
+
+def _kill_survivors_posix(pids: list[int]) -> None:
+    """후손 PID 중 살아있는 것들에 SIGKILL. 이미 죽었으면 silent no-op."""
+    for child_pid in pids:
+        try:
+            os.kill(child_pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 def _terminate_proc(proc: subprocess.Popen, grace_sec: float) -> None:
     """codegen subprocess + 자식 Chromium 종료.
 
-    POSIX: ``start_new_session=True`` 로 띄운 process group 단위로
-    ``SIGTERM`` → 유예 → ``SIGKILL`` (자식 Chromium 자동 포함).
+    POSIX (macOS / Linux): ``start_new_session=True`` 로 띄운 process group 에
+    ``SIGTERM`` → 유예 → ``SIGKILL`` 보낸 뒤, 그래도 살아있는 후손 PID 들을
+    명시적으로 SIGKILL. Chromium 헬퍼가 자체 group 으로 detach 한 경우 group
+    종료만으론 못 잡는 케이스의 백스톱.
 
     Windows: process group 개념 부재 → ``taskkill /F /T /PID`` 한 번으로 트리
-    전체 강제 종료. codegen 의 ``.py`` 출력은 사용자가 액션할 때마다 incremental
-    하게 디스크에 기록되므로 강제 종료 시점에도 이미 저장됨.
+    전체 강제 종료.
+
+    codegen 의 ``.py`` 출력은 사용자가 액션할 때마다 incremental 하게 디스크에
+    기록되므로 강제 종료 시점에도 이미 저장됨.
     """
     if os.name == "nt":
         _kill_process_tree_windows(proc.pid)
@@ -181,17 +230,23 @@ def _terminate_proc(proc: subprocess.Popen, grace_sec: float) -> None:
             log.error("[codegen] taskkill 후에도 wait timeout — handle 만 닫음")
         return
 
+    # POSIX — 후손 PID 는 부모가 살아있는 동안 미리 수집 (이후 부모가 죽으면
+    # ppid 가 init(launchd) 으로 재부모화돼 pgrep -P 로 추적 불가).
+    descendants = _list_descendants_posix(proc.pid)
+
     _signal_group(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=grace_sec)
-        return
     except subprocess.TimeoutExpired:
         log.warning("[codegen] SIGKILL (유예 %.1fs 초과)", grace_sec)
-    _signal_group(proc, signal.SIGKILL)
-    try:
-        proc.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        log.error("[codegen] SIGKILL 후에도 종료되지 않음 — handle 만 닫음")
+        _signal_group(proc, signal.SIGKILL)
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            log.error("[codegen] SIGKILL 후에도 종료되지 않음 — handle 만 닫음")
+
+    # 백스톱 — group 종료를 빠져나간 Chromium 헬퍼 정리.
+    _kill_survivors_posix(descendants)
 
 
 def stop_codegen(handle: CodegenHandle, *, grace_sec: float = 5.0) -> CodegenHandle:
