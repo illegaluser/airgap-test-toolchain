@@ -565,9 +565,12 @@ class QAExecutor:
                     # 사이트가 인증 없는 접근에 native alert 대신 URL 쿼리 redirect
                     # (`?errorMsg=...`) 로 메시지를 전달하는 패턴 감지. dialog 와
                     # 같은 자리(노란 카드)에 합쳐 표시.
-                    redirect_msg = _extract_redirect_msg(active_page.url or "")
-                    if redirect_msg:
-                        dialog_buffer.append(redirect_msg)
+                    # close step 직후엔 active_page 가 닫혀 있어 .url 접근 시
+                    # 예외 — closed 가드 후 진행.
+                    if not active_page.is_closed():
+                        redirect_msg = _extract_redirect_msg(active_page.url or "")
+                        if redirect_msg:
+                            dialog_buffer.append(redirect_msg)
                     if dialog_buffer:
                         result.dialog_text = "\n".join(dialog_buffer)
                     results.append(result)
@@ -585,7 +588,11 @@ class QAExecutor:
                     # G-3: 스텝이 PASS/HEALED 로 판정됐어도 현재 page.url 이 봇 차단
                     # 페이지(/sorry/, captcha challenge 등) 면 마지막 레이어로 FAIL 처리.
                     # verify 가 없는 시나리오에서도 false positive 성공을 차단한다.
-                    current_url = active_page.url or ""
+                    # close step 직후엔 page 가 닫혀 .url 접근 시 예외 — 차단 검사 건너뜀.
+                    if active_page.is_closed():
+                        current_url = ""
+                    else:
+                        current_url = active_page.url or ""
                     if self._is_blocked_url(current_url):
                         log.error(
                             "[Step %s] 스텝은 %s 로 판정됐지만 현재 URL 이 봇 차단 페이지: %s",
@@ -631,8 +638,17 @@ class QAExecutor:
                 except Exception:
                     pass
                 final_path = os.path.join(artifacts, "final_state.png")
-                self._safe_screenshot(last_active_page, final_path)
-                log.info("[Final] 최종 활성 페이지: %s → %s", last_active_page.url, final_path)
+                # 사용자가 마지막 step 에서 page 를 닫은 경우 (close 액션) —
+                # 살아있는 다른 page 가 있으면 그걸로, 아니면 final_state.png 생략.
+                final_page = last_active_page
+                if final_page.is_closed():
+                    alive = [p for p in context.pages if not p.is_closed()]
+                    final_page = alive[-1] if alive else None
+                if final_page is not None:
+                    self._safe_screenshot(final_page, final_path)
+                    log.info("[Final] 최종 활성 페이지: %s → %s", final_page.url, final_path)
+                else:
+                    log.info("[Final] 모든 page 닫힘 — final_state.png 생략")
 
                 # P-2. headed 모드에선 browser.close() 전에 짧게 대기 (사용자 시각 확인).
                 if headed:
@@ -1041,6 +1057,17 @@ class QAExecutor:
             page.wait_for_timeout(ms)
             log.info("[Step %s] wait %dms -> PASS", step_id, ms)
             return StepResult(step_id, action, "", str(ms), desc, "PASS")
+
+        if action == "close":
+            # 사용자가 녹화 중 명시적으로 닫은 탭/창. converter_ast 가 emit.
+            # 이미 닫혀 있어도 idempotent — best-effort 로 처리.
+            try:
+                if not page.is_closed():
+                    page.close()
+            except Exception as e:
+                log.warning("[Step %s] page.close() 무시 가능 오류: %s", step_id, e)
+            log.info("[Step %s] close -> PASS", step_id)
+            return StepResult(step_id, action, "", "", desc, "PASS")
 
         # LLM 출력 보정 — normalize 후 다시 분기
         self._normalize_step(step)

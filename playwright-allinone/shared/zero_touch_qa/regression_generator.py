@@ -247,21 +247,24 @@ def generate_regression_test(
             last_popup_created = popup_to
         else:
             lines.extend(step_lines)
-            # action 직후 active page 의 networkidle 까지 동적 대기 (한도 내).
-            # 단순 sleep 대신 사이트 반응 완료 감지 — 네트워크 지연·SPA 환경에서
-            # 동일 시나리오가 안정적으로 통과.
-            lines.append(f"            _settle({page_var})")
-            # 다음 step 의 element 가 DOM 에 attach 될 때까지 추가 대기 — modal
-            # / dialog 같은 *직전 action 의 비동기 trigger* 가 next step 의
-            # element 를 만들 때까지 기다림. lookahead 로 다음 step 의
-            # stable_selector / target 을 미리 알아 그 locator 의 wait_for.
-            _next = _peek_next_locator_code(scenario, results, idx, known_pages)
-            if _next is not None:
-                _next_page_var, _next_locator_code, _next_state = _next
-                lines.append(
-                    f"            try: {_next_locator_code}.wait_for(state={_next_state!r}, timeout=_step_wait_ms)"
-                )
-                lines.append(f"            except Exception: pass")
+            # close 액션은 page 자체를 닫으므로 그 page 에 _settle 또는 lookahead
+            # wait 호출 시 closed page 예외 — skip.
+            if action != "close":
+                # action 직후 active page 의 networkidle 까지 동적 대기 (한도 내).
+                # 단순 sleep 대신 사이트 반응 완료 감지 — 네트워크 지연·SPA 환경에서
+                # 동일 시나리오가 안정적으로 통과.
+                lines.append(f"            _settle({page_var})")
+                # 다음 step 의 element 가 DOM 에 attach 될 때까지 추가 대기 — modal
+                # / dialog 같은 *직전 action 의 비동기 trigger* 가 next step 의
+                # element 를 만들 때까지 기다림. lookahead 로 다음 step 의
+                # stable_selector / target 을 미리 알아 그 locator 의 wait_for.
+                _next = _peek_next_locator_code(scenario, results, idx, known_pages)
+                if _next is not None:
+                    _next_page_var, _next_locator_code, _next_state = _next
+                    lines.append(
+                        f"            try: {_next_locator_code}.wait_for(state={_next_state!r}, timeout=_step_wait_ms)"
+                    )
+                    lines.append(f"            except Exception: pass")
         lines.append("")
 
     lines.extend([
@@ -659,6 +662,14 @@ def _emit_performance(target, value, step, locator_code, page_var="page"):
     ]
 
 
+def _emit_close(target, value, step, locator_code, page_var="page"):
+    # 사용자가 녹화 중 명시적으로 닫은 탭/창 재현. 이미 닫혔어도 idempotent.
+    return [
+        f"            try: {page_var}.close()",
+        f"            except Exception: pass",
+    ]
+
+
 def _emit_visual_diff(target, value, step, locator_code, page_var="page"):
     """visual_diff emitter — golden 이미지와 viewport 픽셀 diff.
 
@@ -695,6 +706,7 @@ _ACTION_EMITTERS = {
     "cookie_verify": _emit_cookie_verify,
     "performance": _emit_performance,
     "visual_diff": _emit_visual_diff,
+    "close": _emit_close,
 }
 
 

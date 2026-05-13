@@ -738,7 +738,14 @@ class _AstConverter(ast.NodeVisitor):
                 "action": "scroll", "target": target, "value": "into_view",
                 "description": "요소 위치로 스크롤",
             }
-        # close / go_back / 등 — 무시
+        if method == "close":
+            # ``<page_var>.close()`` — 사용자가 녹화 중 명시적으로 닫은 탭/창.
+            # ``page`` 필드는 caller 가 receiver_root (page var 이름) 로 채운다.
+            return {
+                "action": "close", "target": "", "value": "",
+                "description": "창 닫기",
+            }
+        # go_back / 등 — 무시
         return None
 
     def _parse_mock_route(self, call: ast.Call) -> Optional[dict]:
