@@ -24,16 +24,10 @@ DSCORE Replay UI 휴대용 패키지 (Windows)
 폴더를 통째로 이동해도 데이터가 같이 따라갑니다.
 USB 에 풀어 다른 PC 에서 그대로 실행해도 됩니다.
 
-같은 PC 의 Recording UI / 설치본 Replay UI 와 로그인 프로파일을 공유하려면,
-Launch-ReplayUI.bat 호출 전에 명령창에서:
-    set AUTH_PROFILES_DIR=%USERPROFILE%\ttc-allinone-data\auth-profiles
-
-그 다음 Launch-ReplayUI.bat 을 실행하세요 (2026-05-13 부터 두 UI 의 기본 공유 경로).
-
 문제 해결
 ---------
 
 - 브라우저가 열리지 않으면 직접 http://127.0.0.1:18094/ 로 접속해 보세요.
 - 포트 18094 가 이미 사용 중이면 기존 인스턴스로 자동 연결됩니다.
 - Chromium 이 실행되지 않으면 Microsoft Visual C++ 재배포 패키지(2015-2022) 가 필요할 수 있습니다.
-- 로그/오류 흔적은 data/runs/ 폴더 안에서 확인 가능합니다.
+- 로그/오류 흔적은 data/runs/replay-ui.stderr.log 파일을 확인하세요.

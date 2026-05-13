@@ -106,6 +106,7 @@ foreach ($f in @("Launch-ReplayUI.bat", "Stop-ReplayUI.bat", "README.txt")) {
 
 # 1. embedded-python/ 풀기.
 $EmbeddedPyDir = Join-Path $ReplayUiDir "embedded-python"
+$EmbeddedPy    = Join-Path $EmbeddedPyDir "python.exe"
 New-Item -ItemType Directory -Path $EmbeddedPyDir -Force | Out-Null
 Write-Host "[pack-windows] Extracting embedded Python -> embedded-python/"
 Expand-Archive -Path $PythonEmbedZip -DestinationPath $EmbeddedPyDir -Force
@@ -209,7 +210,6 @@ foreach ($d in @("auth-profiles", "scenarios", "scripts", "runs")) {
 }
 
 # 8. Smoke — embedded python 으로 핵심 모듈 import.
-$EmbeddedPy = Join-Path $EmbeddedPyDir "python.exe"
 Write-Host "[pack-windows] Smoke: import 핵심 모듈"
 & $EmbeddedPy -c "import replay_service.server, recording_shared.trace_parser, recording_shared.report_export, zero_touch_qa.auth_profiles, monitor.replay_cmd, playwright"
 if ($LASTEXITCODE -ne 0) { throw "smoke import 실패 (exit $LASTEXITCODE)" }

@@ -1362,8 +1362,14 @@ def _seed_subprocess_writes(storage_path: Path, dump: dict):
 
     def _stub(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args", [])
-        # playwright 호출만 가로채기.
-        if isinstance(cmd, list) and cmd and cmd[0] == "playwright":
+        # playwright 호출만 가로채기 — 두 형태 모두 인식:
+        #   옛 (bare CLI): ["playwright", "open", ...]
+        #   새 (sys.executable -m): [<py>, "-m", "playwright", "open", ...]
+        is_playwright = isinstance(cmd, list) and cmd and (
+            cmd[0] == "playwright"
+            or (len(cmd) >= 3 and cmd[1:3] == ["-m", "playwright"])
+        )
+        if is_playwright:
             if "--save-storage" in cmd:
                 idx = cmd.index("--save-storage")
                 target = Path(cmd[idx + 1])
@@ -1494,7 +1500,11 @@ class TestSeedProfile:
 
         def _maybe_timeout(*a, **kw):
             cmd = a[0] if a else kw.get("args", [])
-            if isinstance(cmd, list) and cmd and cmd[0] == "playwright":
+            is_playwright = isinstance(cmd, list) and cmd and (
+                cmd[0] == "playwright"
+                or (len(cmd) >= 3 and cmd[1:3] == ["-m", "playwright"])
+            )
+            if is_playwright:
                 raise subprocess.TimeoutExpired(cmd, 600)
             return real_run(*a, **kw)
 
@@ -1516,7 +1526,11 @@ class TestSeedProfile:
 
         def _maybe_fail(*a, **kw):
             cmd = a[0] if a else kw.get("args", [])
-            if isinstance(cmd, list) and cmd and cmd[0] == "playwright":
+            is_playwright = isinstance(cmd, list) and cmd and (
+                cmd[0] == "playwright"
+                or (len(cmd) >= 3 and cmd[1:3] == ["-m", "playwright"])
+            )
+            if is_playwright:
                 return _FailResult()
             return real_run(*a, **kw)
 

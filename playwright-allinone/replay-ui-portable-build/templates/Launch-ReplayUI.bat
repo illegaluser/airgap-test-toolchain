@@ -23,8 +23,10 @@ if not errorlevel 1 (
   exit /b 0
 )
 
-REM Replay UI 백그라운드 기동.
-start "ReplayUI" /min "%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
+REM Replay UI 백그라운드 기동. stdout/stderr 를 data\runs\replay-ui.*.log 로 redirect.
+REM macOS .command 와 동등한 진단성 — UI 가 안 뜨면 그 파일을 본다.
+REM start 자체는 redirect 지원이 까다로워 cmd /c 로 한 번 감싼다.
+start "ReplayUI" /min cmd /c ""%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094 > "%ROOT%data\runs\replay-ui.stdout.log" 2> "%ROOT%data\runs\replay-ui.stderr.log""
 
 REM 준비될 때까지 폴링 후 브라우저 오픈.
 for /l %%i in (1,1,15) do (

@@ -2,6 +2,10 @@
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# 첫 실행 시 macOS Gatekeeper quarantine 비트 제거 — zip 내부 python3 / chromium 이
+# 시그니처 미검증으로 차단되는 회귀 차단. xattr 미설치 / 권한 없음은 silent skip.
+xattr -dr com.apple.quarantine "$ROOT" 2>/dev/null || true
+
 export PYTHONHOME=""
 export PYTHONPATH="$ROOT:$ROOT/site-packages"
 export PLAYWRIGHT_BROWSERS_PATH="$ROOT/chromium"

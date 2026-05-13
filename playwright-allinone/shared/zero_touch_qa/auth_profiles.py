@@ -732,7 +732,7 @@ def current_playwright_version() -> str:
     """
     try:
         result = subprocess.run(
-            ["playwright", "--version"],
+            [sys.executable, "-m", "playwright", "--version"],
             capture_output=True,
             text=True,
             timeout=_PLAYWRIGHT_VERSION_TIMEOUT_SEC,
@@ -1523,7 +1523,7 @@ def _do_seed_io(
     """
     _safe_unlink(storage_path)  # 이전 stale 잔재 정리.
     cmd = [
-        "playwright", "open", seed_url,
+        sys.executable, "-m", "playwright", "open", seed_url,
         "--save-storage", str(storage_path),
     ]
     cmd += fingerprint.to_playwright_open_args()
