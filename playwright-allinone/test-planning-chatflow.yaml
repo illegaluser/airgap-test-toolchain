@@ -210,6 +210,7 @@ workflow:
             completion_params:
               temperature: 0.1
               max_tokens: 8192
+              think: false
             mode: chat
             name: 'gemma4:26b'
             provider: ollama
