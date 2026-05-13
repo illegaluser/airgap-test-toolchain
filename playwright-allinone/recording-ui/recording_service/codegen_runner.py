@@ -143,8 +143,44 @@ def _close_pipes(proc: subprocess.Popen) -> None:
             pass
 
 
+def _kill_process_tree_windows(pid: int) -> None:
+    """Windows: ``taskkill /F /T /PID <pid>`` 로 process tree 강제 종료.
+
+    Windows 는 POSIX 의 process group 개념이 없어 ``proc.send_signal(SIGTERM)``
+    이 호출되면 codegen 부모만 죽고 그 자식 Chrome for Testing 은 부모 사망을
+    자동 감지하지 않아 orphan 상태로 살아남는다. ``taskkill /T`` 는 PID 의
+    process tree 전체 (자식 / 손자 포함) 를 한 번에 종료한다.
+
+    이미 죽은 PID 면 rc=128 로 silently no-op.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("[codegen] taskkill tree 실패 (PID=%d): %s", pid, e)
+
+
 def _terminate_proc(proc: subprocess.Popen, grace_sec: float) -> None:
-    """SIGTERM → 유예 → SIGKILL. process group 단위 (자식 Chromium 포함)."""
+    """codegen subprocess + 자식 Chromium 종료.
+
+    POSIX: ``start_new_session=True`` 로 띄운 process group 단위로
+    ``SIGTERM`` → 유예 → ``SIGKILL`` (자식 Chromium 자동 포함).
+
+    Windows: process group 개념 부재 → ``taskkill /F /T /PID`` 한 번으로 트리
+    전체 강제 종료. codegen 의 ``.py`` 출력은 사용자가 액션할 때마다 incremental
+    하게 디스크에 기록되므로 강제 종료 시점에도 이미 저장됨.
+    """
+    if os.name == "nt":
+        _kill_process_tree_windows(proc.pid)
+        try:
+            proc.wait(timeout=grace_sec)
+        except subprocess.TimeoutExpired:
+            log.error("[codegen] taskkill 후에도 wait timeout — handle 만 닫음")
+        return
+
     _signal_group(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=grace_sec)
