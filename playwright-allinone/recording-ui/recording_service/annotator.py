@@ -121,13 +121,23 @@ def _find_hover_trigger_in_chain(node: ast.expr) -> ast.expr | None:
         cur = cur.func.value
     # candidates[0] = leaf (click 직전), candidates[-1] = root 에 가장 가까움.
     # 가장 root 에 가까운 trigger 를 선택 (hover 가 광범위 ancestor 일수록 안전).
+    # locator_resolver 가 인식하는 6개 semantic getter + locator/filter/frame_locator
+    # 를 모두 허용. 이전엔 ``get_by_text/label/title/alt/test_id`` 가 "leaf 라 광범위
+    # 해질 위험" 이라는 추정으로 제외돼 ``page.get_by_title("메뉴 더보기")`` 같은
+    # tooltip ancestor 가 hover trigger 후보에서 빠졌음. 후보 선택은 ① root 에
+    # 가장 가까운 segment 우선 + ② sandbox 단계의 visibility probe 가 가짜 후보를
+    # 검증하므로 false positive 위험은 자동 차단 — 사전 차단을 제거해도 안전.
+    _ALLOWED = {
+        "locator", "filter", "frame_locator",
+        "get_by_role", "get_by_text", "get_by_label",
+        "get_by_placeholder", "get_by_test_id",
+        "get_by_title", "get_by_alt_text",
+    }
     for c in reversed(candidates):
         if not isinstance(c, ast.Call) or not isinstance(c.func, ast.Attribute):
             continue
         method = c.func.attr
-        if method not in ("locator", "filter", "get_by_role", "frame_locator"):
-            # get_by_text / get_by_label 등은 leaf 로 자주 쓰이므로 hover trigger
-            # 후보에서 제외 — 너무 광범위해질 위험.
+        if method not in _ALLOWED:
             continue
         # 인자 텍스트로 trigger 휴리스틱 매칭.
         arg_text = _stringify_args(c)

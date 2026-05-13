@@ -170,11 +170,13 @@ class LocalHealer:
     def _extract_text(el) -> tuple[str, str]:
         """매칭에 쓸 텍스트와 그 출처를 함께 반환.
 
-        Returns ``(text, source)`` — ``source`` ∈ ``{"text","placeholder","value","aria_label",""}``.
-        regression_generator 가 healed selector 를 DSL 형태로 재구성할 때
-        어느 attribute 가 매칭 근거였는지 알아야 ``text=`` / ``placeholder=``
-        / ``label=`` 중 옳은 것을 emit 할 수 있다 (이전엔 텍스트만 알고 출처를
-        몰라 selector 재구성이 아예 불가능했음).
+        Returns ``(text, source)`` — ``source`` ∈ ``{"text","placeholder","value",
+        "aria_label","title","alt","testid",""}``.
+
+        executor 의 locator_resolver 가 인식하는 6개 semantic prefix
+        (text/label/placeholder/testid/title/alt) 와 동기화. 이전엔 text/
+        placeholder/aria_label 3종만 probe 해 ``title=`` / ``alt=`` 타깃의 자가치유
+        가 사실상 불가능했음. ``value`` 는 DSL 표현 부재로 caller fallback 용도.
         """
         try:
             t = (el.inner_text() or "").strip()
@@ -189,6 +191,16 @@ class LocalHealer:
             a = (el.get_attribute("aria-label") or "").strip()
             if a:
                 return a, "aria_label"
+            ti = (el.get_attribute("title") or "").strip()
+            if ti:
+                return ti, "title"
+            al = (el.get_attribute("alt") or "").strip()
+            if al:
+                return al, "alt"
+            # data-testid — Playwright 의 get_by_test_id 기본 attribute.
+            tid = (el.get_attribute("data-testid") or "").strip()
+            if tid:
+                return tid, "testid"
         except Exception:
             return "", ""
         return "", ""
@@ -203,6 +215,9 @@ class LocalHealer:
         - ``text``        → ``text=<t>``       (page.get_by_text)
         - ``placeholder`` → ``placeholder=<t>``(page.get_by_placeholder)
         - ``aria_label``  → ``label=<t>``      (page.get_by_label)
+        - ``title``       → ``title=<t>``      (page.get_by_title)
+        - ``alt``         → ``alt=<t>``        (page.get_by_alt_text)
+        - ``testid``      → ``testid=<t>``     (page.get_by_test_id)
         - ``value`` / 기타 → 빈 문자열 (DSL 표현 부재 — caller fallback)
         """
         if not text:
@@ -213,6 +228,12 @@ class LocalHealer:
             return f"placeholder={text}"
         if source == "aria_label":
             return f"label={text}"
+        if source == "title":
+            return f"title={text}"
+        if source == "alt":
+            return f"alt={text}"
+        if source == "testid":
+            return f"testid={text}"
         return ""
 
     @staticmethod
