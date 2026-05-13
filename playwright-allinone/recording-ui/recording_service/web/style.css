@@ -1,6 +1,11 @@
 /* DSCORE Recording Service — minimal stylesheet (TR.4) */
 
 * { box-sizing: border-box; }
+/* native <select> dropdown 의 option 렌더 회귀 가드 — `* { box-sizing: border-box }`
+   가 <option> 에도 적용돼 컨텐츠 영역이 padding 만큼 잘리고, 신규 Chromium
+   customizable-select 가 페이지 CSS 를 상속해 텍스트가 짤리는 케이스. */
+select, option { box-sizing: content-box; font: inherit; }
+option { background: #fff; color: var(--text); padding: 4px 8px; }
 :root {
   --bg: #f5f5f7;
   --card: #ffffff;

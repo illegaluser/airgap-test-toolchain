@@ -44,6 +44,12 @@ header h1 {
 
 .spacer { flex: 1; }
 
+/* native <select> dropdown 의 option 렌더 회귀 가드 — Recording UI 와 동일.
+   `* { box-sizing: border-box }` 가 <option> 에도 적용돼 컨텐츠 영역이 잘리고,
+   신규 Chromium customizable-select 가 페이지 CSS 를 상속해 텍스트가 짤리는 케이스. */
+select, option { box-sizing: content-box; font: inherit; }
+option { background: #fff; color: var(--fg); padding: 4px 8px; }
+
 .cross-link {
   display: inline-block;
   text-decoration: none;
