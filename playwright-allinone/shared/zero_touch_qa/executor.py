@@ -3392,9 +3392,32 @@ class QAExecutor:
 
     # ── 스크린샷 ──
     @staticmethod
+    def _settle_for_screenshot(page: Page) -> None:
+        """스크린샷 직전 콘텐츠 로드를 짧게 대기 — 빈 영역/스피너로 찍히는 회귀 차단.
+
+        액션 promise resolve 시점과 *실제 화면 그려짐* 사이에 in-flight XHR /
+        lazy image / 동적 layout 이 남아 있을 수 있어, 그 차이를 스크린샷이
+        그대로 박는다 (사용자 보고 2026-05-13). 보수적으로 networkidle 을 짧게
+        기다리고, 추가로 한 프레임 정도의 painting 여유 (120ms) 를 둔다.
+
+        SPA 의 long-poll 처럼 영영 idle 안 오는 케이스는 timeout 후 silent 진행
+        (캡처 자체가 지연될 뿐 흐름엔 영향 없음).
+        """
+        try:
+            page.wait_for_load_state("networkidle", timeout=1500)
+        except Exception:
+            pass
+        try:
+            # 페인팅/transition 마무리 — 컬러/이미지 디코딩 완료 대기.
+            page.wait_for_timeout(120)
+        except Exception:
+            pass
+
+    @staticmethod
     def _screenshot(page: Page, artifacts: str, step_id, suffix: str) -> str:
         """스텝 실행 후 스크린샷을 저장하고 파일 경로를 반환한다."""
         path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
+        QAExecutor._settle_for_screenshot(page)
         page.screenshot(path=path)
         return path
 
@@ -3412,6 +3435,7 @@ class QAExecutor:
         안전하다.
         """
         path = os.path.join(artifacts, f"step_{step_id}_{suffix}.png")
+        QAExecutor._settle_for_screenshot(page)
         try:
             page.screenshot(path=path, mask=mask or [])
         except TypeError:
@@ -3428,6 +3452,7 @@ class QAExecutor:
     def _safe_screenshot(page: Page, path: str):
         """스크린샷을 저장하되, 실패해도 예외를 무시한다."""
         try:
+            QAExecutor._settle_for_screenshot(page)
             page.screenshot(path=path)
         except Exception:
             pass

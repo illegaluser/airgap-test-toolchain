@@ -215,6 +215,42 @@ def _pick_frame_after(
     return frames[-1][1]
 
 
+# 액션 직후 settle/wait 시퀀스를 식별 — 회귀 .py 의 ``_settle(page)`` 호출
+# (wait_for_load_state networkidle) + 다음 step 의 wait_for(state='visible')
+# 모두 이 화이트리스트에 속한다. settle 시퀀스 끝까지 snapshot_time 을 확장해
+# 페이지 콘텐츠 로드 완료 후의 frame 으로 step 스크린샷을 골라낸다.
+_WAIT_METHOD_PREFIXES = (
+    "waitfor",  # waitForLoadState / waitForSelector / waitForTimeout / waitForEvent...
+)
+
+
+def _is_wait_method(method: str) -> bool:
+    m = (method or "").lower().replace("_", "")
+    return any(m.startswith(p) for p in _WAIT_METHOD_PREFIXES)
+
+
+def _settled_snapshot_time(
+    actions: "list[_Action]", idx: int
+) -> float:
+    """``idx`` 번째 action 의 스크린샷 시점 — 직후 연속된 wait/settle action 의
+    마지막 end_time. wait/settle 이 안 따라오면 본 action 자체의 end_time.
+
+    이렇게 잡으면 click 직후 ``wait_for_load_state('networkidle')`` 가 마무리된
+    뒤의 frame 이 step 의 "after" 스크린샷이 된다 — 사용자가 보는 step 별
+    스크린샷이 settle 후 화면을 반영하도록 보정 (2026-05-13).
+    """
+    cur = actions[idx]
+    snapshot_time = cur.end_time
+    # 본 action 자체가 wait 류면 더 이상 확장하지 않음 — 그 자체 end_time 이 충분.
+    if _is_wait_method(cur.method):
+        return snapshot_time
+    j = idx + 1
+    while j < len(actions) and _is_wait_method(actions[j].method):
+        snapshot_time = actions[j].end_time
+        j += 1
+    return snapshot_time
+
+
 def _read_resource(zf: zipfile.ZipFile, sha1: str) -> Optional[bytes]:
     """resources/<sha1> 또는 resources/sha1.{ext} 패턴으로 검색."""
     for name in zf.namelist():
@@ -310,7 +346,10 @@ def parse_trace(
             with out_run_log.open("w", encoding="utf-8") as f_out:
                 for idx, act in enumerate(actions, start=1):
                     shot_field: Optional[str] = None
-                    sha1 = _pick_frame_after(frames, act.end_time)
+                    # action 직후 settle 시퀀스가 있으면 그 끝의 frame 을 채택해
+                    # 페이지 콘텐츠 로드가 끝난 상태를 보여 준다.
+                    snapshot_time = _settled_snapshot_time(actions, idx - 1)
+                    sha1 = _pick_frame_after(frames, snapshot_time)
                     if sha1 is not None:
                         img = _read_resource(zf, sha1)
                         if img is not None:
