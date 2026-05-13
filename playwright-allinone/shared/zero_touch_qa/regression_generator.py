@@ -243,7 +243,20 @@ def generate_regression_test(
             known_pages.add(popup_to)
             # popup 생성 직후 — 새 page 의 networkidle 까지 대기. expect_popup
             # 자체가 새 page 등장을 보장하므로 추가 lookahead wait 은 emit 안 함.
-            lines.append(f"            _settle({popup_to})")
+            #
+            # 예외: 바로 다음 단계가 같은 popup 을 close 하는 경우 settle 생략.
+            # popup 페이지 (외부 사이트 / Microsoft Learn 등) 가 networkidle 까지
+            # 도달하지 못해 3초 timeout 으로 떨어지고, 그 timeout 이 Playwright
+            # 트레이스에 step FAIL 로 기록되는 회귀 차단. 어차피 다음 step 이
+            # close 라 settle 결과는 버려지는 낭비.
+            next_step = scenario[idx + 1] if idx + 1 < len(scenario) else None
+            close_follows = (
+                next_step is not None
+                and str(next_step.get("action", "")).lower() == "close"
+                and (next_step.get("page") or "page") == popup_to
+            )
+            if not close_follows:
+                lines.append(f"            _settle({popup_to})")
             last_popup_created = popup_to
         else:
             lines.extend(step_lines)
