@@ -56,11 +56,12 @@ class Config:
             - ``STEP_INTERVAL_MIN_MS`` / ``STEP_INTERVAL_MAX_MS`` → ``800`` / ``1500``
               (DSL 스텝 간 random sleep, 0 이면 비활성)
             - ``HEAL_THRESHOLD`` → ``0.8``
-            - ``HEAL_TIMEOUT_SEC`` → 무제한 (env 양수 지정 시 그 값으로 제한).
-              운영 원칙: timeout 강제중단은 사용자 명시 옵트인. healing 호출은
-              DOM 크기·LLM 응답 복잡도에 따라 30s~수분 변동 — 강제중단으로 정상
-              실행을 끊는 회귀 (커밋 da82ced 의 replay timeout 과 동일류) 방지.
-            - ``SCENARIO_TIMEOUT_SEC`` → 무제한 (env 양수 지정 시 한도). 동일 원칙.
+            - ``HEAL_TIMEOUT_SEC`` → ``300`` (5분 상한). LLM healer 가 유효 답을
+              못 주는 케이스에서 무제한 대기로 누적되던 비용을 끊는다. 무제한이
+              필요한 운영 환경은 ``HEAL_TIMEOUT_SEC=0`` 로 옵트아웃 (이전엔
+              da82ced 로 무제한이 기본이었으나 2026-05-14 다시 상한 부여).
+            - ``SCENARIO_TIMEOUT_SEC`` → ``300`` (5분 상한). 무제한이 필요한
+              운영 환경은 ``SCENARIO_TIMEOUT_SEC=0`` 로 옵트아웃.
             - ``DOM_SNAPSHOT_LIMIT`` → ``10000``
 
         Returns:
@@ -90,8 +91,8 @@ class Config:
             step_interval_min_ms=int(os.getenv("STEP_INTERVAL_MIN_MS", "800")),
             step_interval_max_ms=int(os.getenv("STEP_INTERVAL_MAX_MS", "1500")),
             heal_threshold=float(os.getenv("HEAL_THRESHOLD", "0.8")),
-            heal_timeout_sec=_optional_positive_int(os.getenv("HEAL_TIMEOUT_SEC", "")),
-            scenario_timeout_sec=_optional_positive_int(os.getenv("SCENARIO_TIMEOUT_SEC", "")),
+            heal_timeout_sec=_optional_positive_int(os.getenv("HEAL_TIMEOUT_SEC", "300")),
+            scenario_timeout_sec=_optional_positive_int(os.getenv("SCENARIO_TIMEOUT_SEC", "300")),
             dom_snapshot_limit=int(os.getenv("DOM_SNAPSHOT_LIMIT", "10000")),
         )
 
