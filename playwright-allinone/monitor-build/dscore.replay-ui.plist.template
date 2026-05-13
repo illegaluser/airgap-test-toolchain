@@ -23,7 +23,7 @@
     <key>PLAYWRIGHT_BROWSERS_PATH</key>
     <string>__HOME__/.dscore.ttc.monitor/chromium</string>
     <key>AUTH_PROFILES_DIR</key>
-    <string>__HOME__/.dscore.ttc.monitor/auth-profiles</string>
+    <string>__HOME__/ttc-allinone-data/auth-profiles</string>
     <key>MONITOR_HOME</key>
     <string>__HOME__/.dscore.ttc.monitor</string>
   </dict>

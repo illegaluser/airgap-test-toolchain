@@ -28,11 +28,11 @@ DSCORE Replay UI 휴대용 패키지 (macOS arm64)
 
 폴더를 통째로 이동해도 데이터가 같이 따라갑니다.
 
-같은 Mac 의 기존 모니터링 설치본과 로그인 프로파일을 공유하려면,
+같은 Mac 의 Recording UI / 설치본 Replay UI 와 로그인 프로파일을 공유하려면,
 터미널에서:
-    export AUTH_PROFILES_DIR="$HOME/.dscore.ttc.monitor/auth-profiles"
+    export AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
 
-그 다음 Launch-ReplayUI.command 를 실행하세요.
+그 다음 Launch-ReplayUI.command 를 실행하세요 (2026-05-13 부터 두 UI 의 기본 공유 경로).
 
 문제 해결
 ---------

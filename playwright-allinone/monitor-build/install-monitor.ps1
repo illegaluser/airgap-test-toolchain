@@ -197,9 +197,28 @@ try {
 }
 
 # 1. 디렉토리.
-foreach ($d in @("venv", "chromium", "auth-profiles", "scenarios", "runs")) {
+# auth-profiles 는 Recording UI 와 공유되는 shared 위치 (~/ttc-allinone-data/auth-profiles).
+# 이전엔 $InstallRoot\auth-profiles 였으나, 2026-05-13 정책 변경 후 공유가 기본.
+$SharedAuthDir = Join-Path $env:USERPROFILE "ttc-allinone-data\auth-profiles"
+foreach ($d in @("venv", "chromium", "scenarios", "scripts", "runs")) {
     $p = Join-Path $InstallRoot $d
     if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
+}
+if (-not (Test-Path $SharedAuthDir)) {
+    New-Item -ItemType Directory -Path $SharedAuthDir -Force | Out-Null
+}
+Write-Host "[install-monitor] auth-profiles 는 Recording UI 와 공유: $SharedAuthDir"
+
+# 기존 사용자 1회 마이그레이션 — legacy ($InstallRoot\auth-profiles) → shared.
+$LegacyAuthDir = Join-Path $InstallRoot "auth-profiles"
+$LegacyIndex = Join-Path $LegacyAuthDir "_index.json"
+$SharedIndex = Join-Path $SharedAuthDir "_index.json"
+if ((Test-Path $LegacyIndex) -and -not (Test-Path $SharedIndex)) {
+    Write-Host "[install-monitor] auth-profiles 마이그레이션: $LegacyAuthDir -> $SharedAuthDir"
+    Get-ChildItem -Path $LegacyAuthDir -File | Where-Object { $_.Name -ne "_index.lock" } | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination $SharedAuthDir -Force
+    }
+    Write-Host "[install-monitor] 마이그레이션 완료 — legacy 디렉토리는 보존 (확인 후 직접 삭제)"
 }
 
 # 2. venv.
@@ -274,7 +293,7 @@ $LauncherPs1 = Join-Path $InstallRoot "start-replay-ui.ps1"
 @"
 `$ErrorActionPreference = "Continue"
 `$env:PLAYWRIGHT_BROWSERS_PATH = "$ChromiumDst"
-`$env:AUTH_PROFILES_DIR = "$InstallRoot\auth-profiles"
+`$env:AUTH_PROFILES_DIR = "$SharedAuthDir"
 `$env:MONITOR_HOME = "$InstallRoot"
 Set-Location "$InstallRoot"
 & "$VenvPy" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094 1>> "$InstallRoot\replay-ui.stdout.log" 2>> "$InstallRoot\replay-ui.stderr.log"

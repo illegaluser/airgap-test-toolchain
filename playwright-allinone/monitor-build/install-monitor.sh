@@ -87,13 +87,29 @@ fi
 echo "[install-monitor] Python $PY_VER OK"
 
 # 1. 디렉토리.
+# auth-profiles 는 Recording UI 와 공유되는 shared 위치 (~/ttc-allinone-data/auth-profiles).
+# 이전엔 $INSTALL_ROOT/auth-profiles 였으나, 2026-05-13 정책 변경 후 공유가 기본.
+SHARED_AUTH_DIR="$HOME/ttc-allinone-data/auth-profiles"
 mkdir -p \
   "$INSTALL_ROOT/venv" \
   "$INSTALL_ROOT/chromium" \
-  "$INSTALL_ROOT/auth-profiles" \
   "$INSTALL_ROOT/scenarios" \
-  "$INSTALL_ROOT/runs"
-echo "[install-monitor] 디렉토리 생성 완료"
+  "$INSTALL_ROOT/scripts" \
+  "$INSTALL_ROOT/runs" \
+  "$SHARED_AUTH_DIR"
+echo "[install-monitor] 디렉토리 생성 완료 (auth-profiles 는 Recording UI 와 공유: $SHARED_AUTH_DIR)"
+
+# 기존 사용자 1회 마이그레이션 — legacy ($INSTALL_ROOT/auth-profiles) → shared.
+# 양쪽 다 있으면 충돌 위험으로 그대로 둠.
+if [[ -f "$INSTALL_ROOT/auth-profiles/_index.json" && ! -f "$SHARED_AUTH_DIR/_index.json" ]]; then
+  echo "[install-monitor] auth-profiles 마이그레이션: $INSTALL_ROOT/auth-profiles → $SHARED_AUTH_DIR"
+  for f in "$INSTALL_ROOT/auth-profiles"/*; do
+    [[ -e "$f" ]] || continue
+    [[ "$(basename "$f")" == "_index.lock" ]] && continue
+    cp -p "$f" "$SHARED_AUTH_DIR/" 2>/dev/null || true
+  done
+  echo "[install-monitor] 마이그레이션 완료 — legacy 디렉토리는 보존 (확인 후 직접 삭제)"
+fi
 
 # 2. venv (이미 있으면 재사용).
 if [[ -x "$INSTALL_ROOT/venv/bin/python" ]]; then
@@ -170,7 +186,7 @@ After=default.target
 
 [Service]
 Environment=PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium
-Environment=AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles
+Environment=AUTH_PROFILES_DIR=$SHARED_AUTH_DIR
 Environment=MONITOR_HOME=$INSTALL_ROOT
 ExecStart=$INSTALL_ROOT/venv/bin/python -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
 Restart=on-failure
@@ -188,7 +204,7 @@ fi
 if [[ "$REGISTER_TASK" = "1" ]]; then
   cat <<HINT
 [install-monitor] 스케줄러 등록 안내 — crontab -e 에 다음 패턴으로 시나리오 .py 별 행을 추가하세요:
-*/30 * * * * PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$INSTALL_ROOT/auth-profiles MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m monitor replay-script $INSTALL_ROOT/scripts/<시나리오.py> --out $INSTALL_ROOT/runs/auto-\$(date +\%Y\%m\%dT\%H\%M\%S) --profile <프로파일이름>
+*/30 * * * * PLAYWRIGHT_BROWSERS_PATH=$INSTALL_ROOT/chromium AUTH_PROFILES_DIR=$SHARED_AUTH_DIR MONITOR_HOME=$INSTALL_ROOT $INSTALL_ROOT/venv/bin/python -m monitor replay-script $INSTALL_ROOT/scripts/<시나리오.py> --out $INSTALL_ROOT/runs/auto-\$(date +\%Y\%m\%dT\%H\%M\%S) --profile <프로파일이름>
 HINT
 fi
 

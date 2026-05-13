@@ -106,9 +106,10 @@
 └── <프로파일이름>.storage.json   ← Playwright storageState
 ```
 
-`AUTH_PROFILES_DIR` env 로 경로 override 가능. 같은 호스트에서 Replay UI 와 로그인
-프로파일을 공유하려면 두 launcher 를 같은 env 로 띄우면 된다 —
-[replay-ui-guide.md §11](replay-ui-guide.md#11-공유-모드--같은-호스트에서-recording-ui-와-로그인-프로파일-공유) 참조.
+같은 호스트의 Replay UI 도 *기본적으로 이 같은 디렉토리를 본다* — 한 번 시드하면
+Replay UI 의 `🔐 로그인 프로파일` 카드에 그대로 나타난다 (2026-05-13 부터 두 UI 의
+기본 동작). 분리하고 싶으면 `AUTH_PROFILES_DIR` env 로 각자 override —
+[replay-ui-guide.md §11](replay-ui-guide.md#11-로그인-프로파일-공유--기본-동작-2026-05-13-부터) 참조.
 
 ### 보안 주의
 

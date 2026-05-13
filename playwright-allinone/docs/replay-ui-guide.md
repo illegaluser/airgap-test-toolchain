@@ -136,14 +136,19 @@ Windows 는 이 한 번으로 Python 3.11 준비, venv/패키지/Chromium/모듈
 설치가 끝나면 사용자 홈 아래에 다음이 생긴다.
 
 ```
-~/.dscore.ttc.monitor/             ← Mac/Linux
+~/.dscore.ttc.monitor/             ← Mac/Linux (Replay UI 데이터)
 %USERPROFILE%\.dscore.ttc.monitor\ ← Windows
 
 ├── venv/                          Python 가상환경 (Replay UI 가 사용)
 ├── chromium/                      Playwright 가 띄울 브라우저
-├── auth-profiles/                 로그인 상태 보관함 (등록할 때마다 여기에 쌓임)
 ├── scripts/                       업로드한 시나리오 .py 들 (D17)
 └── runs/                          실행 결과 (스크린샷, 로그)
+
+~/ttc-allinone-data/auth-profiles/      ← Mac/Linux (Recording UI 와 *공유*)
+%USERPROFILE%\ttc-allinone-data\auth-profiles\  ← Windows
+
+└── 로그인 상태 보관함 — Recording UI / Replay UI 양쪽이 같은 디렉토리를 본다.
+    한 번 로그인하면 양쪽이 그대로 재사용 (정책: 2026-05-13 부터 공유가 기본 동작).
 ```
 
 `--register-startup` 을 줬다면 OS 가 자동으로 Replay UI 를 띄운다. 어떤 방식으로 등록되는지:
@@ -413,16 +418,19 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 
 ## 8. 파일이 어디 저장되나
 
+로그인 프로파일은 Recording UI 와 *공유*되는 별도 디렉토리에, 그 외 Replay UI 자체
+데이터(venv / chromium / scripts / runs) 는 `~/.dscore.ttc.monitor/` 아래에 저장된다.
+
 ```
+~/ttc-allinone-data/auth-profiles/           ← Recording UI 와 공유 (2026-05-13 부터 기본)
+│   ├── _index.json                          ← 어떤 프로파일이 있는지 목록
+│   ├── _index.lock                          ← 동시 접근 잠금 파일
+│   └── <프로파일이름>.storage.json          ← 실제 로그인 상태 (쿠키 + localStorage)
+
 ~/.dscore.ttc.monitor/                       (Mac/Linux. Windows 는 %USERPROFILE%\.dscore.ttc.monitor\)
 │
 ├── venv/                                    Python 가상환경
 ├── chromium/                                Playwright 가 쓰는 브라우저
-│
-├── auth-profiles/                           로그인 상태 보관함
-│   ├── _index.json                          ← 어떤 프로파일이 있는지 목록
-│   ├── _index.lock                          ← 동시 접근 잠금 파일
-│   └── <프로파일이름>.storage.json          ← 실제 로그인 상태 (쿠키 + localStorage)
 │
 ├── scripts/                                 업로드된 시나리오 .py (D17)
 │   └── <시나리오이름>.py
@@ -438,6 +446,10 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 ├── replay-ui.stdout.log                     ← Replay UI 표준 출력 로그
 └── replay-ui.stderr.log                     ← Replay UI 에러 로그 (Replay UI 가 안 뜨면 여기부터)
 ```
+
+> **이전 버전과의 호환** — 2026-05-13 이전엔 `~/.dscore.ttc.monitor/auth-profiles/` 에
+> 저장됐다. launcher (`run-replay-ui.sh start|restart`) 또는 `install-monitor.{sh,cmd}`
+> 재실행 시 자동으로 1회 마이그레이션된다 (legacy 디렉토리는 보존 — 확인 후 직접 삭제).
 
 ---
 
@@ -469,76 +481,55 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 
 ---
 
-## 11. 공유 모드 — 같은 호스트에서 Recording UI 와 로그인 프로파일 공유
+## 11. 로그인 프로파일 공유 — 기본 동작 (2026-05-13 부터)
 
-> **언제 쓰는가** — 개발자 1 명이 같은 PC 에서 Recording UI 와 Replay UI 를 둘 다
-> 띄우는 경우. 같은 사이트에 두 번 (Recording 시드 + Replay 시드) 로그인하는 게
-> 낭비라면 두 UI 가 같은 `auth-profiles/` 디렉토리를 보게 만들 수 있다.
->
-> **언제 쓰지 말 것** — Recording PC 와 Monitoring PC 가 *물리적으로 다른 머신*
-> 인 폐쇄망 운영 모델. 그쪽에서는 모니터링 PC 가 자체적으로 로그인하는 게 원래
-> 설계 ([§1.1](#11-이-도구가-푸는-문제)) — 공유하지 말 것.
+같은 호스트에 Recording UI 와 Replay UI 가 모두 떠 있으면, **두 UI 가 같은 로그인
+프로파일 카탈로그를 본다**. 한 번 시드하면 양쪽에서 그대로 재사용 — 별도 설정 불필요.
 
-### 11.1 기본 경로 (서로 다름)
+### 11.1 카탈로그 위치
 
-| | 기본 경로 |
+| OS | 경로 |
 |---|---|
-| Recording UI | `~/ttc-allinone-data/auth-profiles/` |
-| Replay UI    | `~/.dscore.ttc.monitor/auth-profiles/` |
+| Mac / Linux | `~/ttc-allinone-data/auth-profiles/` |
+| Windows | `%USERPROFILE%\ttc-allinone-data\auth-profiles\` |
 
-파일 포맷 (`<프로파일이름>.storage.json`, `_index.json`, `_index.lock`) 은 두 쪽이
-동일하게 `zero_touch_qa.auth_profiles` 모듈을 쓰므로 **완전 호환**. 디렉토리만 같이
-가리키면 그대로 공유된다.
+두 launcher (`run-recording-ui.sh`, `run-replay-ui.sh`) 모두 이 경로를 기본값으로
+export 한다. 별도의 env 설정 없이 두 UI 를 띄우면 그냥 공유된다.
 
-### 11.2 공유하는 법 — `AUTH_PROFILES_DIR` env 통일
+### 11.2 분리하고 싶다면 — env override
 
-두 launcher 모두 `AUTH_PROFILES_DIR` env 를 존중한다. 쉘에서 한 줄 export 후 띄우면 끝.
-
-**Mac / Linux**
+테스트 격리 / 멀티 계정 환경 등으로 두 UI 를 서로 다른 카탈로그로 띄우려면
+`AUTH_PROFILES_DIR` env 로 각자 override:
 
 ```bash
-export AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
-
-# 그 다음 두 UI 띄우기 (어느 쪽이든 같은 env 가 적용됨)
-./playwright-allinone/recording-ui/run-recording-ui.sh restart
-./playwright-allinone/replay-ui/run-replay-ui.sh restart
+# Replay UI 만 별도 카탈로그
+AUTH_PROFILES_DIR="$HOME/.replay-private/auth-profiles" \
+  ./playwright-allinone/replay-ui/run-replay-ui.sh restart
 ```
 
-**Windows (PowerShell)**
+### 11.3 폐쇄망 운영 모델 — 다른 머신이면 자연스럽게 분리됨
 
-```powershell
-$env:AUTH_PROFILES_DIR = "$HOME\ttc-allinone-data\auth-profiles"
+폐쇄망 정식 운영에서는 Recording PC 와 Monitoring PC 가 *물리적으로 다른 머신*
+이므로 공유 자체가 성립하지 않는다 — 그쪽은 각 PC 가 자체 로컬 카탈로그를 사용하며
+이게 원래 설계 ([§1.1](#11-이-도구가-푸는-문제)).
 
-bash playwright-allinone/recording-ui/run-recording-ui.sh restart
-bash playwright-allinone/replay-ui/run-replay-ui.sh restart
-```
+### 11.4 기존 사용자 마이그레이션
 
-위와 같이 띄운 뒤 Recording UI 에서 `dpg-qa` 로 시드하면, Replay UI 의 `🔐 로그인
-프로파일` 카드에 `dpg-qa` 가 자동으로 보인다 (그 반대도 동일).
+2026-05-13 이전엔 Replay UI 가 `~/.dscore.ttc.monitor/auth-profiles/` 를 썼다.
+신규 launcher / install-monitor 재실행 시 자동으로 1회 마이그레이션된다 (legacy 의
+파일을 shared 위치로 복사, legacy 디렉토리는 보존). 양쪽 모두 `_index.json` 이
+이미 있으면 충돌 위험으로 그대로 둠 — 그 경우 한쪽을 직접 정리한 뒤 launcher 재기동.
 
-### 11.3 한 번만 옮기고 싶다면 — 디렉토리 복사
+### 11.5 주의
 
-이미 한쪽에 등록된 프로파일을 다른 쪽에 가져가고 싶다면 디렉토리째 복사하면 된다.
-
-```bash
-# Recording UI → Replay UI 방향 (예시)
-rsync -a "$HOME/ttc-allinone-data/auth-profiles/" \
-        "$HOME/.dscore.ttc.monitor/auth-profiles/"
-```
-
-`_index.lock` 파일은 활성 잠금이라 양쪽 UI 가 떠 있을 때 복사하면 잠금 충돌이
-날 수 있다 — 복사 전 한 쪽은 `stop` 권장.
-
-### 11.4 주의
-
-- **세션 / 토큰 노출 범위 변화** — 공유하면 Recording UI 에서 쓰는 동일 토큰을
-  Replay UI 도 그대로 쓴다. 정상이지만, 두 UI 가 다른 권한·계정 컨텍스트라고
-  가정한 운영 정책이 있다면 깨진다.
 - **동시 시드 금지** — 같은 프로파일 이름으로 두 UI 에서 동시에 시드 (브라우저
   창 2 개 동시 열림) 하면 `_index.lock` 경합. 이 경우 둘 다 실패할 수 있다.
   시드는 한 쪽에서만.
-- **만료 알람** — 만료 감지는 verify URL 단위라 양쪽 UI 가 같은 만료 시점을 본다.
+- **만료 감지** — verify URL 단위라 양쪽 UI 가 같은 만료 시점을 본다.
   한 쪽에서 재로그인하면 다른 쪽에도 그대로 반영됨 (의도된 동작).
+- **세션 / 토큰 노출 범위** — Recording UI 와 Replay UI 가 같은 토큰을 쓴다.
+  두 UI 가 다른 권한·계정 컨텍스트라고 가정한 운영 정책이 있다면 §11.2 의 env
+  override 로 분리.
 
 ---
 

@@ -14,6 +14,14 @@ INSTALL_ROOT="${MONITOR_HOME:-$HOME/.dscore.ttc.monitor}"
 HOST="${REPLAY_HOST:-127.0.0.1}"
 PORT="${REPLAY_PORT:-18094}"
 
+# 로그인 프로파일 카탈로그 — Recording UI 와 *공유* 가 기본 동작.
+# 두 UI 모두 zero_touch_qa.auth_profiles 의 동일 default (~/ttc-allinone-data/auth-profiles)
+# 를 사용하므로, 같은 호스트에서 한 번 로그인하면 양쪽이 그대로 재사용 가능.
+# 이전엔 Replay UI 가 $INSTALL_ROOT/auth-profiles 를 독자 경로로 썼고 공유는 env
+# override opt-in 이었음 — 2026-05-13 정책 변경 후 공유가 기본.
+SHARED_AUTH_PROFILES_DIR="$HOME/ttc-allinone-data/auth-profiles"
+LEGACY_AUTH_PROFILES_DIR="$INSTALL_ROOT/auth-profiles"
+
 # Python: monitor venv 우선, env override 가능. Windows venv (Git bash 에서
 # 보면 Scripts/python.exe) 와 POSIX venv (bin/python) 둘 다 자동 감지.
 if [ -x "$INSTALL_ROOT/venv/bin/python" ]; then
@@ -46,6 +54,8 @@ Environment:
   REPLAY_HOST             Host to bind (default: 127.0.0.1)
   REPLAY_PYTHON           Python executable (default: \$MONITOR_HOME/venv 의 python)
   MONITOR_HOME            Replay UI 데이터 루트 (default: ~/.dscore.ttc.monitor)
+  AUTH_PROFILES_DIR       로그인 프로파일 카탈로그 (default: ~/ttc-allinone-data/auth-profiles).
+                          Recording UI 와 공유가 기본. 별도 경로를 쓰려면 env override.
   REPLAY_SERVICE_LOG      Log 파일 경로
   REPLAY_SERVICE_PID      PID 파일 경로
 EOF
@@ -56,12 +66,43 @@ log() {
 }
 
 ensure_dirs() {
+  # auth-profiles 는 Recording UI 와 공유되는 shared 위치 — INSTALL_ROOT 와 별개.
+  # 사용자가 AUTH_PROFILES_DIR 로 override 했다면 그것을 사용.
+  local effective_auth="${AUTH_PROFILES_DIR:-$SHARED_AUTH_PROFILES_DIR}"
   mkdir -p "$INSTALL_ROOT" \
-           "$INSTALL_ROOT/auth-profiles" \
            "$INSTALL_ROOT/scenarios" \
            "$INSTALL_ROOT/scripts" \
            "$INSTALL_ROOT/runs" \
-           "$INSTALL_ROOT/chromium"
+           "$INSTALL_ROOT/chromium" \
+           "$effective_auth"
+}
+
+# 기존 사용자가 Replay UI 만 써서 $INSTALL_ROOT/auth-profiles 에 시드해 둔 경우
+# 1회 자동 마이그레이션 — shared 경로에 _index.json 이 없고 legacy 경로에는 있을 때만.
+# 양쪽에 다 있으면 충돌 위험이 있으니 그대로 둠 (사용자 판단 — 가이드 §11 참조).
+migrate_legacy_auth_profiles() {
+  local effective_auth="${AUTH_PROFILES_DIR:-$SHARED_AUTH_PROFILES_DIR}"
+  # 이미 사용자가 shared 가 아닌 곳으로 override 했다면 마이그레이션 비활성.
+  if [ "$effective_auth" != "$SHARED_AUTH_PROFILES_DIR" ]; then
+    return 0
+  fi
+  if [ ! -f "$LEGACY_AUTH_PROFILES_DIR/_index.json" ]; then
+    return 0
+  fi
+  if [ -f "$effective_auth/_index.json" ]; then
+    return 0
+  fi
+  log "migrating auth-profiles: $LEGACY_AUTH_PROFILES_DIR → $effective_auth (1회)"
+  mkdir -p "$effective_auth"
+  # _index.lock 은 활성 잠금 — 복사 제외.
+  for f in "$LEGACY_AUTH_PROFILES_DIR"/*; do
+    [ -e "$f" ] || continue
+    case "$(basename "$f")" in
+      _index.lock) continue ;;
+    esac
+    cp -p "$f" "$effective_auth/" 2>/dev/null || true
+  done
+  log "migrated. legacy 디렉토리 ($LEGACY_AUTH_PROFILES_DIR) 는 보존 — 확인 후 직접 삭제하세요."
 }
 
 python_bin_dir() {
@@ -74,6 +115,7 @@ PY
 
 export_runtime_env() {
   ensure_dirs
+  migrate_legacy_auth_profiles
   # 소스 우선 — venv site-packages 미설치 환경에서도 동작.
   # PYTHONPATH: Windows native python.exe 는 구분자 `;` 만 인식 + Git Bash 의
   # `/c/...` POSIX 경로를 못 알아본다. Git Bash 에서 호스트 python 을 띄우는
@@ -95,7 +137,8 @@ export_runtime_env() {
   # zero_touch_qa) 모두 UTF-8 stdout/stderr 강제.
   export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
   export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$INSTALL_ROOT/chromium}"
-  export AUTH_PROFILES_DIR="${AUTH_PROFILES_DIR:-$INSTALL_ROOT/auth-profiles}"
+  # Recording UI 와 공유 — 사용자가 미리 export 한 값이 있으면 존중.
+  export AUTH_PROFILES_DIR="${AUTH_PROFILES_DIR:-$SHARED_AUTH_PROFILES_DIR}"
   export MONITOR_HOME="$INSTALL_ROOT"
 
   # monitor venv 의 bin/Scripts 를 PATH 첫 자리에 — `playwright open ...`

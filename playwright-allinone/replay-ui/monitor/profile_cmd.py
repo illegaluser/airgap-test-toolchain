@@ -2,9 +2,10 @@
 
 기능: list / seed / delete.
 
-내부적으로 ``zero_touch_qa.auth_profiles`` 를 호출. 카탈로그 경로는 D11 에 따라
-환경변수 ``AUTH_PROFILES_DIR=~/.dscore.ttc.monitor/auth-profiles/`` 로 모니터링
-PC 전용 경로로 분리됨 (install-monitor 가 설정).
+내부적으로 ``zero_touch_qa.auth_profiles`` 를 호출. 카탈로그 경로는 2026-05-13
+부터 Recording UI 와 *공유*되는 ``~/ttc-allinone-data/auth-profiles/`` 가 기본.
+env ``AUTH_PROFILES_DIR`` override 로 분리 가능 (run-replay-ui.sh / install-monitor
+가 자동으로 export).
 """
 
 from __future__ import annotations
