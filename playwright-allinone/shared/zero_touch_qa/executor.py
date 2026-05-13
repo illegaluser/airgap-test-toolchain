@@ -251,9 +251,22 @@ def _extract_stable_selector(locator) -> str:
         role = info.get("role", "")
         name = info.get("name", "")
         if role and name and len(name) <= 200:
-            # exact=true 명시 — element 의 *정확한 accessible name* 으로 추출했으므로
-            # fuzzy 매칭이 아닌 정확 매칭이 의도. ``name="확인"`` 이 ``"확인하기"`` 같은
-            # superstring 도 매칭하는 fragile 회피.
+            # element 의 inner_text 를 공백 평탄화해 만든 합성 이름이라, Playwright
+            # 의 *accessible name* 알고리즘과 결과가 다를 수 있다 (다중 줄바꿈/
+            # 공백/내부 단어 결합 차이 등). 합성 이름이 실제 DOM 에서 매치되지
+            # 않으면 회귀 .py 의 `getByRole(name=..., exact=True)` 가 timeout
+            # → 본 함수는 빈 문자열을 돌려주고 caller 가 healed selector
+            # (예: `text=...\n...`) 로 fallback 하도록 한다.
+            #
+            # 검증: 현재 페이지에서 동일 role+name 으로 *정확히 1건* 매치되어야
+            # 함. 0건이면 알고리즘 mismatch → drop. 2건 이상이면 모호함 → drop.
+            try:
+                page = locator.page
+                probe = page.get_by_role(role, name=name, exact=True)
+                if probe.count() != 1:
+                    return ""
+            except Exception:
+                return ""
             return f"role={role}, name={name}, exact=true"
     return ""
 
