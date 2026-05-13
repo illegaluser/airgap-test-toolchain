@@ -36,6 +36,14 @@ def save_run_log(results: list[StepResult], output_dir: str) -> str:
             # 스텝 실행 중 발생한 네이티브 dialog 텍스트 (있을 때만 키 추가).
             if getattr(r, "dialog_text", None):
                 entry["dialog_text"] = r.dialog_text
+            # visibility healer cascade hover / scroll prepend 시퀀스.
+            pre = getattr(r, "pre_actions", None) or []
+            if pre:
+                entry["pre_actions"] = pre
+            # 통과 시점 element 의 stable selector — 회귀 .py 가 우선 사용.
+            stable = getattr(r, "stable_selector", "") or ""
+            if stable:
+                entry["stable_selector"] = stable
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     log.info("[Log] run_log.jsonl 생성 완료: %s", path)
     return path

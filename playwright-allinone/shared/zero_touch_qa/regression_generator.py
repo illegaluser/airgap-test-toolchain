@@ -137,7 +137,12 @@ def generate_regression_test(
         scen_value = step.get("value", "")
         if r is not None:
             action = ((r.action or scen_action) or "").lower()
-            target = r.target if r.target else scen_target
+            # stable_selector 최우선 — executor 가 *통과 시점의 element* 에서 추출
+            # 한 식별자 (id / testid / role+name). 회귀 .py 가 healed target
+            # (`text=...` 등) 의 visibility filter 차이로 timeout 되는 회귀 차단.
+            # 빈 값이면 healed target 으로, 그것도 없으면 원본 시나리오 target.
+            stable = getattr(r, "stable_selector", "") or ""
+            target = stable or (r.target if r.target else scen_target)
             # scenario value 가 dict/list (mock_data) 면 보존 — StepResult.value 는
             # 항상 str 이라 직렬화 손실이 발생함.
             if isinstance(scen_value, (dict, list)):

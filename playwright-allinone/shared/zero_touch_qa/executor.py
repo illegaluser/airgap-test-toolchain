@@ -142,6 +142,17 @@ class StepResult:
     # 환경에서 같은 통과 시퀀스를 재현한다 (Replay UI 가 healing 안전망을 매번
     # 다시 돌릴 필요 없음).
     pre_actions: list = field(default_factory=list)
+    # 스텝 통과 직전(action 직전) 의 실 element 의 stable selector. action 종류
+    # (click/fill/hover/select/check/upload/scroll/...) 와 무관하게 실제 매칭된
+    # element 의 식별자를 추출. 우선순위: ``#<id>`` > ``testid=<...>`` >
+    # ``role=<role>, name=<accessible name>``. 모두 실패면 빈 문자열.
+    #
+    # **Why**: LocalHealer 가 hidden 매칭을 PASS 로 판정해도, 그 selector 가
+    # 회귀 .py 에서 ``get_by_text(...)`` (visible-only) 로 emit 되면 raw 실행에서
+    # timeout. *통과 시점의 실 element* 의 stable selector 를 별도로 캡처해 회귀
+    # .py 가 그걸 우선 사용하면 통과 조건과 회귀 selector 가 동일해 안정.
+    # (2026-05-13 사용자 요청 — "성공한 코드만을 모아서 스크립트 구성".)
+    stable_selector: str = ""
 
 
 # Visibility Healer (T-H) JS — zero_touch_qa 패키지 안의 ``visibility_heal`` 모듈
@@ -164,6 +175,69 @@ _FRAGILE_BARE_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 _TAG_TO_ROLE = {"button": "button", "a": "link"}
+
+
+def _extract_stable_selector(locator) -> str:
+    """통과 시점 element 의 stable identifier 를 selector 문자열로 반환.
+
+    회귀 .py 가 healed target (`text=...`) 의 visibility filter 차이로 timeout
+    되는 회귀를 차단하기 위해 — 실 통과 시점의 *그 element* 를 다시 정확히
+    잡을 수 있는 식별자를 별도 캡처.
+
+    우선순위:
+      1) ``#<id>`` — id 가 있고 비어있지 않을 때
+      2) ``[data-testid="<v>"]`` — data-testid attribute
+      3) ``role=<aria role | implicit role>, name=<accessible name>`` —
+         accessibility tree 기준 (button / link / etc.)
+
+    매칭 실패면 빈 문자열 (caller 가 기존 target 으로 fallback).
+    실패는 무해 — 회귀 .py 가 healed target 으로 떨어지는 기존 동작.
+    """
+    try:
+        info = locator.evaluate(
+            """el => {
+                const id = (el.id || '').trim();
+                if (id) return {kind: 'id', value: id};
+                const tid = (el.getAttribute && el.getAttribute('data-testid') || '').trim();
+                if (tid) return {kind: 'testid', value: tid};
+                // accessible role: explicit aria-role attr, 없으면 tag 기반 implicit.
+                const explicitRole = (el.getAttribute && el.getAttribute('role') || '').trim();
+                const tag = (el.tagName || '').toLowerCase();
+                const implicit = {
+                    'a': 'link', 'button': 'button',
+                    'input': (el.type === 'submit' || el.type === 'button') ? 'button' : 'textbox',
+                    'textarea': 'textbox',
+                    'select': 'combobox',
+                };
+                const role = explicitRole || implicit[tag] || '';
+                // accessible name: aria-label > inner text 첫 줄 > value.
+                let name = (el.getAttribute && el.getAttribute('aria-label') || '').trim();
+                if (!name) {
+                    const t = (el.innerText || '').trim();
+                    if (t) name = t.split('\\n', 1)[0].trim();
+                }
+                if (!name && (tag === 'input' || tag === 'textarea')) {
+                    name = (el.value || '').trim();
+                }
+                if (role && name) return {kind: 'role_name', role, name};
+                return {kind: 'none'};
+            }"""
+        )
+    except Exception:
+        return ""
+    if not isinstance(info, dict):
+        return ""
+    kind = info.get("kind")
+    if kind == "id":
+        return f"#{info.get('value','')}"
+    if kind == "testid":
+        return f"testid={info.get('value','')}"
+    if kind == "role_name":
+        role = info.get("role", "")
+        name = info.get("name", "")
+        if role and name and len(name) <= 200:
+            return f"role={role}, name={name}"
+    return ""
 
 
 def _ground_fragile_target(page, locator, original_target: str) -> "str | None":
@@ -1104,6 +1178,13 @@ class QAExecutor:
                 "[Step %s] fragile target grounded: %r → %r",
                 step_id, original_target, grounded,
             )
+        # 통과 직전 element 의 stable selector 추출 — 회귀 .py 가 healed target
+        # 대신 이 selector 를 우선 사용해 *통과 시점의 그 element* 를 raw 재생
+        # 시에도 정확히 잡는다. action 직후에는 element 가 detach 될 수 있으므로
+        # action *직전* 에 캡처.
+        stable_sel = _extract_stable_selector(locator)
+        if stable_sel:
+            log.info("[Step %s] stable selector 캡처: %r", step_id, stable_sel)
         try:
             self._perform_action(page, locator, step, resolver)
             if action == "click" and _page_closed(page):
@@ -1117,6 +1198,7 @@ class QAExecutor:
                         str(step.get("value", "")), desc,
                         eff_status, heal_stage=eff_heal_stage,
                         pre_actions=list(pre_actions),
+                        stable_selector=stable_sel,
                     ),
                     None,
                 )
@@ -1127,6 +1209,7 @@ class QAExecutor:
                     str(step.get("value", "")), desc,
                     eff_status, heal_stage=eff_heal_stage,
                     screenshot_path=ss, pre_actions=list(pre_actions),
+                    stable_selector=stable_sel,
                 ),
                 None,
             )
@@ -1175,17 +1258,22 @@ class QAExecutor:
             fb_loc = resolver.resolve(fb_target)
             if not fb_loc:
                 continue
+            stable_sel = _extract_stable_selector(fb_loc)
             try:
                 self._perform_action(page, fb_loc, step, resolver)
                 resolver.record_alias(original_target, fb_target)
                 step["target"] = fb_target
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] fallback 복구 성공: %s", step_id, fb_target)
+                log.info(
+                    "[Step %s] fallback 복구 성공: %s (stable=%r)",
+                    step_id, fb_target, stable_sel,
+                )
                 return (
                     StepResult(
                         step_id, action, str(fb_target),
                         str(step.get("value", "")), desc,
                         "HEALED", heal_stage="fallback", screenshot_path=ss,
+                        stable_selector=stable_sel,
                     ),
                     None,
                 )
@@ -1216,12 +1304,13 @@ class QAExecutor:
             alt_loc = resolver.resolve(alt_step.get("target"))
             if not alt_loc:
                 continue
+            stable_sel = _extract_stable_selector(alt_loc)
             try:
                 self._perform_action(page, alt_loc, alt_step, resolver)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
                 log.info(
-                    "[Step %s] action_alternatives 복구 성공: %s %s",
-                    step_id, alt_step.get("action"), alt_step.get("target"),
+                    "[Step %s] action_alternatives 복구 성공: %s %s (stable=%r)",
+                    step_id, alt_step.get("action"), alt_step.get("target"), stable_sel,
                 )
                 return (
                     StepResult(
@@ -1229,6 +1318,7 @@ class QAExecutor:
                         str(alt_step.get("target", "")),
                         str(alt_step.get("value", "")), desc,
                         "HEALED", heal_stage="alternative", screenshot_path=ss,
+                        stable_selector=stable_sel,
                     ),
                     None,
                 )
@@ -1260,6 +1350,20 @@ class QAExecutor:
         if not heal_result:
             return None
         healed_loc, healed_selector = heal_result
+        # LocalHealer 가 매칭한 element 가 *hidden* 일 수 있다 (DOM 유사도 기반,
+        # visibility 무관 매칭). 그 경우 click 의 auto-wait 으로 *어쩌다* 통과해도
+        # raw 회귀에서는 같은 selector 가 timeout. visibility_heal 의 cascade
+        # hover 를 LocalHealer healed locator 에도 시도해, hidden → visible 만들고
+        # 그 hover 시퀀스를 pre_actions 로 기록 → 회귀 .py 가 그대로 prepend.
+        pre_actions: list = []
+        swap = self._heal_visibility(
+            page, healed_loc, step_id, pre_actions_out=pre_actions,
+        )
+        if swap is not None:
+            healed_loc = swap
+        # action 직전 element 의 stable selector — 회귀 .py 가 healed_selector
+        # (text= 등 visibility filter 케이스) 대신 이 stable id 를 우선 사용.
+        stable_sel = _extract_stable_selector(healed_loc)
         try:
             self._perform_action(page, healed_loc, step, resolver)
             ss = self._screenshot(page, artifacts, step_id, "healed")
@@ -1267,13 +1371,15 @@ class QAExecutor:
             # 원본 target 보존 — regression_generator 가 그대로 fallback.
             final_target = healed_selector or str(original_target or "")
             log.info(
-                "[Step %s] LocalHealer DOM 유사도 복구 성공 (healed_target=%r)",
-                step_id, final_target,
+                "[Step %s] LocalHealer DOM 유사도 복구 성공 (healed_target=%r, stable=%r, pre_actions=%d)",
+                step_id, final_target, stable_sel, len(pre_actions),
             )
             return StepResult(
                 step_id, action, final_target,
                 str(step.get("value", "")), desc,
                 "HEALED", heal_stage="local", screenshot_path=ss,
+                stable_selector=stable_sel,
+                pre_actions=list(pre_actions),
             )
         except Exception as e:  # noqa: BLE001
             log.warning("[Step %s] 로컬 치유 실행 실패: %s", step_id, e)
@@ -1338,19 +1444,21 @@ class QAExecutor:
         healed_loc = resolver.resolve(step.get("target"))
         if not healed_loc:
             return None
+        stable_sel = _extract_stable_selector(healed_loc)
         try:
             self._perform_action(page, healed_loc, step, resolver)
             resolver.record_alias(original_target, step.get("target"))
             ss = self._screenshot(page, artifacts, step_id, "healed")
             log.info(
-                "[Step %s] LLM 치유 성공. 새 타겟: %s",
-                step_id, step.get("target"),
+                "[Step %s] LLM 치유 성공. 새 타겟: %s (stable=%r)",
+                step_id, step.get("target"), stable_sel,
             )
             return StepResult(
                 step_id, str(step.get("action", action)),
                 str(step.get("target", "")),
                 str(step.get("value", "")), desc,
                 "HEALED", heal_stage="dify", screenshot_path=ss,
+                stable_selector=stable_sel,
             )
         except Exception as e:  # noqa: BLE001
             log.error("[Step %s] LLM 치유 후 실행 실패: %s", step_id, e)
