@@ -33,8 +33,14 @@ from zero_touch_qa.dify_token import fetch_token_from_container as _fetch_dify_t
 log = logging.getLogger(__name__)
 
 
-DEFAULT_REPLAY_TIMEOUT_SEC = int(
-    os.environ.get("RECORDING_REPLAY_TIMEOUT_SEC", "300")
+# 기본은 무제한 — LLM healing + executor per-step LLM 호출 + 다단계 verify 가
+# 누적되면 한 시나리오가 수십 분~수 시간 걸리는 케이스도 정상 흐름이다.
+# 옛 기본값 300s 가 정상 실행을 강제 중단해 사용자가 결과를 못 받던 회귀를
+# 발생시켰음. 강제 한도가 필요한 운영 환경만 RECORDING_REPLAY_TIMEOUT_SEC 로
+# 명시 override (양의 정수).
+_raw_timeout = os.environ.get("RECORDING_REPLAY_TIMEOUT_SEC", "").strip()
+DEFAULT_REPLAY_TIMEOUT_SEC: Optional[int] = (
+    int(_raw_timeout) if _raw_timeout and int(_raw_timeout) > 0 else None
 )
 
 
@@ -173,7 +179,7 @@ def _run_subprocess(
     *,
     cwd: str,
     env: dict | None,
-    timeout_sec: int,
+    timeout_sec: Optional[int],
     started: float,
     log_name: str = "play.log",
 ) -> PlayResult:
@@ -209,13 +215,16 @@ def _run_subprocess(
                 cmd, cwd=cwd, env=sub_env,
                 stdout=logf, stderr=subprocess.STDOUT,
             )
-            try:
-                returncode = proc.wait(timeout=timeout_sec)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                proc.kill()
-                proc.wait(timeout=10)
-                returncode = -1
+            if timeout_sec is None:
+                returncode = proc.wait()
+            else:
+                try:
+                    returncode = proc.wait(timeout=timeout_sec)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    proc.kill()
+                    proc.wait(timeout=10)
+                    returncode = -1
     except FileNotFoundError as e:
         raise ReplayProxyError(f"python 호출 실패: {e}") from e
 
@@ -251,7 +260,7 @@ def _run_subprocess(
 def run_codegen_replay(
     *,
     host_session_dir: str,
-    timeout_sec: int = DEFAULT_REPLAY_TIMEOUT_SEC,
+    timeout_sec: Optional[int] = DEFAULT_REPLAY_TIMEOUT_SEC,
     venv_py: str | None = None,
     prefer_annotated: bool = True,
     auth_profile_override: Optional[str] = None,
@@ -268,7 +277,8 @@ def run_codegen_replay(
 
     Args:
         host_session_dir: 호스트 측 세션 디렉토리 — ``original.py`` 위치.
-        timeout_sec: subprocess timeout (기본 300s).
+        timeout_sec: subprocess timeout (기본 None = 무제한 — 환경변수
+            RECORDING_REPLAY_TIMEOUT_SEC 양의 정수일 때만 한도 적용).
         venv_py: 인터프리터 경로 override.
         prefer_annotated: True 이고 ``original_annotated.py`` 가 있으면 그걸 우선
             실행 (T-H 정적 hover 주입본). 기본 True.
@@ -356,7 +366,7 @@ def run_llm_play(
     *,
     host_session_dir: str,
     project_root: str,
-    timeout_sec: int = DEFAULT_REPLAY_TIMEOUT_SEC,
+    timeout_sec: Optional[int] = DEFAULT_REPLAY_TIMEOUT_SEC,
     venv_py: str | None = None,
     auth_profile_override: Optional[str] = None,
     headed: bool = True,
@@ -368,7 +378,8 @@ def run_llm_play(
         host_session_dir: 호스트 측 세션 디렉토리 — ``scenario.json`` 위치 +
             artifacts 산출물도 같은 폴더로 떨어진다 (ARTIFACTS_DIR).
         project_root: zero_touch_qa 패키지가 있는 프로젝트 루트 — PYTHONPATH 주입.
-        timeout_sec: subprocess timeout (기본 300s).
+        timeout_sec: subprocess timeout (기본 None = 무제한 — 환경변수
+            RECORDING_REPLAY_TIMEOUT_SEC 양의 정수일 때만 한도 적용).
         venv_py: 인터프리터 경로 override.
         auth_profile_override: R-Plus Play 호출 시 사용자가 명시한 프로파일.
             ``None`` 이면 metadata 사용, ``""`` 이면 인증 없이, 이름이면 override.

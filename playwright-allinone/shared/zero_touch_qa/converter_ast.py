@@ -37,6 +37,38 @@ class CodegenAstError(RuntimeError):
     """AST 변환 단계의 명시적 에러. 호출 측 line fallback 트리거."""
 
 
+# Tour Script Generator (recording_service/server.py:_format_tour_steps_block) 가
+# URL 마다 박는 안전망 assert 2종. 한국형 엔터프라이즈 사이트가 비로그인 접근에
+# native alert 대신 `?errorMsg=...` 쿼리로 안내 페이지로 redirect 하는 패턴을
+# 잡기 위함 (PLAN_RECORDING_UI_IMPROVEMENTS.md R10). 사용자에게 노출되는 step
+# description 은 이 안전망의 의도가 드러나도록 분기.
+_REDIRECT_MSG_KEYS = ("errorMsg", "error_msg", "msg")
+
+
+def _describe_url_check(needle: str, is_not_in: bool) -> str:
+    """assert "X" (not) in page.url 의 step description 생성.
+
+    needle 이 안전망용 redirect 메시지 키이면 의도를 풀어 쓴 문구로 노출.
+    그 외 일반 케이스는 단순 한국어 문장.
+    """
+    if is_not_in and needle in _REDIRECT_MSG_KEYS:
+        return f"오류 페이지로 튕기지 않았는지 확인 (URL 에 '{needle}' 없음)"
+    if is_not_in:
+        return f"URL 에 '{needle}' 이(가) 없는지 확인"
+    return f"URL 에 '{needle}' 이(가) 있는지 확인"
+
+
+def _describe_min_text_length(selector: str, threshold: int) -> str:
+    """assert len(page.inner_text("X")) >= N 의 step description 생성.
+
+    selector 가 body 이고 임계치가 작은(<=100) 경우는 Tour Script Generator 의
+    "빈 화면 가드" 패턴이라 의도를 풀어 쓴다. 그 외는 selector 그대로 노출.
+    """
+    if selector == "body" and threshold <= 100:
+        return f"빈 화면이 아닌지 확인 (본문 {threshold}자 이상)"
+    return f"'{selector}' 영역 텍스트가 {threshold}자 이상인지 확인"
+
+
 def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
     """codegen .py 파일을 AST 로 파싱해 14-DSL 시나리오로 변환.
 
@@ -320,7 +352,7 @@ class _AstConverter(ast.NodeVisitor):
             "target": "body",
             "value": needle,
             "condition": condition,
-            "description": f"URL {'미포함' if isinstance(op, ast.NotIn) else '포함'} 검증 — '{needle}'",
+            "description": _describe_url_check(needle, isinstance(op, ast.NotIn)),
             "page": right.value.id,
         }
 
@@ -364,7 +396,7 @@ class _AstConverter(ast.NodeVisitor):
             "target": selector,
             "value": str(threshold),
             "condition": "min_text_length",
-            "description": f"본문 텍스트 길이 ≥ {threshold} 검증",
+            "description": _describe_min_text_length(selector, threshold),
             "page": inner.func.value.id,
         }
 
