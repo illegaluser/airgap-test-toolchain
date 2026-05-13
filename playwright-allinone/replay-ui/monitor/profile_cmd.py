@@ -2,10 +2,9 @@
 
 기능: list / seed / delete.
 
-내부적으로 ``zero_touch_qa.auth_profiles`` 를 호출. 카탈로그 경로는 2026-05-13
-부터 Recording UI 와 *공유*되는 ``~/ttc-allinone-data/auth-profiles/`` 가 기본.
-env ``AUTH_PROFILES_DIR`` override 로 분리 가능 (run-replay-ui.sh / install-monitor
-가 자동으로 export).
+내부적으로 ``zero_touch_qa.auth_profiles`` 를 호출. 카탈로그 경로는 휴대용 모드에서
+``<ROOT>/data/auth-profiles/`` — Launch-ReplayUI.{bat,command} 가 ``AUTH_PROFILES_DIR``
+env 를 그 경로로 박는다. env override 로 다른 위치 지정 가능.
 """
 
 from __future__ import annotations

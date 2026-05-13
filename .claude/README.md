@@ -21,9 +21,10 @@
 
 ## settings.json — 허용된 명령
 
-루트의 문서화된 런처(`build.sh`, `run-recording-ui.sh`, `run-replay-ui.sh`,
-`export-airgap.sh`, `scripts/install-git-hooks.sh`, `scripts/run-mac.sh`,
-`scripts/run-wsl2.sh`)와 읽기 전용 git/test/lint 명령만 무프롬프트로 허용합니다.
+루트의 문서화된 런처(`build.sh`, `run-recording-ui.sh`, `Launch-ReplayUI.bat`,
+`Launch-ReplayUI.command`, `export-airgap.sh`, `scripts/install-git-hooks.sh`,
+`scripts/run-mac.sh`, `scripts/run-wsl2.sh`)와 읽기 전용 git/test/lint 명령만
+무프롬프트로 허용합니다.
 파괴적 명령(`rm -rf`, `git push --force`, `git reset --hard`, `git clean -fd`)은
 명시적으로 거부합니다.
 

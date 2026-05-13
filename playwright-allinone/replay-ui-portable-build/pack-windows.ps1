@@ -18,10 +18,10 @@
   마지막에 replay-ui/ 폴더를 zip 으로 압축 (산출: replay-ui-portable-build/build-out/).
 
 .NOTES
-  사전 조건 — `.monitor-runtime-cache/monitor-runtime-build-cache/` 안에
-    wheels/win64/*.whl, chromium/win64/ms-playwright/... 채워져 있어야 함.
+  사전 조건 — `.replay-ui-cache/cache/` 안에
+    wheels/win64/*.whl, chromium/win64/... 채워져 있어야 함.
   비어있으면 먼저 (Git Bash 또는 WSL2 에서):
-    bash playwright-allinone/monitor-build/build-monitor-runtime.sh --target win64 --no-package
+    bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target win64
 #>
 
 param(
@@ -41,8 +41,8 @@ $RepoRoot     = Split-Path -Parent $AllInOneDir
 $ReplayUiDir  = Join-Path $AllInOneDir "replay-ui"
 $SharedDir    = Join-Path $AllInOneDir "shared"
 
-$CacheRoot       = Join-Path $RepoRoot ".monitor-runtime-cache"
-$CacheBuildDir   = Join-Path $CacheRoot "monitor-runtime-build-cache"
+$CacheRoot       = Join-Path $RepoRoot ".replay-ui-cache"
+$CacheBuildDir   = Join-Path $CacheRoot "cache"
 $WheelsDir       = Join-Path $CacheBuildDir "wheels\win64"
 $ChromiumSrcDir  = Join-Path $CacheBuildDir "chromium\win64"
 $PythonEmbedZip  = Join-Path $CacheRoot "python-$PythonVersion-embed-amd64.zip"
@@ -60,7 +60,7 @@ if (-not $WheelFiles -or $WheelFiles.Count -eq 0) {
     throw @"
 wheels 캐시가 비어있습니다 — $WheelsDir
 먼저 Git Bash 또는 WSL2 에서:
-    bash playwright-allinone/monitor-build/build-monitor-runtime.sh --target win64 --no-package
+    bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target win64
 "@
 }
 Write-Host "[pack-windows] wheels 캐시 OK ($($WheelFiles.Count) files)"
@@ -173,7 +173,7 @@ if (Test-Path $ChromiumSrcDir) {
 }
 
 # 4b. chromium revision 보정 — cache 의 chromium 과 site-packages 의 playwright 가
-# 기대하는 revision 이 일치하지 않을 수 있음 (build-monitor-runtime.sh 의 helper
+# 기대하는 revision 이 일치하지 않을 수 있음 (build-cache.sh 의 helper
 # venv 가 다른 playwright 버전을 갖고 받은 경우). embedded python 으로 한 번 더
 # install 호출해서 누락 revision 만 보충 (E2E 회귀 검출, plan G.3).
 $env:PLAYWRIGHT_BROWSERS_PATH = $ChromiumDstDir

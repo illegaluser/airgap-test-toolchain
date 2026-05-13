@@ -30,7 +30,7 @@ grpcio
 
 # --- AI / 크롤링 / 프레임워크 ---
 crawl4ai
-playwright>=1.51  # codegen 호환성 (Phase 0 T0.2 핀)
+playwright==1.59.0  # 휴대용 모델은 단일 버전만 지원 — chromium revision (1217) 표류 차단
 ollama
 jsonschema
 jsonpath-ng

@@ -177,9 +177,7 @@ DSCORE-ReplayUI-portable-<os>-<ts>/
 | `mac-agent-setup.sh` | 예 | macOS 호스트 agent + Recording UI 준비 |
 | `wsl-agent-setup.sh` | 예 | WSL2 호스트 agent + Recording UI 준비 |
 | `recording-ui/run-recording-ui.sh` | 예 | Recording UI 데몬 독립 운영 (18092) |
-| `replay-ui/run-replay-ui.sh` | 예 | Replay UI 데몬 독립 운영 (18094, 모니터링 PC) |
-| `monitor-build/build-monitor-runtime.sh` | 예 | 모니터링 PC 용 1회-설치형 zip 빌드 |
-| `monitor-build/install-monitor.{sh,ps1,cmd}` | 예 | 모니터링 PC 설치 (1회) |
+| `replay-ui-portable-build/build-cache.sh` | 예 | Replay UI 휴대용 빌드 캐시 (wheels + chromium) 채움 |
 | `replay-ui-portable-build/pack-windows.ps1` | 예 | Replay UI 휴대용 zip 빌드 (Windows) |
 | `replay-ui-portable-build/pack-macos.sh` | 예 | Replay UI 휴대용 zip 빌드 (macOS arm64) |
 | `backup-volume.sh` | 예 | `dscore-data` 백업 |

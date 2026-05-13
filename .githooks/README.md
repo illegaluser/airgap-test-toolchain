@@ -24,11 +24,11 @@ Replay UI 휴대용 자산의 stale 을 검출해 자동 갱신.
 4. 다르면 OS 자동 감지해 `pack-*` 실행 → stamp 갱신 후 push 진행.
 5. 실패해도 push 차단은 안 함 (개발 흐름 보호) — 경고만 출력.
 
-**전제 조건** — `.monitor-runtime-cache/monitor-runtime-build-cache/` 의 wheels/chromium 캐시가 채워져 있어야 자동 갱신 성공. 첫 빌드는 다음 한 줄 (Git Bash 또는 WSL2):
+**전제 조건** — `.replay-ui-cache/cache/` 의 wheels/chromium 캐시가 채워져 있어야 자동 갱신 성공. 첫 빌드는 다음 한 줄 (Git Bash 또는 WSL2):
 
 ```bash
-bash playwright-allinone/monitor-build/build-monitor-runtime.sh --target win64 --no-package
+bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target win64
 # 또는 macos-arm64 / all
 ```
 
-이후엔 hook 이 `--reuse-cache` 로 빠르게 동작.
+이후엔 hook 이 캐시를 그대로 재사용해 빠르게 동작.

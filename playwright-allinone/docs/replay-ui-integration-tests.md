@@ -83,8 +83,6 @@ PASS / FAIL / N/A (테스트 환경 미준비).
 ### 클린 OS 프로비저닝
 
 - [ ] **T2** 모니터링 PC = Mac / 동일 흐름 step PASS
-- [ ] **T6** clean Windows 에 `install-monitor.ps1` (UAC 일반 사용자) → venv + Chromium + 카탈로그 + Replay UI startup task + 30분 스케줄러
-- [ ] **T7** clean Mac 에 `install-monitor.sh` → plist 템플릿이 home 경로 substitute 후 `~/Library/LaunchAgents/` 배치 + `launchctl load`
 - [ ] **T15** Replay UI 가 OS 서비스로 등록 시도 → 거부 / 기본 옵션은 startup task
 
 ### 회귀 / 정책

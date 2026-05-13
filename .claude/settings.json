@@ -3,7 +3,8 @@
     "allow": [
       "Bash(bash build.sh:*)",
       "Bash(bash run-recording-ui.sh:*)",
-      "Bash(bash run-replay-ui.sh:*)",
+      "Bash(bash replay-ui-portable-build/build-cache.sh:*)",
+      "Bash(bash replay-ui-portable-build/pack-macos.sh:*)",
       "Bash(bash export-airgap.sh:*)",
       "Bash(./export-airgap.sh:*)",
       "Bash(bash scripts/install-git-hooks.sh:*)",

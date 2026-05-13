@@ -44,7 +44,13 @@ app = FastAPI(
 
 
 def _monitor_home() -> Path:
-    """모니터링 PC 데이터 루트. install-monitor 가 만든 디렉토리."""
+    """모니터링 PC 데이터 루트.
+
+    휴대용 모드에서는 Launch-ReplayUI.{bat,command} 가 ``MONITOR_HOME`` env 를
+    zip 폴더 안 ``<ROOT>/data`` 로 박는다. CLI 직접 호출 등 env 미설정 시
+    홈 디렉토리 fallback (~/.dscore.ttc.monitor) — 사용자가 명시 위치 원하면
+    ``MONITOR_HOME`` env 로 override.
+    """
     raw = os.environ.get("MONITOR_HOME") or "~/.dscore.ttc.monitor"
     root = Path(raw).expanduser()
     root.mkdir(parents=True, exist_ok=True)

@@ -2,10 +2,13 @@
 # 소스에서 `./build.sh` 로 재생성 가능.
 *.tar.gz
 
-# 모니터링 PC 반출 zip + 빌드 캐시 — `bash export-airgap.sh` 산출.
-# zip 300MB+ / 캐시(wheels + chromium) 그보다 큼. 소스에서 재생성.
-monitor-runtime-*.zip
+# 휴대용 Replay UI 빌드 캐시 — `bash build-cache.sh` 산출.
+# 캐시(wheels + chromium) 1GB+. 소스에서 재생성.
+.replay-ui-cache/
+
+# Legacy — 이전 1회 설치형 시절 산출. 사용자 PC 디스크 정리는 수동.
 .monitor-runtime-cache/
+monitor-runtime-*.zip
 
 # macOS metadata
 .DS_Store

@@ -7,11 +7,11 @@
 # 직접 채워넣는다. 채워넣은 후 사용자는 `zip -r replay-ui.zip replay-ui/`
 # 한 줄로 반출하거나, 본 스크립트의 --make-zip 옵션으로 자동 zip 생성.
 #
-# 사전 조건 — `.monitor-runtime-cache/monitor-runtime-build-cache/` 안에
-#   wheels/macos-arm64/*.whl, chromium/macos-arm64/ms-playwright/... 채워져
-#   있어야 함. 비어있으면 먼저:
-#     bash playwright-allinone/monitor-build/build-monitor-runtime.sh \
-#       --target macos-arm64 --no-package
+# 사전 조건 — `.replay-ui-cache/cache/` 안에
+#   wheels/macos-arm64/*.whl, chromium/macos-arm64/... 채워져 있어야 함.
+#   비어있으면 먼저:
+#     bash playwright-allinone/replay-ui-portable-build/build-cache.sh \
+#       --target macos-arm64
 #
 # Usage:
 #   bash pack-macos.sh [--reuse-cache] [--make-zip]
@@ -39,8 +39,8 @@ REPO_ROOT="$(cd "$ALLINONE_DIR/.." && pwd)"
 REPLAYUI_DIR="$ALLINONE_DIR/replay-ui"
 SHARED_DIR="$ALLINONE_DIR/shared"
 
-CACHE_ROOT="$REPO_ROOT/.monitor-runtime-cache"
-CACHE_BUILD_DIR="$CACHE_ROOT/monitor-runtime-build-cache"
+CACHE_ROOT="$REPO_ROOT/.replay-ui-cache"
+CACHE_BUILD_DIR="$CACHE_ROOT/cache"
 WHEELS_DIR="$CACHE_BUILD_DIR/wheels/macos-arm64"
 CHROMIUM_SRC="$CACHE_BUILD_DIR/chromium/macos-arm64"
 
@@ -55,7 +55,7 @@ if [[ ! -d "$WHEELS_DIR" ]] || ! ls "$WHEELS_DIR"/*.whl >/dev/null 2>&1; then
   cat >&2 <<EOF
 wheels 캐시가 비어있습니다 — $WHEELS_DIR
 먼저:
-  bash playwright-allinone/monitor-build/build-monitor-runtime.sh --target macos-arm64 --no-package
+  bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target macos-arm64
 EOF
   exit 1
 fi
@@ -162,7 +162,7 @@ if [[ -d "$CHROMIUM_SRC" ]]; then
 fi
 
 # 3b. chromium revision 보정 — cache 의 chromium 과 site-packages 의 playwright 가
-# 기대하는 revision 이 일치하지 않을 수 있음 (build-monitor-runtime.sh 의 helper
+# 기대하는 revision 이 일치하지 않을 수 있음 (build-cache.sh 의 helper
 # venv 가 다른 playwright 버전을 갖고 받은 경우). relocatable python 으로 한 번 더
 # install 호출해서 누락 revision 만 보충 (E2E 회귀 검출).
 mkdir -p "$CHROMIUM_DST"

@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# 모듈 위치는 monitor-runtime zip 에 동봉된 src/ 와 동일하므로 절대 import 가능.
+# 휴대용 zip 의 폴더 루트에 recording_shared/ · zero_touch_qa/ 가 카피되어 있어
+# launcher 가 PYTHONPATH 에 폴더 루트를 박으면 절대 import 가능. 소스 트리에서도
+# shared/ 가 PYTHONPATH 에 들어가 있어 동일.
 from recording_shared import trace_parser
 from zero_touch_qa import auth_profiles
 

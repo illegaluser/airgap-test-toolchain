@@ -12,8 +12,8 @@ PORT="${RECORDING_PORT:-18092}"
 
 # Python: agent venv 우선, env override 가능. Windows venv (Git Bash 에서 보면
 # Scripts/python.exe) 와 POSIX venv (bin/python) 둘 다 자동 감지.
-# run-replay-ui.sh 와 동일 패턴 — Git Bash 의 `python3` 가 Windows Store stub
-# 으로 잡혀 launcher 가 실패하던 회귀 방지 (2026-05-11).
+# Git Bash 의 `python3` 가 Windows Store stub 으로 잡혀 launcher 가 실패하던
+# 회귀 방지 (2026-05-11).
 if [ -x "$AGENT_DIR/venv/bin/python" ]; then
   DEFAULT_PY="$AGENT_DIR/venv/bin/python"
 elif [ -x "$AGENT_DIR/venv/Scripts/python.exe" ]; then
