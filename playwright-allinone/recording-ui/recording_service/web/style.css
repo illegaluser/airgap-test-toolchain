@@ -873,6 +873,43 @@ dialog textarea {
   color: var(--err);
 }
 
+/* 로그인 프로파일 카드 액션 + 테이블 — Replay UI 와 통일된 UX. */
+.auth-card-actions {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 6px;
+  flex-wrap: wrap;
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+}
+.data-table th, .data-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  font-size: 0.9em;
+}
+.data-table th {
+  background: #fafafb;
+  font-weight: 600;
+  color: var(--muted);
+}
+.data-table td .ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+.data-table td .expired {
+  color: var(--err);
+  font-weight: 600;
+}
+.data-table tr.muted td {
+  color: var(--muted);
+  font-style: italic;
+}
+
 /* 인증 모달 공통 (시드 입력 / 시드 진행 / 만료 / 머신 불일치) */
 .auth-dialog {
   border: none;

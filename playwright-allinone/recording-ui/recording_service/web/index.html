@@ -24,37 +24,32 @@
     <!-- 섹션 1-C: Login Profile Registration -->
     <section class="card">
       <details id="login-profile-section">
-        <summary><h2 style="display:inline-block; margin:0;">🔐 Login Profile Registration</h2></summary>
+        <summary><h2 style="display:inline-block; margin:0;">🔐 로그인 프로파일</h2></summary>
         <p class="muted">
           테스트 대상 서비스의 로그인 세션을 시드/검증/삭제합니다. 시드된 프로파일은
           Recording 과 Discover URLs 섹션에서 선택해 재사용할 수 있습니다.
+          Replay UI 와 같은 카탈로그를 공유하므로, 양쪽 어디서 시드하든 그대로 보입니다.
         </p>
-        <fieldset class="auth-block">
-          <legend>인증 프로파일 — 시드된 storageState 재사용</legend>
-          <div class="auth-row">
-            <label class="auth-select-wrap">
-              <span>Auth Profile</span>
-              <select id="auth-profile-select">
-                <option value="">(없음 — 비로그인 녹화)</option>
-              </select>
-            </label>
-            <button type="button" id="btn-auth-verify" class="auth-btn"
-                    disabled
-                    title="선택된 프로파일을 즉시 verify (서비스 측 + 네이버 weak probe)">
-              ↻ verify
-            </button>
-            <button type="button" id="btn-auth-delete" class="auth-btn auth-btn-danger"
-                    disabled
-                    title="선택된 프로파일을 삭제 (카탈로그 + storageState 파일)">
-              🗑 삭제
-            </button>
-          </div>
-          <p class="auth-status muted" id="auth-status">— 프로파일을 선택하거나 새로 시드하세요 —</p>
+        <div class="auth-card-actions">
           <button type="button" id="btn-auth-seed" class="auth-btn"
                   title="새 인증 세션 시드 — 별도 브라우저 창에서 직접 로그인 + 2중 확인 통과">
-            + 새 세션 시드
+            + 새 프로파일
           </button>
-        </fieldset>
+          <button type="button" id="btn-auth-refresh" class="auth-btn"
+                  title="로그인 프로파일 목록 새로고침">
+            ↻ 새로고침
+          </button>
+        </div>
+        <table id="auth-profiles-table" class="data-table">
+          <thead>
+            <tr>
+              <th>프로파일 이름</th><th>로그인 상태</th><th>최근 확인</th><th>사이트</th><th>액션</th>
+            </tr>
+          </thead>
+          <tbody id="auth-profiles-tbody">
+            <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+          </tbody>
+        </table>
 
         <!-- 시드 입력 모달 -->
         <dialog id="auth-seed-dialog" class="auth-dialog">

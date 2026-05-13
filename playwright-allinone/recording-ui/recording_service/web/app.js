@@ -1428,17 +1428,10 @@ async function loadAuthProfiles() {
       return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
     }).join("");
 
-  const sel = $("#auth-profile-select");
-  const current = _authState.selected;
-  sel.innerHTML = optionsHtml;
-  if (current && profiles.some((p) => p.name === current)) {
-    sel.value = current;
-    _renderAuthStatus();
-  } else {
-    _authState.selected = "";
-    _renderAuthStatus();
-  }
+  // 로그인 프로파일 카드 자체는 테이블로 렌더 (Replay UI 와 통일).
+  _renderAuthProfilesTable();
 
+  // 다른 카드의 select 들 — 선택값 보존하며 갱신.
   // New Recording 의 단순 dropdown 도 같은 옵션으로 채운다 (선택값 보존).
   const recSel = $("#recording-auth-profile");
   if (recSel) {
@@ -1473,98 +1466,98 @@ function _selectedProfile() {
   return _authState.profiles.find((p) => p.name === _authState.selected) || null;
 }
 
-function _renderAuthStatus() {
-  const p = _selectedProfile();
-  const status = $("#auth-status");
-  const verifyBtn = $("#btn-auth-verify");
-  const deleteBtn = $("#btn-auth-delete");
-  if (!p) {
-    status.textContent = "— 프로파일을 선택하거나 새로 시드하세요 —";
-    status.className = "auth-status muted";
-    verifyBtn.disabled = true;
-    if (deleteBtn) deleteBtn.disabled = true;
+// Replay UI 와 통일된 테이블 — 프로파일 목록을 행 단위로 표시하고, 행마다
+// "다시 로그인" / "삭제" 버튼을 둔다. 이전엔 단일 <select> + verify/delete
+// 버튼 패턴이었으나, 양쪽 UI 의 UX 통일 (2026-05-13) 후 본 패턴으로 일원화.
+function _renderAuthProfilesTable() {
+  const tbody = $("#auth-profiles-tbody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  const profiles = _authState.profiles || [];
+  if (profiles.length === 0) {
+    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 프로파일 없음 —</td></tr>';
     return;
   }
-  verifyBtn.disabled = false;
-  if (deleteBtn) deleteBtn.disabled = false;
-  let txt = `프로파일 "${p.name}" — ${p.service_domain}`;
-  if (p.last_verified_at) {
-    txt += ` · ${_formatRelative(p.last_verified_at)} 검증`;
-  } else {
-    txt += " · 미검증";
+  for (const p of profiles) {
+    const tr = document.createElement("tr");
+    const warn = p.session_storage_warning
+      ? ' <span class="muted">⚠ sessionStorage 의존</span>'
+      : "";
+    tr.innerHTML = `
+      <td><strong>${escapeHtml(p.name)}</strong></td>
+      <td><span class="ok">등록됨</span>${warn}</td>
+      <td>${escapeHtml(p.last_verified_at || "—")}</td>
+      <td>${escapeHtml(p.service_domain || "—")}</td>
+      <td>
+        <button type="button" class="auth-btn auth-reseed-row" data-name="${escapeHtml(p.name)}">↻ 다시 로그인</button>
+        <button type="button" class="auth-btn auth-btn-danger auth-del-row" data-name="${escapeHtml(p.name)}" title="프로파일 삭제 (카탈로그 + storageState)">🗑</button>
+      </td>`;
+    tbody.appendChild(tr);
   }
-  // P5.9 — sessionStorage 의심 서비스 경고.
-  if (p.session_storage_warning) {
-    txt += " · ⚠ sessionStorage 의존 가능 (재시드 빈도↑)";
-  }
-  if (_authState.lastVerify && _authState.lastVerify.profile === p.name) {
-    if (_authState.lastVerify.ok) {
-      txt = "✓ verify OK · " + txt;
-      status.className = "auth-status ok";
-    } else {
-      txt = "✗ verify FAIL · " + txt;
-      status.className = "auth-status err";
-    }
-  } else {
-    status.className = "auth-status muted";
-  }
-  status.textContent = txt;
+  $all("#auth-profiles-tbody .auth-reseed-row").forEach((b) => {
+    b.addEventListener("click", () => _openReseedFromCatalog(b.dataset.name));
+  });
+  $all("#auth-profiles-tbody .auth-del-row").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const name = b.dataset.name;
+      const prof = _authState.profiles.find((x) => x.name === name);
+      const domain = prof ? prof.service_domain : "";
+      const ok = window.confirm(
+        `프로파일 "${name}"${domain ? ` (${domain})` : ""} 을 삭제하시겠습니까?\n` +
+        `카탈로그 항목과 저장된 storageState 파일이 함께 제거됩니다.`,
+      );
+      if (!ok) return;
+      b.disabled = true;
+      try {
+        await deleteAuthProfile(name);
+        if (_authState.selected === name) {
+          _authState.selected = "";
+          _authState.lastVerify = null;
+        }
+        await loadAuthProfiles();
+      } catch (err) {
+        alert(`삭제 실패: ${err.message || err}`);
+        b.disabled = false;
+      }
+    });
+  });
 }
 
-// 드롭다운 선택 변경.
-$("#auth-profile-select").addEventListener("change", (e) => {
-  _authState.selected = e.target.value;
+// 행의 "↻ 다시 로그인" 클릭 — 카탈로그 detail 을 prefill 한 시드 모달 오픈.
+// expired 모달이 쓰던 재시드 흐름과 동일 패턴 (verify_service_url 의 origin 으로
+// seed_url 추정, 사용자가 모달에서 수정 가능).
+async function _openReseedFromCatalog(name) {
+  _authState.selected = name;
   _authState.lastVerify = null;
-  _renderAuthStatus();
-});
-
-// 🗑 삭제 — 카탈로그 + storageState 파일 제거.
-$("#btn-auth-delete").addEventListener("click", async () => {
-  const p = _selectedProfile();
-  if (!p) return;
-  const ok = window.confirm(
-    `프로파일 "${p.name}" (${p.service_domain}) 을 삭제하시겠습니까?\n` +
-    `카탈로그 항목과 저장된 storageState 파일이 함께 제거됩니다.`,
-  );
-  if (!ok) return;
-  const btn = $("#btn-auth-delete");
-  btn.disabled = true;
-  $("#auth-status").textContent = `"${p.name}" 삭제 중...`;
-  $("#auth-status").className = "auth-status muted";
+  let detail = null;
   try {
-    await deleteAuthProfile(p.name);
-    _authState.selected = "";
-    _authState.lastVerify = null;
-    await loadAuthProfiles();
-    $("#auth-status").textContent = `✓ "${p.name}" 삭제됨`;
-    $("#auth-status").className = "auth-status ok";
-  } catch (err) {
-    $("#auth-status").textContent = `✗ 삭제 실패: ${err.message || err}`;
-    $("#auth-status").className = "auth-status err";
-    btn.disabled = false;
+    detail = await fetchAuthProfileDetail(name);
+  } catch (e) {
+    console.warn("auth profile detail 조회 실패:", e);
   }
-});
+  if (detail) {
+    let seedUrlGuess = "";
+    try {
+      seedUrlGuess = new URL(detail.verify_service_url).origin + "/";
+    } catch (_) {
+      seedUrlGuess = detail.verify_service_url;
+    }
+    _openSeedDialog({
+      name: detail.name,
+      seed_url: seedUrlGuess,
+      verify_service_url: detail.verify_service_url,
+      verify_service_text: detail.verify_service_text,
+      ttl_hint_hours: detail.ttl_hint_hours,
+      naver_probe: detail.naver_probe_enabled,
+      idp_domain: detail.idp_domain !== undefined ? (detail.idp_domain || "") : "naver.com",
+    });
+  } else {
+    _openSeedDialog({ name });
+  }
+}
 
-// ↻ verify (P5.3).
-$("#btn-auth-verify").addEventListener("click", async () => {
-  const p = _selectedProfile();
-  if (!p) return;
-  const btn = $("#btn-auth-verify");
-  btn.disabled = true;
-  $("#auth-status").textContent = "verify 진행 중...";
-  $("#auth-status").className = "auth-status muted";
-  try {
-    const result = await verifyAuthProfile(p.name);
-    _authState.lastVerify = { profile: p.name, ...result };
-    // 카탈로그 last_verified_at 갱신 — 다시 fetch.
-    await loadAuthProfiles();
-  } catch (err) {
-    _authState.lastVerify = { profile: p.name, ok: false, fail_reason: err.message };
-    _renderAuthStatus();
-  } finally {
-    btn.disabled = false;
-  }
-});
+// ↻ 새로고침 — 카드 상단 액션.
+$("#btn-auth-refresh")?.addEventListener("click", () => loadAuthProfiles());
 
 // ── 시드 입력 모달 (P5.4) ────────────────────────────────────────────────
 function _openSeedDialog(prefill) {
@@ -1689,8 +1682,6 @@ $("#btn-auth-seed-cancel").addEventListener("click", () => {
 
 $("#btn-auth-seed-skip").addEventListener("click", () => {
   _authState.selected = "";
-  $("#auth-profile-select").value = "";
-  _renderAuthStatus();
   $("#auth-seed-progress").close();
 });
 
@@ -1698,13 +1689,11 @@ $("#btn-auth-seed-done").addEventListener("click", () => {
   const profile = $("#btn-auth-seed-done").dataset.profile || "";
   if (profile) {
     _authState.selected = profile;
-    $("#auth-profile-select").value = profile;
     // 새로 시드한 프로파일을 New Recording 에서도 즉시 사용할 수 있게 미리 선택.
     const recSel = $("#recording-auth-profile");
     if (recSel && [...recSel.options].some((o) => o.value === profile)) {
       recSel.value = profile;
     }
-    _renderAuthStatus();
   }
   $("#auth-seed-progress").close();
 });
