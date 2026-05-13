@@ -220,7 +220,8 @@ def generate_regression_test(
                     lines.append("            " + sl)
             lines.append(f"            {popup_to} = {popup_to}_info.value")
             known_pages.add(popup_to)
-            # popup 생성 직후 — 새 page 의 networkidle 까지 대기.
+            # popup 생성 직후 — 새 page 의 networkidle 까지 대기. expect_popup
+            # 자체가 새 page 등장을 보장하므로 추가 lookahead wait 은 emit 안 함.
             lines.append(f"            _settle({popup_to})")
         else:
             lines.extend(step_lines)
@@ -228,6 +229,17 @@ def generate_regression_test(
             # 단순 sleep 대신 사이트 반응 완료 감지 — 네트워크 지연·SPA 환경에서
             # 동일 시나리오가 안정적으로 통과.
             lines.append(f"            _settle({page_var})")
+            # 다음 step 의 element 가 DOM 에 attach 될 때까지 추가 대기 — modal
+            # / dialog 같은 *직전 action 의 비동기 trigger* 가 next step 의
+            # element 를 만들 때까지 기다림. lookahead 로 다음 step 의
+            # stable_selector / target 을 미리 알아 그 locator 의 wait_for.
+            _next = _peek_next_locator_code(scenario, results, idx, known_pages)
+            if _next is not None:
+                _next_page_var, _next_locator_code, _next_state = _next
+                lines.append(
+                    f"            try: {_next_locator_code}.wait_for(state={_next_state!r}, timeout=_step_wait_ms)"
+                )
+                lines.append(f"            except Exception: pass")
         lines.append("")
 
     lines.extend([
@@ -662,6 +674,50 @@ _ACTION_EMITTERS = {
     "performance": _emit_performance,
     "visual_diff": _emit_visual_diff,
 }
+
+
+def _peek_next_locator_code(scenario, results, idx, known_pages):
+    """다음 step 의 wait 대상 locator 표현 + page_var + wait_state 반환.
+
+    회귀 .py 가 현재 step 직후 *다음 step 의 element 가 등장할 때까지* 대기
+    하면, modal/dialog 같이 직전 action 이 비동기로 만드는 element 도 안정적
+    으로 잡힌다.
+
+    wait_state 분기:
+      - next step 에 pre_actions(hover ancestor) 가 있음 → ``"attached"`` —
+        hover 가 일어나야 visible 되는 메뉴 케이스. visible 까지 강제하면
+        hover 전이라 timeout.
+      - 없음 → ``"visible"`` — modal/dialog 같이 직전 action 이 즉시 visible
+        만드는 케이스. visible 까지 기다리면 후속 click 의 auto-wait 가 빠짐.
+
+    Returns:
+        (page_var, locator_code, wait_state) 또는 None.
+    """
+    next_idx = idx + 1
+    if next_idx >= len(scenario):
+        return None
+    next_step = scenario[next_idx]
+    next_action = (next_step.get("action", "") or "").lower()
+    if next_action in ("navigate", "maps", "wait"):
+        return None
+    if next_step.get("popup_to"):
+        return None
+    next_page_var = next_step.get("page") or "page"
+    if next_page_var not in known_pages:
+        return None
+    next_r = results[next_idx] if next_idx < len(results) else None
+    next_target = ""
+    next_pre_actions: list = []
+    if next_r is not None:
+        next_target = (getattr(next_r, "stable_selector", "") or "") or (next_r.target or "")
+        next_pre_actions = getattr(next_r, "pre_actions", None) or []
+    if not next_target:
+        next_target = next_step.get("target", "") or ""
+    if not next_target:
+        return None
+    locator_code = _target_to_playwright_code(next_target, page_var=next_page_var)
+    wait_state = "attached" if next_pre_actions else "visible"
+    return next_page_var, locator_code, wait_state
 
 
 def _target_to_playwright_code(target, page_var: str = "page") -> str:

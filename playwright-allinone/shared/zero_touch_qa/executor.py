@@ -229,14 +229,24 @@ def _extract_stable_selector(locator) -> str:
         return ""
     kind = info.get("kind")
     if kind == "id":
-        return f"#{info.get('value','')}"
+        v = info.get('value','')
+        # CSS selector 의 id 부분에 escape 가 필요한 문자 (``:`` ``.`` 공백 등) 가
+        # 있으면 ``#id`` 표현은 invalid. 그 경우 attribute selector 로 emit —
+        # ``[id="..."]`` 는 임의 문자 안전.
+        import re as _re
+        if _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", v):
+            return f"#{v}"
+        return f'[id="{v}"]'
     if kind == "testid":
         return f"testid={info.get('value','')}"
     if kind == "role_name":
         role = info.get("role", "")
         name = info.get("name", "")
         if role and name and len(name) <= 200:
-            return f"role={role}, name={name}"
+            # exact=true 명시 — element 의 *정확한 accessible name* 으로 추출했으므로
+            # fuzzy 매칭이 아닌 정확 매칭이 의도. ``name="확인"`` 이 ``"확인하기"`` 같은
+            # superstring 도 매칭하는 fragile 회피.
+            return f"role={role}, name={name}, exact=true"
     return ""
 
 
