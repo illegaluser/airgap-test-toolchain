@@ -331,6 +331,30 @@ def _emit_verify(target, value, step, locator_code, page_var="page"):
             "            _text = _el.inner_text() or _el.input_value()",
             f"            assert {json.dumps(str(value))} in _text",
         ]
+    # url_contains / url_not_contains — target 무시, page.url 자체 검사. Tour Script
+    # Generator 의 안전망 assert (errorMsg 패턴) 도 이쪽 분기. executor 와 의미 동일.
+    if condition == "url_not_contains":
+        return [
+            f"            _url = {page_var}.url or \"\"",
+            f"            assert {json.dumps(str(value))} not in _url, _url",
+        ]
+    if condition == "url_contains":
+        return [
+            f"            _url = {page_var}.url or \"\"",
+            f"            assert {json.dumps(str(value))} in _url, _url",
+        ]
+    # min_text_length — 본문(보통 body) inner_text 길이 ≥ 임계치. 빈 화면/안내
+    # 페이지 가드. executor 와 의미 동일.
+    if condition == "min_text_length":
+        try:
+            threshold = int(str(value))
+        except (TypeError, ValueError):
+            threshold = 0
+        return [
+            f"            _body = ({locator_code}.inner_text(timeout=5000) or \"\").strip()",
+            f"            assert len(_body) >= {threshold}, "
+            f"f\"본문 텍스트 길이 {{len(_body)}} < {threshold}\"",
+        ]
     return [f"            assert {locator_code}.is_visible()"]
 
 
@@ -417,6 +441,129 @@ def _emit_reset_state(target, value, step, locator_code, page_var="page"):
     return out
 
 
+def _emit_dialog_choose(target, value, step, locator_code, page_var="page"):
+    """dialog_choose emitter — 다음 dialog 의 one-shot 응답 등록.
+
+    executor._execute_dialog_choose 와 의미 동일. target ∈ {alert, confirm, prompt, any},
+    value ∈ {accept, dismiss, "<prompt 응답 텍스트>"}.
+    """
+    dt = str(target or "any").strip().lower()
+    val = str(value or "dismiss")
+    p = page_var
+    return [
+        f"            # dialog_choose target={dt} value={val!r}",
+        f"            _choice = ({json.dumps(dt)}, {json.dumps(val)})",
+        f"            def _on_dlg(_d, _c=_choice):",
+        f"                _tgt, _val = _c",
+        f"                if _tgt != 'any' and _d.type != _tgt: return",
+        f"                if _val == 'accept': _d.accept()",
+        f"                elif _val == 'dismiss': _d.dismiss()",
+        f"                else: _d.accept(_val)",
+        f"            {p}.once('dialog', _on_dlg)",
+    ]
+
+
+def _emit_storage_read(target, value, step, locator_code, page_var="page"):
+    """storage_read emitter — local/session storage 의 키 존재/값 검증.
+
+    executor._execute_storage_read 와 의미 동일. target 형식 ``<scope>:<key>``
+    (scope ∈ local|session, 생략 시 local). value 빈 문자열 = 키 존재만 검증.
+    """
+    raw_target = str(target or "")
+    expected = str(value or "")
+    if ":" in raw_target:
+        scope, key = raw_target.split(":", 1)
+        scope = scope.strip().lower() or "local"
+        key = key.strip()
+    else:
+        scope, key = "local", raw_target
+    store = "localStorage" if scope == "local" else "sessionStorage"
+    p = page_var
+    lines = [
+        f"            # storage_read {scope}:{key} expected={expected!r}",
+        f"            _val = {p}.evaluate("
+        f"f'(k) => {{ try {{ return {store}.getItem(k); }} catch(e) {{ return null; }} }}', "
+        f"{json.dumps(key)})",
+    ]
+    if expected == "":
+        lines.append(f"            assert _val is not None, f'storage {scope}:{key} 미존재'")
+    else:
+        lines.append(
+            f"            assert _val == {json.dumps(expected)}, "
+            f"f'storage {scope}:{key} 값 불일치 actual={{_val!r}}'"
+        )
+    return lines
+
+
+def _emit_cookie_verify(target, value, step, locator_code, page_var="page"):
+    """cookie_verify emitter — 특정 cookie 존재/값 검증.
+
+    executor._execute_cookie_verify 와 의미 동일. target ``NAME`` 또는
+    ``NAME@DOMAIN``. value 빈 문자열 = cookie 존재만 검증.
+    """
+    raw_target = str(target or "")
+    expected = str(value or "")
+    if "@" in raw_target:
+        name, domain = raw_target.split("@", 1)
+        name = name.strip()
+        domain = domain.strip().lstrip(".")
+    else:
+        name, domain = raw_target, ""
+    p = page_var
+    lines = [
+        f"            # cookie_verify {raw_target} expected={expected!r}",
+        f"            _cookies = {p}.context.cookies()",
+        f"            _matched = [c for c in _cookies if c.get('name') == {json.dumps(name)} "
+        f"and (not {json.dumps(domain)} or (c.get('domain') or '').lstrip('.') == {json.dumps(domain)})]",
+        f"            assert _matched, f'cookie {raw_target!r} 미존재 (전체 {{len(_cookies)}}개)'",
+    ]
+    if expected != "":
+        lines.append(
+            f"            _vals = [c.get('value','') for c in _matched]"
+        )
+        lines.append(
+            f"            assert {json.dumps(expected)} in _vals, "
+            f"f'cookie {raw_target!r} 값 불일치 actual={{_vals!r}}'"
+        )
+    return lines
+
+
+def _emit_performance(target, value, step, locator_code, page_var="page"):
+    """performance emitter — page load time 임계 비교.
+
+    executor._execute_performance 와 의미 동일. value=임계 ms (정수).
+    """
+    try:
+        threshold = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        threshold = 0
+    p = page_var
+    return [
+        f"            # performance load time 임계 {threshold}ms",
+        f"            _elapsed = {p}.evaluate("
+        f"'() => {{ const t = performance.timing; "
+        f"if (!t || !t.navigationStart || !t.loadEventEnd) return -1; "
+        f"return t.loadEventEnd - t.navigationStart; }}')",
+        f"            assert isinstance(_elapsed, (int, float)) and _elapsed >= 0, "
+        f"'performance timing 미가용'",
+        f"            assert _elapsed <= {threshold}, "
+        f"f'load {{int(_elapsed)}}ms > 임계 {threshold}ms'",
+    ]
+
+
+def _emit_visual_diff(target, value, step, locator_code, page_var="page"):
+    """visual_diff emitter — golden 이미지와 viewport 픽셀 diff.
+
+    PIL + golden 파일 필요 — 회귀 .py 가 외부 의존을 끌어들이지 않도록 주석
+    skip 으로 emit. 사용자가 의도적으로 사용 시 별도 환경에서 실 측정.
+    """
+    return [
+        f"            # [skip] visual_diff target={target!r} threshold={value!r} — "
+        f"PIL + golden 이미지 의존, 회귀 스크립트 standalone 보장 위해 주석 처리.",
+        f"            # 측정이 필요하면 zero_touch_qa executor 의 --mode execute 로 실 시나리오 실행.",
+    ]
+
+
 _ACTION_EMITTERS = {
     "navigate": _emit_navigate,
     "maps": _emit_navigate,
@@ -435,6 +582,11 @@ _ACTION_EMITTERS = {
     "verify": _emit_verify,
     "auth_login": _emit_auth_login,
     "reset_state": _emit_reset_state,
+    "dialog_choose": _emit_dialog_choose,
+    "storage_read": _emit_storage_read,
+    "cookie_verify": _emit_cookie_verify,
+    "performance": _emit_performance,
+    "visual_diff": _emit_visual_diff,
 }
 
 
@@ -554,11 +706,16 @@ def _segment_to_playwright_code(seg: str, *, root: str, in_chain: bool = False) 
             role_only = role_only.split(",", 1)[0].strip()
         return f"{root}.get_by_role({json.dumps(role_only)}){suffix}"
 
+    # locator_resolver 와 동일한 6개 semantic prefix. title= / alt= 누락 시
+    # `page.locator("title=X")` 로 잘못 떨어져 CSS <title> 엘리먼트 매칭이 되어
+    # 회귀 .py 가 step FAIL (사용자 보고 2026-05-13 fa81865a8b4c step 6).
     prefix_map = {
         "text=": "get_by_text",
         "label=": "get_by_label",
         "placeholder=": "get_by_placeholder",
         "testid=": "get_by_test_id",
+        "title=": "get_by_title",
+        "alt=": "get_by_alt_text",
     }
     for prefix, method in prefix_map.items():
         if seg.startswith(prefix):
