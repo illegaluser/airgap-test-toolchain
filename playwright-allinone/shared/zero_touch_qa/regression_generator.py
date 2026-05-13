@@ -64,6 +64,10 @@ def generate_regression_test(
         "        try:",
     ])
 
+    # 팝업 page var 추적 — converter_ast 가 emit 한 step["page"] / step["popup_to"]
+    # 를 보존해 회귀 .py 가 원본의 다중 탭 흐름을 재현하게 한다. popup_to 가 박힌
+    # step 은 ``with <page_var>.expect_popup() as <popup_to>_info:`` 로 wrap.
+    known_pages: set[str] = {"page"}
     for idx, step in enumerate(scenario):
         r = results[idx] if idx < len(results) else None
 
@@ -91,6 +95,11 @@ def generate_regression_test(
             target = scen_target
             value = scen_value
             heal_stage = "none"
+
+        # 액션이 동작할 page 변수 결정. converter_ast 가 step["page"] 로 박은 값.
+        # 평탄 시나리오(키 없음/legacy)는 자동으로 "page" 로 fallback.
+        page_var = (step.get("page") or "page")
+        popup_to = step.get("popup_to") or None
 
         desc = step.get("description", "")
         if desc:
@@ -120,10 +129,10 @@ def generate_regression_test(
                         f"            # [PRE] visibility heal — hover ancestor"
                     )
                     lines.append(
-                        f"            page.locator({json.dumps(str(pre_target))})"
+                        f"            {page_var}.locator({json.dumps(str(pre_target))})"
                         f".first.hover(timeout=1500)"
                     )
-                    lines.append("            page.wait_for_timeout(150)")
+                    lines.append(f"            {page_var}.wait_for_timeout(150)")
                 elif pre_action == "wait" and pre_target:
                     try:
                         wait_ms = int(str(pre_target))
@@ -132,10 +141,27 @@ def generate_regression_test(
                     lines.append(
                         f"            # [PRE] visibility heal — size poll"
                     )
-                    lines.append(f"            page.wait_for_timeout({wait_ms})")
+                    lines.append(f"            {page_var}.wait_for_timeout({wait_ms})")
 
-        locator_code = _target_to_playwright_code(target)
-        lines.extend(_emit_step_code(action, target, value, step, locator_code))
+        locator_code = _target_to_playwright_code(target, page_var=page_var)
+        step_lines = _emit_step_code(action, target, value, step, locator_code, page_var=page_var)
+        if popup_to and popup_to not in known_pages:
+            # popup_to 가 박힌 step: 클릭 등이 새 page 를 트리거.
+            # ``with <page_var>.expect_popup() as <popup_to>_info:`` 로 wrap,
+            # 본 step 라인을 4 space 추가 들여쓰기, 직후 ``<popup_to> = ..._info.value``.
+            lines.append(
+                f"            with {page_var}.expect_popup() as {popup_to}_info:"
+            )
+            for sl in step_lines:
+                # step_lines 는 이미 12-space base 들여쓰기. with 블록 내부는 +4 space.
+                if sl.startswith("            "):
+                    lines.append("    " + sl)
+                else:
+                    lines.append("            " + sl)
+            lines.append(f"            {popup_to} = {popup_to}_info.value")
+            known_pages.add(popup_to)
+        else:
+            lines.extend(step_lines)
         lines.append("")
 
     lines.extend([
@@ -158,36 +184,39 @@ def generate_regression_test(
 
 
 def _emit_step_code(
-    action: str, target, value, step: dict, locator_code: str
+    action: str, target, value, step: dict, locator_code: str,
+    page_var: str = "page",
 ) -> list[str]:
     """단일 step 을 Playwright 호출 라인 목록으로 변환한다.
 
     14대 DSL 액션 모두를 처리한다. 신규 5종(upload/drag/scroll/mock_*)도
     executor 의 실제 동작과 1:1 로 매핑되어 회귀 테스트가 동등하게 재현한다.
+
+    page_var: 액션이 동작할 page 변수 (메인=page, popup=page1/page2/…).
     """
     handler = _ACTION_EMITTERS.get(action)
     if handler is None:
         return [f"            # [skip] 미지원 action: {action}"]
-    return handler(target, value, step, locator_code)
+    return handler(target, value, step, locator_code, page_var)
 
 
-def _emit_navigate(target, value, step, locator_code):
+def _emit_navigate(target, value, step, locator_code, page_var="page"):
     url = value or str(target)
     return [
-        f"            page.goto({json.dumps(url)})",
-        '            page.wait_for_load_state("domcontentloaded")',
+        f"            {page_var}.goto({json.dumps(url)})",
+        f'            {page_var}.wait_for_load_state("domcontentloaded")',
     ]
 
 
-def _emit_wait(target, value, step, locator_code):
-    return [f"            page.wait_for_timeout({int(value or 1000)})"]
+def _emit_wait(target, value, step, locator_code, page_var="page"):
+    return [f"            {page_var}.wait_for_timeout({int(value or 1000)})"]
 
 
-def _emit_click(target, value, step, locator_code):
+def _emit_click(target, value, step, locator_code, page_var="page"):
     return [f"            {locator_code}.click(timeout=5000)"]
 
 
-def _emit_fill(target, value, step, locator_code):
+def _emit_fill(target, value, step, locator_code, page_var="page"):
     # 한 글자씩 입력 + keyup dispatch + 자동완성 settle — executor _do_fill 1순위
     # 전략 완전 미러. 빠뜨릴 경우 한국형 검색 자동완성 사이트가 dropdown 을 못
     # 띄워 다음 step 의 추천어 click 이 5초 timeout 으로 깨짐 (2026-05-11 회귀).
@@ -206,17 +235,17 @@ def _emit_fill(target, value, step, locator_code):
         f"            {locator_code}.fill(\"\")",
         f"            {locator_code}.press_sequentially({json.dumps(str(value))}, delay=80)",
         f"            {locator_code}.evaluate(\"el => {{ try {{ el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}})); }} catch(e) {{}} }}\")",
-        "            page.wait_for_timeout(300)",
+        f"            {page_var}.wait_for_timeout(300)",
     ]
 
 
-def _emit_press(target, value, step, locator_code):
+def _emit_press(target, value, step, locator_code, page_var="page"):
     if not target:
-        return [f"            page.keyboard.press({json.dumps(str(value))})"]
+        return [f"            {page_var}.keyboard.press({json.dumps(str(value))})"]
     return [f"            {locator_code}.press({json.dumps(str(value))})"]
 
 
-def _emit_select(target, value, step, locator_code):
+def _emit_select(target, value, step, locator_code, page_var="page"):
     # ``combobox.nth(N)`` 같은 위치 기반 selector 는 ajax 로 늦게 로드되는 select
     # 가 페이지에 *충분히 자리잡기 전* 에 select_option 이 호출되어 30s timeout
     # 으로 깨지던 회귀 (2026-05-11 FLOW-USR-007 step 14). 명시적 wait_for(attached)
@@ -229,17 +258,17 @@ def _emit_select(target, value, step, locator_code):
     ]
 
 
-def _emit_check(target, value, step, locator_code):
+def _emit_check(target, value, step, locator_code, page_var="page"):
     if str(value).lower() == "off":
         return [f"            {locator_code}.uncheck()"]
     return [f"            {locator_code}.check()"]
 
 
-def _emit_hover(target, value, step, locator_code):
+def _emit_hover(target, value, step, locator_code, page_var="page"):
     return [f"            {locator_code}.hover()"]
 
 
-def _emit_upload(target, value, step, locator_code):
+def _emit_upload(target, value, step, locator_code, page_var="page"):
     # 업로드 경로는 artifacts 기준 상대경로로 들어옴 — 회귀 테스트는 실행 위치
     # (artifacts 디렉토리)에서 그대로 set_input_files 한다.
     return [
@@ -247,8 +276,8 @@ def _emit_upload(target, value, step, locator_code):
     ]
 
 
-def _emit_drag(target, value, step, locator_code):
-    target_locator = _target_to_playwright_code(value)
+def _emit_drag(target, value, step, locator_code, page_var="page"):
+    target_locator = _target_to_playwright_code(value, page_var=page_var)
     return [
         f"            _src = {locator_code}",
         f"            _dst = {target_locator}",
@@ -256,31 +285,31 @@ def _emit_drag(target, value, step, locator_code):
     ]
 
 
-def _emit_scroll(target, value, step, locator_code):
+def _emit_scroll(target, value, step, locator_code, page_var="page"):
     return [f"            {locator_code}.scroll_into_view_if_needed(timeout=5000)"]
 
 
-def _emit_mock_status(target, value, step, locator_code):
+def _emit_mock_status(target, value, step, locator_code, page_var="page"):
     pattern = json.dumps(str(target))
     status = int(str(value).strip())
     return [
-        f"            page.route({pattern}, lambda r: r.fulfill(status={status}), times=1)",
+        f"            {page_var}.route({pattern}, lambda r: r.fulfill(status={status}), times=1)",
     ]
 
 
-def _emit_mock_data(target, value, step, locator_code):
+def _emit_mock_data(target, value, step, locator_code, page_var="page"):
     pattern = json.dumps(str(target))
     if isinstance(value, (dict, list)):
         body = json.dumps(json.dumps(value, ensure_ascii=False))
     else:
         body = json.dumps(str(value))
     return [
-        f"            page.route({pattern}, lambda r: r.fulfill(status=200, "
+        f"            {page_var}.route({pattern}, lambda r: r.fulfill(status=200, "
         f'content_type="application/json", body={body}), times=1)',
     ]
 
 
-def _emit_verify(target, value, step, locator_code):
+def _emit_verify(target, value, step, locator_code, page_var="page"):
     condition = str(step.get("condition", "")).strip().lower()
     if condition == "hidden":
         return [f"            assert not {locator_code}.is_visible()"]
@@ -305,51 +334,55 @@ def _emit_verify(target, value, step, locator_code):
     return [f"            assert {locator_code}.is_visible()"]
 
 
-def _emit_auth_login(target, value, step, locator_code):
+def _emit_auth_login(target, value, step, locator_code, page_var="page"):
     """auth_login emitter — credential alias + mode 분기.
 
     회귀 스크립트는 zero_touch_qa.auth 모듈을 import 해 fixture 통합과
     동일한 흐름을 재현한다. resolve_credential / generate_totp_code 가
     이미 검증된 path 라 1:1 매핑.
+
+    page_var: 메인 페이지 외 popup 에서 인증 흐름이 발생할 일은 거의 없지만,
+    혹시 모를 케이스를 위해 인자 통일.
     """
     target_str = json.dumps(str(target))
     alias = json.dumps(str(value))
+    p = page_var
     return [
         "            # auth_login (T-D / P0.1) — env var credential + form/totp/oauth",
         f"            _opts = parse_auth_target({target_str})",
         f"            _cred = resolve_credential({alias})",
         '            if _opts.mode == "form":',
-        "                _email = page.locator(_opts.email_field) if _opts.email_field else None",
+        f"                _email = {p}.locator(_opts.email_field) if _opts.email_field else None",
         "                if _email is None or _email.count() == 0:",
         "                    for _sel in EMAIL_FIELD_CANDIDATES:",
-        "                        if page.locator(_sel).count() > 0:",
-        "                            _email = page.locator(_sel); break",
-        "                _pwd = page.locator(_opts.password_field) if _opts.password_field else None",
+        f"                        if {p}.locator(_sel).count() > 0:",
+        f"                            _email = {p}.locator(_sel); break",
+        f"                _pwd = {p}.locator(_opts.password_field) if _opts.password_field else None",
         "                if _pwd is None or _pwd.count() == 0:",
         "                    for _sel in PASSWORD_FIELD_CANDIDATES:",
-        "                        if page.locator(_sel).count() > 0:",
-        "                            _pwd = page.locator(_sel); break",
-        "                _submit = page.locator(_opts.submit) if _opts.submit else None",
+        f"                        if {p}.locator(_sel).count() > 0:",
+        f"                            _pwd = {p}.locator(_sel); break",
+        f"                _submit = {p}.locator(_opts.submit) if _opts.submit else None",
         "                if _submit is None or _submit.count() == 0:",
         "                    for _sel in SUBMIT_BUTTON_CANDIDATES:",
-        "                        if page.locator(_sel).count() > 0:",
-        "                            _submit = page.locator(_sel); break",
+        f"                        if {p}.locator(_sel).count() > 0:",
+        f"                            _submit = {p}.locator(_sel); break",
         "                _email.first.fill(_cred.user, timeout=5000)",
         "                _pwd.first.fill(_cred.password, timeout=5000)",
         "                _submit.first.click(timeout=5000)",
-        '                page.wait_for_load_state("domcontentloaded", timeout=10000)',
+        f'                {p}.wait_for_load_state("domcontentloaded", timeout=10000)',
         '            elif _opts.mode == "totp":',
         "                _code = generate_totp_code(_cred.totp_secret)",
-        "                _otp = page.locator(_opts.totp_field) if _opts.totp_field else None",
+        f"                _otp = {p}.locator(_opts.totp_field) if _opts.totp_field else None",
         "                if _otp is None or _otp.count() == 0:",
         "                    for _sel in TOTP_FIELD_CANDIDATES:",
-        "                        if page.locator(_sel).count() > 0:",
-        "                            _otp = page.locator(_sel); break",
+        f"                        if {p}.locator(_sel).count() > 0:",
+        f"                            _otp = {p}.locator(_sel); break",
         "                _otp.first.fill(_code, timeout=5000)",
     ]
 
 
-def _emit_reset_state(target, value, step, locator_code):
+def _emit_reset_state(target, value, step, locator_code, page_var="page"):
     """reset_state emitter — cookie / storage / indexeddb / all (+ permissions).
 
     executor `_execute_reset_state` 와 1:1 매핑. all 은 permissions 도 reset.
@@ -357,22 +390,22 @@ def _emit_reset_state(target, value, step, locator_code):
     scope = str(value).strip().lower()
     out = [f"            # reset_state value={scope}"]
     if scope in ("cookie", "all"):
-        out.append("            page.context.clear_cookies()")
+        out.append(f"            {page_var}.context.clear_cookies()")
     if scope == "all":
         out.extend([
-            "            try: page.context.clear_permissions()",
+            f"            try: {page_var}.context.clear_permissions()",
             "            except Exception: pass",
         ])
     if scope in ("storage", "all"):
         out.append(
-            "            page.evaluate(\"\"\"() => {"
+            f"            {page_var}.evaluate(\"\"\"() => {{"
             " try { localStorage.clear(); } catch(e) {} "
             " try { sessionStorage.clear(); } catch(e) {} "
             "}\"\"\")"
         )
     if scope in ("indexeddb", "all"):
         out.append(
-            "            page.evaluate(\"\"\"async () => { "
+            f"            {page_var}.evaluate(\"\"\"async () => {{ "
             "if (!('indexedDB' in window) || !indexedDB.databases) return; "
             "try { const dbs = await indexedDB.databases(); "
             "await Promise.all(dbs.map(d => new Promise((res) => { "
@@ -405,29 +438,33 @@ _ACTION_EMITTERS = {
 }
 
 
-def _target_to_playwright_code(target) -> str:
+def _target_to_playwright_code(target, page_var: str = "page") -> str:
     """DSL target 을 독립 실행 가능한 Playwright 코드 스니펫으로 변환한다.
 
     P0.1 #2 / T-C — ``>>`` 합성 chain (frame= / shadow= / role= / text= / ...
     + 후미 modifier nth=/has_text=) 을 모두 지원한다. resolver 의 chain 처리와
     동일 의미로 코드 스니펫을 누적한다.
+
+    page_var: 액션이 동작할 page 변수 이름. 메인 페이지는 ``page``, 팝업 탭은
+    ``page1`` / ``page2`` … (converter_ast 가 step['page'] 로 emit). 기본 ``page``
+    로 popup 정보 없는 시나리오는 기존 동작 유지.
     """
     if not target:
-        return 'page.locator("body")'
+        return f'{page_var}.locator("body")'
 
     if isinstance(target, dict):
         if target.get("role"):
             role = json.dumps(target["role"])
             name = json.dumps(target.get("name", ""))
-            return f"page.get_by_role({role}, name={name}).first"
+            return f"{page_var}.get_by_role({role}, name={name}).first"
         if target.get("label"):
-            return f"page.get_by_label({json.dumps(target['label'])}).first"
+            return f"{page_var}.get_by_label({json.dumps(target['label'])}).first"
         if target.get("text"):
-            return f"page.get_by_text({json.dumps(target['text'])}).first"
+            return f"{page_var}.get_by_text({json.dumps(target['text'])}).first"
         if target.get("placeholder"):
-            return f"page.get_by_placeholder({json.dumps(target['placeholder'])}).first"
+            return f"{page_var}.get_by_placeholder({json.dumps(target['placeholder'])}).first"
         if target.get("testid"):
-            return f"page.get_by_test_id({json.dumps(target['testid'])}).first"
+            return f"{page_var}.get_by_test_id({json.dumps(target['testid'])}).first"
         target = target.get("selector", str(target))
 
     t = str(target).strip()
@@ -436,13 +473,13 @@ def _target_to_playwright_code(target) -> str:
     base_str, modifiers = _split_trailing_modifiers(t)
 
     if " >> " in base_str:
-        return _chain_to_playwright_code(base_str, modifiers)
+        return _chain_to_playwright_code(base_str, modifiers, page_var=page_var)
 
     # 단일 segment — modifier 가 있으면 .first 미부착 raw 로 emit (chain 경로와 동일).
     # ``.first.nth(N)`` 은 Playwright 의미상 빈 매치라 N≥1 에서 timeout → 회귀 실패.
     # locator_resolver._resolve_raw 와 같은 의도.
     snippet = _segment_to_playwright_code(
-        base_str, root="page", in_chain=bool(modifiers)
+        base_str, root=page_var, in_chain=bool(modifiers)
     )
     return _apply_modifier_suffix(snippet, modifiers)
 
@@ -466,13 +503,13 @@ def _split_trailing_modifiers(t: str) -> tuple[str, list[tuple[str, str]]]:
     return ", ".join(parts), mods
 
 
-def _chain_to_playwright_code(base_str: str, modifiers) -> str:
+def _chain_to_playwright_code(base_str: str, modifiers, page_var: str = "page") -> str:
     """``>>`` chain 을 Playwright 메서드 chain 코드로 변환."""
     segments = [s.strip() for s in base_str.split(" >> ") if s.strip()]
     if not segments:
-        return 'page.locator("body")'
+        return f'{page_var}.locator("body")'
 
-    cur = "page"
+    cur = page_var
     for seg in segments:
         if seg.startswith("frame="):
             sel = seg[len("frame="):].strip()
