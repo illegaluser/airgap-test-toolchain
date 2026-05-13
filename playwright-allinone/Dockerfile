@@ -232,7 +232,7 @@ COPY nginx.conf /etc/nginx/nginx.conf
 #       모든 오프라인 앱 프로비저닝 (Phase 4/5 해당) 을 독립적으로 수행한다.
 COPY entrypoint.sh  /entrypoint.sh
 COPY provision.sh       /opt/provision.sh
-COPY zero_touch_qa                   /opt/zero_touch_qa
+COPY shared/zero_touch_qa            /opt/zero_touch_qa
 COPY test/fixtures                   /opt/seed/fixtures
 COPY dify-chatflow.yaml              /opt/dify-chatflow.yaml
 COPY test-planning-chatflow.yaml     /opt/test-planning-chatflow.yaml

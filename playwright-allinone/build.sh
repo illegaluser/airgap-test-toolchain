@@ -160,7 +160,7 @@ docker buildx version >/dev/null 2>&1 || err "docker buildx 가 필요합니다 
 [ -f "$SCRIPT_DIR/Dockerfile" ]         || err "Dockerfile 이 없습니다."
 [ -f "$SCRIPT_DIR/dify-chatflow.yaml" ] || err "dify-chatflow.yaml 이 없습니다."
 [ -f "$SCRIPT_DIR/test-planning-chatflow.yaml" ] || err "test-planning-chatflow.yaml 이 없습니다 (Test Planning RAG 트랙)."
-[ -d "$SCRIPT_DIR/zero_touch_qa" ]      || err "zero_touch_qa/ 디렉토리가 없습니다."
+[ -d "$SCRIPT_DIR/shared/zero_touch_qa" ] || err "shared/zero_touch_qa/ 디렉토리가 없습니다."
 [ -f "$SCRIPT_DIR/ZeroTouch-QA.jenkinsPipeline" ] || err "Pipeline 정의 파일 없음."
 [ -d "$SCRIPT_DIR/jenkins-init" ]       || err "jenkins-init/ 디렉토리가 없습니다."
 

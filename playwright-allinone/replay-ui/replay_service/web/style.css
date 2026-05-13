@@ -44,6 +44,22 @@ header h1 {
 
 .spacer { flex: 1; }
 
+.cross-link {
+  display: inline-block;
+  text-decoration: none;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+.cross-link:hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
 .alarm {
   background: #ffebe9;
   color: var(--fail);

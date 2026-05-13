@@ -1314,25 +1314,25 @@ $("#import-file-input").addEventListener("change", async (e) => {
   }
 });
 
-// ── 뒤로가기 버튼 — 항상 노출 (Jenkins 의 Safe HTML 정책이 <a target="_blank">
-// 의 target 을 스트립해 새 탭 진입이 불가능 — 동일 탭 진입 사용자의 복귀 경로). ──
+// ── 뒤로가기 버튼 — referrer 가 있을 때만 노출 (Jenkins 등 외부 페이지에서
+// 동일 탭 진입한 경우의 복귀 경로). 북마크·직접 URL 진입처럼 referrer 가
+// 비어 있으면 버튼 자체를 숨겨 빈 history.back() / 의미 없는 fallback 으로
+// 인한 혼란을 차단한다.
 (function _initBackButton() {
   const btn = document.getElementById("back-btn");
   if (!btn) return;
+  if (!document.referrer) return;  // hidden 속성 유지 → 표시 안 함
+  try {
+    const ref = new URL(document.referrer);
+    if (ref.origin === window.location.origin && ref.pathname === window.location.pathname) {
+      return;  // 자기 자신 새로고침/내부 이동 — 표시 안 함
+    }
+  } catch (_) {
+    return;
+  }
+  btn.hidden = false;
   btn.addEventListener("click", () => {
-    // 시도 1: referrer (가장 결정적). 다른 origin 에서 왔다면 100% 동작.
-    if (document.referrer) {
-      window.location.href = document.referrer;
-      return;
-    }
-    // 시도 2: history.back. 이 페이지 진입 전에 history 가 있으면 이동.
-    if (window.history.length > 1) {
-      window.history.back();
-      return;
-    }
-    // 시도 3: 시작점 — 안내 후 Jenkins 기본 URL 로.
-    alert("이전 페이지가 없습니다 — Jenkins 메인으로 이동합니다.");
-    window.location.href = "http://localhost:18080/";
+    window.location.href = document.referrer;
   });
 })();
 

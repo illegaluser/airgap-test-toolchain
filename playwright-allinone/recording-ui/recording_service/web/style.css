@@ -54,6 +54,21 @@ header .header-left {
   color: #fff;
   filter: none;
 }
+.cross-link {
+  display: inline-block;
+  text-decoration: none;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.92rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+.cross-link:hover {
+  background: var(--accent);
+  color: #fff;
+}
 
 main {
   max-width: 980px;
