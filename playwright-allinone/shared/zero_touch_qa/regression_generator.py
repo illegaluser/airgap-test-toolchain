@@ -1,4 +1,4 @@
-import json
+import json as _json
 import os
 import re
 import time
@@ -9,6 +9,27 @@ from .executor import StepResult
 # 위해 executor 의 resolver 와 동일 헬퍼 재사용. 자체 정의하면 두 곳에서 정규식이
 # 어긋날 위험.
 from .locator_resolver import _split_name_exact
+
+
+class _DumpsShim:
+    """json.dumps wrapper — ensure_ascii=False 가 *기본* 이 되도록 강제.
+
+    회귀 .py 의 selector / value / URL / DOM 패턴 등 모든 emit 자리에서
+    한글이 ``\\uXXXX`` escape 로 떨어지던 가독성 회귀 (2026-05-13 사용자 보고)
+    방지. 호출 측이 명시적으로 ensure_ascii=True 를 넘기지 않는 한 그대로
+    한글 문자 유지.
+    """
+    @staticmethod
+    def dumps(obj, **kw):
+        kw.setdefault("ensure_ascii", False)
+        return _json.dumps(obj, **kw)
+
+    # 옛 ``import json; json.loads(...)`` 등 dumps 외 attribute 호환.
+    def __getattr__(self, name):
+        return getattr(_json, name)
+
+
+json = _DumpsShim()
 
 log = logging.getLogger(__name__)
 
