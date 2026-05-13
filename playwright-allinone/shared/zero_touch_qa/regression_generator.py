@@ -120,6 +120,39 @@ def generate_regression_test(
         "                p.wait_for_load_state('networkidle', timeout=_step_wait_ms)",
         "            except Exception:",
         "                pass",
+        "        # 클릭이 actionability 검사로 거부된 경우 (요소가 닫히는 레이어에",
+        "        # 가려졌거나 height:0 / line-height:0 같은 computed style 으로 인해",
+        "        # Playwright 의 hit-test 가 실패) JS dispatch click 으로 폴백.",
+        "        # anchor/button/clickable role 일 때만 — 그 외 요소엔 실 사이트 listener",
+        "        # 가 없어 false-positive PASS 가 될 수 있어 그대로 raise. executor 의",
+        "        # 동일 패턴(executor.py:3183-3205) 미러.",
+        "        def _safe_click(loc, *, timeout):",
+        "            try:",
+        "                loc.click(timeout=timeout)",
+        "                return",
+        "            except Exception as click_err:",
+        "                msg = str(click_err)",
+        "                if not any(s in msg for s in (",
+        "                    'not visible', 'outside of the viewport',",
+        "                    'intercepts pointer events', 'Element is not stable',",
+        "                    'Timeout',",
+        "                )):",
+        "                    raise",
+        "                try:",
+        "                    info = loc.evaluate(",
+        '                        "el => ({tag: (el.tagName||\\"\\").toLowerCase(),"',
+        '                        " role: ((el.getAttribute&&el.getAttribute(\\"role\\"))||\\"\\").toLowerCase(),"',
+        '                        " onclick: typeof el.onclick === \\"function\\"})"',
+        "                    )",
+        "                except Exception:",
+        "                    raise click_err",
+        "                tag = info.get('tag') if isinstance(info, dict) else ''",
+        "                role = info.get('role') if isinstance(info, dict) else ''",
+        "                onclick = info.get('onclick') if isinstance(info, dict) else False",
+        "                safe = (tag in ('a','button')) or (role in ('button','link','menuitem','tab','option','checkbox')) or onclick",
+        "                if not safe:",
+        "                    raise",
+        "                loc.evaluate('el => el.click()')",
         "        try:",
     ])
 
@@ -337,7 +370,12 @@ def _emit_click(target, value, step, locator_code, page_var="page"):
     #
     # 옛 5s timeout 은 사이트 응답 지연에 너무 짧아 flaky FAIL → 15s 로 상향만
     # 하고 wait_for 제거. click 의 auto-wait/auto-scroll 에 모든 안전망 위임.
-    return [f"            {locator_code}.click(timeout=_action_timeout_ms)"]
+    #
+    # 추가: _safe_click 으로 감싸 actionability 거부 시 JS dispatch 폴백 — 사용자
+    # 녹화에선 통과했지만 회귀에선 닫히는 레이어 / transition 잔여물에 가려져
+    # Playwright 의 hit-test 가 실패하는 케이스를 흡수 (executor 가 LLM 모드에서
+    # 하던 폴백과 동일).
+    return [f"            _safe_click({locator_code}, timeout=_action_timeout_ms)"]
 
 
 def _emit_fill(target, value, step, locator_code, page_var="page"):

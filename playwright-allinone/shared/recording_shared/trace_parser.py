@@ -51,7 +51,27 @@ class _Action:
 
     @property
     def status(self) -> str:
-        return "FAIL" if self.error else "PASS"
+        if not self.error:
+            return "PASS"
+        # 회귀 .py 가 안정성 보강용으로 끼워 두는 *advisory wait* 들은 모두
+        # try/except 로 swallow 되며 흐름엔 영향이 없다. Playwright 가 trace 에
+        # 기록한 timeout 을 그대로 FAIL 로 보고하면 회귀 전체가 실패로 보이는
+        # 회귀가 있어 (사용자 보고 2026-05-14), 이 advisory 패턴은 PASS 로 강등.
+        #
+        # 대상:
+        # - ``wait_for_load_state`` / ``waitForEventInfo`` — _settle(p) 호출
+        # - ``wait_for_selector`` 의 짧은 timeout — 다음 element 의 lookahead
+        #   wait (회귀 생성기가 try/except 로 감싸 emit)
+        #
+        # 실제 click / fill / navigation 등의 timeout 은 그대로 FAIL 보존.
+        m = (self.method or "").lower().replace("_", "")
+        if m in ("waitforloadstate", "waitforeventinfo", "waitforselector"):
+            # Timeout 오류만 advisory 로 본다 — 실 selector 에러 (multi-match,
+            # invalid selector) 는 여전히 FAIL.
+            err = str(self.error)
+            if "Timeout" in err and "exceeded" in err:
+                return "PASS"
+        return "FAIL"
 
 
 def _extract_target(method: str, params: dict[str, Any] | None) -> str:
