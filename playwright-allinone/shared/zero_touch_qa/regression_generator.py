@@ -109,6 +109,10 @@ def generate_regression_test(
         "        # 케이스는 timeout 후 silent 진행 (try/except 흡수).",
         "        # 옵트인 off: REGRESSION_STEP_WAIT_TIMEOUT_MS=0 (예: pre-commit 슈트).",
         "        _step_wait_ms = int(os.environ.get('REGRESSION_STEP_WAIT_TIMEOUT_MS', '3000'))",
+        "        # 각 action (click/select/drag/scroll/...) 의 Playwright timeout.",
+        "        # env REGRESSION_ACTION_TIMEOUT_MS — 기본 15000ms. 느린 사이트나",
+        "        # 비동기 trigger 가 길게 걸리는 케이스는 늘려 시도 가능.",
+        "        _action_timeout_ms = int(os.environ.get('REGRESSION_ACTION_TIMEOUT_MS', '15000'))",
         "        def _settle(p):",
         "            if _step_wait_ms <= 0:",
         "                return",
@@ -299,7 +303,7 @@ def _emit_click(target, value, step, locator_code, page_var="page"):
     #
     # 옛 5s timeout 은 사이트 응답 지연에 너무 짧아 flaky FAIL → 15s 로 상향만
     # 하고 wait_for 제거. click 의 auto-wait/auto-scroll 에 모든 안전망 위임.
-    return [f"            {locator_code}.click(timeout=15000)"]
+    return [f"            {locator_code}.click(timeout=_action_timeout_ms)"]
 
 
 def _emit_fill(target, value, step, locator_code, page_var="page"):
@@ -339,7 +343,7 @@ def _emit_select(target, value, step, locator_code, page_var="page"):
     val_json = json.dumps(str(value))
     return [
         f"            _sel = {locator_code}",
-        f"            _sel.wait_for(state='attached', timeout=15000)",
+        f"            _sel.wait_for(state='attached', timeout=_action_timeout_ms)",
         f"            _sel.select_option(label={val_json})",
     ]
 
@@ -367,12 +371,12 @@ def _emit_drag(target, value, step, locator_code, page_var="page"):
     return [
         f"            _src = {locator_code}",
         f"            _dst = {target_locator}",
-        "            _src.drag_to(_dst, timeout=10000)",
+        "            _src.drag_to(_dst, timeout=_action_timeout_ms)",
     ]
 
 
 def _emit_scroll(target, value, step, locator_code, page_var="page"):
-    return [f"            {locator_code}.scroll_into_view_if_needed(timeout=5000)"]
+    return [f"            {locator_code}.scroll_into_view_if_needed(timeout=_action_timeout_ms)"]
 
 
 def _emit_mock_status(target, value, step, locator_code, page_var="page"):
