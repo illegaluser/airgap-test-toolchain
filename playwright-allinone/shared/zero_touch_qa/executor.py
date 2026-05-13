@@ -210,11 +210,19 @@ def _extract_stable_selector(locator) -> str:
                     'select': 'combobox',
                 };
                 const role = explicitRole || implicit[tag] || '';
-                // accessible name: aria-label > inner text 첫 줄 > value.
+                // accessible name: aria-label > inner text (multi-line 평탄화) > value.
+                // 줄바꿈 split-first 는 multi-line nav (``<a><span>A</span><span>B</span></a>``)
+                // 의 이름을 첫 줄만으로 잘라 잘못된 selector emit 하는 회귀 (2026-05-13
+                // 사용자 보고 adc30a1e3fa3 step 21 — "디지털융합플랫폼 페르소나 ChatBot"
+                // 이 "디지털융합플랫폼" 으로만 잘림). 줄바꿈을 공백 1개로 합쳐
+                // accessible name 의 *실제 시각적 표현* 에 가깝게 보존.
                 let name = (el.getAttribute && el.getAttribute('aria-label') || '').trim();
                 if (!name) {
                     const t = (el.innerText || '').trim();
-                    if (t) name = t.split('\\n', 1)[0].trim();
+                    if (t) {
+                        // 줄바꿈 / 다중 공백을 단일 공백으로 정규화.
+                        name = t.split(/\\s+/).filter(Boolean).join(' ');
+                    }
                 }
                 if (!name && (tag === 'input' || tag === 'textarea')) {
                     name = (el.value || '').trim();
