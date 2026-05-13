@@ -1454,9 +1454,13 @@ class QAExecutor:
         if _page_closed(page):
             log.info("[Step %s] Dify 치유 스킵 — page 가 이미 closed", step_id)
             return None
+        timeout_disp = (
+            f"{self.config.heal_timeout_sec}s"
+            if self.config.heal_timeout_sec else "무제한"
+        )
         log.info(
-            "[Step %s] Dify LLM 치유 요청 중 (timeout=%ds)...",
-            step_id, self.config.heal_timeout_sec,
+            "[Step %s] Dify LLM 치유 요청 중 (timeout=%s)...",
+            step_id, timeout_disp,
         )
         try:
             dom_snapshot = page.content()[: self.config.dom_snapshot_limit]
