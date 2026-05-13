@@ -103,6 +103,19 @@ def generate_regression_test(
         "        context.on('page', lambda _p: _p.on('dialog', _auto_dismiss_dialog))",
         "        page = context.new_page()",
         "        page.on('dialog', _auto_dismiss_dialog)",
+        "",
+        "        # 각 action 직후 사이트 반응이 완료될 때까지 동적 대기. 단순 고정",
+        "        # sleep 보다 빠르고 안정. SPA 의 long-poll 처럼 영영 idle 안 오는",
+        "        # 케이스는 timeout 후 silent 진행 (try/except 흡수).",
+        "        # 옵트인 off: REGRESSION_STEP_WAIT_TIMEOUT_MS=0 (예: pre-commit 슈트).",
+        "        _step_wait_ms = int(os.environ.get('REGRESSION_STEP_WAIT_TIMEOUT_MS', '3000'))",
+        "        def _settle(p):",
+        "            if _step_wait_ms <= 0:",
+        "                return",
+        "            try:",
+        "                p.wait_for_load_state('networkidle', timeout=_step_wait_ms)",
+        "            except Exception:",
+        "                pass",
         "        try:",
     ])
 
@@ -202,8 +215,14 @@ def generate_regression_test(
                     lines.append("            " + sl)
             lines.append(f"            {popup_to} = {popup_to}_info.value")
             known_pages.add(popup_to)
+            # popup 생성 직후 — 새 page 의 networkidle 까지 대기.
+            lines.append(f"            _settle({popup_to})")
         else:
             lines.extend(step_lines)
+            # action 직후 active page 의 networkidle 까지 동적 대기 (한도 내).
+            # 단순 sleep 대신 사이트 반응 완료 감지 — 네트워크 지연·SPA 환경에서
+            # 동일 시나리오가 안정적으로 통과.
+            lines.append(f"            _settle({page_var})")
         lines.append("")
 
     lines.extend([
