@@ -1,7 +1,7 @@
 """Replay UI 를 실제로 운전해 한 건 업로드 → 실행 → 결과 확인까지 풀 동선.
 
 흐름:
-  1. 라이브 18099 Replay UI 를 헤디드 Chromium 으로 연다.
+  1. 라이브 18093 Replay UI 를 헤디드 Chromium 으로 연다.
   2. ⬆ 업로드 (.py) 버튼을 통해 example_com_recorded.py (Recording UI 가 만든 codegen 산출물)
      를 #script-file 인풋에 set_input_files 로 주입 → 자동 POST /api/scripts.
   3. scripts-tbody 에 row 가 나타나면 그 row 의 ▶ 실행 버튼 클릭.
@@ -33,8 +33,8 @@ for _stream in (sys.stdout, sys.stderr):
 
 from playwright.sync_api import sync_playwright, expect
 
-REPLAY_URL = "http://127.0.0.1:18099/"
-API_BASE = "http://127.0.0.1:18099"
+REPLAY_URL = "http://127.0.0.1:18093/"
+API_BASE = "http://127.0.0.1:18093"
 SCRIPT_PATH = r"C:\Users\csr68\AppData\Local\Temp\example_com_recorded.py"
 SCRIPT_NAME = "example_com_recorded.py"
 

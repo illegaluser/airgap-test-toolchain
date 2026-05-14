@@ -130,14 +130,15 @@ Phase 1.5 이후 버전업이 필요해지면 `tree-sitter-languages` 를 `tree-
 
 포트 충돌 감지 루프는 18093~18097 까지 보고 있다 (18097 은 차후 슈트용 예약).
 
-**다른 영구 데몬 포트 (e2e 슈트 범위 밖)**:
+**Replay UI 의 두 실행 형태 — 다른 포트**:
 
-| 데몬 | 포트 | 비고 |
+| 형태 | 포트 | 어디서 띄우는가 |
 |---|---|---|
+| 호스트 Replay UI | 18093 | dev/빌드 머신에서 직접 `python -m uvicorn replay_service.server:app --port 18093`. Recording UI cross-link 도 여기로. **주의**: 같은 포트가 `test_recording_ui_e2e.py` 슈트 포트라 dev 머신에서 호스트 Replay UI 띄운 채 commit 하면 hook 의 포트 점유 감지가 Recording UI e2e 를 스킵함. commit 직전엔 호스트 Replay UI 내리거나 `--no-verify` 사용. |
+| 휴대용 Replay UI | 18099 | 받는 PC 에서 `Launch-ReplayUI.{bat,command}` 더블클릭 또는 빌드 머신의 `build.sh` step 5-5 자동 호출. e2e 슈트 포트(18093-18097) 범위 밖이라 commit 회귀에 영향 없음. |
 | Recording UI (호스트 데몬) | 18092 | agent-setup step 6.5 가 띄움 |
-| 휴대용 Replay UI | 18099 | `replay-ui/Launch-ReplayUI.{bat,command}` |
 
-휴대용 Replay UI 는 받는 PC 가 주된 실행 환경이지만, dev 머신에서도 같은 launcher 로 띄울 수 있다. e2e 슈트 포트(18093-18097) 와 겹치면 pre-commit hook 의 포트 충돌 감지 루프가 슈트를 스킵해 회귀 검출이 빠지므로, 휴대용은 18099 로 분리했다 (2026-05-14).
+원래 둘 다 18094 였는데 18094 가 `test_auth_profile_api_e2e.py` 슈트 포트라 commit 회귀가 조용히 스킵되는 사고가 있어, 2026-05-14 사용자 결정으로 휴대용은 18099, 호스트는 18093 으로 분리했다.
 
 - 설치: `bash playwright-allinone/scripts/install-git-hooks.sh` 1회.
 - 일시 우회: `git commit --no-verify` — 사용자가 명시 요청한 경우 외 금지.
