@@ -123,24 +123,25 @@ Phase 1.5 이후 버전업이 필요해지면 `tree-sitter-languages` 를 `tree-
 
 | 슈트 | 포트 | 영역 |
 |---|---|---|
-| `test/test_recording_ui_e2e.py` | 18093 | Recording UI 회귀 |
 | `test/test_auth_profile_api_e2e.py` | 18094 | Auth Profile HTTP API |
 | `test/test_auth_profile_ui_e2e.py` | 18095 | Auth Profile UI |
 | `test/test_discover_api_e2e.py` | 18096 | Discover URLs API |
+| `test/test_recording_ui_layout_e2e.py` | 18097 | Recording UI Layout (Round 3+4) |
+| `test/test_recording_ui_e2e.py` | 18098 | Recording UI 회귀 (2026-05-14 이전 18093 → 18098) |
 
-포트 충돌 감지 루프는 18093~18097 까지 보고 있다 (18097 은 차후 슈트용 예약).
+포트 충돌 감지 루프는 18094~18098 까지 본다. 18093 은 호스트 Replay UI 의 영구 포트라 감지 범위에서 제외.
 
 **Replay UI 의 두 실행 형태 — 다른 포트**:
 
 | 형태 | 포트 | 어디서 띄우는가 |
 |---|---|---|
-| 호스트 Replay UI | 18093 | dev/빌드 머신에서 직접 `python -m uvicorn replay_service.server:app --port 18093`. Recording UI cross-link 도 여기로. **주의**: 같은 포트가 `test_recording_ui_e2e.py` 슈트 포트라 dev 머신에서 호스트 Replay UI 띄운 채 commit 하면 hook 의 포트 점유 감지가 Recording UI e2e 를 스킵함. commit 직전엔 호스트 Replay UI 내리거나 `--no-verify` 사용. |
-| 휴대용 Replay UI | 18099 | 받는 PC 에서 `Launch-ReplayUI.{bat,command}` 더블클릭 또는 빌드 머신의 `build.sh` step 5-5 자동 호출. e2e 슈트 포트(18093-18097) 범위 밖이라 commit 회귀에 영향 없음. |
+| 호스트 Replay UI | 18093 | dev/빌드 머신에서 직접 `python -m uvicorn replay_service.server:app --port 18093`. Recording UI cross-link 도 여기로. **18093 의 영구 owner 는 이 호스트 Replay UI** — e2e 슈트 전용 포트가 아니다. |
+| 휴대용 Replay UI | 18099 | 받는 PC 가 zip 풀고 `Launch-ReplayUI.{bat,command}` 더블클릭. build.sh 는 띄우지 않는다 (호스트 18093 과 분리). |
 | Recording UI (호스트 데몬) | 18092 | agent-setup step 6.5 가 띄움 |
 
-원래 둘 다 18094 였는데 18094 가 `test_auth_profile_api_e2e.py` 슈트 포트라 commit 회귀가 조용히 스킵되는 사고가 있어, 2026-05-14 사용자 결정으로 휴대용은 18099, 호스트는 18093 으로 분리했다.
+원래 모든 Replay UI 가 18094 였는데 18094 가 `test_auth_profile_api_e2e.py` 슈트 포트라 commit 회귀가 조용히 스킵되는 사고가 있어, 2026-05-14 사용자 결정으로 **호스트 Replay UI 는 18093, 휴대용 Replay UI 는 18099** 로 분리했다.
 
 - 설치: `bash playwright-allinone/scripts/install-git-hooks.sh` 1회.
 - 일시 우회: `git commit --no-verify` — 사용자가 명시 요청한 경우 외 금지.
 
-**새 슈트 추가 체크리스트**: 사용 포트가 18093~18097 과 겹치지 않게 다음 번호 할당 → `.githooks/pre-commit` 의 `RELEVANT_PATTERN` 에 신규 모듈/테스트 정규식 추가 → 포트 충돌 감지 루프와 실행 루프 양쪽 모두 추가 → 헤더 코멘트의 슈트 번호/포트 표 갱신.
+**새 슈트 추가 체크리스트**: 사용 포트가 18094-18098 e2e 범위 또는 18092 (Recording UI) / 18093 (호스트 Replay UI) / 18099 (휴대용 Replay UI) 영구 데몬과 겹치지 않게 다음 번호 할당 → `.githooks/pre-commit` 의 `RELEVANT_PATTERN` 에 신규 모듈/테스트 정규식 추가 → 포트 충돌 감지 루프와 실행 루프 양쪽 모두 추가 → 헤더 코멘트의 슈트 번호/포트 표 갱신.

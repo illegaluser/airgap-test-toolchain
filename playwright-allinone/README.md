@@ -38,7 +38,7 @@ playwright-allinone/
 ├── recording-ui/                ← Recording UI 본체 (호스트 데몬, 18092)
 │   ├── recording_service/
 │   └── run-recording-ui.sh
-├── replay-ui/                   ← Replay UI 본체 (모니터링 PC 데몬, 18099)
+├── replay-ui/                   ← Replay UI 본체 (호스트 데몬 18093 / 휴대용 zip 18099)
 │   ├── replay_service/
 │   └── monitor/                 ← 명령줄 도구 (python -m monitor)
 ├── shared/                      ← 두 UI 가 함께 쓰는 공용 코드
@@ -144,7 +144,7 @@ chmod +x *.sh
 
 ### 어디서 실행하나
 
-어디서 실행하든 `./build.sh --redeploy` 한 번이면 빌드 → 컨테이너 → provision → 호스트 agent → Recording UI(18092) → Replay UI(18099) 까지 자동 완료.
+어디서 실행하든 `./build.sh --redeploy` 한 번이면 빌드 → 컨테이너 → provision → 호스트 agent → Recording UI(18092) → 호스트 Replay UI(18093) 까지 자동 완료. 휴대용 Replay UI(18099) 는 받는 PC 가 별도 zip 풀고 띄움.
 
 > **WSL2 호스트 분기 주의** — build.sh 가 WSL2 Ubuntu 안에서 실행되더라도 `wsl-agent-setup.sh` 는 Windows 호스트 네이티브 (Git Bash) 에 위임돼 돈다. Playwright 브라우저는 항상 호스트 네이티브에서 헤드드 창으로 떠야 하므로 (사용자 원칙) WSL2 안 직접 실행은 스크립트가 거부한다. Replay UI 도 같은 분기에서 `cmd.exe /c start` 를 거쳐 호스트의 `Launch-ReplayUI.bat` 으로 자동 시작.
 
@@ -172,7 +172,7 @@ agent 실행 로그는 `/tmp/dscore-agent.log`.
 | 옵션 | 역할 | 자주 쓰는 상황 |
 |---|---|---|
 | (없음) | 빌드만 — `dscore.ttc.playwright-<ts>.tar.gz` 산출 | airgap 머신으로 옮길 배포 패키지 만들 때 |
-| `--redeploy` | 빌드 + 기존 컨테이너 swap + **호스트 agent · Recording UI(18092) · Replay UI(18099) 동시 자동 구동**. 데이터 볼륨은 보존. | 같은 머신에서 코드 수정 후 즉시 재기동 |
+| `--redeploy` | 빌드 + 기존 컨테이너 swap + **호스트 agent · Recording UI(18092) · 호스트 Replay UI(18093) 동시 자동 구동**. 데이터 볼륨은 보존. | 같은 머신에서 코드 수정 후 즉시 재기동 |
 | `--redeploy --reprovision` | 위 + provision 재실행. KB 임베딩 / Jenkins 이력 / 챗봇 대화는 보존하되 chatflow / Jenkins job 정의 / Dify provider 등록은 새 이미지 기준으로 재생성. | chatflow YAML 이나 provision 로직을 바꿨을 때 |
 | `--redeploy --fresh` | 위 + 볼륨까지 삭제 (`dscore-data` 제거). **모든 데이터 폐기**. | 처음부터 다시. 디버깅 막판. |
 | `--redeploy --no-agent` | 빌드 + 컨테이너만 재기동, agent 연결은 스킵 | CI 머신에서 컨테이너만 갱신 |
@@ -343,10 +343,11 @@ Jenkins Pipeline 의 LLM 단계 (시나리오 생성 / 치유) 가 호스트 Oll
 |---|---|---|---|
 | Jenkins / Dify | 18080 / 18081 | 컨테이너 | build.sh step 5-2 (`docker run`) |
 | Recording UI | 18092 | 호스트 (Mac venv / Windows venv) | agent-setup step 6.5 |
-| Replay UI | 18099 | 호스트 (휴대용 embedded-python) | build.sh step 5-5 (`Launch-ReplayUI.{bat,command}`) |
+| 호스트 Replay UI | 18093 | 호스트 (venv uvicorn) | agent-setup step 6.6 |
+| 휴대용 Replay UI | 18099 | 받는 PC (휴대용 embedded-python) | 받는 PC 가 `Launch-ReplayUI.{bat,command}` 더블클릭 (build.sh 는 띄우지 않음) |
 | Jenkins agent | — | 호스트 (Mac / Windows 네이티브) | build.sh step 5-4 (`*-agent-setup.sh`) |
 
-세 UI 모두 별도 명령을 칠 필요 없다. 빌드 끝나면 브라우저로 18080 / 18081 / 18092 / 18099 네 곳을 그대로 열면 된다.
+위 4 종(컨테이너 + Recording UI + 호스트 Replay UI) 은 모두 별도 명령을 칠 필요 없다. 빌드 끝나면 브라우저로 18080 / 18081 / 18092 / 18093 네 곳을 그대로 열면 된다. 휴대용 Replay UI(18099) 는 받는 PC 흐름이라 빌드와 무관.
 
 **Q. Recording UI 만 재기동하려면?**
 

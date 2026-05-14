@@ -194,7 +194,7 @@ def _is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
 
 @pytest.fixture(scope="session")
 def daemon(stub_path_dir, tmp_path_factory):
-    """별도 포트 (18094) 로 데몬 spawn — Tier 3 의 18093 과 격리."""
+    """별도 포트 (18094) 로 데몬 spawn — Tier 1 의 18098 (test_recording_ui_e2e.py) 과 격리."""
     if _is_port_listening(E2E_PORT):
         pytest.skip(f"port {E2E_PORT} 가 이미 사용 중 — Tier 2 e2e 스킵")
 

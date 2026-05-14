@@ -677,7 +677,7 @@ def _discover_worker(job_id: str, storage_path: Path | None, fp,
 
 ### 태스크 5 — API 통합 테스트 신규 (`test/test_discover_api_e2e.py`)
 
-기존 `test_auth_profile_api_e2e.py` 의 별도 uvicorn daemon fixture 패턴을 재사용한다. 포트는 기존 18093/18094 와 충돌하지 않는 별도 포트를 사용한다.
+기존 `test_auth_profile_api_e2e.py` 의 별도 uvicorn daemon fixture 패턴을 재사용한다. 포트는 기존 18094/18098 와 충돌하지 않는 별도 포트를 사용한다.
 
 검증 케이스:
 1. `POST /discover` → 202, job_id 반환.

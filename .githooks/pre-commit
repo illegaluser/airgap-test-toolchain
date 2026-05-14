@@ -10,9 +10,10 @@
 # 설치: `playwright-allinone/scripts/install-git-hooks.sh` 한 번 실행.
 # 일시 우회: `git commit --no-verify` (긴급 핫픽스용).
 #
-# 사용 포트: 18093 (Recording UI) · 18094 (Auth Profile API) ·
-#           18095 (Auth Profile UI) · 18096 (Discover URLs API) ·
-#           18097 (Recording UI Layout — Round 3+4 회귀)
+# 사용 포트: 18094 (Auth Profile API) · 18095 (Auth Profile UI) ·
+#           18096 (Discover URLs API) · 18097 (Recording UI Layout — Round 3+4) ·
+#           18098 (Recording UI 회귀)
+# 18093 은 호스트 Replay UI 의 영구 포트라 e2e 감지 범위에서 제외.
 
 set -e
 
@@ -35,8 +36,9 @@ if [ ! -x "$VENV_PY" ]; then
   exit 0
 fi
 
-# 3. 포트 충돌 감지 — 슈트가 4개 포트(18093~18096)를 사용한다.
-for PORT in 18093 18094 18095 18096 18097; do
+# 3. 포트 충돌 감지 — 슈트가 5개 포트(18094-18098)를 사용한다.
+# 18093 은 호스트 Replay UI 영구 포트라 감지 대상에서 뺀다 — 평소에도 떠 있는 게 정상.
+for PORT in 18094 18095 18096 18097 18098; do
   if command -v lsof >/dev/null 2>&1 && lsof -i :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "[pre-commit] ⚠ port $PORT 점유 중 — E2E 스킵"
     echo "  점유 프로세스: $(lsof -i :$PORT -sTCP:LISTEN -t | head -1)"

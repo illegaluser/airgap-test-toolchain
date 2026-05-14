@@ -12,7 +12,7 @@
 - 세션 일괄 선택/삭제 UI 상태 머신 (indeterminate, disabled, count)
 - R-PLUS 결과 클립보드 복사
 
-별도 포트(18097) 로 격리 — ``test_recording_ui_e2e.py`` (18093) 와 동시
+별도 포트(18097) 로 격리 — ``test_recording_ui_e2e.py`` (18098) 와 동시
 실행 가능. SID 4종을 디스크 시드로 노출:
 
 - SID_BASIC      : done state, scenario.json 만 — run-log 없음

@@ -609,6 +609,56 @@ else
   log "  [6.5] ⚠ $REC_LAUNCHER 없음 — Recording UI 수동 기동 필요"
 fi
 
+# ── 6.6 호스트 Replay UI (영구 데몬, 18093) ──────────────────────────────
+# 호스트 Replay UI 는 빌드 머신/대상 PC 양쪽에서 영구로 떠 있어야 한다.
+# Recording UI 와 같은 패턴 — venv uvicorn 백그라운드 + PID/Log 파일.
+REPLAY_PORT="${REPLAY_PORT:-18093}"
+REPLAY_PID_FILE="$AGENT_DIR/replay-service.pid"
+REPLAY_LOG_FILE="$AGENT_DIR/replay-service.log"
+
+if [ -f "$REPLAY_PID_FILE" ]; then
+  OLD_PID=$(cat "$REPLAY_PID_FILE" 2>/dev/null || true)
+  if [ -n "$OLD_PID" ]; then
+    log "  [6.6] 기존 replay_service PID=$OLD_PID 정리"
+    if [ "$IS_WIN_HOST" = "true" ]; then
+      taskkill //F //T //PID "$OLD_PID" 2>/dev/null || true
+    else
+      kill "$OLD_PID" 2>/dev/null || true
+    fi
+    sleep 1
+  fi
+  rm -f "$REPLAY_PID_FILE"
+fi
+# 포트 점유 안전망
+if [ "$IS_WIN_HOST" = "true" ]; then
+  PORT_PIDS=$(netstat -ano 2>/dev/null | tr -d '\r' | awk -v p=":$REPLAY_PORT" '$2 ~ p"$" && $4=="LISTENING" {print $5}' | sort -u)
+  for _p in $PORT_PIDS; do taskkill //F //T //PID "$_p" 2>/dev/null || true; done
+elif command -v fuser >/dev/null 2>&1; then
+  fuser -k "$REPLAY_PORT/tcp" 2>/dev/null || true
+fi
+
+log "[6.6] Replay UI (호스트 데몬) 기동: port=$REPLAY_PORT"
+nohup env \
+  PYTHONPATH="$ROOT_DIR/replay-ui:$ROOT_DIR/shared:${PYTHONPATH:-}" \
+  PYTHONUNBUFFERED=1 \
+  "$VENV_PY" -m uvicorn replay_service.server:app \
+    --host 127.0.0.1 --port "$REPLAY_PORT" --workers 1 --log-level info \
+  > "$REPLAY_LOG_FILE" 2>&1 &
+echo $! > "$REPLAY_PID_FILE"
+
+_w=0
+while [ $_w -lt 10 ]; do
+  if curl -sS "http://127.0.0.1:$REPLAY_PORT/" >/dev/null 2>&1; then
+    log "  [6.6] ✓ Replay UI 응답 — http://127.0.0.1:$REPLAY_PORT/"
+    break
+  fi
+  _w=$((_w + 1))
+  sleep 1
+done
+if [ $_w -ge 10 ]; then
+  log "  [6.6] ⚠ replay_service 헬스체크 실패 — 로그 확인: $REPLAY_LOG_FILE"
+fi
+
 
 # ── 7. 기동 스크립트 생성 + agent 연결 ─────────────────────────────────────
 # 기존 agent.jar 프로세스 정리는 이미 step 0-A 에서 수행됨 (스크립트 시작 시점).

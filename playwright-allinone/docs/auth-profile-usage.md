@@ -452,7 +452,7 @@ python3 -m zero_touch_qa auth delete --name booking-via-naver
 | 1 | `test/e2e_p1_auth_profiles.py` | (없음) | auth_profile 풀 사이클 (시뮬 시드 + verify + 만료) |
 | 2 | `test/test_auth_profile_api_e2e.py` | 18094 | HTTP API 5개 + recording_start 통합 |
 | 3 | `test/test_auth_profile_ui_e2e.py` | 18095 | 인증 블록 / 4 모달 / 만료-재시드 동선 |
-| (기존) | `test/test_recording_ui_e2e.py` | 18093 | Recording UI 회귀 |
+| (기존) | `test/test_recording_ui_e2e.py` | 18098 | Recording UI 회귀 |
 
 ### 5.2 단독 실행
 
@@ -526,7 +526,7 @@ playwright-allinone/scripts/install-git-hooks.sh
 
 **자동 skip 조건**:
 - venv python 미존재
-- port 18093 / 18094 / 18095 점유 중
+- port 18094 / 18095 / 18098 점유 중
 
 ### 5.5 단위 / 통합 테스트 (e2e 외)
 

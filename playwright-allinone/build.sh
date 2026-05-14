@@ -479,43 +479,9 @@ if [ "$REDEPLOY" = "true" ]; then
     log "          NODE_SECRET=<값> ./<mac|wsl>-agent-setup.sh"
   fi
 
-  # 5-5. Replay UI 자동 기동 — 빌드 끝에 18099 데몬도 동시 구동 (사용자 요구).
-  # Recording UI (18092) 는 agent-setup 의 step 6.5 가 처리하므로 여기선 Replay UI 만.
-  REPLAY_DIR_POSIX="$SCRIPT_DIR/replay-ui"
-  case "$(uname -s)" in
-    Darwin)
-      if [ -f "$REPLAY_DIR_POSIX/Launch-ReplayUI.command" ]; then
-        log "  [5-5] Replay UI 자동 기동 (port 18099, macOS launcher)"
-        (nohup bash "$REPLAY_DIR_POSIX/Launch-ReplayUI.command" </dev/null >/dev/null 2>&1 &) || true
-      else
-        log "  [5-5] Replay UI 휴대용 산출물 없음 — 스킵 (replay-ui-portable-build 로 pack 필요)"
-      fi
-      ;;
-    Linux)
-      if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null \
-         && [ -f "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" ]; then
-        # WSL2 → Windows interop. .bat 는 Windows path 로 호출해야 cmd.exe 가 인식.
-        REPLAY_WIN_BAT=$(wslpath -w "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" 2>/dev/null || true)
-        if [ -n "$REPLAY_WIN_BAT" ]; then
-          log "  [5-5] Replay UI 자동 기동 (port 18099, Windows launcher 위임)"
-          cmd.exe /c start "" "$REPLAY_WIN_BAT" </dev/null >/dev/null 2>&1 || true
-        else
-          log "  [5-5] ⚠ wslpath 실패 — Replay UI 수동 기동 필요 (Launch-ReplayUI.bat)"
-        fi
-      else
-        log "  [5-5] Replay UI 휴대용 산출물 없음 — 스킵 (replay-ui-portable-build 로 pack 필요)"
-      fi
-      ;;
-    MINGW*|MSYS*|CYGWIN*)
-      if [ -f "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" ]; then
-        REPLAY_WIN_BAT=$(cygpath -w "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" 2>/dev/null || echo "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat")
-        log "  [5-5] Replay UI 자동 기동 (port 18099, Git Bash → cmd /c start)"
-        cmd //c start "" "$REPLAY_WIN_BAT" </dev/null >/dev/null 2>&1 || true
-      else
-        log "  [5-5] Replay UI 휴대용 산출물 없음 — 스킵 (replay-ui-portable-build/pack-windows.ps1 -MakeZip 필요)"
-      fi
-      ;;
-  esac
+  # 5-5. 호스트 Replay UI (18093) 는 agent-setup step 6.6 이 처리한다.
+  # build.sh 단계는 별도 동작 없음. 휴대용 Replay UI 는 받는 PC 가 직접 띄우는 것이라
+  # build.sh 가 띄우지 않는다.
 
   log ""
   log "=========================================================================="
@@ -580,7 +546,8 @@ log "접속:"
 log "  - Jenkins:      http://localhost:18080  (admin / password)"
 log "  - Dify:         http://localhost:18081  (admin@example.com / Admin1234!)"
 log "  - Recording UI: http://localhost:18092"
-log "  - Replay UI:    http://127.0.0.1:18099  (휴대용 launcher 있을 때 자동 기동)"
+log "  - Replay UI:    http://127.0.0.1:18093  (호스트 데몬, agent-setup step 6.6 이 기동)"
+log "  - 휴대용 Replay UI: 받는 PC 가 zip 풀고 Launch-ReplayUI.{bat,command} 더블클릭 → 18099"
 log ""
 log "⚠️  호스트 Ollama 미기동 / 호스트 agent 미연결 시 Pipeline Stage 3 가 실패한다."
 log "    자세한 가이드: docs/quickstart.md / docs/operations.md"

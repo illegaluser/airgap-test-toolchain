@@ -524,7 +524,7 @@ open shadow piercing 활용. closed shadow 만나면 명확한 FAIL 메시지.
 6. **Day 12~13 — OAuth mock 서버**
    - `oauth2-mock-server` (npm package) 또는 직접 작성한 Flask app 을 컨테이너에
      추가 (Dockerfile 의 별도 stage)
-   - localhost:18093 에 OAuth provider 모의 — `/authorize` → callback 리다이렉트
+   - localhost:18091 에 OAuth provider 모의 — `/authorize` → callback 리다이렉트 (18093 은 호스트 Replay UI 영구 포트라 충돌 회피)
      → `/token` → access_token 반환
    - `test/fixtures/auth_oauth_client.html` — mock provider 로 redirect, callback
      수신 후 인증 상태 표시

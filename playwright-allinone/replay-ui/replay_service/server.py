@@ -44,20 +44,13 @@ app = FastAPI(
 
 
 def _monitor_home() -> Path:
-    """모니터링 PC 데이터 루트.
+    """모니터링 PC 데이터 루트. install-monitor 가 만든 디렉토리.
 
-    휴대용 launcher (Launch-ReplayUI.{bat,command}) 가 ``MONITOR_HOME`` env 를
-    zip 폴더 안 ``<ROOT>/data`` 로 박는다. uvicorn 직접 호출 등 env 미설정 시
-    조용히 다른 곳에 빈 디렉토리를 만들면 진짜 데이터(`<ROOT>/data/`) 와
-    분리되므로, 즉시 명확한 에러로 죽인다.
+    휴대용 launcher (Launch-ReplayUI.{bat,command}) 는 zip 폴더 안 ``<ROOT>/data``
+    를 ``MONITOR_HOME`` env 로 박는다. 호스트 venv 직접 기동 (agent-setup
+    step 6.6) 처럼 env 미설정이면 기본값 ``~/.dscore.ttc.monitor`` 로 fallback.
     """
-    raw = os.environ.get("MONITOR_HOME")
-    if not raw:
-        raise RuntimeError(
-            "MONITOR_HOME env 가 설정돼 있지 않습니다. 휴대용 launcher "
-            "(Launch-ReplayUI.bat / Launch-ReplayUI.command) 로 기동하거나, "
-            "직접 기동 시 MONITOR_HOME=<휴대용 폴더>/data 를 export 한 뒤 다시 시도하세요."
-        )
+    raw = os.environ.get("MONITOR_HOME") or "~/.dscore.ttc.monitor"
     root = Path(raw).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     return root

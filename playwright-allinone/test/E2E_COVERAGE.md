@@ -8,7 +8,7 @@
 
 | # | 영역 | 파일 | 포트 | 데몬 환경 |
 |---|------|------|------|-----------|
-| 1 | Recording UI | `test/test_recording_ui_e2e.py` | 18093 | uvicorn(server.py) + 사전 시드 세션 2개 |
+| 1 | Recording UI | `test/test_recording_ui_e2e.py` | 18098 | uvicorn(server.py) + 사전 시드 세션 2개 (2026-05-14 이전 18093 → 18098 로 옮김 — 18093 은 호스트 Replay UI 의 영구 포트) |
 | 2 | Auth Profile API | `test/test_auth_profile_api_e2e.py` | 18094 | uvicorn + `playwright` CLI stub + fake login service |
 | 3 | Auth Profile UI | `test/test_auth_profile_ui_e2e.py` | 18095 | uvicorn + 사전 카탈로그 시드 |
 | 4 | Discover URLs API | `test/test_discover_api_e2e.py` | 18096 | uvicorn + 로컬 fixture site |
@@ -160,13 +160,13 @@ DISCOVERY_HOST_ROOT 격리. **When/Then**: 6개 엔드포인트의 정상/예외
 - 실제 SSO(예: portal.koreaconnect.kr) 플로우는 수동 검증만. CI 자동화는 자격증명 보관 정책이 잡힌 뒤.
 - Discover의 *실패한 페이지가 결과 표/CSV에 status=null 로 기록* 되는 시각적 회귀는 단위에서만 확인.
 - Discover UI 자체(`#discover-section`)의 Playwright 클릭 회귀는 미작성 — 후속에 합류 가능.
-- 동시 e2e 슈트 실행 시 18093~18096 이외 OS-level race(예: agent venv 잠금)는 가드 없음.
+- 동시 e2e 슈트 실행 시 18094~18096+18098 이외 OS-level race(예: agent venv 잠금)는 가드 없음.
 - 코드 커버리지 수치는 측정하지 않는다. 필요 시 `pytest --cov=recording_service --cov=zero_touch_qa --cov-report=term-missing` 로 측정 (pre-commit 기본 비활성, 속도 가드).
 
 ## 회귀 시 디버깅 팁
 
 1. 어느 슈트가 깨졌는지 확인: `pytest test -m e2e -q | tail`
 2. 실패한 슈트만 단독 재실행: `pytest test/test_<which>_e2e.py -v --tb=long`
-3. 데몬 살아있는지 확인: `lsof -i :18093-18096`
+3. 데몬 살아있는지 확인: `lsof -i :18094-18096,18098`
 4. 데몬 로그: 각 슈트가 `subprocess.PIPE` 로 stderr 잡고 있다 — 실패 시 stderr 일부를 출력.
 5. 브라우저 e2e 가 깨지면 headed 로 재현: `PWDEBUG=1 pytest test/test_recording_ui_e2e.py::test_X`

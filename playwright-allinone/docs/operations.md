@@ -20,7 +20,7 @@ cd playwright-allinone
 | `./build.sh --redeploy --fresh` | 삭제 | 전체 재생성 | 개발/초기화 |
 | `./build.sh --redeploy --no-agent` | 보존 | 기존 provision 결과 재사용 | 컨테이너만 기동하고 agent / Recording UI / Replay UI 는 수동 |
 
-`--no-agent` 외 모든 `--redeploy` 변형은 **컨테이너(Jenkins 18080 / Dify 18081) + 호스트 agent + Recording UI(18092) + Replay UI(18099)** 를 동시 자동 구동한다. Replay UI 는 `replay-ui/Launch-ReplayUI.{bat,command}` 가 휴대용 패킹된 경우에만 뜨고, 그렇지 않으면 build.sh 가 한 줄 로그만 남기고 스킵한다.
+`--no-agent` 외 모든 `--redeploy` 변형은 **컨테이너(Jenkins 18080 / Dify 18081) + 호스트 agent + Recording UI(18092) + 호스트 Replay UI(18093)** 를 동시 자동 구동한다. 호스트 Replay UI 는 agent-setup step 6.6 이 venv uvicorn 으로 띄운다. 휴대용 Replay UI(18099) 는 받는 PC 가 별도 zip 으로 띄우는 것이라 build.sh 와 무관.
 
 처음 운영 환경에서 잘 모르겠으면 `./build.sh --redeploy`를 사용한다. `--fresh`는 데이터를 지우므로 개발 초기화가 필요할 때만 쓴다. `--reprovision` 전에는 `./backup-volume.sh`로 백업을 먼저 만든다.
 
