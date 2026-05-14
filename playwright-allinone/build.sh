@@ -405,21 +405,26 @@ if [ "$REDEPLOY" = "true" ]; then
           AGENT_LABEL="mac-agent-setup"
           ;;
         Linux)
-          AGENT_SCRIPT="$SCRIPT_DIR/wsl-agent-setup.sh"
-          AGENT_LABEL="wsl-agent-setup"
+          # WSL2 안에서 build.sh 가 돌고 있다면 — 사용자 원칙상 wsl-agent-setup.sh 는
+          # Windows 호스트 네이티브 (Git Bash) 에서 실행되어야 한다 (Playwright host-native 원칙).
+          # WSL interop 으로 Windows-side Git Bash bash.exe 에 위임.
+          if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+            AGENT_SCRIPT="/mnt/c/Program Files/Git/bin/bash.exe"
+            AGENT_INVOKE="win_gitbash"
+            AGENT_LABEL="wsl-agent-setup (via Git Bash on Windows host)"
+            [ -x "$AGENT_SCRIPT" ] || log "  [5-4] ⚠ Git Bash bash.exe 없음 ($AGENT_SCRIPT) — agent 수동 연결 필요"
+          else
+            AGENT_SCRIPT="$SCRIPT_DIR/wsl-agent-setup.sh"
+            AGENT_LABEL="wsl-agent-setup"
+          fi
           ;;
         MINGW*|MSYS*|CYGWIN*)
-          # Git Bash / MSYS2 / Cygwin on Windows — wsl-agent-setup.sh 가 apt/sudo 같은
-          # Linux 명령에 의존하므로 같은 셸에서 직접 실행하면 깨짐. WSL2 distro 안에서
-          # 실행하도록 `wsl bash` 로 위임. SCRIPT_DIR 의 /c/... 형식을 /mnt/c/... 로 변환.
-          if command -v wsl.exe >/dev/null 2>&1 || command -v wsl >/dev/null 2>&1; then
-            WSL_SCRIPT_DIR=$(echo "$SCRIPT_DIR" | sed 's|^/\([a-zA-Z]\)/|/mnt/\1/|')
-            AGENT_SCRIPT="$WSL_SCRIPT_DIR/wsl-agent-setup.sh"
-            AGENT_LABEL="wsl-agent-setup (via wsl bash → WSL2 distro)"
-            AGENT_INVOKE="wsl"
-          else
-            log "  [5-4] ⚠ wsl 명령 없음 (WSL2 미설치) — agent 수동 연결 필요: NODE_SECRET=$NODE_SECRET ./wsl-agent-setup.sh"
-          fi
+          # Git Bash / MSYS2 / Cygwin on Windows = Windows 호스트 네이티브 그 자체.
+          # 사용자 원칙(Playwright host-native): wsl-agent-setup.sh 가 이 셸 자체를
+          # 호스트로 인식해 python.exe / java.exe / Windows Chromium 경로를 쓰도록
+          # 설계돼 있다 (스크립트 step 0 의 IS_WIN_HOST 분기). WSL 로 재위임하지 않는다.
+          AGENT_SCRIPT="$SCRIPT_DIR/wsl-agent-setup.sh"
+          AGENT_LABEL="wsl-agent-setup (Git Bash 호스트 네이티브)"
           ;;
         *)
           log "  [5-4] ⚠ 알 수 없는 OS ($(uname -s)) — agent 수동 연결 필요"
@@ -428,10 +433,13 @@ if [ "$REDEPLOY" = "true" ]; then
       if [ -n "$AGENT_SCRIPT" ]; then
         log "  [5-4] $AGENT_LABEL 기동 (분리 실행 + /tmp/dscore-agent.log 로 리다이렉트)"
         # agent-setup 스크립트 자신이 기존 프로세스 정리 + 새 연결 수행
-        if [ "$AGENT_INVOKE" = "wsl" ]; then
-          # Windows Git Bash → WSL2 distro 안 nohup 으로 위임. 로그는 WSL2 의 /tmp/.
-          # Windows 에서 보려면 \\wsl$\<distro>\tmp\dscore-agent.log
-          wsl bash -lc "nohup env NODE_SECRET='$NODE_SECRET' bash '$AGENT_SCRIPT' </dev/null >/tmp/dscore-agent.log 2>&1 &" \
+        if [ "$AGENT_INVOKE" = "win_gitbash" ]; then
+          # WSL2 → Windows 호스트 Git Bash 위임 (사용자 원칙: host-native Playwright).
+          # /mnt/c/... 형식의 SCRIPT_DIR 을 Git Bash 가 인식하는 /c/... 로 변환.
+          GIT_BASH_SCRIPT_DIR=$(echo "$SCRIPT_DIR" | sed 's|^/mnt/\([a-zA-Z]\)/|/\1/|')
+          # Git Bash 안 $HOME 은 Windows %USERPROFILE% (예: /c/Users/csr68).
+          # nohup 분리 + agent-setup 로그를 호스트 home 의 agent dir 안에 기록.
+          "$AGENT_SCRIPT" -lc "cd '$GIT_BASH_SCRIPT_DIR' && mkdir -p \"\$HOME/.dscore.ttc.playwright-agent\" && NODE_SECRET='$NODE_SECRET' nohup ./wsl-agent-setup.sh </dev/null >\"\$HOME/.dscore.ttc.playwright-agent/agent-setup.log\" 2>&1 &" \
             >/dev/null 2>&1 &
           disown 2>/dev/null || true
         elif command -v setsid >/dev/null 2>&1; then
@@ -452,10 +460,12 @@ if [ "$REDEPLOY" = "true" ]; then
           disown
         fi
         sleep 3
-        if [ "$AGENT_INVOKE" = "wsl" ]; then
-          log "  [5-4] 로그 위치: WSL2 의 /tmp/dscore-agent.log  (Windows 에서 'wsl tail -f /tmp/dscore-agent.log')"
+        if [ "$AGENT_INVOKE" = "win_gitbash" ]; then
+          log "  [5-4] 로그 위치: Windows 호스트 %USERPROFILE%\\.dscore.ttc.playwright-agent\\agent-setup.log"
+          log "        Recording UI (18092) 는 wsl-agent-setup.sh step 6.5 가 동시 기동합니다."
         else
           log "  [5-4] 로그 위치: /tmp/dscore-agent.log  (tail -f 로 진행 관찰 가능)"
+          log "        Recording UI (18092) 는 agent-setup step 6.5 가 동시 기동합니다."
         fi
         log "  [5-4] Jenkins Node online 확인: "
         log "        curl -sf -u admin:password \$JENKINS_URL/computer/mac-ui-tester/api/json | grep offline   # Mac"
@@ -468,6 +478,44 @@ if [ "$REDEPLOY" = "true" ]; then
     log "          docker logs $CONTAINER_NAME | grep NODE_SECRET"
     log "          NODE_SECRET=<값> ./<mac|wsl>-agent-setup.sh"
   fi
+
+  # 5-5. Replay UI 자동 기동 — 빌드 끝에 18094 데몬도 동시 구동 (사용자 요구).
+  # Recording UI (18092) 는 agent-setup 의 step 6.5 가 처리하므로 여기선 Replay UI 만.
+  REPLAY_DIR_POSIX="$SCRIPT_DIR/replay-ui"
+  case "$(uname -s)" in
+    Darwin)
+      if [ -f "$REPLAY_DIR_POSIX/Launch-ReplayUI.command" ]; then
+        log "  [5-5] Replay UI 자동 기동 (port 18094, macOS launcher)"
+        (nohup bash "$REPLAY_DIR_POSIX/Launch-ReplayUI.command" </dev/null >/dev/null 2>&1 &) || true
+      else
+        log "  [5-5] Replay UI 휴대용 산출물 없음 — 스킵 (replay-ui-portable-build 로 pack 필요)"
+      fi
+      ;;
+    Linux)
+      if grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null \
+         && [ -f "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" ]; then
+        # WSL2 → Windows interop. .bat 는 Windows path 로 호출해야 cmd.exe 가 인식.
+        REPLAY_WIN_BAT=$(wslpath -w "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" 2>/dev/null || true)
+        if [ -n "$REPLAY_WIN_BAT" ]; then
+          log "  [5-5] Replay UI 자동 기동 (port 18094, Windows launcher 위임)"
+          cmd.exe /c start "" "$REPLAY_WIN_BAT" </dev/null >/dev/null 2>&1 || true
+        else
+          log "  [5-5] ⚠ wslpath 실패 — Replay UI 수동 기동 필요 (Launch-ReplayUI.bat)"
+        fi
+      else
+        log "  [5-5] Replay UI 휴대용 산출물 없음 — 스킵 (replay-ui-portable-build 로 pack 필요)"
+      fi
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      if [ -f "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" ]; then
+        REPLAY_WIN_BAT=$(cygpath -w "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat" 2>/dev/null || echo "$REPLAY_DIR_POSIX/Launch-ReplayUI.bat")
+        log "  [5-5] Replay UI 자동 기동 (port 18094, Git Bash → cmd /c start)"
+        cmd //c start "" "$REPLAY_WIN_BAT" </dev/null >/dev/null 2>&1 || true
+      else
+        log "  [5-5] Replay UI 휴대용 산출물 없음 — 스킵 (replay-ui-portable-build/pack-windows.ps1 -MakeZip 필요)"
+      fi
+      ;;
+  esac
 
   log ""
   log "=========================================================================="
@@ -529,9 +577,10 @@ log "     WSL2: NODE_SECRET=<위 값> ./wsl-agent-setup.sh"
 log "     → JDK/venv/Chromium 설치 + agent 연결. 성공 시 호스트 화면에 headed Chromium"
 log ""
 log "접속:"
-log "  - Jenkins:  http://localhost:18080  (admin / password)"
-log "  - Dify:     http://localhost:18081  (admin@example.com / Admin1234!)"
+log "  - Jenkins:      http://localhost:18080  (admin / password)"
+log "  - Dify:         http://localhost:18081  (admin@example.com / Admin1234!)"
 log "  - Recording UI: http://localhost:18092"
+log "  - Replay UI:    http://127.0.0.1:18094  (휴대용 launcher 있을 때 자동 기동)"
 log ""
 log "⚠️  호스트 Ollama 미기동 / 호스트 agent 미연결 시 Pipeline Stage 3 가 실패한다."
 log "    자세한 가이드: docs/quickstart.md / docs/operations.md"

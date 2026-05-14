@@ -70,9 +70,10 @@ cd playwright-allinone
 bash build.sh --redeploy
 ```
 
-- Ollama 는 Windows 호스트에, Jenkins agent 는 WSL2 Ubuntu 안에 올라가는 하이브리드 구조입니다.
-- headed Chromium 은 WSLg 를 통해 Windows 데스크탑에 표시됩니다.
-- agent 수동 연결이 필요하면 `wsl-agent-setup.sh` 를 사용합니다.
+- 한 번 실행으로 컨테이너(Jenkins / Dify), Jenkins agent, Recording UI(18092), Replay UI(18094) 까지 **동시 자동 구동**됩니다.
+- Ollama 는 Windows 호스트 네이티브, Playwright 브라우저(헤드드 Chromium) 도 Windows 호스트 네이티브 — `wsl-agent-setup.sh` 는 WSL2 안에서 build.sh 가 돌더라도 Git Bash(`/mnt/c/Program Files/Git/bin/bash.exe`) 로 위임되어 호스트에서 실행됩니다.
+- Replay UI 는 `replay-ui/Launch-ReplayUI.bat` 가 휴대용 패킹 상태일 때만 자동 기동됩니다 (`replay-ui-portable-build` 로 미리 pack 안 한 경우 스킵).
+- agent 수동 연결이 필요하면 `wsl-agent-setup.sh` 를 **Git Bash** 에서 실행합니다 (WSL2 안 실행은 스크립트가 거부).
 
 ### 2. Code & AI Quality
 

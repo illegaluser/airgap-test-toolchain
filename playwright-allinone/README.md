@@ -144,7 +144,9 @@ chmod +x *.sh
 
 ### 어디서 실행하나
 
-어디서 실행하든 `./build.sh --redeploy` 한 번이면 빌드 → 컨테이너 → provision → agent 까지 자동 완료.
+어디서 실행하든 `./build.sh --redeploy` 한 번이면 빌드 → 컨테이너 → provision → 호스트 agent → Recording UI(18092) → Replay UI(18094) 까지 자동 완료.
+
+> **WSL2 호스트 분기 주의** — build.sh 가 WSL2 Ubuntu 안에서 실행되더라도 `wsl-agent-setup.sh` 는 Windows 호스트 네이티브 (Git Bash) 에 위임돼 돈다. Playwright 브라우저는 항상 호스트 네이티브에서 헤드드 창으로 떠야 하므로 (사용자 원칙) WSL2 안 직접 실행은 스크립트가 거부한다. Replay UI 도 같은 분기에서 `cmd.exe /c start` 를 거쳐 호스트의 `Launch-ReplayUI.bat` 으로 자동 시작.
 
 | 호스트 | build.sh 실행 위치 | 분기 결과 |
 |---|---|---|
@@ -170,7 +172,7 @@ agent 실행 로그는 `/tmp/dscore-agent.log`.
 | 옵션 | 역할 | 자주 쓰는 상황 |
 |---|---|---|
 | (없음) | 빌드만 — `dscore.ttc.playwright-<ts>.tar.gz` 산출 | airgap 머신으로 옮길 배포 패키지 만들 때 |
-| `--redeploy` | 빌드 + 기존 컨테이너 swap + 호스트 agent 재연결. 데이터 볼륨은 보존. | 같은 머신에서 코드 수정 후 즉시 재기동 |
+| `--redeploy` | 빌드 + 기존 컨테이너 swap + **호스트 agent · Recording UI(18092) · Replay UI(18094) 동시 자동 구동**. 데이터 볼륨은 보존. | 같은 머신에서 코드 수정 후 즉시 재기동 |
 | `--redeploy --reprovision` | 위 + provision 재실행. KB 임베딩 / Jenkins 이력 / 챗봇 대화는 보존하되 chatflow / Jenkins job 정의 / Dify provider 등록은 새 이미지 기준으로 재생성. | chatflow YAML 이나 provision 로직을 바꿨을 때 |
 | `--redeploy --fresh` | 위 + 볼륨까지 삭제 (`dscore-data` 제거). **모든 데이터 폐기**. | 처음부터 다시. 디버깅 막판. |
 | `--redeploy --no-agent` | 빌드 + 컨테이너만 재기동, agent 연결은 스킵 | CI 머신에서 컨테이너만 갱신 |
@@ -332,6 +334,19 @@ Jenkins Pipeline 의 LLM 단계 (시나리오 생성 / 치유) 가 호스트 Oll
 
 **Q. 컨테이너 안 코드를 바꾸려면?**
 호스트 코드 수정 후 `./build.sh --redeploy` 로 image 재빌드 + 컨테이너 swap. 데이터 볼륨은 보존됨. `--reprovision` 옵션을 추가하면 provision 재실행 (KB·Jenkins 이력 등 데이터는 유지하되 Jenkins job 정의 / Dify chatflow 같은 baked-in 정의는 새 image 기준으로 재생성).
+
+**Q. 빌드 시 어떤 UI 가 동시에 뜨나?**
+
+`./build.sh --redeploy` 한 번이 다음 4 가지를 동시 자동 구동한다.
+
+| 서비스 | 포트 | 어디서 도는가 | 띄우는 주체 |
+|---|---|---|---|
+| Jenkins / Dify | 18080 / 18081 | 컨테이너 | build.sh step 5-2 (`docker run`) |
+| Recording UI | 18092 | 호스트 (Mac venv / Windows venv) | agent-setup step 6.5 |
+| Replay UI | 18094 | 호스트 (휴대용 embedded-python) | build.sh step 5-5 (`Launch-ReplayUI.{bat,command}`) |
+| Jenkins agent | — | 호스트 (Mac / Windows 네이티브) | build.sh step 5-4 (`*-agent-setup.sh`) |
+
+세 UI 모두 별도 명령을 칠 필요 없다. 빌드 끝나면 브라우저로 18080 / 18081 / 18092 / 18094 네 곳을 그대로 열면 된다.
 
 **Q. Recording UI 만 재기동하려면?**
 

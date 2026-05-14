@@ -595,82 +595,18 @@ else
   log "  다운로드 완료: $(du -h "$AGENT_JAR" | cut -f1)"
 fi
 
-# ── 6.5 Recording 서비스 (Phase R-MVP TR.9) ────────────────────────────────
-# WSL2 환경에서도 mac 과 동일 패턴 — nohup 백그라운드 기동. systemd 사용자
-# 단위는 WSL distro 별 가용성이 들쭉날쭉이라 R-MVP 단계는 nohup 으로 통일.
-# 운영자가 WSL 재시작 시 본 setup 스크립트 재실행으로 복구.
-
-REC_PORT="${RECORDING_PORT:-18092}"
-REC_PID_FILE="$AGENT_DIR/recording-service.pid"
-REC_LOG_FILE="$AGENT_DIR/recording-service.log"
-REC_RUN_SCRIPT="$AGENT_DIR/run-recording-service.sh"
-
-if [ -f "$REC_PID_FILE" ]; then
-  OLD_PID=$(cat "$REC_PID_FILE" 2>/dev/null || true)
-  if [ -n "$OLD_PID" ]; then
-    log "  [6.5] 기존 recording_service PID=$OLD_PID 정리 시도"
-    if [ "$IS_WIN_HOST" = "true" ]; then
-      taskkill //F //T //PID "$OLD_PID" 2>/dev/null || true
-    else
-      kill -0 "$OLD_PID" 2>/dev/null && kill "$OLD_PID" 2>/dev/null || true
-    fi
-    sleep 1
-  fi
-  rm -f "$REC_PID_FILE"
-fi
-# 포트 점유 프로세스 정리 (안전망)
-if [ "$IS_WIN_HOST" = "true" ]; then
-  # netstat -ano + taskkill (Windows). LISTENING 상태의 PID 만 잡는다.
-  PORT_PIDS=$(netstat -ano 2>/dev/null | tr -d '\r' | awk -v p=":$REC_PORT" '$2 ~ p"$" && $4=="LISTENING" {print $5}' | sort -u)
-  for _p in $PORT_PIDS; do taskkill //F //T //PID "$_p" 2>/dev/null || true; done
-elif command -v fuser >/dev/null 2>&1; then
-  fuser -k "$REC_PORT/tcp" 2>/dev/null || true
-elif command -v lsof >/dev/null 2>&1; then
-  lsof -nP -iTCP:"$REC_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 | xargs -r -I{} kill {} 2>/dev/null || true
-fi
-
-cat > "$REC_RUN_SCRIPT" <<REC_EOF
-#!/usr/bin/env bash
-# Phase R-MVP TR.9 — recording_service 기동 (WSL nohup 백그라운드)
-set -e
-export PYTHONPATH="$ROOT_DIR:\${PYTHONPATH:-}"
-export RECORDING_HOST_ROOT="\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}"
-export PYTHONUNBUFFERED="\${PYTHONUNBUFFERED:-1}"
-# venv bin/ 을 PATH 앞에 둬야 codegen_runner.is_codegen_available() 가 'playwright'
-# CLI 를 찾는다. 이 줄이 없으면 UI badge 가 ⚠ codegen 미설치 로 떨어진다.
-export PATH="$(dirname "$VENV_PY"):\${PATH:-}"
-LOG_FILE="\${RECORDING_SERVICE_LOG:-$REC_LOG_FILE}"
-PID_FILE="\${RECORDING_SERVICE_PID:-$REC_PID_FILE}"
-mkdir -p "$AGENT_DIR"
-mkdir -p "\$RECORDING_HOST_ROOT"
-echo "\$\$" > "\$PID_FILE"
-{
-  printf '\\n[%s] recording_service starting\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')"
-  printf '[%s] cwd=%s\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')" "\$(pwd)"
-  printf '[%s] log=%s\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')" "\$LOG_FILE"
-  printf '[%s] pid_file=%s pid=%s\\n' "\$(date '+%Y-%m-%d %H:%M:%S %z')" "\$PID_FILE" "\$\$"
-} >> "\$LOG_FILE"
-exec >> "\$LOG_FILE" 2>&1
-exec "$VENV_PY" -m uvicorn recording_service.server:app \\
-  --host 127.0.0.1 --port $REC_PORT --workers 1 --log-level info
-REC_EOF
-chmod +x "$REC_RUN_SCRIPT"
-
-log "[6.5] Recording 서비스 백그라운드 기동: port=$REC_PORT"
-nohup "$REC_RUN_SCRIPT" > "$REC_LOG_FILE" 2>&1 &
-echo $! > "$REC_PID_FILE"
-
-_w=0
-while [ $_w -lt 10 ]; do
-  if curl -sS "http://127.0.0.1:$REC_PORT/healthz" >/dev/null 2>&1; then
-    log "  [6.5] ✓ /healthz 응답 — http://127.0.0.1:$REC_PORT/"
-    break
-  fi
-  _w=$((_w + 1))
-  sleep 1
-done
-if [ $_w -ge 10 ]; then
-  log "  [6.5] ⚠ recording_service 헬스체크 실패 — 로그 확인: $REC_LOG_FILE"
+# ── 6.5 Recording 서비스 — run-recording-ui.sh 위임 ────────────────────────
+# 2026-05-14: 직접 uvicorn 기동 시 PYTHONPATH 가 ROOT_DIR 만이라 recording_service 모듈을
+# 못 찾는 사고 (ModuleNotFoundError) + Windows python.exe 의 path separator (;) 처리 누락.
+# README 가 표준 launcher 로 명시한 run-recording-ui.sh 가 이미 PYTHONPATH / OS sep /
+# venv detect 모두 처리하므로 그대로 위임한다 (중복 구현 제거).
+REC_LAUNCHER="$ROOT_DIR/recording-ui/run-recording-ui.sh"
+if [ -x "$REC_LAUNCHER" ]; then
+  log "[6.5] Recording 서비스 기동 (run-recording-ui.sh restart 위임)"
+  RECORDING_PYTHON="$VENV_PY" "$REC_LAUNCHER" restart \
+    || log "  [6.5] ⚠ Recording UI restart 실패 — 로그: $AGENT_DIR/recording-service.log"
+else
+  log "  [6.5] ⚠ $REC_LAUNCHER 없음 — Recording UI 수동 기동 필요"
 fi
 
 
