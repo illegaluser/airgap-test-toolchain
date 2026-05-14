@@ -54,6 +54,7 @@ def main():
         help="chat: 자연어, doc: 기획서 업로드, convert: Playwright 녹화 변환, execute: 기존 시나리오 재실행",
     )
     parser.add_argument("--file", default=None, help="기획서 또는 Playwright .py 파일 경로")
+    parser.add_argument("--trace", default=None, help="convert 모드 — 동봉된 codegen trace.zip 경로 (선택). click+navigation 감지 → wait step 자동 삽입.")
     parser.add_argument("--scenario", default=None, help="기존 scenario.json 경로 (execute 모드)")
     parser.add_argument("--target-url", default=None, help="테스트 시작 URL")
     parser.add_argument("--srs-text", default=None, help="자연어 요구사항 (chat 모드)")
@@ -477,7 +478,9 @@ def _prepare_scenario(
     if args.mode == "convert":
         if not args.file:
             raise FileNotFoundError("convert 모드에는 --file 인자가 필요합니다.")
-        scenario = convert_playwright_to_dsl(args.file, config.artifacts_dir)
+        scenario = convert_playwright_to_dsl(
+            args.file, config.artifacts_dir, trace_zip=args.trace,
+        )
         # 14대 DSL 계약 검증을 convert 경로에서도 강제 — 기존엔 누락되어
         # 손상된 DSL 이 executor 단계에서 ValueError 로 흘러들었다.
         # Recording 서비스(--convert-only) 도 이 검증으로 즉시 실패를 받음.

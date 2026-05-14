@@ -48,12 +48,14 @@ REDEPLOY=false
 FRESH_VOLUME=false
 REPROVISION=false
 SKIP_AGENT=false
+SKIP_TARBALL=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    --redeploy)    REDEPLOY=true; shift ;;
-    --fresh)       FRESH_VOLUME=true; shift ;;
-    --reprovision) REPROVISION=true; shift ;;
-    --no-agent)    SKIP_AGENT=true; shift ;;
+    --redeploy)     REDEPLOY=true; shift ;;
+    --fresh)        FRESH_VOLUME=true; shift ;;
+    --reprovision)  REPROVISION=true; shift ;;
+    --no-agent)     SKIP_AGENT=true; shift ;;
+    --skip-tarball) SKIP_TARBALL=true; shift ;;
     -h|--help)
       cat <<'USAGE'
 사용법: ./build.sh [옵션]
@@ -301,9 +303,13 @@ log "  이미지 크기:"
 docker images "$IMAGE_TAG" --format '  {{.Repository}}:{{.Tag}}  {{.Size}}'
 
 # ── 4. docker save + gzip 압축 ────────────────────────────────────────────
-log "[4/4] 이미지 save + 압축 → $OUTPUT_TAR"
-docker save "$IMAGE_TAG" | gzip -1 > "$SCRIPT_DIR/$OUTPUT_TAR"
-log "  최종 파일: $SCRIPT_DIR/$OUTPUT_TAR ($(du -h "$SCRIPT_DIR/$OUTPUT_TAR" | cut -f1))"
+if [ "$SKIP_TARBALL" = "true" ]; then
+  log "[4/4] --skip-tarball — tar.gz 산출 스킵 (이미지만 docker daemon 에 남김)"
+else
+  log "[4/4] 이미지 save + 압축 → $OUTPUT_TAR"
+  docker save "$IMAGE_TAG" | gzip -1 > "$SCRIPT_DIR/$OUTPUT_TAR"
+  log "  최종 파일: $SCRIPT_DIR/$OUTPUT_TAR ($(du -h "$SCRIPT_DIR/$OUTPUT_TAR" | cut -f1))"
+fi
 
 # ── 5. --redeploy: 같은 호스트에서 바로 컨테이너 재기동 + agent 재연결 ──────
 if [ "$REDEPLOY" = "true" ]; then

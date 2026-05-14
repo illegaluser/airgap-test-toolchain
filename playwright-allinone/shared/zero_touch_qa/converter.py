@@ -3,13 +3,16 @@ import json
 import os
 import re
 import logging
+from typing import Optional
 
 from .step_kind import classify_step_kind
 
 log = logging.getLogger(__name__)
 
 
-def convert_playwright_to_dsl(file_path: str, output_dir: str) -> list[dict]:
+def convert_playwright_to_dsl(
+    file_path: str, output_dir: str, trace_zip: Optional[str] = None,
+) -> list[dict]:
     """
     Playwright codegen이 생성한 Python 스크립트를 파싱하여
     14대 DSL scenario.json으로 변환한다.
@@ -39,7 +42,7 @@ def convert_playwright_to_dsl(file_path: str, output_dir: str) -> list[dict]:
     # 1) AST 우선
     try:
         from .converter_ast import convert_via_ast, CodegenAstError
-        scenario = convert_via_ast(file_path, output_dir)
+        scenario = convert_via_ast(file_path, output_dir, trace_zip=trace_zip)
         if scenario:
             return scenario
         log.warning(

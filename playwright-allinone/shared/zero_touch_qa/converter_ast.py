@@ -69,12 +69,18 @@ def _describe_min_text_length(selector: str, threshold: int) -> str:
     return f"'{selector}' 영역 텍스트가 {threshold}자 이상인지 확인"
 
 
-def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
+def convert_via_ast(
+    file_path: str, output_dir: str, trace_zip: Optional[str] = None,
+) -> list[dict]:
     """codegen .py 파일을 AST 로 파싱해 14-DSL 시나리오로 변환.
 
     Args:
         file_path: codegen 출력 .py 파일 절대 경로
         output_dir: scenario.json 을 저장할 디렉토리
+        trace_zip: 동봉된 codegen trace.zip 경로 (선택). 있으면 click action
+            직후 frame navigation 이 일어난 자리에 ``wait`` step 을 자동 삽입
+            한다 (사용자 보고 2026-05-14: 모달 [확인] → page reload → 다음
+            step resolver 0건 race 차단).
 
     Returns:
         14-DSL 스텝 list. 각 스텝은 step/action/target/value/description/fallback_targets.
@@ -118,6 +124,9 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
     # 한글 IME 사이트에서 codegen 이 emit 하는 노이즈 step (CapsLock toggle /
     # Unidentified key / 빈 fill→non-empty fill) 정리.
     scenario = _strip_ime_noise(scenario)
+    # trace.zip 으로 click+navigation 흐름 감지 → wait step 자동 삽입.
+    if trace_zip:
+        scenario = _inject_post_click_waits(scenario, trace_zip)
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "scenario.json")
     with open(output_path, "w", encoding="utf-8") as f:
@@ -128,6 +137,55 @@ def convert_via_ast(file_path: str, output_dir: str) -> list[dict]:
         file_path, output_path, len(scenario),
     )
     return scenario
+
+
+def _inject_post_click_waits(
+    scenario: list[dict], trace_zip: str,
+) -> list[dict]:
+    """click step 직후 trace 상 frame navigation 이 있었던 자리에 wait step 삽입.
+
+    trace 파싱은 best-effort — 실패하면 원본 그대로. boolean flag list 와 scenario
+    의 click step 들을 인덱스 순서로 매핑한다는 가정 (codegen 출력의 click 순서
+    = trace 의 click 순서). _dedupe_consecutive_clicks / _strip_ime_noise 가 일부
+    click 을 제거할 수 있어 매핑이 1:1 보장은 안 되지만, 빠진 click 은 보수적
+    으로 wait 미삽입으로 처리 (false negative > false positive).
+    """
+    try:
+        from recording_shared.trace_parser import click_actions_post_nav_flags
+        flags = click_actions_post_nav_flags(trace_zip)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[Convert/AST] trace 분석 실패 — wait 삽입 스킵: %s", e)
+        return scenario
+    if not flags:
+        return scenario
+
+    out: list[dict] = []
+    flag_idx = 0
+    inserted = 0
+    for s in scenario:
+        out.append(s)
+        if s.get("action") != "click":
+            continue
+        if flag_idx >= len(flags):
+            continue
+        triggers_nav = flags[flag_idx]
+        flag_idx += 1
+        if not triggers_nav:
+            continue
+        # 다음 step 이 이미 wait 류면 중복 삽입 회피.
+        out.append({
+            "action": "wait",
+            "target": "",
+            "value": "networkidle",
+            "description": "자동 삽입 — 직전 클릭 후 navigation 감지",
+            "page": s.get("page", "page"),
+            "kind": "auxiliary",
+            "fallback_targets": [],
+        })
+        inserted += 1
+    if inserted:
+        log.info("[Convert/AST] post-click wait %d 건 자동 삽입", inserted)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -166,8 +224,18 @@ def _normalized_click_identity(step: dict) -> Optional[str]:
 
 
 def _dedupe_consecutive_clicks(scenario: list[dict]) -> list[dict]:
-    """연속한 두 click step 이 같은 page 의 같은 accessible name 을 가리키면
-    하나만 남긴다. ``popup_to`` 가 있는 쪽을 우선 보존, 없으면 뒤쪽을 보존.
+    """연속한 두 click step 이 wrapper button + inner link 같은 *DOM 중복*
+    이면 하나만 남긴다. ``popup_to`` 가 있는 쪽을 우선 보존.
+
+    2026-05-14 정책 변경 — *의도적 더블클릭* (사용자가 같은 element 를 두 번
+    누른 경우, codegen 도 동일 target 문자열로 두 번 emit) 은 보존한다. 한 번
+    클릭으로 안 닫히는 모달 [확인] x2 패턴이 dedupe 로 깎이면 재생 시 모달이
+    그대로 떠 다음 step resolver 0건이 되는 회귀가 있었다. 구별 휴리스틱:
+
+    - **target 문자열이 완전 동일** → 같은 selector 를 두 번 누름 → 의도적
+      더블클릭. 보존.
+    - **target 문자열은 다른데 정규화한 accessible name 만 같음** → outer
+      button vs inner link 같은 DOM 중복 → 압축.
 
     step 번호는 압축 후 1..N 으로 재부여 (validator 가 연속 번호 요구).
     """
@@ -184,6 +252,12 @@ def _dedupe_consecutive_clicks(scenario: list[dict]) -> list[dict]:
             and _normalized_click_identity(prev) is not None
             and _normalized_click_identity(prev) == _normalized_click_identity(cur)
         ):
+            prev_target = str(prev.get("target") or "")
+            cur_target = str(cur.get("target") or "")
+            if prev_target and prev_target == cur_target:
+                # 같은 selector 두 번 → 사용자 의도적 더블클릭. 보존.
+                out.append(cur)
+                continue
             keep = prev if prev.get("popup_to") and not cur.get("popup_to") else cur
             log.info(
                 "[Convert/AST] dedupe consecutive click step%s + step%s → keep step%s",

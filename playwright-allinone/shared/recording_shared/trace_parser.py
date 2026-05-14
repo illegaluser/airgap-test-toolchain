@@ -271,6 +271,77 @@ def _settled_snapshot_time(
     return snapshot_time
 
 
+def collect_navigation_timestamps(trace_zip_path: str) -> list[float]:
+    """trace.zip 안의 frame navigation 이벤트 timestamp 목록 (오름차순, ms).
+
+    Playwright trace 포맷의 navigation event 는 버전에 따라 다양한 모양으로
+    들어오므로 (event/frame-navigated / page.frameNavigated / 단일 method 명
+    'frameNavigated' / method 명에 'navigated' 포함) 광범위 매칭.
+
+    main vs subframe 구분은 trace 가 parentId 를 명시할 때만 가능 — 구분 불가
+    시 모두 포함 (보수적). converter 의 wait step 자동 삽입 휴리스틱은 click
+    직후 짧은 window 안의 nav 만 보므로 subframe 노이즈 영향은 작다.
+    """
+    try:
+        with zipfile.ZipFile(trace_zip_path, "r") as zf:
+            events = _read_trace_events(zf)
+    except (OSError, zipfile.BadZipFile, FileNotFoundError):
+        return []
+
+    times: list[float] = []
+    for ev in events:
+        ty = (ev.get("type") or "").lower()
+        method = (
+            ev.get("method") or ev.get("apiName") or ev.get("event") or ""
+        ).lower()
+        is_nav = (
+            ty in ("frame-navigated", "framenavigated", "navigation")
+            or "framenavigated" in method
+            or method.endswith("navigated")
+        )
+        if not is_nav:
+            continue
+        ts = (
+            ev.get("time")
+            or ev.get("timestamp")
+            or ev.get("startTime")
+            or ev.get("endTime")
+        )
+        if isinstance(ts, (int, float)) and ts > 0:
+            times.append(float(ts))
+    times.sort()
+    return times
+
+
+def click_actions_post_nav_flags(
+    trace_zip_path: str, window_ms: float = 2000.0
+) -> list[bool]:
+    """trace.zip 의 click action 들에 대해, 각 click 의 end_time 직후
+    ``window_ms`` 안에 navigation 이 있었는지 boolean 리스트.
+
+    반환 인덱스는 trace 상의 click 등장 순서. converter 가 scenario.json 의
+    click step 들과 같은 순서로 매핑한다는 가정 (codegen 출력의 click 순서 =
+    trace 의 click 순서).
+
+    실패 (trace 없음 / 파싱 실패 / click action 0개) 시 빈 리스트.
+    """
+    try:
+        with zipfile.ZipFile(trace_zip_path, "r") as zf:
+            events = _read_trace_events(zf)
+    except (OSError, zipfile.BadZipFile, FileNotFoundError):
+        return []
+    actions = _collect_actions(events)
+    nav_times = collect_navigation_timestamps(trace_zip_path)
+    flags: list[bool] = []
+    for a in actions:
+        if a.method != "click":
+            continue
+        end = a.end_time
+        has_nav = any(end <= t <= end + window_ms for t in nav_times)
+        flags.append(has_nav)
+    return flags
+
+
 def _read_resource(zf: zipfile.ZipFile, sha1: str) -> Optional[bytes]:
     """resources/<sha1> 또는 resources/sha1.{ext} 패턴으로 검색."""
     for name in zf.namelist():

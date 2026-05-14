@@ -163,6 +163,29 @@ def run_convert(
                 f"stderr={cp_in.stderr.decode('utf-8', errors='replace')[:300]}"
             )
 
+        # 2b. 동봉된 codegen trace.zip 도 같이 cp — converter 가 click+navigation
+        #     감지로 wait step 자동 삽입 (2026-05-14 사용자 보고: step N click 후
+        #     reload 미완 상태에서 step N+1 resolver 0건 → LLM 치유 300s 직행).
+        #     trace.zip 없으면 silent skip — 변환은 그대로 진행.
+        host_trace = host_session / "trace.zip"
+        trace_in_container: Optional[str] = None
+        if host_trace.is_file():
+            cp_trace = _docker_run(
+                [
+                    "docker", "cp",
+                    str(host_trace),
+                    f"{container_name}:{scratch}/trace.zip",
+                ],
+                timeout=_AUX_DOCKER_TIMEOUT_SEC,
+            )
+            if cp_trace.returncode == 0:
+                trace_in_container = f"{scratch}/trace.zip"
+            else:
+                log.warning(
+                    "[convert-proxy] trace.zip copy-in 실패 (rc=%s) — wait 자동 삽입 스킵",
+                    cp_trace.returncode,
+                )
+
         # 3. 메인 변환 — exec.
         cmd = [
             "docker", "exec",
@@ -174,6 +197,8 @@ def run_convert(
             "--convert-only",
             "--file", f"{scratch}/original.py",
         ]
+        if trace_in_container:
+            cmd += ["--trace", trace_in_container]
         log.info("[convert-proxy] %s", " ".join(cmd))
         proc = _docker_run(cmd, timeout=timeout_sec)
 

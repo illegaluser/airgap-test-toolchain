@@ -3215,6 +3215,20 @@ class QAExecutor:
                     f"URL 유지({before_url}), 유효한 새 탭 없음. "
                     f"링크가 overlay 에 가려졌거나 봇 차단 가능성."
                 )
+            # (A) click 후 settle 강제 — 사용자 보고 (2026-05-14): step N 의 click 이
+            # 모달 닫힘 / page reload 를 유발할 때, 다음 step N+1 의 resolver 가
+            # reload 중인 DOM 을 보고 0건 → fallback_targets 빈 시나리오는 즉시 LLM
+            # 치유 (300s timeout) 직행하는 race. click 직후 짧은 settle 로 회피.
+            # networkidle 영영 안 오는 SPA long-poll 대비 timeout 짧게 + silent skip.
+            if not _page_closed(page):
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=3000)
+                except Exception:
+                    pass
+                try:
+                    page.wait_for_load_state("networkidle", timeout=2000)
+                except Exception:
+                    pass
         elif action == "fill":
             # A: multi-strategy + post-condition (clear+fill / type / js-set).
             self._do_fill(locator, str(value))
