@@ -2,7 +2,7 @@
 
 기동::
 
-    python -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
+    python -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18099
 
 설계:
 - bind 는 **127.0.0.1 전용** (계획 D10).

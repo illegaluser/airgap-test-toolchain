@@ -115,7 +115,7 @@ chmod +x *.sh
 5. `NODE_SECRET` 대기
 6. 호스트 agent setup 스크립트 실행 (WSL2 호스트인 경우 Git Bash 경유 위임)
 7. Recording UI(18092) 자동 기동 — agent-setup step 6.5 가 처리
-8. Replay UI(18094) 자동 기동 — `replay-ui/Launch-ReplayUI.{bat,command}` 가 휴대용 패킹된 경우
+8. Replay UI(18099) 자동 기동 — `replay-ui/Launch-ReplayUI.{bat,command}` 가 휴대용 패킹된 경우
 
 중간에 관리자 권한이나 Docker 권한 관련 오류가 나오면 그 오류를 먼저 해결한 뒤 같은 명령을 다시 실행한다. `--redeploy`는 기존 운영 데이터 볼륨을 지우지 않는다.
 
@@ -167,7 +167,7 @@ Windows 11 / WSL2 Ubuntu:
 ./wsl-agent-setup.sh
 ```
 
-이 스크립트는 JDK/Python 확인, venv 생성, Playwright Chromium 설치, Jenkins agent 연결, Recording UI(18092) 서비스 기동을 처리한다. Replay UI(18094) 는 별개로 `replay-ui/Launch-ReplayUI.{bat,command}` 가 띄우며, `./build.sh --redeploy` 가 자동으로 호출한다.
+이 스크립트는 JDK/Python 확인, venv 생성, Playwright Chromium 설치, Jenkins agent 연결, Recording UI(18092) 서비스 기동을 처리한다. Replay UI(18099) 는 별개로 `replay-ui/Launch-ReplayUI.{bat,command}` 가 띄우며, `./build.sh --redeploy` 가 자동으로 호출한다.
 
 의존성 자동 설치까지 맡기려면 운영 환경에 맞는 명령 하나만 실행한다.
 

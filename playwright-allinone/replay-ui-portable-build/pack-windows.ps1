@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Replay UI 휴대용 자산을 `playwright-allinone/replay-ui/` 폴더 안에 채워넣는다.
 

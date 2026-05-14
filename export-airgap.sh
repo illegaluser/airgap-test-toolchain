@@ -169,5 +169,5 @@ cat <<'HINT'
     DSCORE-ReplayUI-portable-macos-arm64-<ts>.zip 을 풀고 Launch-ReplayUI.command 더블클릭.
     첫 실행은 Finder 에서 right-click → 열기 (Gatekeeper 1회 우회).
 
-  접속: http://127.0.0.1:18094 — 대상 PC 내부에서만.
+  접속: http://127.0.0.1:18099 — 대상 PC 내부에서만.
 HINT

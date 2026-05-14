@@ -17,21 +17,21 @@ export PYTHONIOENCODING="utf-8"
 mkdir -p "$ROOT/data/auth-profiles" "$ROOT/data/scenarios" "$ROOT/data/scripts" "$ROOT/data/runs"
 
 # 포트 충돌 — 기존 인스턴스 우선.
-if lsof -nP -iTCP:18094 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "[Replay UI] Port 18094 already in use — opening existing instance."
-  open "http://127.0.0.1:18094/"
+if lsof -nP -iTCP:18099 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "[Replay UI] Port 18099 already in use — opening existing instance."
+  open "http://127.0.0.1:18099/"
   exit 0
 fi
 
 # Replay UI 백그라운드 기동.
-nohup "$ROOT/python/bin/python3" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094 \
+nohup "$ROOT/python/bin/python3" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18099 \
   > "$ROOT/data/runs/replay-ui.stdout.log" 2> "$ROOT/data/runs/replay-ui.stderr.log" &
 echo $! > "$ROOT/.replay-ui.pid"
 
 # 준비 폴링.
 for i in $(seq 1 15); do
-  if curl -sSf --max-time 1 "http://127.0.0.1:18094/" >/dev/null 2>&1; then
-    open "http://127.0.0.1:18094/"
+  if curl -sSf --max-time 1 "http://127.0.0.1:18099/" >/dev/null 2>&1; then
+    open "http://127.0.0.1:18099/"
     exit 0
   fi
   sleep 1

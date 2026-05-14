@@ -1,4 +1,4 @@
-"""Replay UI headed walkthrough — 라이브 18094 데몬에 대해 핵심 UI 동선을
+"""Replay UI headed walkthrough — 라이브 18099 데몬에 대해 핵심 UI 동선을
 브라우저 창을 띄워 회귀 검증.
 
 이 스크립트는 dedicated pytest 슈트가 아닌 일회성 walkthrough 다. (E2E_COVERAGE
@@ -33,7 +33,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 from playwright.sync_api import sync_playwright, expect
 
-REPLAY_URL = "http://127.0.0.1:18094/"
+REPLAY_URL = "http://127.0.0.1:18099/"
 RECORDING_URL_PREFIX = "http://localhost:18092"
 
 results: list[tuple[str, str, str]] = []

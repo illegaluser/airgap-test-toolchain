@@ -130,6 +130,15 @@ Phase 1.5 이후 버전업이 필요해지면 `tree-sitter-languages` 를 `tree-
 
 포트 충돌 감지 루프는 18093~18097 까지 보고 있다 (18097 은 차후 슈트용 예약).
 
+**다른 영구 데몬 포트 (e2e 슈트 범위 밖)**:
+
+| 데몬 | 포트 | 비고 |
+|---|---|---|
+| Recording UI (호스트 데몬) | 18092 | agent-setup step 6.5 가 띄움 |
+| 휴대용 Replay UI | 18099 | `replay-ui/Launch-ReplayUI.{bat,command}` |
+
+휴대용 Replay UI 는 받는 PC 가 주된 실행 환경이지만, dev 머신에서도 같은 launcher 로 띄울 수 있다. e2e 슈트 포트(18093-18097) 와 겹치면 pre-commit hook 의 포트 충돌 감지 루프가 슈트를 스킵해 회귀 검출이 빠지므로, 휴대용은 18099 로 분리했다 (2026-05-14).
+
 - 설치: `bash playwright-allinone/scripts/install-git-hooks.sh` 1회.
 - 일시 우회: `git commit --no-verify` — 사용자가 명시 요청한 경우 외 금지.
 

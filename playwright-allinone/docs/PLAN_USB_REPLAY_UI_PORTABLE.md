@@ -26,7 +26,7 @@
 
 **exFAT 포맷 USB 한 개**를 들고 Windows PC 든 macOS arm64 PC 든 어디든 꽂아서, 그 안의 폴더 하나를 풀고 `Launch-ReplayUI.bat` (Windows) 또는 `Launch-ReplayUI.command` (macOS) **딱 한 번** 더블클릭하면 다음 4가지가 다 동작한다:
 
-1. 브라우저에 Replay UI 가 뜬다 (`http://127.0.0.1:18094/`).
+1. 브라우저에 Replay UI 가 뜬다 (`http://127.0.0.1:18099/`).
 2. 「+ 새 프로파일」 → 사이트 주소 입력 → 자동으로 chromium 창이 떠서 사람이 로그인하고 닫으면 로그인 상태가 USB 안에 저장된다.
 3. 시나리오 `.py` 파일을 업로드하고 ▶ 실행 누르면 chromium 이 그 시나리오를 그대로 재생한다.
 4. 실행 결과 / 스크린샷 / HTML 리포트가 USB 안 `data/` 폴더에 누적된다.
@@ -704,9 +704,9 @@ powershell -NoProfile -Command "$null = [scriptblock]::Create((Get-Content -Raw 
 
 ```bat
 :: 변경 전
-start "ReplayUI" /min "%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094
+start "ReplayUI" /min "%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18099
 :: 변경 후
-start "ReplayUI" /min cmd /c ""%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094 > "%ROOT%data\runs\replay-ui.stdout.log" 2> "%ROOT%data\runs\replay-ui.stderr.log""
+start "ReplayUI" /min cmd /c ""%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18099 > "%ROOT%data\runs\replay-ui.stdout.log" 2> "%ROOT%data\runs\replay-ui.stderr.log""
 ```
 
 핵심:
@@ -897,7 +897,7 @@ Start-Process -FilePath "$($Tmp.FullName)\replay-ui\Launch-ReplayUI.bat"
 
 1. 15초 이내 HTTP 응답:
    ```powershell
-   (Invoke-WebRequest http://127.0.0.1:18094/ -UseBasicParsing -TimeoutSec 15).StatusCode
+   (Invoke-WebRequest http://127.0.0.1:18099/ -UseBasicParsing -TimeoutSec 15).StatusCode
    ```
    200. timeout → `$Tmp\replay-ui\data\runs\replay-ui.stderr.log` 확인.
 
@@ -1034,7 +1034,7 @@ open /tmp/replayui-mac-test/replay-ui/Launch-ReplayUI.command
 
 1. 15초 이내:
    ```bash
-   for i in $(seq 1 15); do curl -sf http://127.0.0.1:18094/ -o /dev/null && echo OK && break; sleep 1; done
+   for i in $(seq 1 15); do curl -sf http://127.0.0.1:18099/ -o /dev/null && echo OK && break; sleep 1; done
    ```
    OK.
 

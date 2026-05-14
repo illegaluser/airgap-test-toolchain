@@ -12,10 +12,10 @@ if [[ -f "$ROOT/.replay-ui.pid" ]]; then
 fi
 
 # pid 파일 없거나 stale — 포트로 한 번 더 확인.
-pids="$(lsof -nP -iTCP:18094 -sTCP:LISTEN -t 2>/dev/null || true)"
+pids="$(lsof -nP -iTCP:18099 -sTCP:LISTEN -t 2>/dev/null || true)"
 if [[ -n "$pids" ]]; then
   echo "$pids" | xargs kill 2>/dev/null || true
-  echo "[Replay UI] Stopped port 18094 holders: $pids"
+  echo "[Replay UI] Stopped port 18099 holders: $pids"
 fi
 
 if [[ -z "${pids:-}" && ! -f "$ROOT/.replay-ui.pid" ]]; then

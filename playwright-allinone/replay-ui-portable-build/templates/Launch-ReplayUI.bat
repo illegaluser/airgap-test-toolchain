@@ -15,22 +15,22 @@ if not exist "%ROOT%data\scenarios"     mkdir "%ROOT%data\scenarios" >nul 2>&1
 if not exist "%ROOT%data\scripts"       mkdir "%ROOT%data\scripts" >nul 2>&1
 if not exist "%ROOT%data\runs"          mkdir "%ROOT%data\runs" >nul 2>&1
 
-REM 포트 충돌 — 기존 인스턴스가 이미 18094 를 잡고 있으면 그 쪽으로 연결.
-netstat -ano | findstr ":18094 " | findstr "LISTENING" >nul
+REM 포트 충돌 — 기존 인스턴스가 이미 18099 를 잡고 있으면 그 쪽으로 연결.
+netstat -ano | findstr ":18099 " | findstr "LISTENING" >nul
 if not errorlevel 1 (
-  echo [Replay UI] Port 18094 is already in use - opening existing instance.
-  start "" "http://127.0.0.1:18094/"
+  echo [Replay UI] Port 18099 is already in use - opening existing instance.
+  start "" "http://127.0.0.1:18099/"
   exit /b 0
 )
 
 REM Replay UI 백그라운드 기동. stdout/stderr 를 data\runs\replay-ui.*.log 로 redirect.
 REM macOS .command 와 동등한 진단성 — UI 가 안 뜨면 그 파일을 본다.
 REM start 자체는 redirect 지원이 까다로워 cmd /c 로 한 번 감싼다.
-start "ReplayUI" /min cmd /c ""%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18094 > "%ROOT%data\runs\replay-ui.stdout.log" 2> "%ROOT%data\runs\replay-ui.stderr.log""
+start "ReplayUI" /min cmd /c ""%ROOT%embedded-python\python.exe" -m uvicorn replay_service.server:app --host 127.0.0.1 --port 18099 > "%ROOT%data\runs\replay-ui.stdout.log" 2> "%ROOT%data\runs\replay-ui.stderr.log""
 
 REM 준비될 때까지 폴링 후 브라우저 오픈.
 for /l %%i in (1,1,15) do (
-  >nul 2>&1 powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18094/ -TimeoutSec 1).StatusCode } catch { exit 1 }"
+  >nul 2>&1 powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18099/ -TimeoutSec 1).StatusCode } catch { exit 1 }"
   if not errorlevel 1 goto :open
   >nul timeout /t 1 /nobreak
 )
@@ -39,5 +39,5 @@ echo [Replay UI] Service did not come up within 15s. See "%ROOT%data\runs" for l
 exit /b 1
 
 :open
-start "" "http://127.0.0.1:18094/"
+start "" "http://127.0.0.1:18099/"
 endlocal

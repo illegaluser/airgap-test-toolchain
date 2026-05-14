@@ -7,7 +7,7 @@
 조건부 노출) 까지 포함해 한 흐름으로 회귀 검증한다.
 
 검증 범위:
-  1. 헤더: title / h1 / 뒤로 버튼 (직접 진입 시 hidden) / cross-link → 18094
+  1. 헤더: title / h1 / 뒤로 버튼 (직접 진입 시 hidden) / cross-link → 18099
   2. health-badge 가 'checking…' 외 상태로 갱신됨 (서버 healthz 응답)
   3. 5개 collapsible 섹션 (Login Profile / Discover / Recording / Play & more
      / 결과 확인) 각각 expand/collapse 동작
@@ -39,7 +39,7 @@ for _stream in (sys.stdout, sys.stderr):
 from playwright.sync_api import sync_playwright, expect
 
 RECORDING_URL = "http://127.0.0.1:18092/"
-REPLAY_URL_PREFIX = "http://localhost:18094"
+REPLAY_URL_PREFIX = "http://localhost:18099"
 
 results: list[tuple[str, str, str]] = []
 
@@ -88,7 +88,7 @@ def main() -> int:
         except Exception as exc:
             step("back-btn hidden", "FAIL", str(exc))
 
-        # 1-c. cross-link → 18094 / target=_blank
+        # 1-c. cross-link → 18099 / target=_blank
         try:
             cross = page.locator("a.cross-link")
             expect(cross).to_be_visible(timeout=2000)

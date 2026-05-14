@@ -14,7 +14,7 @@ DSCORE Replay UI 휴대용 패키지 (macOS arm64)
    또는 터미널에서 한 번:
      xattr -dr com.apple.quarantine /path/to/이-폴더
 3) Launch-ReplayUI.command 더블클릭.
-4) 잠시 후 기본 웹브라우저에 http://127.0.0.1:18094/ 이 뜹니다.
+4) 잠시 후 기본 웹브라우저에 http://127.0.0.1:18099/ 이 뜹니다.
 5) 종료하려면 Stop-ReplayUI.command 를 더블클릭하세요.
 
 데이터 위치
@@ -31,7 +31,7 @@ DSCORE Replay UI 휴대용 패키지 (macOS arm64)
 문제 해결
 ---------
 
-- 브라우저가 열리지 않으면 직접 http://127.0.0.1:18094/ 로 접속해 보세요.
-- 포트 18094 가 이미 사용 중이면 기존 인스턴스로 자동 연결됩니다.
+- 브라우저가 열리지 않으면 직접 http://127.0.0.1:18099/ 로 접속해 보세요.
+- 포트 18099 가 이미 사용 중이면 기존 인스턴스로 자동 연결됩니다.
 - 첫 실행 시 macOS 가 차단하면 위 2번 절차를 따르세요 (사내 비공식 배포 — Apple notarization 없음).
 - 로그/오류 흔적은 data/runs/replay-ui.stderr.log 에서 확인 가능합니다.
