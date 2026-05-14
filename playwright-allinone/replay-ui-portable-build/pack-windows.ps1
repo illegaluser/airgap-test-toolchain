@@ -104,6 +104,15 @@ foreach ($f in @("Launch-ReplayUI.bat", "Stop-ReplayUI.bat", "README.txt")) {
     if (Test-Path $p) { Remove-Item -Path $p -Force }
 }
 
+# data/ 통째 삭제 — 빌드 머신 dev 가 이전 실행으로 남긴 *.storage.json /
+# _index.lock / portable-*.log 가 받는 사람 zip 에 동봉되는 사고 차단.
+# (마지막에 빈 placeholder 4개를 다시 만든다.)
+$DataDirOld = Join-Path $ReplayUiDir "data"
+if (Test-Path $DataDirOld) {
+    Write-Host "[pack-windows] Clean data/ (purge dev leftovers) -> $DataDirOld"
+    Remove-Item -Path $DataDirOld -Recurse -Force
+}
+
 # 1. embedded-python/ 풀기.
 $EmbeddedPyDir = Join-Path $ReplayUiDir "embedded-python"
 $EmbeddedPy    = Join-Path $EmbeddedPyDir "python.exe"
@@ -202,6 +211,20 @@ foreach ($pkg in @("recording_shared", "zero_touch_qa")) {
 Copy-Item -Path (Join-Path $TemplatesDir "Launch-ReplayUI.bat") -Destination $ReplayUiDir -Force
 Copy-Item -Path (Join-Path $TemplatesDir "Stop-ReplayUI.bat")   -Destination $ReplayUiDir -Force
 Copy-Item -Path (Join-Path $TemplatesDir "README.txt")          -Destination $ReplayUiDir -Force
+
+# 6b. .bat 파일을 강제 CRLF 로 정규화 — .gitattributes 가 못 잡는 경로
+# (git autocrlf 비활성, 외부 편집기 LF 저장, 캐시된 worktree) 모두 보호.
+# CRLF 깨진 .bat 은 cmd.exe 가 다중 라벨 batch 파일을 잘못 파싱하면서
+# 'errorlevel' is not recognized / 'profiles" >nul 2>&1' is not recognized
+# 같은 cryptic 오류로 launcher 가 즉사.
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+foreach ($batName in @("Launch-ReplayUI.bat", "Stop-ReplayUI.bat")) {
+    $batPath = Join-Path $ReplayUiDir $batName
+    $text    = [System.IO.File]::ReadAllText($batPath, [System.Text.UTF8Encoding]::new($false))
+    $crlf    = $text -replace "`r?`n", "`r`n"
+    [System.IO.File]::WriteAllText($batPath, $crlf, $utf8NoBom)
+}
+Write-Host "[pack-windows] .bat CRLF normalized"
 
 # 7. data/ 빈 디렉토리.
 $DataDir = Join-Path $ReplayUiDir "data"

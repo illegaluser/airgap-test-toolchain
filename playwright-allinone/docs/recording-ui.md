@@ -106,10 +106,11 @@
 └── <프로파일이름>.storage.json   ← Playwright storageState
 ```
 
-같은 호스트의 Replay UI 도 *기본적으로 이 같은 디렉토리를 본다* — 한 번 시드하면
-Replay UI 의 `🔐 로그인 프로파일` 카드에 그대로 나타난다 (2026-05-13 부터 두 UI 의
-기본 동작). 분리하고 싶으면 `AUTH_PROFILES_DIR` env 로 각자 override —
-[replay-ui-guide.md §11](replay-ui-guide.md#11-로그인-프로파일-공유--기본-동작-2026-05-13-부터) 참조.
+Replay UI (휴대용 모델) 은 *별도 카탈로그* 를 본다 — 압축 푼
+`replay-ui/data/auth-profiles/` 가 그 위치 ([replay-ui-guide.md §11](replay-ui-guide.md#11-데이터-위치-정책)).
+같은 사이트의 로그인을 양쪽에서 쓰려면 **Replay UI 에서 별도로 한 번 더 시드** 하는 게
+원칙 (재시드가 가장 안전). 정 파일을 직접 옮겨야 한다면
+[replay-ui-guide.md §11.2](replay-ui-guide.md#112-공유가-필요하면) 의 카탈로그 복사 절차 참조.
 
 ### 보안 주의
 

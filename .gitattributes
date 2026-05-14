@@ -1,0 +1,13 @@
+# Line endings — locked per file type.
+# Windows shells (cmd / PowerShell) require CRLF or fail with cryptic
+# parse errors ('errorlevel' is not recognized, etc).
+# POSIX shells require LF.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+*.sh        text eol=lf
+*.command   text eol=lf
+
+# Default — let git auto-detect for everything else.
+*           text=auto

@@ -21,7 +21,7 @@
   11. cross-link 클릭 → 새 탭에 Replay UI 진입
 
 Usage:
-    /c/Users/csr68/.dscore.ttc.monitor/venv/Scripts/python.exe \\
+    "$HOME/.dscore.ttc.playwright-agent/venv/Scripts/python.exe" \\
         playwright-allinone/test/test_recording_ui_walkthrough_headed.py
 """
 

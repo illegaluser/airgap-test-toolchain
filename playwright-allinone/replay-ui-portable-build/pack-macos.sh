@@ -130,6 +130,14 @@ for f in Launch-ReplayUI.command Stop-ReplayUI.command README.txt; do
   [[ -e "$p" ]] && rm -f "$p"
 done
 
+# data/ 통째 삭제 — 빌드 머신 dev 가 이전 실행으로 남긴 *.storage.json /
+# _index.lock / portable-*.log 가 받는 사람 zip 에 동봉되는 사고 차단.
+# (마지막에 빈 placeholder 4개를 다시 만든다.)
+if [[ -d "$REPLAYUI_DIR/data" ]]; then
+  echo "[pack-macos] Clean data/ (purge dev leftovers) -> $REPLAYUI_DIR/data"
+  rm -rf "$REPLAYUI_DIR/data"
+fi
+
 # 1. python/ — relocatable CPython 풀기.
 echo "[pack-macos] Extracting python-build-standalone -> python/"
 tar -xzf "$PBS_TARBALL" -C "$REPLAYUI_DIR"

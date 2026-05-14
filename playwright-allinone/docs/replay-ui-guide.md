@@ -53,122 +53,140 @@ Replay UI 는 이 갭을 메운다. **로그인은 모니터링 PC 에서 사람
 
 ---
 
-## 3. 준비물
+## 3. 받기 전에 확인할 것
 
-| 항목 | 값 |
+받는 PC 가 다음만 맞으면 됩니다.
+
+| 항목 | 필요 |
 |---|---|
-| OS | macOS 12+ (arm64) / Windows 10·11 |
-| Python | **불필요** — 휴대용 zip 안에 Python 3.11.x 인터프리터가 동봉됨 |
-| 디스크 여유 | 500MB 이상 (압축 풀린 폴더 + 실행 시 누적 데이터) |
-| 권한 | 일반 사용자 권한 (관리자 권한 / sudo 불필요) |
-| 네트워크 | 사용 시 외부 인터넷 불필요 (zip 안에 Chromium 포함) |
+| OS | Windows 10·11 (64비트) **또는** macOS 12 이상 (Apple Silicon) |
+| 디스크 여유 공간 | 1GB 이상 |
+| 권한 | 일반 사용자 (관리자 권한 / sudo 불필요) |
+| 인터넷 | **불필요** — 폐쇄망 PC OK |
+| 미리 깔 것 | **없음** — Python · Chromium · 모든 라이브러리가 zip 안에 동봉됨 |
 
-받는 사람 PC 에 *아무것도* 미리 깔려있을 필요 없습니다. zip 만 풀고 launcher 더블클릭만 하면 됩니다.
+> 회사 PC 라 관리자 권한이 막혀 있어도 됩니다. 외부 인터넷이 차단된 폐쇄망 PC 도 됩니다.
 
 ---
 
-## 4. 설치·기동 — 휴대용 단일 모델
+## 4. 설치·기동 — 5단계, 5분
 
-받는 사람의 한 줄: zip 풀고 launcher 더블클릭. 설치 단계 없음, 인터넷 없음, 관리자 권한 없음.
+다음 다섯 단계를 순서대로 따라하면 끝납니다. 각 단계 안에 「**막혔다면**」 박스가 있으니, 안 되면 그것부터 보세요.
 
-### 4.1 패키지 받기
+### 단계 1 — zip 파일 받기
 
-`DSCORE-ReplayUI-portable-{win64|macos-arm64}-<날짜시각>.zip` 을 받는다. 받는 곳은 두 군데 중 하나:
+운영팀에서 보내준 zip 파일을 받습니다. **본인 OS 와 맞는 파일** 인지 확인:
 
-| 방법 | 어디서 |
+| 본인 OS | 파일 이름 (예) |
 |---|---|
-| GitHub Release | 운영팀이 미리 빌드해 둔 zip 을 Release 페이지에서 다운로드 |
-| 직접 빌드 | 빌드 머신에서 `bash playwright-allinone/replay-ui-portable-build/build-cache.sh` 로 캐시 채운 뒤 `pack-windows.ps1` 또는 `pack-macos.sh` → 산출 zip 을 받는 PC 로 복사 |
+| Windows | `DSCORE-ReplayUI-portable-win64-<날짜>.zip` |
+| macOS | `DSCORE-ReplayUI-portable-macos-arm64-<날짜>.zip` |
 
-zip 을 임의 폴더에 풀면 `replay-ui/` 폴더 안에 launcher 가 있다.
+받는 곳은 사내 공유 폴더 / 이메일 / USB / GitHub Release 등 — 어디서든 OK.
 
-### 4.2 더블클릭
+**확인** — 파일 크기가 약 360MB 인지 본다. 한참 작으면 다운로드가 끊긴 것 → 다시 받기.
 
-| OS | 실행 파일 | 첫 실행 우회 |
-|---|---|---|
-| Windows 10/11 | `Launch-ReplayUI.bat` | 없음 (그냥 더블클릭) |
-| macOS 12+ arm64 | `Launch-ReplayUI.command` | [최초 1회 Gatekeeper 우회](#mac-gatekeeper) |
+> ⚠️ **OS 가 다른 zip 은 절대 안 됩니다.** Windows PC 에 macos zip 을 받으면 단계 3 에서 안 떠요.
 
-종료는 `Stop-ReplayUI.bat` / `Stop-ReplayUI.command` 또는 콘솔 창 닫기.
+### 단계 2 — 폴더에 풀기
 
-### 4.3 동작 확인
+받은 zip 을 자기 PC 의 임의의 폴더에 풉니다. 추천 위치:
 
-브라우저가 자동으로 열리고 `http://127.0.0.1:18094/` 가 표시된다. 페이지 상단에 `🎬 Replay UI` 와 4개 카드 (`🔐 로그인 프로파일`, `📄 시나리오 스크립트`, `▶️ 실행`, `📊 결과`) 가 보이면 OK.
+| OS | 추천 위치 |
+|---|---|
+| Windows | 바탕화면 또는 `D:\` (경로가 짧을수록 좋음) |
+| macOS | `~/Desktop/` 또는 `~/Documents/` |
 
-> 이 주소는 **그 PC 자기 자신에서만** 접속된다. 다른 PC 에서 LAN 으로 접속해도 거부된다 (의도된 보안 설정).
+**푸는 방법**:
 
-### 4.4 데이터 위치
+- **Windows** — 받은 zip 우클릭 → `압축 풀기...` → 위치 지정 → `압축 풀기` 클릭. (별도 도구 필요 없음, OS 기본 기능.)
+- **macOS** — 받은 zip 더블클릭. 같은 폴더에 자동으로 폴더가 생깁니다.
 
-압축 푼 `replay-ui/` 폴더 안에 모든 상태가 저장된다:
+풀고 나면 안에 다음 파일들이 보여야 합니다:
 
-```
+```text
 replay-ui/
-├── embedded-python/                ← Python 3.11.9 (Windows) 또는 python/ (macOS)
-├── site-packages/                  ← fastapi · uvicorn · playwright · pywin32 …
-├── chromium/                       ← Playwright 가 띄울 Chromium
-├── replay_service/ · monitor/ · recording_shared/ · zero_touch_qa/   ← 코드
-├── Launch-ReplayUI.bat · Stop-ReplayUI.bat · README.txt              ← 진입점·안내
-└── data/                           ← 사용자 데이터 (실행하면서 누적)
-    ├── auth-profiles/<프로파일>.storage.json
-    ├── scenarios/
-    ├── scripts/                    ← 업로드한 시나리오 .py
-    └── runs/<runId>/               ← 실행 결과 + 로그
-        ├── run_log.jsonl
-        ├── trace.zip
-        ├── screenshots/
-        ├── meta.json · exit_code
-        ├── replay-ui.stdout.log
-        └── replay-ui.stderr.log    ← UI 가 안 뜨면 이 파일부터
+├── Launch-ReplayUI.bat       ← Windows: 이거 더블클릭
+├── Stop-ReplayUI.bat         ← Windows: 종료할 때
+├── Launch-ReplayUI.command   ← macOS: 이거 더블클릭
+├── Stop-ReplayUI.command     ← macOS: 종료할 때
+├── README.txt
+└── (다른 폴더들 — 손대지 마세요)
 ```
 
-**폴더 자체를 USB 로 옮기면 데이터까지 같이 따라간다.** 휴대용 모델의 본질.
+> 푼 폴더는 나중에 옮기거나 이름 바꿔도 OK. USB 로 다른 PC 로 옮겨 그대로 실행해도 됩니다.
 
-<a id="mac-gatekeeper"></a>
+**막혔다면**:
 
-### 4.5 macOS Gatekeeper — 최초 1회
+- *"경로가 너무 깁니다"* (Windows) → 더 짧은 경로 (`D:\replay-ui\`) 에 풀기.
+- 압축 안 푼 채 zip 안에서 .bat 을 그냥 더블클릭 → 동작 안 함. *반드시 압축 풀기 먼저.*
 
-사내 비공식 배포 (Apple notarization 없음) 의 경우 첫 실행 시 macOS 가 차단한다. 한 번만:
+### 단계 3 — 실행
 
-- Finder 에서 `Launch-ReplayUI.command` 를 우클릭(또는 Control-클릭) → "열기" → 경고 다이얼로그에서 "열기".
+#### Windows
 
-`Launch-ReplayUI.command` 가 시작될 때 폴더 내부 (`python/bin/python3`, `chromium/...`) 의 quarantine xattr 도 함께 정리하므로 이후 ▶ 실행 시 추가 다이얼로그가 뜨지 않는다.
+`replay-ui\Launch-ReplayUI.bat` **더블클릭**.
 
-### 4.6 자주 일어나는 문제
+1. 검은 콘솔 창이 잠깐 떴다가 최소화됩니다.
+2. 약 10~15초 후 기본 브라우저가 자동으로 열립니다.
 
-| 증상 | 원인 / 해결 |
+**Windows Defender / SmartScreen 경고가 뜨면**:
+
+- *"Windows 의 PC 보호"* 같은 파란 창 → `추가 정보` 클릭 → `실행` 버튼 클릭.
+- 회사 정책으로 강하게 막혀 있으면 IT 팀에 *"이 .bat 파일 실행 허용"* 요청.
+
+#### macOS
+
+`replay-ui/Launch-ReplayUI.command` **더블클릭**.
+
+**최초 1회만** 다음 우회가 필요합니다 (Apple 승인 안 받은 사내 배포라서).
+
+1. 처음 더블클릭하면 *"확인되지 않은 개발자... 열 수 없습니다"* 경고 → `취소` 누름.
+2. Finder 에서 같은 파일을 **Control 키 누른 채 클릭** (또는 우클릭) → 메뉴에서 `열기` 선택.
+3. *"... 정말 열겠습니까?"* 다이얼로그 → `열기` 클릭.
+4. Terminal 창이 뜨고, 약 10~15초 후 기본 브라우저가 자동으로 열립니다.
+
+> 한 번 위 *Control-클릭→열기* 를 하면 다음부터는 그냥 더블클릭으로 바로 됩니다.
+
+**막혔다면**:
+
+- 30초 기다려도 브라우저가 안 열림 → 단계 4 의 직접 접속 방법으로 시도.
+- 그래도 안 됨 → `replay-ui/data/runs/replay-ui.stderr.log` 파일을 메모장 / TextEdit 으로 열어 *마지막 10줄* 을 운영팀에 전달.
+
+### 단계 4 — 작동 확인
+
+브라우저에 다음이 보이면 성공입니다.
+
+- 주소창 — `http://127.0.0.1:18094/`
+- 화면 상단 — `🎬 Replay UI`
+- 카드 4개 — `🔐 로그인 프로파일`, `📄 시나리오 스크립트`, `▶️ 실행`, `📊 결과`
+
+브라우저가 자동으로 안 열린 경우 — 직접 다음 주소를 브라우저 주소창에 입력하세요:
+
+```text
+http://127.0.0.1:18094/
+```
+
+> ⚠️ 이 주소는 **그 PC 자기 자신** 에서만 열립니다. 같은 사무실의 다른 PC 가 IP 로 접속해도 거부됩니다. *의도된 보안 정책* — 결과를 다른 사람과 공유하려면 [§9 보안](#9-보안--무엇이-어디로-안-나가나) 의 HTML 리포트 다운로드를 사용하세요.
+
+### 단계 5 — 종료할 때
+
+- **Windows** — `replay-ui\Stop-ReplayUI.bat` 더블클릭.
+- **macOS** — `replay-ui/Stop-ReplayUI.command` 더블클릭.
+
+종료 후 데이터 (등록한 로그인 프로파일, 실행 결과) 는 그대로 보존됩니다. 다음에 다시 단계 3 부터 하면 그 자리에서 이어집니다.
+
+> 단축 종료 — 검은 콘솔 / Terminal 창의 X 버튼으로 닫아도 됩니다 (콘솔 창은 단계 3 에서 떴던 그것).
+
+### 그 외 자주 일어나는 일
+
+| 증상 | 어떻게 |
 |---|---|
-| 브라우저에서 `http://127.0.0.1:18094` 가 안 뜸 | 15초 대기 후에도 안 뜨면 `data/runs/replay-ui.stderr.log` 의 첫 traceback 확인. 그래도 막히면 [§9 자주 막히는 곳](#9-자주-막히는-곳). |
-| 포트 18094 점유 중 (다른 인스턴스가 떠 있음) | launcher 가 자동으로 기존 인스턴스로 브라우저 열어줌. 같은 PC 에 두 인스턴스 동시 기동 안 됨. |
+| 단계 3 더블클릭했는데 콘솔 창이 잠깐 뜨고 그냥 사라짐 | 이미 같은 PC 에 Replay UI 가 떠 있는 상태. 단계 4 의 주소를 직접 입력하면 바로 그 인스턴스에 접속됩니다. |
+| 단계 3 후 1분 기다려도 브라우저 안 뜸 | `replay-ui/data/runs/replay-ui.stderr.log` 가 있으면 그 파일 마지막 10줄 운영팀에 전달. 파일 자체가 없으면 단계 3 의 더블클릭이 *완전히 차단된 것* — IT 팀에 .bat / .command 실행 허용 요청. |
+| 종료 후 다시 더블클릭하니 *"포트 18094 사용 중"* 같은 메시지 | 이전 인스턴스가 안 죽고 살아있음. 단계 5 한 번 누르고 다시 단계 3. |
 
-### 4.7 휴대용 zip 빌드 (빌드 머신)
-
-```powershell
-# Windows 빌드 머신 (PowerShell)
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File playwright-allinone/replay-ui-portable-build/pack-windows.ps1 -MakeZip
-```
-
-```bash
-# macOS arm64 빌드 머신
-bash playwright-allinone/replay-ui-portable-build/pack-macos.sh --make-zip
-```
-
-산출: `playwright-allinone/replay-ui-portable-build/build-out/DSCORE-ReplayUI-portable-{win64|macos-arm64}-<ts>.zip` (~200-250MB).
-
-**전제 조건** — `.replay-ui-cache/cache/` 의 wheels/chromium 이 채워져 있어야 한다. 한 번도 빌드해 본 적 없으면 먼저:
-
-```bash
-bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target win64
-# 또는 macos-arm64 / all
-```
-
-**자동 갱신 hook (개발자, 권장)** — 본 저장소의 코드가 바뀐 채로 git push 하면 자동으로 자산을 재채워 준다. 한 번만:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-설치 후 `git push` 시 stale 검출 + `pack-*` 자동 호출. 실패해도 push 자체는 차단 안 함 (개발 흐름 보호). 자세한 동작은 `.githooks/README.md`.
+자세한 자주 막히는 케이스는 [§10](#10-자주-막히는-곳).
 
 ---
 
@@ -274,7 +292,7 @@ zip 풀린 폴더 절대경로를 `<ROOT>` 라 하면 (예: `D:\ReplayUI\replay-
 
 **macOS** (crontab)
 
-```
+```cron
 */30 * * * * <ROOT>/python/bin/python3 -m monitor replay-script \
    <ROOT>/data/scripts/dashboard-tour.py \
    --out <ROOT>/data/runs/auto --profile dpg-qa
@@ -282,7 +300,7 @@ zip 풀린 폴더 절대경로를 `<ROOT>` 라 하면 (예: `D:\ReplayUI\replay-
 
 **Windows** (작업 스케줄러)
 
-```
+```bat
 schtasks /create /sc minute /mo 30 /tn "Monitor Replay dashboard-tour" \
    /tr "<ROOT>\embedded-python\python.exe -m monitor replay-script \
         <ROOT>\data\scripts\dashboard-tour.py \
@@ -353,7 +371,7 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 
 **모든 데이터가 zip 풀린 `replay-ui/` 폴더 안 `data/` 에 저장된다.** 호스트 홈 디렉토리는 건드리지 않는다. 폴더 자체를 USB 로 옮기면 데이터까지 같이 따라간다.
 
-```
+```text
 <ROOT>/                                      ← zip 풀린 replay-ui/ 폴더 절대경로
 │
 ├── embedded-python/                         ← Python 3.11 (Windows)
@@ -433,14 +451,56 @@ CI / 외부 모니터링 시스템은 이 종료 코드로 분기한다.
 
 ### 11.3 폐쇄망 운영 모델
 
-폐쇄망 정식 운영에서는 Recording PC 와 Monitoring PC 가 *물리적으로 다른 머신*. 각 PC 가 자체 로컬 카탈로그를 사용하며 이게 원래 설계 ([§1.1](#11-이-도구가-푸는-문제)).
-- **세션 / 토큰 노출 범위** — Recording UI 와 Replay UI 가 같은 토큰을 쓴다.
-  두 UI 가 다른 권한·계정 컨텍스트라고 가정한 운영 정책이 있다면 §11.2 의 env
-  override 로 분리.
+폐쇄망 정식 운영에서는 Recording PC 와 Monitoring PC 가 *물리적으로 다른 머신*. 각 PC 가 자체 로컬 카탈로그를 사용하며 이게 원래 설계 ([§1.1](#11-이-도구가-푸는-문제)). 휴대용 모델은 `<ROOT>/data/auth-profiles/` 가 그 머신 안에서만 닫혀 있어 같은 정책을 자연스럽게 만족한다.
 
 ---
 
-## 12. 다음 문서
+## 12. 휴대용 zip 만들기 (빌드 머신용)
+
+**받는 사람은 이 절을 읽지 않습니다.** 새 zip 산출물을 만드는 *빌드 머신* (운영팀 / 개발자) 용입니다. 받는 사람은 §1~§10 까지로 충분.
+
+### 12.1 한 번 — 캐시 채우기
+
+빌드 머신에서 처음 한 번 인터넷에 연결된 채로:
+
+```bash
+bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target win64
+# macOS arm64 도 만들 거면:
+bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target macos-arm64
+# 둘 다 한 번에:
+bash playwright-allinone/replay-ui-portable-build/build-cache.sh --target all
+```
+
+`.replay-ui-cache/cache/` 안에 wheels + Chromium 이 채워집니다.
+
+### 12.2 zip 산출
+
+```powershell
+# Windows 빌드 머신 (PowerShell)
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File playwright-allinone/replay-ui-portable-build/pack-windows.ps1 -MakeZip
+```
+
+```bash
+# macOS arm64 빌드 머신
+bash playwright-allinone/replay-ui-portable-build/pack-macos.sh --make-zip
+```
+
+산출 위치 — `playwright-allinone/replay-ui-portable-build/build-out/DSCORE-ReplayUI-portable-{win64|macos-arm64}-<날짜시각>.zip` (약 360MB).
+
+### 12.3 자동 갱신 hook (개발자 권장)
+
+저장소 코드를 바꾼 채로 `git push` 하면 자동으로 자산을 재채워주는 hook. 한 번만:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+설치 후 `git push` 시 stale 검출 + `pack-*` 자동 호출. 실패해도 push 자체는 차단 안 함 (개발 흐름 보호). 자세한 동작은 [.githooks/README.md](../../.githooks/README.md).
+
+---
+
+## 13. 다음 문서
 
 | 알고 싶은 것 | 문서 |
 |---|---|

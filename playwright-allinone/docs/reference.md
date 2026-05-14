@@ -137,21 +137,7 @@ Recording UI session 예:
 └── play-llm.log
 ```
 
-모니터링 PC (Replay UI, 1회 설치형) 디렉토리:
-
-```text
-~/.dscore.ttc.monitor/
-├── venv/
-├── chromium/             ← PLAYWRIGHT_BROWSERS_PATH
-├── auth-profiles/        ← Replay UI 와 Recording UI 가 공유 가능
-├── scenarios/            ← .py 시나리오 업로드 위치
-├── scripts/
-├── runs/                 ← 실행 결과 (trace.zip, 보고서, 로그)
-├── replay-ui.pid
-└── replay-ui.stdout.log
-```
-
-휴대용 zip 풀린 디렉토리 (Replay UI portable):
+모니터링 PC (Replay UI, 휴대용 zip 풀린 디렉토리):
 
 ```text
 DSCORE-ReplayUI-portable-<os>-<ts>/

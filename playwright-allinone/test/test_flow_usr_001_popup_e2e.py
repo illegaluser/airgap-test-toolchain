@@ -20,7 +20,7 @@
   - Ollama qwen3.5:9b 활성 (LLM healing 대비)
 
 Usage:
-    /c/Users/csr68/.dscore.ttc.monitor/venv/Scripts/python.exe \\
+    "$HOME/.dscore.ttc.playwright-agent/venv/Scripts/python.exe" \\
         playwright-allinone/test/test_flow_usr_001_popup_e2e.py
 """
 

@@ -16,7 +16,7 @@
   8. cross-link 클릭 → 새 탭으로 18092 (Recording UI) 진입
 
 Usage:
-    /c/Users/csr68/.dscore.ttc.monitor/venv/Scripts/python.exe \\
+    "$HOME/.dscore.ttc.playwright-agent/venv/Scripts/python.exe" \\
         playwright-allinone/test/test_replay_ui_walkthrough_headed.py
 """
 

@@ -142,7 +142,7 @@ def test_wrapper_generates_trace_zip(tmp_path: Path):
         "    browser = p.chromium.launch(headless=True)\n"
         "    context = browser.new_context()\n"
         "    page = context.new_page()\n"
-        f"    page.goto('file://{fixture_html}')\n"
+        f"    page.goto({fixture_html.as_uri()!r})\n"
         "    page.wait_for_load_state('domcontentloaded')\n"
         "    context.close()\n"
         "    browser.close()\n",
@@ -166,6 +166,58 @@ def test_wrapper_generates_trace_zip(tmp_path: Path):
     trace = sess_dir / "trace.zip"
     assert trace.is_file(), "trace.zip 미생성"
     # zip 이 비어있지 않은지 — 최소 trace.trace 한 파일은 있어야 함
+    import zipfile
+    with zipfile.ZipFile(trace, "r") as zf:
+        names = zf.namelist()
+    assert any(n.endswith("trace.trace") for n in names), \
+        f"trace.trace 누락. 파일들: {names[:10]}"
+
+
+@pytest.mark.e2e
+def test_wrapper_generates_trace_zip_for_browser_new_page(tmp_path: Path):
+    """``browser.new_page()`` 형 스크립트 (Plan B.6 표준 smoke 패턴) 도 trace.zip 산출.
+
+    회귀 가드 — Playwright 의 ``Browser.new_page`` 는 public ``Browser.new_context`` 가
+    아닌 impl-level 우회 경로를 타므로, ``Browser.new_context`` monkey-patch 만으로는
+    tracing.start 가 발화하지 않는다. 별도 ``Browser.new_page`` patch 가 필요.
+    이 가드 없이는 받는 사람이 zip 안의 README 표준 예시를 그대로 돌려도 결과 폴더에
+    trace.zip / screenshots 가 안 나온다 (운영자 리뷰 2026-05-14 finding 3).
+    """
+    fixture_html = tmp_path / "page.html"
+    fixture_html.write_text(
+        "<!doctype html><html><body><h1>hello</h1></body></html>",
+        encoding="utf-8",
+    )
+
+    sess_dir = tmp_path / "session"
+    sess_dir.mkdir()
+    (sess_dir / "original.py").write_text(
+        "from playwright.sync_api import sync_playwright\n"
+        "with sync_playwright() as p:\n"
+        "    browser = p.chromium.launch(headless=True)\n"
+        "    page = browser.new_page()\n"
+        f"    page.goto({fixture_html.as_uri()!r})\n"
+        "    page.wait_for_load_state('domcontentloaded')\n"
+        "    browser.close()\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        str(PROJECT_ROOT) + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
+    )
+    env["CODEGEN_SESSION_DIR"] = str(sess_dir)
+    env["CODEGEN_SCRIPT"] = "original.py"
+
+    proc = subprocess.run(
+        [VENV_PY, "-m", "recording_shared.codegen_trace_wrapper"],
+        env=env, capture_output=True, timeout=60,
+    )
+    assert proc.returncode == 0, (
+        f"래퍼 실패: stderr={proc.stderr.decode('utf-8', 'replace')[-500:]}"
+    )
+    trace = sess_dir / "trace.zip"
+    assert trace.is_file(), "trace.zip 미생성 — Browser.new_page hook 회귀"
     import zipfile
     with zipfile.ZipFile(trace, "r") as zf:
         names = zf.namelist()

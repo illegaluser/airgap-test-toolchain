@@ -14,7 +14,7 @@
     /tmp/example_com_recorded.py 로 미리 복사해 둠.
 
 Usage:
-    /c/Users/csr68/.dscore.ttc.monitor/venv/Scripts/python.exe \\
+    "$HOME/.dscore.ttc.playwright-agent/venv/Scripts/python.exe" \\
         playwright-allinone/test/test_replay_ui_real_run_headed.py
 """
 

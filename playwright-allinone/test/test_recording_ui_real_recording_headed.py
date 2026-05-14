@@ -11,7 +11,7 @@
 준비된 인증 프로파일이나 시드는 사용하지 않는다 (비로그인 녹화).
 
 Usage:
-    /c/Users/csr68/.dscore.ttc.monitor/venv/Scripts/python.exe \\
+    "$HOME/.dscore.ttc.playwright-agent/venv/Scripts/python.exe" \\
         playwright-allinone/test/test_recording_ui_real_recording_headed.py
 """
 

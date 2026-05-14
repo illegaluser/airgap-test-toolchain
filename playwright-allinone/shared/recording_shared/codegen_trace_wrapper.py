@@ -150,7 +150,14 @@ def _attach_progress_logging(ctx: BrowserContext) -> None:
 
 
 def _install_tracing_patches(session_dir: Path) -> None:
-    """Browser.new_context / BrowserContext.close 에 tracing hook 주입."""
+    """Browser.new_context / Browser.new_page / BrowserContext.close 에 tracing hook 주입.
+
+    `new_page` 까지 patch 하는 이유 — Playwright Python 의 ``browser.new_page()`` 는
+    내부적으로 public ``Browser.new_context`` 가 아닌 *impl-level* ``_impl_obj.new_context``
+    를 호출. 따라서 ``Browser.new_context`` monkey-patch 를 우회한다.
+    Plan B.6 의 표준 smoke 예시 (``page = browser.new_page()``) 가 정확히 이 패턴이라
+    이 hook 없이는 trace.zip / screenshots / storage_state 주입이 모두 무력화.
+    """
     trace_path = session_dir / "trace.zip"
     # 이전 실행의 trace 가 있으면 삭제 (덮어쓰기 의미)
     try:
@@ -160,9 +167,37 @@ def _install_tracing_patches(session_dir: Path) -> None:
         pass
 
     real_new_context = Browser.new_context
+    real_new_page = Browser.new_page
+    real_browser_close = Browser.close
     real_close = BrowserContext.close
     started_contexts: list[BrowserContext] = []
     stopped_paths: set[str] = set()  # 중복 stop 방지
+
+    def _stop_tracing_now(source: str) -> None:
+        """started_contexts 중 가장 마지막 활성 것에서 tracing.stop → trace.zip 저장."""
+        for ctx in reversed(started_contexts):
+            if str(trace_path) in stopped_paths:
+                return
+            try:
+                ctx.tracing.stop(path=str(trace_path))
+                stopped_paths.add(str(trace_path))
+                return
+            except Exception as e:  # noqa: BLE001
+                print(f"[codegen-trace] tracing.stop ({source}) 실패: {e}",
+                      file=sys.stderr)
+
+    def _start_tracing_on(ctx: BrowserContext, source: str) -> None:
+        try:
+            ctx.tracing.start(screenshots=True, snapshots=True, sources=False)
+            started_contexts.append(ctx)
+        except Exception as e:  # noqa: BLE001 — best-effort
+            print(f"[codegen-trace] tracing.start ({source}) 실패 — 계속 진행: {e}",
+                  file=sys.stderr)
+        try:
+            _attach_progress_logging(ctx)
+        except Exception as e:  # noqa: BLE001
+            print(f"[codegen-trace] 진행 훅 부착 ({source}) 실패: {e}",
+                  file=sys.stderr)
 
     def patched_new_context(self, **kwargs):
         # 로그인 프로파일 / fingerprint 주입 — 사용자 스크립트는 보통 빈 컨텍스트로
@@ -171,14 +206,23 @@ def _install_tracing_patches(session_dir: Path) -> None:
         # 사용자가 명시한 값은 절대 덮어쓰지 않음 (의도 보존).
         _inject_auth_and_fingerprint(kwargs)
         ctx = real_new_context(self, **kwargs)
-        try:
-            ctx.tracing.start(screenshots=True, snapshots=True, sources=False)
-            started_contexts.append(ctx)
-        except Exception as e:  # noqa: BLE001 — best-effort
-            print(f"[codegen-trace] tracing.start 실패 — 계속 진행: {e}",
-                  file=sys.stderr)
-        _attach_progress_logging(ctx)
+        _start_tracing_on(ctx, "new_context")
         return ctx
+
+    def patched_new_page(self, **kwargs):
+        # browser.new_page() 도 동등 처리 — kwargs 는 new_context 와 동일 시그니처를
+        # 받아 owned context 에 적용된다. 따라서 storage_state / viewport / 등 주입을
+        # 같은 helper 로 처리. 반환된 page 의 owned context 에 tracing 시작.
+        _inject_auth_and_fingerprint(kwargs)
+        page = real_new_page(self, **kwargs)
+        try:
+            ctx = page.context
+        except Exception as e:  # noqa: BLE001
+            print(f"[codegen-trace] page.context 접근 실패 (new_page hook): {e}",
+                  file=sys.stderr)
+            return page
+        _start_tracing_on(ctx, "new_page")
+        return page
 
     def patched_close(self, *args, **kwargs):
         # 가장 마지막에 close 되는 context 만 trace.zip 으로 저장
@@ -192,21 +236,23 @@ def _install_tracing_patches(session_dir: Path) -> None:
                 print(f"[codegen-trace] tracing.stop 실패: {e}", file=sys.stderr)
         return real_close(self, *args, **kwargs)
 
+    def patched_browser_close(self, *args, **kwargs):
+        # `browser.close()` 는 owned/manual context 를 impl-level 로 일괄 닫아
+        # 위 `BrowserContext.close` monkey-patch 를 우회. browser 가 닫힌 뒤엔
+        # context 핸들이 죽어 tracing.stop 이 실패하므로 *먼저* 산출을 만든다.
+        # 이 hook 없이는 ``browser.new_page() ... browser.close()`` 패턴 (Plan B.6
+        # smoke 예시) 에서 trace.zip 이 안 나오는 회귀가 재발한다.
+        _stop_tracing_now("browser.close")
+        return real_browser_close(self, *args, **kwargs)
+
     Browser.new_context = patched_new_context  # type: ignore[assignment]
+    Browser.new_page = patched_new_page  # type: ignore[assignment]
+    Browser.close = patched_browser_close  # type: ignore[assignment]
     BrowserContext.close = patched_close  # type: ignore[assignment]
 
-    # 사용자 스크립트가 예외로 종료되어 close() 미호출일 수 있으므로 atexit 도 등록
-    def _flush_remaining():
-        for ctx in started_contexts:
-            try:
-                if str(trace_path) in stopped_paths:
-                    return
-                ctx.tracing.stop(path=str(trace_path))
-                stopped_paths.add(str(trace_path))
-            except Exception:
-                pass
-
-    atexit.register(_flush_remaining)
+    # 사용자 스크립트가 예외로 종료되어 close() 미호출일 수 있으므로 atexit 도 등록.
+    # 정상 경로에서는 위 patched_browser_close / patched_close 가 먼저 stop 시킴.
+    atexit.register(lambda: _stop_tracing_now("atexit"))
 
 
 def _inject_auth_and_fingerprint(kwargs: dict) -> None:

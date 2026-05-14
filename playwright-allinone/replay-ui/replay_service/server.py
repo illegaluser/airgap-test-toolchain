@@ -7,7 +7,7 @@
 설계:
 - bind 는 **127.0.0.1 전용** (계획 D10).
 - 사용자 startup task 로 기동 (D9 — OS 서비스 X).
-- 데이터 루트 = ``~/.dscore.ttc.monitor/`` 또는 ``MONITOR_HOME`` env.
+- 데이터 루트 = ``MONITOR_HOME`` env (휴대용 launcher 가 ``<ROOT>/data`` 로 박음 — 미설정 시 즉시 실패).
 """
 
 from __future__ import annotations
@@ -46,12 +46,18 @@ app = FastAPI(
 def _monitor_home() -> Path:
     """모니터링 PC 데이터 루트.
 
-    휴대용 모드에서는 Launch-ReplayUI.{bat,command} 가 ``MONITOR_HOME`` env 를
-    zip 폴더 안 ``<ROOT>/data`` 로 박는다. CLI 직접 호출 등 env 미설정 시
-    홈 디렉토리 fallback (~/.dscore.ttc.monitor) — 사용자가 명시 위치 원하면
-    ``MONITOR_HOME`` env 로 override.
+    휴대용 launcher (Launch-ReplayUI.{bat,command}) 가 ``MONITOR_HOME`` env 를
+    zip 폴더 안 ``<ROOT>/data`` 로 박는다. uvicorn 직접 호출 등 env 미설정 시
+    조용히 다른 곳에 빈 디렉토리를 만들면 진짜 데이터(`<ROOT>/data/`) 와
+    분리되므로, 즉시 명확한 에러로 죽인다.
     """
-    raw = os.environ.get("MONITOR_HOME") or "~/.dscore.ttc.monitor"
+    raw = os.environ.get("MONITOR_HOME")
+    if not raw:
+        raise RuntimeError(
+            "MONITOR_HOME env 가 설정돼 있지 않습니다. 휴대용 launcher "
+            "(Launch-ReplayUI.bat / Launch-ReplayUI.command) 로 기동하거나, "
+            "직접 기동 시 MONITOR_HOME=<휴대용 폴더>/data 를 export 한 뒤 다시 시도하세요."
+        )
     root = Path(raw).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     return root
