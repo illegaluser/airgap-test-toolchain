@@ -154,7 +154,7 @@ def _inject_post_click_waits(
         from recording_shared.trace_parser import click_actions_post_nav_flags
         flags = click_actions_post_nav_flags(trace_zip)
     except Exception as e:  # noqa: BLE001
-        log.warning("[Convert/AST] trace 분석 실패 — wait 삽입 스킵: %s", e)
+        log.warning("[Convert/AST] trace analysis failed — skipping wait injection: %s", e)
         return scenario
     if not flags:
         return scenario
@@ -184,7 +184,7 @@ def _inject_post_click_waits(
         })
         inserted += 1
     if inserted:
-        log.info("[Convert/AST] post-click wait %d 건 자동 삽입", inserted)
+        log.info("[Convert/AST] auto-injected %d post-click waits", inserted)
     return out
 
 

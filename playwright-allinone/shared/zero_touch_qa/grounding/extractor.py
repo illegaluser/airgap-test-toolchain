@@ -54,10 +54,10 @@ def fetch_inventory(
 
     except PWTimeout as e:
         inv.error = f"timeout: {e}"
-        log.warning("[grounding] %s 추출 timeout: %s", target_url, e)
+        log.warning("[grounding] %s extraction timeout: %s", target_url, e)
     except Exception as e:  # noqa: BLE001 — graceful degradation 정책
         inv.error = f"{type(e).__name__}: {e}"
-        log.warning("[grounding] %s 추출 실패: %s", target_url, e)
+        log.warning("[grounding] %s extraction failed: %s", target_url, e)
 
     if inv.error is None:
         log.info(

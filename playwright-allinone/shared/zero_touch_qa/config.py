@@ -71,7 +71,7 @@ class Config:
         if not api_key:
             fetched = fetch_token_from_container()
             if fetched:
-                log.info("[Config] DIFY_API_KEY 자동 조회 — 컨테이너 DB 에서 토큰 획득")
+                log.info("[Config] DIFY_API_KEY auto-fetched — token obtained from container DB")
                 api_key = fetched
             else:
                 log.warning(

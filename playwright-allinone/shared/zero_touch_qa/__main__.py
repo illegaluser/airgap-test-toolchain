@@ -96,7 +96,7 @@ def main():
 
     # Recording 서비스 계약상 convert-only 오용은 Dify retry 전에 즉시 실패해야 한다.
     if args.convert_only and args.mode != "convert":
-        log.error("--convert-only 는 --mode convert 와 함께만 사용한다.")
+        log.error("--convert-only must be used together with --mode convert.")
         sys.exit(1)
 
     config = Config.from_env()
@@ -129,7 +129,7 @@ def main():
         sys.exit(1)
 
     if not scenario:
-        log.error("시나리오가 비어 있습니다.")
+        log.error("Scenario is empty.")
         sys.exit(1)
 
     # --convert-only: Recording 서비스(또는 외부 호출자) 가 변환 결과만 필요한 경우
@@ -149,7 +149,7 @@ def main():
     # gemma4:e4b 같은 작은 모델이 Chatflow 의 navigate-first 지시를 무시할 때
     # 브라우저가 about:blank 에서 시작해 모든 후속 step 이 실패하는 것을 막는다.
     if target_url and scenario[0].get("action") != "navigate":
-        log.info("[Guard] scenario[0].action != navigate — TARGET_URL 로 navigate step 자동 prepend")
+        log.info("[Guard] scenario[0].action != navigate — auto-prepending a navigate step to TARGET_URL")
         scenario.insert(0, {
             "step": 1,
             "action": "navigate",
@@ -173,7 +173,7 @@ def main():
     uploaded_name = _copy_upload_to_artifacts(upload_source, config.artifacts_dir)
 
     # 실행
-    log.info("시나리오 실행 시작 (%d스텝, headed=%s)", len(scenario), headed)
+    log.info("Scenario execution starting (%d steps, headed=%s)", len(scenario), headed)
     executor = QAExecutor(config)
     results = executor.execute(
         scenario,
@@ -200,7 +200,7 @@ def main():
     # 결과 요약
     passed = sum(1 for r in results if r.status in ("PASS", "HEALED"))
     failed = sum(1 for r in results if r.status == "FAIL")
-    log.info("실행 완료 — PASS: %d, FAIL: %d", passed, failed)
+    log.info("Execution done — PASS: %d, FAIL: %d", passed, failed)
 
     if failed > 0:
         sys.exit(1)
@@ -408,11 +408,11 @@ def _sanitize_scenario(scenario):
     keep = []
     for i, st in enumerate(scenario):
         if not isinstance(st, dict):
-            log.warning("[Sanitize] step[%d] 가 dict 아님 — drop: %r", i, st)
+            log.warning("[Sanitize] step[%d] is not a dict — drop: %r", i, st)
             continue
         action = st.get("action")
         if not isinstance(action, str):
-            log.warning("[Sanitize] step[%d] action 누락/None — drop: %r", i, st)
+            log.warning("[Sanitize] step[%d] action missing/None — drop: %r", i, st)
             continue
         normalized = action.strip().strip("`'\" ").lower()
         if normalized not in _VALID_ACTIONS:
@@ -427,11 +427,11 @@ def _sanitize_scenario(scenario):
                 )
                 st = {**st, "action": head}
             else:
-                log.warning("[Sanitize] step[%d] 미지원 action=%r — drop", i, action)
+                log.warning("[Sanitize] step[%d] unsupported action=%r — drop", i, action)
                 continue
         keep.append(st)
     if len(keep) != len(scenario):
-        log.warning("[Sanitize] %d/%d step 유지", len(keep), len(scenario))
+        log.warning("[Sanitize] kept %d of %d steps", len(keep), len(scenario))
     return keep
 
 
@@ -472,7 +472,7 @@ def _prepare_scenario(
         # 손으로 작성한 scenario.json 의 mock_status value 정수성 같은 계약 위반이
         # 런타임 ValueError 로 흘러들어가 자가치유에 의해 가려지는 것을 막는다.
         _validate_scenario(scenario)
-        log.info("[Scenario] %s 로드 (%d스텝)", args.scenario, len(scenario))
+        log.info("[Scenario] %s loaded (%d steps)", args.scenario, len(scenario))
         return scenario
 
     if args.mode == "convert":
@@ -493,7 +493,7 @@ def _prepare_scenario(
 
     if args.mode == "doc":
         if not args.file:
-            log.warning("[Doc] --file 인자가 없습니다. SRS_TEXT로 대체합니다.")
+            log.warning("[Doc] --file argument missing. Falling back to SRS_TEXT.")
         else:
             # 클라이언트 측 파일 → 텍스트 추출 후 srs_text 에 prepend.
             # Dify Chatflow 의 Planner 노드가 context.enabled=false 상태라 파일 업로드
@@ -516,9 +516,9 @@ def _prepare_scenario(
                         )
                     else:
                         srs_text = f"[첨부 문서 내용]\n{doc_text}"
-                    log.info("[Doc] 문서에서 %d 자 추출, srs_text 에 병합", len(doc_text))
+                    log.info("[Doc] extracted %d chars from document, merging into srs_text", len(doc_text))
                 else:
-                    log.warning("[Doc] 문서에서 추출된 텍스트가 비어있습니다.")
+                    log.warning("[Doc] extracted text from document is empty.")
             except Exception as e:
                 log.warning(
                     "[Doc] 파일 추출 실패 (%s) — 기존 upload_file 경로로 폴백", e
@@ -587,7 +587,7 @@ def _copy_upload_to_artifacts(source_path: str | None, artifacts_dir: str) -> st
     except OSError:
         pass
     shutil.copy2(source_path, dest)
-    log.info("[Upload] 원본 파일 artifacts 에 복사: %s", basename)
+    log.info("[Upload] copied original file into artifacts: %s", basename)
     return basename
 
 
@@ -608,7 +608,7 @@ def _generate_error_report(artifacts_dir: str, error_msg: str):
     path = os.path.join(artifacts_dir, "index.html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    log.info("[Error Report] %s 생성", path)
+    log.info("[Error Report] generated: %s", path)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -725,12 +725,12 @@ def _run_auth_cli(argv: list) -> int:
     }
     handler = handlers.get(args.action)
     if handler is None:
-        log.error("[auth] 알 수 없는 action: %s", args.action)
+        log.error("[auth] unknown action: %s", args.action)
         return 1
     try:
         return handler(args, ap)
     except KeyboardInterrupt:
-        log.warning("[auth] 사용자 중단")
+        log.warning("[auth] interrupted by user")
         return 130
 
 

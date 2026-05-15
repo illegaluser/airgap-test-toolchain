@@ -45,7 +45,7 @@ def generate_regression_test(
     실패 스텝이 있으면 생성하지 않고 None을 반환한다.
     """
     if any(r.status == "FAIL" for r in results):
-        log.info("[Regression] 실패 스텝 존재 — 생성 건너뜀")
+        log.info("[Regression] failed step present — skipping generation")
         return None
 
     needs_auth_imports = any(
@@ -338,7 +338,7 @@ def generate_regression_test(
     output_path = os.path.join(output_dir, "regression_test.py")
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    log.info("[Regression] 독립 테스트 생성 완료: %s", output_path)
+    log.info("[Regression] standalone test generation done: %s", output_path)
     return output_path
 
 

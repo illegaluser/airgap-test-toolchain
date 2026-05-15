@@ -114,7 +114,7 @@ def _ensure_root() -> Path:
         os.chmod(root, _DIR_MODE)
     except OSError as e:
         # 외부에서 마운트한 디렉토리 등 chmod 안 되는 환경 — warn 만.
-        log.warning("[auth-profiles] root 권한 0700 설정 실패 (%s): %s", root, e)
+        log.warning("[auth-profiles] failed to set root perms 0700 (%s): %s", root, e)
     return root
 
 
@@ -219,7 +219,7 @@ def _load_index() -> dict:
     except (OSError, json.JSONDecodeError) as e:
         # 카탈로그 파일이 깨졌으면 빈 카탈로그로 fallback. 데이터 손실은 storage
         # 파일이 남아 있으면 사용자가 수동 복구 가능. 로그로만 경고.
-        log.warning("[auth-profiles] _index.json 로드 실패 — 빈 카탈로그로 진행 (%s)", e)
+        log.warning("[auth-profiles] _index.json load failed — proceeding with empty catalog (%s)", e)
         return _empty_index()
     # 최소 구조 보정 (외부에서 손댄 경우).
     if not isinstance(data, dict):
@@ -549,7 +549,7 @@ def list_profiles() -> list["AuthProfile"]:
     out: list[AuthProfile] = []
     for raw in data.get("profiles", []):
         if not isinstance(raw, dict):
-            log.warning("[auth-profiles] 카탈로그에 비정상 항목 (dict 아님) — 스킵")
+            log.warning("[auth-profiles] non-dict entry in catalog — skipping")
             continue
         try:
             out.append(AuthProfile.from_dict(raw))
@@ -613,10 +613,10 @@ def delete_profile(name: str) -> None:
     storage_p = _root() / storage_basename
     try:
         storage_p.unlink()
-        log.info("[auth-profiles] 삭제됨 — name=%s storage=%s", name, storage_p)
+        log.info("[auth-profiles] deleted — name=%s storage=%s", name, storage_p)
     except FileNotFoundError:
         # 멱등성 — 파일이 이미 없으면 카탈로그 정리만 한 셈.
-        log.info("[auth-profiles] 삭제됨 (storage 파일 이미 없음) — name=%s", name)
+        log.info("[auth-profiles] deleted (storage file already missing) — name=%s", name)
     except OSError as e:
         # 카탈로그는 이미 갱신됐는데 파일 unlink 가 실패. 사용자가 수동 정리 필요.
         log.warning(
@@ -672,7 +672,7 @@ def _read_machine_uuid_macos() -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        log.debug("[auth-profiles] ioreg 호출 실패 — %s", e)
+        log.debug("[auth-profiles] ioreg invocation failed — %s", e)
         return ""
     if result.returncode != 0:
         return ""
@@ -739,7 +739,7 @@ def current_playwright_version() -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        log.debug("[auth-profiles] playwright --version 호출 실패 — %s", e)
+        log.debug("[auth-profiles] playwright --version invocation failed — %s", e)
         return ""
     if result.returncode != 0:
         return ""
@@ -1294,7 +1294,7 @@ def _record_verify(profile: "AuthProfile", *, ok: bool, detail: dict) -> None:
         _upsert_profile(profile)
     except Exception as e:
         # 카탈로그 갱신 실패는 verify 결과 자체에 영향 주지 않음 — warn 만.
-        log.warning("[auth-profiles] verify 결과 카탈로그 갱신 실패 — %s", e)
+        log.warning("[auth-profiles] failed to update catalog with verify result — %s", e)
 
 
 def verify_profile(
@@ -1446,7 +1446,7 @@ def _run_seed_subprocess(cmd: list[str], timeout_sec: int) -> None:
         SeedTimeoutError: ``timeout_sec`` 안에 종료 안 됨 (사용자가 창 미종료).
         SeedSubprocessError: subprocess 실행 자체 실패 또는 비정상 returncode.
     """
-    log.info("[auth-profiles] subprocess 실행 — %s", " ".join(cmd))
+    log.info("[auth-profiles] subprocess running — %s", " ".join(cmd))
     try:
         result = subprocess.run(
             cmd,
@@ -1538,7 +1538,7 @@ def _do_seed_io(
         try:
             os.chmod(storage_path, _FILE_MODE)
         except OSError as e:
-            log.warning("[auth-profiles] storage 권한 0600 설정 실패 — %s", e)
+            log.warning("[auth-profiles] failed to set storage perms 0600 — %s", e)
 
     # D12 — dump 검증.
     try:
