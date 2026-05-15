@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from helpers.scenarios import click, fill, navigate, verify, wait
+from helpers.scenarios import click, fill, navigate, verify, wait  # noqa: F401
 
 
 def test_iframe_payment_card_input(make_executor, run_scenario, fixture_url):
@@ -187,3 +187,36 @@ def test_bare_iframe_chain_with_prefix_title_matcher(
     ])
     statuses = [r.status for r in results]
     assert all(s == "PASS" for s in statuses), f"실패: {statuses}"
+
+
+def test_iframe_chain_contenteditable_fill_uses_textcontent_postcheck(
+    make_executor, run_scenario, fixture_url,
+):
+    """Nested iframe 안 contenteditable body 에 fill 이 PASS 해야 한다.
+
+    회귀 가드: executor 의 _do_fill 이 post-check 단계에서 무조건
+    ``locator.input_value()`` 를 호출하던 시절에는 contenteditable 대상이
+    'Node is not an <input>, <textarea> or <select> element' 로 즉시 fail
+    해 LLM healer 까지 도달했다 (Naver kEditor 패턴). 본 테스트는 fill 의
+    contenteditable 분기(post-check 가 textContent 비교) 가 작동함을 확인.
+    """
+    executor = make_executor()
+    page = fixture_url("iframe_codegen_chain.html")
+    target = (
+        'iframe[title="에디터 전체 영역"] >> '
+        'iframe[title^="편집 모드 영역"] >> #keditor_body'
+    )
+    results, _, _ = run_scenario(executor, [
+        navigate(page, step=1),
+        # 사용자가 본 실패 케이스 — fill 한 번에 곧장 PASS 가 나와야 한다.
+        fill(target, "take me home", step=2),
+        verify(target, step=3, condition="contains_text", value="take me home"),
+    ])
+    statuses = [r.status for r in results]
+    assert all(s == "PASS" for s in statuses), f"실패: {statuses}"
+    # 회귀 보강: LLM healer 까지 가서야 통과한 적도 있으므로 step 2 는
+    # heal_stage 'none' (그대로 PASS) 이어야 한다.
+    assert results[1].heal_stage == "none", (
+        f"step 2 가 LLM healer 거쳐 PASS 됐다 — _do_fill 의 contenteditable "
+        f"분기가 작동 안 한 신호. heal_stage={results[1].heal_stage!r}"
+    )

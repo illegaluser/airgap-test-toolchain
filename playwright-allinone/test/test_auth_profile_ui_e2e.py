@@ -223,7 +223,7 @@ def _is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
 @pytest.fixture(scope="session")
 def ui_daemon(stub_path_dir, seeded_auth_dir, tmp_path_factory):
     if _is_port_listening(E2E_PORT):
-        pytest.skip(f"port {E2E_PORT} 가 이미 사용 중 — Tier 3 e2e 스킵")
+        pytest.skip(f"port {E2E_PORT} already in use - Tier 3 e2e skipped")
 
     rec_root = tmp_path_factory.mktemp("ui_e2e_rec")
 
@@ -258,7 +258,7 @@ def ui_daemon(stub_path_dir, seeded_auth_dir, tmp_path_factory):
         time.sleep(0.2)
     else:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
         pytest.skip("Tier 3 daemon healthz 대기 timeout")
@@ -266,11 +266,11 @@ def ui_daemon(stub_path_dir, seeded_auth_dir, tmp_path_factory):
     yield {"base": E2E_BASE, "auth_root": seeded_auth_dir}
 
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.terminate()
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
     except ProcessLookupError:
@@ -290,9 +290,28 @@ def page(ui_daemon):
         page_.evaluate(
             "document.querySelectorAll('details').forEach((d) => { d.open = true; });"
         )
-        # 인증 블록 fetch 완료 대기.
+        # 인증 블록 fetch 완료 대기. 옛 UI 는 #auth-profile-select 셀렉트박스였고
+        # 현재 UI 는 #auth-profiles-tbody 테이블 — 어느 한쪽이라도 데이터가 들어
+        # 오면 ready 로 본다. 둘 다 없으면 5초 timeout.
         page_.wait_for_function(
-            "document.querySelector('#auth-profile-select').options.length > 1",
+            """
+            (() => {
+                const sel = document.querySelector('#auth-profile-select');
+                if (sel && sel.options.length > 1) return true;
+                const tbody = document.querySelector('#auth-profiles-tbody');
+                if (tbody) {
+                    const rows = tbody.querySelectorAll('tr');
+                    // .muted 한 줄(로딩 placeholder) 만 남아 있으면 아직 fetch 중.
+                    if (rows.length === 0) return false;
+                    if (rows.length === 1 && rows[0].classList.contains('muted')) {
+                        // '— 등록된 프로파일 없음 —' 안내문 (.muted 라도 fetch 완료된 상태) 도 ready.
+                        return true;
+                    }
+                    return true;
+                }
+                return false;
+            })()
+            """,
             timeout=5000,
         )
         yield page_
@@ -306,12 +325,17 @@ def page(ui_daemon):
 
 class TestAuthMarkup:
     def test_critical_ids_present(self, page: Page):
-        """인증 블록 + 4 모달의 critical ID 가 DOM 에 존재 (P5.1)."""
+        """인증 블록 + 모달의 critical ID 가 DOM 에 존재 (P5.1).
+
+        2026-05-13 UI 리팩토링: 옛 단일 dropdown + verify 버튼 (#auth-profile-select
+        / #btn-auth-verify / #auth-status) 패턴은 테이블 기반 (#auth-profiles-tbody
+        의 행마다 '다시 로그인' / '삭제' 버튼) 으로 교체됨. 현재 UI 의 critical ID
+        만 검증.
+        """
         for sel in [
-            "#auth-profile-select",
-            "#btn-auth-verify",
+            "#auth-profiles-tbody",
             "#btn-auth-seed",
-            "#auth-status",
+            "#btn-auth-refresh",
             "#auth-seed-dialog",
             "#auth-seed-progress",
             "#auth-expired-dialog",
@@ -335,34 +359,41 @@ class TestAuthMarkup:
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestDropdown:
+    """2026-05-13 UI 리팩토링 후: 옛 카드 상단의 단일 #auth-profile-select 드롭다운
+    + verify 버튼 패턴은 테이블 기반 UI (#auth-profiles-tbody 의 행마다 액션 버튼)
+    로 교체됨. 본 클래스의 테스트는 '카탈로그 표시' 라는 핵심 의도를 새 UI 의 행에서
+    검증하도록 갱신."""
+
     def test_seeded_profiles_listed(self, page: Page):
-        opts = page.locator("#auth-profile-select option").all_text_contents()
-        # "(없음 — 비로그인 녹화)" + 3개 시드 프로파일.
-        joined = " ".join(opts)
+        # 카탈로그의 모든 프로파일 이름은 #auth-profiles-tbody 의 행마다 <strong>
+        # 으로 표시됨 (renderAuthProfilesTable).
+        names = page.locator("#auth-profiles-tbody tr td:first-child strong").all_text_contents()
+        joined = " ".join(names)
         assert "ui-valid" in joined
         assert "ui-expired" in joined
         assert "ui-with-ss" in joined
 
     def test_session_storage_warning_label(self, page: Page):
-        """sessionStorage 경고 라벨 (P5.9) — 'ui-with-ss' 옵션에 ⚠sessionStorage 표시."""
-        opts = page.locator("#auth-profile-select option").all_text_contents()
-        ss_opt = next(o for o in opts if "ui-with-ss" in o)
-        assert "sessionStorage" in ss_opt or "⚠" in ss_opt
+        """sessionStorage 경고 라벨 (P5.9) — 'ui-with-ss' 행에 ⚠ sessionStorage 의존 배지."""
+        # 행 전체 텍스트로 매칭. 새 UI 에선 상태 셀 옆에 muted span 으로 표시.
+        row_text = page.locator(
+            "#auth-profiles-tbody tr",
+            has_text="ui-with-ss",
+        ).first.text_content() or ""
+        assert "sessionStorage" in row_text or "⚠" in row_text
 
-    def test_select_updates_status(self, page: Page):
-        page.locator("#auth-profile-select").select_option("ui-valid")
-        # 상태 라벨이 갱신될 시간을 잠깐 줌.
-        page.wait_for_timeout(200)
-        status_text = page.locator("#auth-status").text_content() or ""
-        assert "ui-valid" in status_text or "localhost" in status_text
+    def test_seeded_profile_row_has_reseed_button(self, page: Page):
+        """행마다 '다시 로그인' 버튼이 있어야 — 옛 verify 버튼 대체 동선."""
+        # 'ui-valid' 행의 .auth-reseed-row 버튼 존재 + 활성.
+        row = page.locator("#auth-profiles-tbody tr", has_text="ui-valid").first
+        reseed_btn = row.locator(".auth-reseed-row")
+        assert reseed_btn.count() == 1
+        assert not reseed_btn.is_disabled()
 
-    def test_verify_button_enabled_after_select(self, page: Page):
-        """프로파일 선택 전 verify 버튼 disabled, 선택 후 enabled (P5.2)."""
-        verify_btn = page.locator("#btn-auth-verify")
-        assert verify_btn.is_disabled()
-        page.locator("#auth-profile-select").select_option("ui-valid")
-        page.wait_for_timeout(200)
-        assert not verify_btn.is_disabled()
+    # 옛 #btn-auth-verify 는 테이블 기반 UI 도입(2026-05-13) 으로 삭제됨 —
+    # 명시적 verify 진입점 자체가 사라졌고, 각 행의 '다시 로그인' 이 그 자리.
+    # 옛 test_verify_button_enabled_after_select 는 위 test_seeded_profile_row_has_reseed_button
+    # 으로 의도 흡수.
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -171,7 +171,7 @@ def e2e_root(tmp_path_factory):
 def e2e_daemon(e2e_root):
     """별도 포트로 recording-service spawn. session-scoped — 모든 E2E 가 공유."""
     if _is_port_listening(E2E_PORT):
-        pytest.skip(f"port {E2E_PORT} 가 이미 사용 중 — E2E 전용 포트 충돌")
+        pytest.skip(f"port {E2E_PORT} already in use - E2E port conflict")
 
     env = os.environ.copy()
     env["PYTHONPATH"] = (
@@ -214,7 +214,7 @@ def e2e_daemon(e2e_root):
         time.sleep(0.2)
     else:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
         pytest.skip("E2E daemon healthz 대기 timeout (20s)")
@@ -222,11 +222,11 @@ def e2e_daemon(e2e_root):
     yield E2E_BASE
 
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.terminate()
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
     except Exception:  # noqa: BLE001

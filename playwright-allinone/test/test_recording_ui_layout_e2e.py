@@ -183,15 +183,15 @@ def daemon(daemon_root):
             break
         time.sleep(0.2)
     else:
-        try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        try: proc.kill()
         except Exception: pass
         pytest.skip("daemon 시작 timeout")
     yield E2E_BASE
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.terminate()
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        try: proc.kill()
         except Exception: pass
     except Exception:
         pass
