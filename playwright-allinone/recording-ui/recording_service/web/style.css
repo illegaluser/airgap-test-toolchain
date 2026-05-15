@@ -698,24 +698,33 @@ dialog textarea {
 .log-actions button:hover { background: #e6e6ea; }
 .log-actions .toast { font-size: 0.78rem; color: var(--muted); margin-left: 4px; }
 
-/* Hide native <details> triangle, add custom chevron that rotates on open.
-   The chevron tells users the header is a toggle. */
-summary { list-style: none; cursor: pointer; position: relative; padding-right: 1.4em; }
+/* Hide native <details> triangle, add custom +/− toggle indicator.
+   Use + (closed) / − (open) — unambiguous, not confused with title triangles
+   like ▶ in 'Run Console'. */
+summary {
+  list-style: none;
+  cursor: pointer;
+  position: relative;
+  display: block;
+  width: 100%;
+  padding-right: 1.8em;
+}
 summary::-webkit-details-marker { display: none; }
 summary::marker { display: none; }
 summary::after {
-  content: "▸";
+  content: "+";
   position: absolute;
-  right: 4px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--muted);
-  font-size: 0.9em;
-  transition: transform 0.15s ease;
+  font-size: 1.1em;
+  font-weight: 600;
+  line-height: 1;
+  width: 1em;
+  text-align: center;
 }
-details[open] > summary::after {
-  transform: translateY(-50%) rotate(90deg);
-}
+details[open] > summary::after { content: "−"; }
 summary:hover::after { color: var(--text); }
 #play-progress-details summary {
   cursor: pointer;
