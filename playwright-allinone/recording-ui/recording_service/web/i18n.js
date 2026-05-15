@@ -342,6 +342,26 @@
 
     // ── footer ───────────────────────────────────────────────────────────────
     "footer.text": "Recording UI · host daemon · air-gap compatible",
+
+    // ── dynamic strings used by app.js ───────────────────────────────────────
+    "badge.codegenMissing": "⚠ codegen not installed · v{v}",
+    "sessions.filterNoMatch": "0 matches ({n} total)",
+    "sessions.empty.bare": "no sessions",
+    "sessions.row.open": "Open",
+    "sessions.row.delete": "Delete",
+    "count.selected": "{n} selected",
+    "time.minSec": "{m}m {s}s",
+    "time.sec": "{s}s",
+    "scenario.loadFail": "(scenario.json load failed: {msg})",
+    "alert.stepCopyFail": "Step copy failed: {msg}",
+    "err.clipboardUnsupported": "Browser does not support clipboard API — HTTPS/localhost required",
+    "alert.copyFail": "Copy failed: {msg}",
+    "preview.collapse": "▴ Collapse",
+    "preview.expand": "▾ Expand all",
+    "relTime.sec": "{n}s ago",
+    "relTime.min": "{n}m ago",
+    "relTime.hour": "{n}h ago",
+    "relTime.day": "{n}d ago",
   };
 
   const DICT = { en: EN };
@@ -364,11 +384,28 @@
   }
 
   // Look up a key. Used by app.js for dynamic strings.
-  function t(key, fallback) {
+  //   t("k", "ko fallback")           → "ko fallback" in ko, dict.en[k] in en
+  //   t("k", "ko {x} {y}", {x,y})     → same, with {placeholder} substitution
+  //   t("k", {x,y})                   → if 2nd arg is an object, treat as vars
+  //                                     (key must exist in ko inline use case — rare)
+  function t(key, fallback, vars) {
+    let v;
+    if (typeof fallback === "object" && fallback !== null) {
+      vars = fallback;
+      fallback = null;
+    }
     const lang = getLang();
-    if (lang === "ko") return fallback != null ? fallback : key;
-    const v = DICT.en[key];
-    return v != null ? v : (fallback != null ? fallback : key);
+    if (lang === "ko") {
+      v = fallback != null ? fallback : key;
+    } else {
+      v = DICT.en[key] != null ? DICT.en[key] : (fallback != null ? fallback : key);
+    }
+    if (vars) {
+      for (const k in vars) {
+        v = v.split("{" + k + "}").join(String(vars[k]));
+      }
+    }
+    return v;
   }
 
   function _cacheOriginal(el, attr) {

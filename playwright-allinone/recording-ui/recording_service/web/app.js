@@ -37,7 +37,7 @@ async function loadHealth() {
       badge.textContent = `✓ healthy · v${h.version}`;
       badge.className = "ok";
     } else {
-      badge.textContent = `⚠ codegen 미설치 · v${h.version}`;
+      badge.textContent = I18N.t("badge.codegenMissing", "⚠ codegen 미설치 · v{v}", { v: h.version });
       badge.className = "warn";
     }
   } catch (e) {
@@ -66,7 +66,10 @@ function _renderSessionRows() {
   const tbody = $("#session-tbody");
   if (!filtered.length) {
     const all = _sessionsCache.length;
-    tbody.innerHTML = `<tr class="muted"><td colspan="8">— ${all > 0 ? "필터 일치 0건 (" + all + "건 중)" : "세션 없음"} —</td></tr>`;
+    const emptyMsg = all > 0
+      ? I18N.t("sessions.filterNoMatch", "필터 일치 0건 ({n}건 중)", { n: all })
+      : I18N.t("sessions.empty.bare", "세션 없음");
+    tbody.innerHTML = `<tr class="muted"><td colspan="8">— ${emptyMsg} —</td></tr>`;
     _updateSessionBulkUi();
     return;
   }
@@ -80,8 +83,8 @@ function _renderSessionRows() {
       <td>${s.action_count || 0}</td>
       <td class="muted">${formatIso(s.created_at_iso)}</td>
       <td class="row-actions">
-        <button data-act="open" data-sid="${s.id}">열기</button>
-        <button data-act="del" data-sid="${s.id}" class="danger">삭제</button>
+        <button data-act="open" data-sid="${s.id}">${I18N.t("sessions.row.open", "열기")}</button>
+        <button data-act="del" data-sid="${s.id}" class="danger">${I18N.t("sessions.row.delete", "삭제")}</button>
       </td>
     </tr>
   `).join("");
@@ -96,7 +99,7 @@ function _selectedSessionIds() {
 function _updateSessionBulkUi() {
   const n = _selectedSessionIds().length;
   const cnt = $("#session-selected-count");
-  if (cnt) cnt.textContent = `${n}개 선택`;
+  if (cnt) cnt.textContent = I18N.t("count.selected", "{n}개 선택", { n });
   const btn = $("#btn-session-delete-selected");
   if (btn) btn.disabled = (n === 0);
   // header check 상태: 전부 체크면 ON, 일부면 indeterminate, 아니면 OFF
@@ -331,7 +334,9 @@ function updateElapsed() {
   const sec = Math.round((Date.now() - _state.startedAt) / 1000);
   const m = Math.floor(sec / 60);
   const s = sec % 60;
-  $("#active-elapsed").textContent = m > 0 ? `${m}분 ${s}초` : `${s}초`;
+  $("#active-elapsed").textContent = m > 0
+    ? I18N.t("time.minSec", "{m}분 {s}초", { m, s })
+    : I18N.t("time.sec", "{s}초", { s });
 }
 
 // ── 결과 패널 ────────────────────────────────────────────────────────────────
@@ -355,7 +360,7 @@ async function openSession(sid) {
       _scenarioStepCount = Array.isArray(scenario) ? scenario.length : 0;
       $("#result-json").textContent = JSON.stringify(scenario, null, 2);
     } catch (err) {
-      $("#result-json").textContent = `(scenario.json 로드 실패: ${err.message})`;
+      $("#result-json").textContent = I18N.t("scenario.loadFail", "(scenario.json 로드 실패: {msg})", { msg: err.message });
     }
     _refreshPreviewToggle("result-json");
     // 산출물이 있는 카드는 토글 펼침 (R6).
@@ -1183,7 +1188,7 @@ document.addEventListener("click", async (e) => {
     btn.textContent = "✓";
     setTimeout(() => { btn.textContent = "📋"; }, 800);
   } catch (err) {
-    alert("Step 복사 실패: " + err.message);
+    alert(I18N.t("alert.stepCopyFail", "Step 복사 실패: {msg}", { msg: err.message }));
   }
 });
 
@@ -1219,7 +1224,7 @@ document.addEventListener("keydown", (e) => {
 // ── 클립보드 복사 (항목 2) ─────────────────────────────────────────────────
 async function _copyToClipboard(text) {
   if (!navigator.clipboard) {
-    throw new Error("브라우저가 clipboard API 미지원 — HTTPS/localhost 필요");
+    throw new Error(I18N.t("err.clipboardUnsupported", "브라우저가 clipboard API 미지원 — HTTPS/localhost 필요"));
   }
   await navigator.clipboard.writeText(text);
 }
@@ -1243,7 +1248,7 @@ document.addEventListener("click", async (e) => {
       }, 800);
     }
   } catch (err) {
-    alert("복사 실패: " + err.message);
+    alert(I18N.t("alert.copyFail", "복사 실패: {msg}", { msg: err.message }));
   }
 });
 
@@ -1258,7 +1263,9 @@ document.addEventListener("click", (e) => {
   if (!pre) return;
   const willExpand = !pre.classList.contains("expanded");
   pre.classList.toggle("expanded", willExpand);
-  btn.textContent = willExpand ? "▴ 접기" : "▾ 전체 펼치기";
+  btn.textContent = willExpand
+    ? I18N.t("preview.collapse", "▴ 접기")
+    : I18N.t("preview.expand", "▾ 전체 펼치기");
 });
 
 // 길이가 임계 이상일 때만 토글 버튼 노출. 짧으면 어차피 전체 보이므로 UI 군더더기.
@@ -1271,7 +1278,7 @@ function _refreshPreviewToggle(targetId) {
   // 펼친 상태였으면 측정 위해 잠깐 접고 비교 — 그러나 일반적으로 텍스트 갱신 시점에는
   // 닫힘 상태이므로 그대로 측정.
   pre.classList.remove("expanded");
-  btn.textContent = "▾ 전체 펼치기";
+  btn.textContent = I18N.t("preview.expand", "▾ 전체 펼치기");
   const clipped = pre.scrollHeight > pre.clientHeight + 1;
   btn.hidden = !clipped;
 }
@@ -1404,10 +1411,10 @@ function _formatRelative(iso) {
   try {
     const dt = new Date(iso);
     const sec = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
-    if (sec < 60) return `${sec}초 전`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}분 전`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}시간 전`;
-    return `${Math.floor(sec / 86400)}일 전`;
+    if (sec < 60) return I18N.t("relTime.sec", "{n}초 전", { n: sec });
+    if (sec < 3600) return I18N.t("relTime.min", "{n}분 전", { n: Math.floor(sec / 60) });
+    if (sec < 86400) return I18N.t("relTime.hour", "{n}시간 전", { n: Math.floor(sec / 3600) });
+    return I18N.t("relTime.day", "{n}일 전", { n: Math.floor(sec / 86400) });
   } catch {
     return iso;
   }
