@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Role-conditional submenu (GNB-like)</title>
+  <style>
+    /* Parent menu item. Hovering it reveals the submenu. */
+    nav { display: flex; gap: 12px; padding: 10px; border-bottom: 1px solid #ccc; }
+    nav > .menu { position: relative; cursor: pointer; padding: 6px 12px; }
+    nav > .menu > .submenu { display: none; position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid #ccc; padding: 8px; min-width: 200px; }
+    nav > .menu:hover > .submenu { display: block; }
+    /* Submenu items render as <a> with role conditionally elevated to "button"
+       only when the parent menu is :hover (mimics SPA where ARIA role is toggled
+       via JS based on menu-open state). At codegen time the human opened the menu
+       so role=button matched; on replay the menu is closed so role=button → 0. */
+    .submenu .item { display: block; padding: 4px 8px; color: #1d1d1f; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>Role-conditional GNB</h1>
+  <nav>
+    <div class="menu" id="menu-notify">
+      <span>알림·소통</span>
+      <div class="submenu">
+        <a href="#data-market" class="item" id="leaf-data-market">데이터·API 마켓</a>
+        <a href="#service-inquiry" class="item" id="leaf-service-inquiry">서비스 문의</a>
+      </div>
+    </div>
+    <div class="menu" id="menu-other">
+      <span>기타</span>
+      <div class="submenu">
+        <a href="#other-1" class="item">기타 1</a>
+      </div>
+    </div>
+  </nav>
+  <p id="clicked-target" data-clicked="">last click: <span id="clicked-text">(none)</span></p>
+
+  <script>
+    // role attribute is *added* on the leaf only while the menu is hovered
+    // (codegen-time state) and *removed* when not hovered (replay-time state
+    // immediately after navigate).
+    const menu = document.getElementById('menu-notify');
+    const leaves = menu.querySelectorAll('.item');
+    const setRole = (on) => leaves.forEach((el) => {
+      if (on) el.setAttribute('role', 'button');
+      else el.removeAttribute('role');
+    });
+    menu.addEventListener('mouseenter', () => setRole(true));
+    menu.addEventListener('mouseleave', () => setRole(false));
+    // Recording the click — UI guard so verify can read what was clicked.
+    document.querySelectorAll('.item').forEach((a) => {
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        document.getElementById('clicked-text').textContent = a.textContent || '';
+        document.getElementById('clicked-target').dataset.clicked = a.id;
+      });
+    });
+  </script>
+</body>
+</html>
