@@ -362,6 +362,61 @@
     "relTime.min": "{n}m ago",
     "relTime.hour": "{n}h ago",
     "relTime.day": "{n}d ago",
+
+    // Phase 2-b: Play / Doc / Compare flow
+    "scenario.empty.disabled":
+      "scenario.json is empty — unavailable. This import script wasn't converted into " +
+      "a scenario (not a codegen artifact and not a tour pattern). Only 'Run test code " +
+      "as recorded' is available.",
+    "alert.startFail": "Start failed: {msg}",
+    "alert.stopFail": "Stop failed: {msg}",
+    "alert.noSession": "No session selected.",
+    "alert.positionInvalid": "position must be a positive integer (>= 1).",
+    "alert.stepAdded": "Step {n} added (total: {total} steps)",
+    "alert.stepAddFail": "Add Step failed: {msg}",
+    "annotate.noInject":
+      "\nannotate: examined {n} clicks → 0 hovers injected (using original as-is)",
+    "annotate.injected":
+      "\nannotate: examined {n} clicks → {k} hovers injected\n",
+    "play.running.headed":
+      "⏳ {label} running... (a browser window will appear on the host — keep it open until done)",
+    "play.running.headless":
+      "⏳ {label} running... (headless mode — no window. The live progress log below is your only signal.)",
+    "play.done": "✓ {label} done",
+    "play.fail": "✗ {label} failed",
+    "play.aborted.expired":
+      "⚠ {label} aborted — auth session '{name}' expired ({reason}). Re-seed and try again.",
+    "play.failDetail": "✗ {label} failed: {msg}",
+    "play.label.codegen": "Run test code as recorded",
+    "play.label.llm": "Run LLM-applied code",
+    "enrich.running": "⏳ Ollama reverse-inference running... (may take tens of seconds to several minutes)",
+    "enrich.done": "✓ Generate Doc done (model={model}, {ms}ms)",
+    "enrich.savedTo": "Saved: {path}",
+    "enrich.fail": "✗ Reverse-inference failed: {msg}",
+    "compare.notArray": "doc-DSL must be a JSON array.",
+    "alert.jsonParseFail": "JSON parse failed: {msg}",
+    "compare.done": "✓ Compare done",
+    "compare.counts":
+      "Exact: {exact} · Value diff: {valueDiff} · Missing: {missing} · " +
+      "Extra: {extra} · Intent-only: {intentOnly}",
+    "compare.reportHtml": "Report HTML: {url}",
+    "alert.compareFail": "Compare failed: {msg}",
+    "confirm.deleteSession":
+      "Delete session {sid}? (the host directory will also be removed)",
+    "alert.deleteFail": "Delete failed: {msg}",
+    "confirm.deleteSelected":
+      "Delete the {n} selected session(s)?\n(host directories will also be removed)",
+    "alert.deletePartial": "{ok}/{total} deleted. Failures:\n",
+    "runlog.emptyShort": "empty run-log",
+    "runlog.shotZoom": "Zoom screenshot",
+    "runlog.stepCopy": "Copy this step JSON",
+    "diff.noChange": "(no difference)",
+    "diff.analysisHint":
+      "— Click <strong>🔎 LLM analysis</strong> to start analysis —",
+    "diff.calling": "⏳ Calling Ollama... model inference takes about 30–60s.",
+    "diff.fail": "✗ Analysis failed:",
+    "import.uploading": "⏳ Uploading...",
+    "alert.uploadFail": "Upload failed: {msg}",
   };
 
   const DICT = { en: EN };

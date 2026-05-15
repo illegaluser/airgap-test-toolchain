@@ -419,7 +419,8 @@ function _setLlmDocAvailability(scenarioStepCount) {
   const btnLlm = document.getElementById("btn-play-llm");
   const btnEnrich = document.getElementById("btn-enrich");
   const btnCompare = document.getElementById("btn-compare-open");
-  const emptyMsg = (
+  const emptyMsg = I18N.t(
+    "scenario.empty.disabled",
     "scenario.json 이 비어 있어 사용 불가 — 시나리오로 변환되지 않은 임포트 스크립트 " +
     "(codegen 산출물도 tour 패턴도 아닌 경우). 테스트코드 원본 실행만 가능합니다."
   );
@@ -513,7 +514,7 @@ $("#start-form").addEventListener("submit", async (e) => {
     _setRplusInactive();
     await loadSessions();
   } catch (err) {
-    alert("Start 실패: " + err.message);
+    alert(I18N.t("alert.startFail", "Start 실패: {msg}", { msg: err.message }));
   } finally {
     // success 경로에선 showActivePanel 이 비활성 상태를 잡고 있으니 덮어쓰지 않음.
     if (!_state.activeSid) $("#btn-start").disabled = false;
@@ -529,7 +530,7 @@ $("#btn-stop").addEventListener("click", async () => {
     if (data.id) await openSession(data.id);
     await loadSessions();
   } catch (err) {
-    alert("Stop 실패: " + err.message);
+    alert(I18N.t("alert.stopFail", "Stop 실패: {msg}", { msg: err.message }));
   } finally {
     $("#btn-stop").disabled = false;
   }
@@ -549,7 +550,7 @@ $("#assertion-form select[name='action']").addEventListener("change", (e) => {
 $("#assertion-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const sid = e.target.dataset.sid;
-  if (!sid) { alert("세션 미선택."); return; }
+  if (!sid) { alert(I18N.t("alert.noSession", "세션 미선택.")); return; }
   const fd = new FormData(e.target);
   const payload = {
     action: fd.get("action"),
@@ -565,7 +566,7 @@ $("#assertion-form").addEventListener("submit", async (e) => {
   if (posRaw) {
     const pos = parseInt(posRaw, 10);
     if (Number.isNaN(pos) || pos < 1) {
-      alert("position 은 1 이상의 정수여야 합니다.");
+      alert(I18N.t("alert.positionInvalid", "position 은 1 이상의 정수여야 합니다."));
       return;
     }
     payload.position = pos;
@@ -575,9 +576,9 @@ $("#assertion-form").addEventListener("submit", async (e) => {
     const data = await addAssertion(sid, payload);
     e.target.reset();
     await openSession(sid);
-    alert(`Step ${data.step_added} 추가됨 (총 ${data.step_count} 스텝)`);
+    alert(I18N.t("alert.stepAdded", "Step {n} 추가됨 (총 {total} 스텝)", { n: data.step_added, total: data.step_count }));
   } catch (err) {
-    alert("Step 추가 실패: " + err.message);
+    alert(I18N.t("alert.stepAddFail", "Step 추가 실패: {msg}", { msg: err.message }));
   }
 });
 
@@ -596,12 +597,19 @@ function _annotateLine(a) {
   if (!a) return "";
   if (a.skipped) return `\nannotate: skipped — ${a.skipped}`;
   if (a.injected === 0) {
-    return `\nannotate: examined ${a.examined_clicks} clicks → 0 hover 주입 (원본 그대로 사용)`;
+    return I18N.t(
+      "annotate.noInject",
+      "\nannotate: examined {n} clicks → 0 hover 주입 (원본 그대로 사용)",
+      { n: a.examined_clicks },
+    );
   }
   const triggers = (a.triggers || []).map((t, i) => `  ${i + 1}. ${t}`).join("\n");
   return (
-    `\nannotate: examined ${a.examined_clicks} clicks → ${a.injected} hover 주입\n` +
-    triggers
+    I18N.t(
+      "annotate.injected",
+      "\nannotate: examined {n} clicks → {k} hover 주입\n",
+      { n: a.examined_clicks, k: a.injected },
+    ) + triggers
   );
 }
 
@@ -616,8 +624,8 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
   const headedEl = document.getElementById("rplus-headed");
   const headed = headedEl ? headedEl.checked : true;
   _rplusOutputBox().textContent = headed
-    ? `⏳ ${label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)`
-    : `⏳ ${label} 진행 중... (헤드리스 모드 — 화면에 창이 뜨지 않습니다. 아래 ‘실시간 진행 로그’ 가 진행 상황의 유일한 신호입니다)`;
+    ? I18N.t("play.running.headed", "⏳ {label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)", { label })
+    : I18N.t("play.running.headless", "⏳ {label} 진행 중... (헤드리스 모드 — 화면에 창이 뜨지 않습니다. 아래 ‘실시간 진행 로그’ 가 진행 상황의 유일한 신호입니다)", { label });
 
   // P2 — 실시간 로그 진행 박스 초기화 + 1s 폴링.
   const progress = $("#play-progress");
@@ -646,7 +654,9 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
 
   try {
     const data = await fn(sid);
-    const status = data.returncode === 0 ? `✓ ${label} 완료` : `✗ ${label} 실패`;
+    const status = data.returncode === 0
+      ? I18N.t("play.done", "✓ {label} 완료", { label })
+      : I18N.t("play.fail", "✗ {label} 실패", { label });
     _rplusOutputBox().textContent =
       `${status}\n\n` +
       `returncode: ${data.returncode}\n` +
@@ -674,8 +684,11 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
     if (err.status === 409 && err.detail?.reason === "profile_expired") {
       const profName = err.detail.profile_name || _authState.selected || "—";
       const reason = err.detail.fail_reason || err.detail.reason || "verify failed";
-      _rplusOutputBox().textContent =
-        `⚠ ${label} 중단 — 인증 세션 '${profName}' 만료 (${reason}). 재시드 후 다시 실행하세요.`;
+      _rplusOutputBox().textContent = I18N.t(
+        "play.aborted.expired",
+        "⚠ {label} 중단 — 인증 세션 '{name}' 만료 ({reason}). 재시드 후 다시 실행하세요.",
+        { label, name: profName, reason },
+      );
       // 만료된 프로파일 이름을 관리 상태에도 반영 — 재시드 다이얼로그가
       // detail fetch / prefill 을 정상 수행하도록.
       if (profName && profName !== "—") {
@@ -683,7 +696,7 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
       }
       _showExpiredDialog(profName, reason);
     } else {
-      _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
+      _rplusOutputBox().textContent = I18N.t("play.failDetail", "✗ {label} 실패: {msg}", { label, msg: err.message });
     }
   } finally {
     stopped = true;
@@ -693,27 +706,27 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
 }
 
 $("#btn-play-codegen").addEventListener("click", () =>
-  _runPlay("테스트코드 실행", "#btn-play-codegen", playCodegen, "codegen"),
+  _runPlay(I18N.t("play.label.codegen", "테스트코드 실행"), "#btn-play-codegen", playCodegen, "codegen"),
 );
 
 $("#btn-play-llm").addEventListener("click", () =>
-  _runPlay("LLM 적용 코드 실행", "#btn-play-llm", playLLM, "llm"),
+  _runPlay(I18N.t("play.label.llm", "LLM 적용 코드 실행"), "#btn-play-llm", playLLM, "llm"),
 );
 
 $("#btn-enrich").addEventListener("click", async () => {
   const sid = _currentRplusSid();
   if (!sid) return;
   $("#btn-enrich").disabled = true;
-  _rplusOutputBox().textContent = "⏳ Ollama 역추정 진행 중... (수십 초~수 분 소요 가능)";
+  _rplusOutputBox().textContent = I18N.t("enrich.running", "⏳ Ollama 역추정 진행 중... (수십 초~수 분 소요 가능)");
   try {
     const data = await enrichSession(sid);
     _rplusOutputBox().textContent =
-      `✓ Generate Doc 완료 (model=${data.model}, ${data.elapsed_ms.toFixed(0)}ms)\n` +
-      `저장: ${data.saved_to}\n\n` +
+      I18N.t("enrich.done", "✓ Generate Doc 완료 (model={model}, {ms}ms)", { model: data.model, ms: data.elapsed_ms.toFixed(0) }) + "\n" +
+      I18N.t("enrich.savedTo", "저장: {path}", { path: data.saved_to }) + "\n\n" +
       "─".repeat(40) + "\n\n" +
       data.markdown;
   } catch (err) {
-    _rplusOutputBox().textContent = "✗ 역추정 실패: " + err.message;
+    _rplusOutputBox().textContent = I18N.t("enrich.fail", "✗ 역추정 실패: {msg}", { msg: err.message });
   } finally {
     $("#btn-enrich").disabled = false;
   }
@@ -734,9 +747,9 @@ $("#compare-form").addEventListener("submit", async (e) => {
   let docDsl;
   try {
     docDsl = JSON.parse(fd.get("doc_dsl"));
-    if (!Array.isArray(docDsl)) throw new Error("doc-DSL 은 JSON 배열이어야 합니다.");
+    if (!Array.isArray(docDsl)) throw new Error(I18N.t("compare.notArray", "doc-DSL 은 JSON 배열이어야 합니다."));
   } catch (err) {
-    alert("JSON 파싱 실패: " + err.message);
+    alert(I18N.t("alert.jsonParseFail", "JSON 파싱 실패: {msg}", { msg: err.message }));
     return;
   }
   const threshold = fd.get("threshold") || 0.7;
@@ -746,14 +759,17 @@ $("#compare-form").addEventListener("submit", async (e) => {
     const data = await compareSession(sid, docDsl, threshold);
     const c = data.counts;
     _rplusOutputBox().textContent =
-      `✓ Compare 완료\n\n` +
-      `정확: ${c.exact} · 값차이: ${c.value_diff} · 누락: ${c.missing} · ` +
-      `추가: ${c.extra} · 녹화 외 의도: ${c.intent_only}\n` +
-      `리포트 HTML: ${data.report_html_url}\n`;
+      I18N.t("compare.done", "✓ Compare 완료") + "\n\n" +
+      I18N.t(
+        "compare.counts",
+        "정확: {exact} · 값차이: {valueDiff} · 누락: {missing} · 추가: {extra} · 녹화 외 의도: {intentOnly}",
+        { exact: c.exact, valueDiff: c.value_diff, missing: c.missing, extra: c.extra, intentOnly: c.intent_only },
+      ) + "\n" +
+      I18N.t("compare.reportHtml", "리포트 HTML: {url}", { url: data.report_html_url }) + "\n";
     window.open(data.report_html_url, "_blank");
     $("#compare-dialog").close();
   } catch (err) {
-    alert("Compare 실패: " + err.message);
+    alert(I18N.t("alert.compareFail", "Compare 실패: {msg}", { msg: err.message }));
   } finally {
     $("#btn-compare-submit").disabled = false;
   }
@@ -767,14 +783,14 @@ $("#session-tbody").addEventListener("click", async (e) => {
   if (btn.dataset.act === "open") {
     await openSession(sid);
   } else if (btn.dataset.act === "del") {
-    if (!confirm(`세션 ${sid} 를 삭제할까요? (호스트 디렉토리도 함께 제거)`)) return;
+    if (!confirm(I18N.t("confirm.deleteSession", "세션 {sid} 를 삭제할까요? (호스트 디렉토리도 함께 제거)", { sid }))) return;
     try {
       await deleteSession(sid);
       $("#result-section").hidden = true;
       $("#assertion-section").hidden = true;
       await loadSessions();
     } catch (err) {
-      alert("삭제 실패: " + err.message);
+      alert(I18N.t("alert.deleteFail", "삭제 실패: {msg}", { msg: err.message }));
     }
   }
 });
@@ -806,7 +822,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (del) del.addEventListener("click", async () => {
     const sids = _selectedSessionIds();
     if (!sids.length) return;
-    if (!confirm(`선택한 ${sids.length}개 세션을 삭제할까요?\n(호스트 디렉토리도 함께 제거)`)) return;
+    if (!confirm(I18N.t("confirm.deleteSelected", "선택한 {n}개 세션을 삭제할까요?\n(호스트 디렉토리도 함께 제거)", { n: sids.length }))) return;
     del.disabled = true;
     const failures = [];
     for (const sid of sids) {
@@ -820,7 +836,10 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#assertion-section").hidden = true;
     await loadSessions();
     if (failures.length) {
-      alert(`${sids.length - failures.length}/${sids.length} 삭제 완료. 실패:\n` + failures.join("\n"));
+      alert(
+        I18N.t("alert.deletePartial", "{ok}/{total} 삭제 완료. 실패:\n", { ok: sids.length - failures.length, total: sids.length })
+        + failures.join("\n"),
+      );
     }
   });
 });
@@ -907,7 +926,7 @@ async function _renderRunLog(sid, opts = {}) {
   const payload = resolved === "llm" ? llmRes : cgRes;
   const records = (payload && Array.isArray(payload.records)) ? payload.records : [];
   if (records.length === 0) {
-    container.innerHTML = '<p class="muted">— 빈 run-log —</p>';
+    container.innerHTML = `<p class="muted">— ${escapeHtml(I18N.t("runlog.emptyShort", "빈 run-log"))} —</p>`;
     return;
   }
 
@@ -921,10 +940,10 @@ async function _renderRunLog(sid, opts = {}) {
                   data-shot-sid="${escapeHtml(sid)}"
                   data-shot-mode="${escapeHtml(resolved)}"
                   data-shot-step="${escapeHtml(String(rec.step))}"
-                  title="스크린샷 확대">📷</button>`
+                  title="${escapeHtml(I18N.t("runlog.shotZoom", "스크린샷 확대"))}">📷</button>`
       : "—";
     const recJson = JSON.stringify(rec).replace(/'/g, "&#39;");
-    const copyCell = `<button class="copy-step-btn" data-step-json='${recJson}' title="이 step JSON 복사">📋</button>`;
+    const copyCell = `<button class="copy-step-btn" data-step-json='${recJson}' title="${escapeHtml(I18N.t("runlog.stepCopy", "이 step JSON 복사"))}">📋</button>`;
     return `
       <tr class="run-log-row run-log-${status.toLowerCase()}" data-step="${escapeHtml(String(rec.step))}">
         <td class="step-no">${escapeHtml(String(rec.step ?? "—"))}</td>
@@ -968,7 +987,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── 항목 4 — codegen 원본 ↔ LLM healed regression 비교 ────────────────────
 function _renderUnifiedDiff(text) {
-  if (!text) return '<span class="muted">(차이 없음)</span>';
+  if (!text) return `<span class="muted">${escapeHtml(I18N.t("diff.noChange", "(차이 없음)"))}</span>`;
   return text.split("\n").map((line) => {
     const safe = escapeHtml(line);
     if (line.startsWith("+++") || line.startsWith("---")) return `<span class="diff-meta">${safe}</span>`;
@@ -1029,8 +1048,10 @@ async function _renderDiff(sid) {
   card.hidden = false;
   $("#diff-output").innerHTML = _renderUnifiedDiff(data.unified_diff);
   // 분석 영역 초기화 (다른 세션 진입 시 이전 결과 흔적 제거)
-  $("#diff-analysis-output").innerHTML =
-    "— <strong>🔎 LLM 분석</strong> 버튼을 누르면 분석을 시작합니다 —";
+  $("#diff-analysis-output").innerHTML = I18N.t(
+    "diff.analysisHint",
+    "— <strong>🔎 LLM 분석</strong> 버튼을 누르면 분석을 시작합니다 —",
+  );
 }
 
 // LLM 분석 버튼 핸들러
@@ -1040,8 +1061,7 @@ $("#btn-analyze-diff").addEventListener("click", async () => {
   const out = $("#diff-analysis-output");
   const btn = $("#btn-analyze-diff");
   btn.disabled = true;
-  out.innerHTML =
-    '<span class="muted">⏳ Ollama 호출 중... 모델 추론에 30~60s 소요됩니다.</span>';
+  out.innerHTML = `<span class="muted">${escapeHtml(I18N.t("diff.calling", "⏳ Ollama 호출 중... 모델 추론에 30~60s 소요됩니다."))}</span>`;
   try {
     const data = await api(
       `/experimental/sessions/${sid}/diff-analysis`, { method: "POST" },
@@ -1052,7 +1072,7 @@ $("#btn-analyze-diff").addEventListener("click", async () => {
                     _renderMarkdown(data.markdown) + '</div>';
   } catch (err) {
     out.innerHTML =
-      '<span class="err">✗ 분석 실패:</span> ' + escapeHtml(err.message);
+      `<span class="err">${escapeHtml(I18N.t("diff.fail", "✗ 분석 실패:"))}</span> ` + escapeHtml(err.message);
   } finally {
     btn.disabled = false;
   }
@@ -1299,7 +1319,7 @@ $("#import-file-input").addEventListener("change", async (e) => {
   if (ap) fd.append("auth_profile", ap);
   const btn = $("#btn-import-script");
   btn.disabled = true;
-  btn.textContent = "⏳ 업로드 중...";
+  btn.textContent = I18N.t("import.uploading", "⏳ 업로드 중...");
   try {
     const r = await fetch("/recording/import-script", {
       method: "POST", body: fd,
@@ -1316,7 +1336,7 @@ $("#import-file-input").addEventListener("change", async (e) => {
       } else {
         msg = `HTTP ${r.status}`;
       }
-      alert("업로드 실패: " + msg);
+      alert(I18N.t("alert.uploadFail", "업로드 실패: {msg}", { msg }));
       return;
     }
     await loadSessions();
@@ -1324,10 +1344,10 @@ $("#import-file-input").addEventListener("change", async (e) => {
     // 결과 화면으로 스크롤
     $("#result-section").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
-    alert("업로드 실패: " + err.message);
+    alert(I18N.t("alert.uploadFail", "업로드 실패: {msg}", { msg: err.message }));
   } finally {
     btn.disabled = false;
-    btn.innerHTML = "📁 Play Script from File";
+    btn.innerHTML = I18N.t("rplus.upload.btn", "📁 Play Script from File");
     e.target.value = "";  // 같은 파일 재업로드 가능하도록 reset
   }
 });
