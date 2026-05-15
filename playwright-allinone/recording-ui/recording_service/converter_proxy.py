@@ -122,13 +122,13 @@ def run_convert(
     """
     if not is_docker_available():
         raise ConverterProxyError(
-            "docker 실행 파일을 찾을 수 없습니다. 호스트 PATH 를 확인하세요."
+            "docker executable not found. Check the host PATH."
         )
 
     host_session = Path(host_session_dir)
     host_original = host_session / "original.py"
     if not host_original.is_file():
-        raise ConverterProxyError(f"original.py 없음: {host_original}")
+        raise ConverterProxyError(f"original.py missing: {host_original}")
 
     sid = host_session.name
     # 컨테이너 안 scratch — 매 호출마다 격리.
