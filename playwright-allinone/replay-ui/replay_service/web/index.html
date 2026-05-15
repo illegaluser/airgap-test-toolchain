@@ -2,18 +2,26 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>Replay UI</title>
+  <title data-i18n="doc.title">Replay UI</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 
 <header>
-  <h1>🎬 Replay UI</h1>
+  <h1 data-i18n="header.title">🎬 Replay UI</h1>
   <a class="cross-link" href="http://localhost:18092/" target="_blank" rel="noopener noreferrer"
-     title="Recording UI 를 새 탭에서 열기 (port 18092)">📹 Recording UI ↗</a>
-  <span id="alarm-badge" class="alarm hidden" title="다시 로그인이 필요한 프로파일 수"></span>
+     data-i18n-attr-title="header.recording.title"
+     title="Recording UI 를 새 탭에서 열기 (port 18092)"
+     data-i18n="header.recording.label">📹 Recording UI ↗</a>
+  <span id="alarm-badge" class="alarm hidden"
+        data-i18n-attr-title="header.alarm.title"
+        title="다시 로그인이 필요한 프로파일 수"></span>
   <span class="spacer"></span>
-  <button id="btn-wizard" type="button" title="첫 사용 가이드 (로그인 등록 → 시나리오 .py 업로드 → 실행)">
+  <span id="lang-toggle" class="lang-toggle" aria-label="Language"></span>
+  <button id="btn-wizard" type="button"
+          data-i18n-attr-title="header.wizard.title"
+          title="첫 사용 가이드 (로그인 등록 → 시나리오 .py 업로드 → 실행)"
+          data-i18n="header.wizard.label">
     🧭 첫 사용 가이드
   </button>
 </header>
@@ -22,70 +30,83 @@
 
   <!-- 🔐 Login Profiles -->
   <section class="card">
-    <h2>🔐 Login Profiles</h2>
+    <h2 data-i18n="login.title">🔐 Login Profiles</h2>
     <div class="card-actions">
-      <button id="btn-add-alias" type="button">+ 새 프로파일</button>
-      <button id="btn-refresh-profiles" type="button" class="ghost">↻ 새로고침</button>
+      <button id="btn-add-alias" type="button" data-i18n="login.btn.add">+ 새 프로파일</button>
+      <button id="btn-refresh-profiles" type="button" class="ghost" data-i18n="login.btn.refresh">↻ 새로고침</button>
     </div>
     <table id="profiles-table" class="data-table">
       <thead>
         <tr>
-          <th>프로파일 이름</th><th>로그인 상태</th><th>최근 확인</th><th>사이트</th><th>액션</th>
+          <th data-i18n="login.col.name">프로파일 이름</th>
+          <th data-i18n="login.col.state">로그인 상태</th>
+          <th data-i18n="login.col.last">최근 확인</th>
+          <th data-i18n="login.col.site">사이트</th>
+          <th data-i18n="login.col.actions">액션</th>
         </tr>
       </thead>
       <tbody id="profiles-tbody">
-        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+        <tr class="muted"><td colspan="5" data-i18n="login.row.loading">— 로딩 중 —</td></tr>
       </tbody>
     </table>
   </section>
 
   <!-- 📄 시나리오 스크립트 (D17 — 번들 zip 폐기 후 단일 진입점) -->
   <section class="card">
-    <h2>📄 Scenario Scripts</h2>
-    <p class="muted">
+    <h2 data-i18n="scripts.title">📄 Scenario Scripts</h2>
+    <p class="muted" data-i18n-html="scripts.desc">
       Recording UI 에서 <code>⬇ 다운로드</code> 받은 <code>.py</code> 스크립트를 업로드합니다.
       적용할 로그인 프로파일은 실행 시점에 사용자가 직접 고르며, 비로그인 시나리오면 프로파일을 비워 두세요.
     </p>
     <div class="card-actions">
       <input type="file" id="script-file" accept=".py" hidden />
-      <button id="btn-upload-script" type="button">⬆ 업로드 (.py)</button>
-      <button id="btn-refresh-scripts" type="button" class="ghost">↻ 새로고침</button>
+      <button id="btn-upload-script" type="button" data-i18n="scripts.btn.upload">⬆ 업로드 (.py)</button>
+      <button id="btn-refresh-scripts" type="button" class="ghost" data-i18n="scripts.btn.refresh">↻ 새로고침</button>
       <button id="btn-bulk-delete-scripts" type="button" class="ghost" disabled
-              title="체크된 스크립트를 한 번에 삭제합니다.">🗑 선택 삭제</button>
+              data-i18n-attr-title="scripts.btn.bulkDelete.title"
+              title="체크된 스크립트를 한 번에 삭제합니다."
+              data-i18n="scripts.btn.bulkDelete">🗑 선택 삭제</button>
       <span class="card-actions-spacer"></span>
       <label class="inline-label">
-        <span>적용할 로그인 프로파일</span>
+        <span data-i18n="scripts.run.profile">적용할 로그인 프로파일</span>
         <select id="run-script-profile-select">
-          <option value="">(비로그인 — storage_state 미주입)</option>
+          <option value="" data-i18n="scripts.run.profile.none">(비로그인 — storage_state 미주입)</option>
         </select>
       </label>
       <label class="inline-label inline-checkbox">
         <input type="checkbox" id="run-script-headed-toggle" checked />
-        <span>화면 표시 (headed)</span>
+        <span data-i18n="scripts.run.headed">화면 표시 (headed)</span>
       </label>
       <label class="inline-label inline-checkbox"
+             data-i18n-attr-title="scripts.run.slowmo.title"
              title="각 액션 사이에 지연을 줍니다. 사람이 눈으로 따라가며 디버깅할 때 유용 — 다만 액션 수만큼 누적되어 전체 실행 시간이 길어집니다.">
         <input type="checkbox" id="run-script-slowmo-enabled" />
-        <span>액션 사이 지연</span>
+        <span data-i18n="scripts.run.slowmo">액션 사이 지연</span>
         <input type="number" id="run-script-slowmo-ms" value="1000" min="0" step="100"
                style="width:80px;" disabled />
-        <span class="muted">ms</span>
+        <span class="muted" data-i18n="scripts.run.slowmo.ms">ms</span>
       </label>
     </div>
     <label class="inline-label" style="display:block; margin-top:6px;">
-      <span>verify URL <em>(선택)</em></span>
-      <input type="url" id="run-script-verify-url" placeholder="비우면 프로파일 카탈로그의 verify URL 사용" style="width:60%;" />
+      <span><span data-i18n="scripts.run.verifyUrl">verify URL</span> <em data-i18n="scripts.run.verifyUrl.opt">(선택)</em></span>
+      <input type="url" id="run-script-verify-url"
+             data-i18n-attr-placeholder="scripts.run.verifyUrl.placeholder"
+             placeholder="비우면 프로파일 카탈로그의 verify URL 사용" style="width:60%;" />
     </label>
     <table id="scripts-table" class="data-table">
       <thead>
         <tr>
           <th class="col-check"><input type="checkbox" id="scripts-select-all"
+                                       data-i18n-attr-title="scripts.th.checkbox.title"
                                        title="전체 선택 / 해제" /></th>
-          <th>스크립트</th><th>등록일</th><th>크기</th><th>액션</th>
+          <th data-i18n="scripts.th.script">스크립트</th>
+          <th data-i18n="scripts.th.registered">등록일</th>
+          <th data-i18n="scripts.th.size">크기</th>
+          <th data-i18n="scripts.th.actions">액션</th>
         </tr>
       </thead>
       <tbody id="scripts-tbody">
-        <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+        <tr class="muted"><td colspan="5" data-i18n="login.row.loading">— 로딩 중 —</td></tr>
       </tbody>
     </table>
   </section>
@@ -93,29 +114,36 @@
 
   <!-- ▶ 실행 (실시간) -->
   <section class="card">
-    <h2>▶ Run Console</h2>
-    <div id="run-status" class="muted">— 대기 —</div>
+    <h2 data-i18n="run.title">▶ Run Console</h2>
+    <div id="run-status" class="muted" data-i18n="run.idle">— 대기 —</div>
     <pre id="run-stream" class="run-stream"></pre>
   </section>
 
   <!-- 📊 결과 -->
   <section class="card">
-    <h2>📊 Results</h2>
+    <h2 data-i18n="results.title">📊 Results</h2>
     <div class="card-actions">
-      <button id="btn-refresh-runs" type="button" class="ghost">↻ 새로고침</button>
+      <button id="btn-refresh-runs" type="button" class="ghost" data-i18n="results.btn.refresh">↻ 새로고침</button>
       <button id="btn-bulk-delete-runs" type="button" class="ghost" disabled
-              title="체크된 실행 결과를 한 번에 삭제합니다 (디스크 폴더까지 제거).">🗑 선택 삭제</button>
+              data-i18n-attr-title="results.btn.bulkDelete.title"
+              title="체크된 실행 결과를 한 번에 삭제합니다 (디스크 폴더까지 제거)."
+              data-i18n="results.btn.bulkDelete">🗑 선택 삭제</button>
     </div>
     <table id="runs-table" class="data-table">
       <thead>
         <tr>
           <th class="col-check"><input type="checkbox" id="runs-select-all"
+                                       data-i18n-attr-title="scripts.th.checkbox.title"
                                        title="전체 선택 / 해제" /></th>
-          <th>시간</th><th>시나리오</th><th>프로파일 이름</th><th>결과</th><th></th>
+          <th data-i18n="results.th.time">시간</th>
+          <th data-i18n="results.th.scenario">시나리오</th>
+          <th data-i18n="results.th.profile">프로파일 이름</th>
+          <th data-i18n="results.th.result">결과</th>
+          <th></th>
         </tr>
       </thead>
       <tbody id="runs-tbody">
-        <tr class="muted"><td colspan="6">— 로딩 중 —</td></tr>
+        <tr class="muted"><td colspan="6" data-i18n="login.row.loading">— 로딩 중 —</td></tr>
       </tbody>
     </table>
   </section>
@@ -134,68 +162,72 @@
   <div class="modal-backdrop" data-modal-close="seed-input-modal"></div>
   <div class="modal-body">
     <form id="seed-input-form">
-      <h3 id="seed-input-title">+ 새 로그인 프로파일</h3>
-      <p class="muted">
+      <h3 id="seed-input-title" data-i18n="seed.input.title">+ 새 로그인 프로파일</h3>
+      <p class="muted" data-i18n="seed.input.desc">
         이 단계는 1회만 수행합니다 (만료 시 다시 로그인). 사람이 직접 사이트에 로그인 +
         2중 확인을 통과하면 그 결과를 저장해서 이후 시나리오 실행에 자동으로 재사용합니다.
       </p>
 
       <label class="modal-row">
-        <span>프로파일 이름</span>
+        <span data-i18n="seed.input.name">프로파일 이름</span>
         <input type="text" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"
                placeholder="예: dpg-qa"
+               data-i18n-attr-title="seed.input.name.title"
                title="영문/숫자/_/- 1~64자, 첫 글자는 영문/숫자" />
       </label>
 
       <label class="modal-row">
-        <span>시작 URL</span>
+        <span data-i18n="seed.input.url">시작 URL</span>
         <input type="url" name="seed_url" required placeholder="https://example.com/" />
       </label>
-      <p class="muted modal-hint">
+      <p class="muted modal-hint" data-i18n-html="seed.input.url.hint">
         ⚠ 테스트 대상 <strong>서비스</strong> 진입 페이지를 입력하세요 (네이버 로그인 페이지가 아님).
       </p>
 
       <label class="modal-row">
-        <span>검증 URL</span>
+        <span data-i18n="seed.input.verifyUrl">검증 URL</span>
         <input type="url" name="verify_service_url" required placeholder="https://example.com/mypage" />
       </label>
-      <p class="muted modal-hint">
+      <p class="muted modal-hint" data-i18n="seed.input.verifyUrl.hint">
         시드 후 자동으로 이 URL 에 접근해 로그인 상태를 확인합니다.
       </p>
 
       <label class="modal-row">
-        <span>검증 텍스트 <em>(선택)</em></span>
-        <input type="text" name="verify_service_text" placeholder="김QA님 환영합니다" />
+        <span><span data-i18n="seed.input.verifyText">검증 텍스트</span> <em data-i18n="seed.input.verifyText.opt">(선택)</em></span>
+        <input type="text" name="verify_service_text"
+               data-i18n-attr-placeholder="seed.input.verifyText.placeholder"
+               placeholder="김QA님 환영합니다" />
       </label>
-      <p class="muted modal-hint">
+      <p class="muted modal-hint" data-i18n="seed.input.verifyText.hint">
         비우면 검증 URL 접근 성공만 확인. 채우면 해당 텍스트까지 보여야 통과 (강한 검증).
       </p>
 
       <label class="modal-row">
-        <span>TTL 힌트 (시간)</span>
+        <span data-i18n="seed.input.ttl">TTL 힌트 (시간)</span>
         <input type="number" name="ttl_hint_hours" min="1" max="168" value="12" />
       </label>
 
       <label class="modal-row">
-        <span>IdP 도메인 <em>(선택)</em></span>
+        <span><span data-i18n="seed.input.idp">IdP 도메인</span> <em data-i18n="seed.input.idp.opt">(선택)</em></span>
         <input type="text" name="idp_domain" placeholder="naver.com"
                value="naver.com"
+               data-i18n-attr-title="seed.input.idp.title"
                title="2중 확인을 거치는 외부 IdP 도메인 (예: naver.com / kakao.com / accounts.google.com). 비우면 IdP 검증 없음 — 순수 ID/PW 서비스용." />
       </label>
-      <p class="muted modal-hint">
+      <p class="muted modal-hint" data-i18n="seed.input.idp.hint">
         시드 후 storage 에 이 도메인의 쿠키가 있어야 합니다. ID/PW 만 쓰는 사이트면 비워 주세요.
       </p>
 
       <label class="modal-row checkbox">
         <input type="checkbox" name="naver_probe" checked />
-        <span>네이버 측 weak probe 활성 (best-effort, IdP=naver.com 일 때만 의미 있음)</span>
+        <span data-i18n="seed.input.naverProbe">네이버 측 weak probe 활성 (best-effort, IdP=naver.com 일 때만 의미 있음)</span>
       </label>
 
-      <p class="modal-warning">⚠ 운영 계정 사용 금지 — 테스트 전용 계정 권장</p>
+      <p class="modal-warning" data-i18n="seed.input.warning">⚠ 운영 계정 사용 금지 — 테스트 전용 계정 권장</p>
 
       <div class="modal-actions">
-        <button type="button" class="modal-cancel" data-modal-close="seed-input-modal">취소</button>
-        <button type="submit" class="primary">열기 →</button>
+        <button type="button" class="modal-cancel" data-modal-close="seed-input-modal" data-i18n="seed.input.cancel">취소</button>
+        <button type="submit" class="primary" data-i18n="seed.input.submit">열기 →</button>
       </div>
     </form>
   </div>
@@ -205,22 +237,22 @@
 <div id="seed-progress-modal" class="modal" hidden>
   <div class="modal-backdrop" data-modal-close="seed-progress-modal"></div>
   <div class="modal-body">
-    <h3>🪟 로그인 세션 저장 중</h3>
+    <h3 data-i18n="seed.progress.title">🪟 로그인 세션 저장 중</h3>
     <ol class="seed-steps">
-      <li>대상 서비스의 [네이버로 로그인] 또는 일반 로그인 버튼 클릭</li>
-      <li>로그인 화면에서 ID / 비밀번호 입력</li>
-      <li>2중 확인 (SMS / OTP 등) 직접 통과</li>
-      <li>서비스로 자동 복귀 → 검증 대상 페이지 확인</li>
-      <li><strong>로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요</strong></li>
+      <li data-i18n="seed.progress.step1">대상 서비스의 [네이버로 로그인] 또는 일반 로그인 버튼 클릭</li>
+      <li data-i18n="seed.progress.step2">로그인 화면에서 ID / 비밀번호 입력</li>
+      <li data-i18n="seed.progress.step3">2중 확인 (SMS / OTP 등) 직접 통과</li>
+      <li data-i18n="seed.progress.step4">서비스로 자동 복귀 → 검증 대상 페이지 확인</li>
+      <li data-i18n-html="seed.progress.step5"><strong>로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요</strong></li>
     </ol>
-    <p id="seed-progress-status" class="seed-status">⏳ 사용자 입력 대기 중</p>
-    <p id="seed-progress-elapsed" class="muted">경과 0초 / 한도 600초</p>
-    <p id="seed-progress-hint" class="muted">
+    <p id="seed-progress-status" class="seed-status" data-i18n="seed.progress.status.waiting">⏳ 사용자 입력 대기 중</p>
+    <p id="seed-progress-elapsed" class="muted" data-i18n="seed.progress.elapsed">경과 0초 / 한도 600초</p>
+    <p id="seed-progress-hint" class="muted" data-i18n="seed.progress.hint">
       창이 닫히면 세션을 저장하고, 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.
     </p>
     <div class="modal-actions">
-      <button type="button" id="btn-seed-cancel">취소 (창은 직접 닫으세요)</button>
-      <button type="button" id="btn-seed-done" class="primary" hidden>닫기</button>
+      <button type="button" id="btn-seed-cancel" data-i18n="seed.progress.cancel">취소 (창은 직접 닫으세요)</button>
+      <button type="button" id="btn-seed-done" class="primary" hidden data-i18n="seed.progress.done">닫기</button>
     </div>
   </div>
 </div>
@@ -229,12 +261,12 @@
 <div id="seed-expired-modal" class="modal" hidden>
   <div class="modal-backdrop" data-modal-close="seed-expired-modal"></div>
   <div class="modal-body">
-    <h3>⚠ 로그인 만료</h3>
-    <p>프로파일 <code id="seed-expired-name">—</code> 이 만료되었습니다.</p>
-    <p class="muted">다시 로그인하면 시작 URL / 검증 URL / 검증 텍스트 입력값이 그대로 유지됩니다.</p>
+    <h3 data-i18n="seed.expired.title">⚠ 로그인 만료</h3>
+    <p><span data-i18n="seed.expired.body.prefix">프로파일 </span><code id="seed-expired-name">—</code><span data-i18n="seed.expired.body.suffix"> 이 만료되었습니다.</span></p>
+    <p class="muted" data-i18n="seed.expired.hint">다시 로그인하면 시작 URL / 검증 URL / 검증 텍스트 입력값이 그대로 유지됩니다.</p>
     <div class="modal-actions">
-      <button type="button" class="modal-cancel" data-modal-close="seed-expired-modal">취소</button>
-      <button type="button" id="btn-seed-expired-reseed" class="primary">다시 로그인</button>
+      <button type="button" class="modal-cancel" data-modal-close="seed-expired-modal" data-i18n="seed.expired.cancel">취소</button>
+      <button type="button" id="btn-seed-expired-reseed" class="primary" data-i18n="seed.expired.reseed">다시 로그인</button>
     </div>
   </div>
 </div>
@@ -244,9 +276,9 @@
   <div class="modal-backdrop" data-modal-close="detail-modal"></div>
   <div class="modal-body">
     <div class="detail-header">
-      <button type="button" class="ghost" data-modal-close="detail-modal">← 목록으로</button>
-      <h3 id="detail-title">실행 상세</h3>
-      <a id="detail-report" class="dl-link" href="#" target="_blank">📥 HTML 리포트</a>
+      <button type="button" class="ghost" data-modal-close="detail-modal" data-i18n="detail.back">← 목록으로</button>
+      <h3 id="detail-title" data-i18n="detail.title">실행 상세</h3>
+      <a id="detail-report" class="dl-link" href="#" target="_blank" data-i18n="detail.report">📥 HTML 리포트</a>
     </div>
     <div id="detail-meta" class="detail-meta muted"></div>
     <div class="detail-body">
@@ -262,19 +294,20 @@
 <div id="wizard-modal" class="modal" hidden>
   <div class="modal-backdrop" data-modal-close="wizard-modal"></div>
   <div class="modal-body">
-    <h3>🧭 첫 사용 가이드</h3>
+    <h3 data-i18n="wizard.title">🧭 첫 사용 가이드</h3>
     <ol class="wizard-steps">
-      <li><strong>1단계</strong> — 로그인 프로파일 카드의 <code>+ 새 프로파일</code> 로 프로파일 이름과 사이트 주소를 입력합니다.</li>
-      <li><strong>2단계</strong> — 자동으로 열린 브라우저에서 직접 로그인 후 창을 닫아 주세요. 로그인 상태가 모니터링 PC 에 저장됩니다.</li>
-      <li><strong>3단계</strong> — 시나리오 스크립트 카드의 <code>⬆ 업로드 (.py)</code> 로 녹화 PC 에서 받은 <code>original.py</code> 또는 <code>regression_test.py</code> 를 올립니다.</li>
-      <li><strong>4단계</strong> — 적용할 로그인 프로파일 select 에서 (등록한 alias 또는 비로그인) 선택 → 행의 <code>▶ 실행</code>.</li>
+      <li data-i18n-html="wizard.step1"><strong>1단계</strong> — 로그인 프로파일 카드의 <code>+ 새 프로파일</code> 로 프로파일 이름과 사이트 주소를 입력합니다.</li>
+      <li data-i18n-html="wizard.step2"><strong>2단계</strong> — 자동으로 열린 브라우저에서 직접 로그인 후 창을 닫아 주세요. 로그인 상태가 모니터링 PC 에 저장됩니다.</li>
+      <li data-i18n-html="wizard.step3"><strong>3단계</strong> — 시나리오 스크립트 카드의 <code>⬆ 업로드 (.py)</code> 로 녹화 PC 에서 받은 <code>original.py</code> 또는 <code>regression_test.py</code> 를 올립니다.</li>
+      <li data-i18n-html="wizard.step4"><strong>4단계</strong> — 적용할 로그인 프로파일 select 에서 (등록한 alias 또는 비로그인) 선택 → 행의 <code>▶ 실행</code>.</li>
     </ol>
     <div class="modal-actions">
-      <button type="button" class="primary" data-modal-close="wizard-modal">시작하기</button>
+      <button type="button" class="primary" data-modal-close="wizard-modal" data-i18n="wizard.start">시작하기</button>
     </div>
   </div>
 </div>
 
+<script src="/static/i18n.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
