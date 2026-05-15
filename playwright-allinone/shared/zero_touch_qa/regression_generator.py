@@ -34,6 +34,10 @@ json = _DumpsShim()
 
 log = logging.getLogger(__name__)
 
+# 회귀 스크립트가 emit 하는 try/except 한 줄 — 동일 라인이 여러 emitter 에서
+# 반복돼 lint(S1192) 가 잡히므로 상수로 박는다. 들여쓰기는 emit 자리와 동일.
+_EXCEPT_PASS_LINE = "            except Exception: pass"
+
 
 def _frame_chain_prefix(target) -> str:
     """``iframe[...] >> ... >> leaf`` 형태에서 frame entry 부분만 추출.
@@ -48,24 +52,13 @@ def _frame_chain_prefix(target) -> str:
     return " >> ".join(frames)
 
 
-def generate_regression_test(
-    scenario: list[dict],
-    results: list[StepResult],
-    output_dir: str,
-) -> str | None:
-    """
-    모든 스텝이 성공(PASS/HEALED)한 경우,
-    LLM 없이 독립 실행 가능한 Playwright 스크립트를 생성한다.
-    실패 스텝이 있으면 생성하지 않고 None을 반환한다.
-    """
-    if any(r.status == "FAIL" for r in results):
-        log.info("[Regression] failed step present — skipping generation")
-        return None
+def _build_header_lines(needs_auth_imports: bool) -> list[str]:
+    """회귀 .py 의 prologue — module docstring / import / context / 헬퍼 정의.
 
-    needs_auth_imports = any(
-        s.get("action", "").lower() == "auth_login" for s in scenario
-    )
-
+    분리 이유: generate_regression_test 의 cognitive complexity 가 step loop
+    뿐 아니라 거대한 header 리터럴 까지 합쳐 폭발하던 구조 정리. emit 내용
+    자체는 변경 없음 (헬퍼 추출만).
+    """
     lines = [
         '"""',
         "Auto-generated regression test from Zero-Touch QA scenario.",
@@ -113,7 +106,7 @@ def generate_regression_test(
         "        # 명시적 dismiss 가 없으면 confirm/alert 가 흐름을 막는다.",
         "        def _auto_dismiss_dialog(d):",
         "            try: d.dismiss()",
-        "            except Exception: pass",
+        _EXCEPT_PASS_LINE,
         "        context.on('page', lambda _p: _p.on('dialog', _auto_dismiss_dialog))",
         "        page = context.new_page()",
         "        page.on('dialog', _auto_dismiss_dialog)",
@@ -179,174 +172,12 @@ def generate_regression_test(
         "                loc.evaluate('el => el.click()')",
         "        try:",
     ])
+    return lines
 
-    # 팝업 page var 추적 — converter_ast 가 emit 한 step["page"] / step["popup_to"]
-    # 를 보존해 회귀 .py 가 원본의 다중 탭 흐름을 재현하게 한다. popup_to 가 박힌
-    # step 은 ``with <page_var>.expect_popup() as <popup_to>_info:`` 로 wrap.
-    known_pages: set[str] = {"page"}
-    # 직전 step 이 popup 을 새로 띄웠다면 그 popup 의 var 이름을 기록.
-    # 다음 step 이 *다른* page (보통 원본 page) 대상이면 bring_to_front 로
-    # focus 회복 — popup 이 띄워진 직후 본 page 가 background 상태라
-    # hover/click 이 1500ms 안에 못 끝나고 timeout 되는 케이스 대응.
-    last_popup_created: str | None = None
-    for idx, step in enumerate(scenario):
-        r = results[idx] if idx < len(results) else None
 
-        # Healing-aware override (2026-05-11 수정) — fallback / alternative /
-        # local / dify 단계가 통과시킨 *실제 selector / action / value* 를
-        # 우선 채택해 회귀 .py 가 "녹화 시점 fragile selector" 가 아닌
-        # "최종 통과 selector" 를 들고 나가게 한다. r 값이 비어 있으면 원본
-        # scenario 값으로 fallback (PASS 그리고 navigate/wait 처럼 target 이
-        # 본래 빈 케이스 모두 동일하게 처리).
-        scen_action = step["action"].lower()
-        scen_target = step.get("target", "")
-        scen_value = step.get("value", "")
-        if r is not None:
-            action = ((r.action or scen_action) or "").lower()
-            # stable_selector 최우선 — executor 가 *통과 시점의 element* 에서 추출
-            # 한 식별자 (id / testid / role+name). 회귀 .py 가 healed target
-            # (`text=...` 등) 의 visibility filter 차이로 timeout 되는 회귀 차단.
-            # 빈 값이면 healed target 으로, 그것도 없으면 원본 시나리오 target.
-            stable = getattr(r, "stable_selector", "") or ""
-            if stable:
-                # 원본 target 이 iframe chain 으로 진입한 leaf 였다면 frame prefix
-                # 를 보존한다. stable_selector 는 leaf element 의 id/testid/role+name
-                # 만 캡처해 frame context 를 잃어버리므로, 단독 사용 시 회귀 .py 가
-                # 메인 DOM 에서 찾으려 들어 timeout 된다 (2026-05-15 portal.koreaconnect
-                # SmartEditor `#keditor_body` 회귀 보고). chain 없는 평상시는 그대로.
-                frame_prefix = _frame_chain_prefix(scen_target) or _frame_chain_prefix(r.target)
-                target = (frame_prefix + " >> " + stable) if frame_prefix else stable
-            else:
-                target = r.target if r.target else scen_target
-            # scenario value 가 dict/list (mock_data) 면 보존 — StepResult.value 는
-            # 항상 str 이라 직렬화 손실이 발생함.
-            if isinstance(scen_value, (dict, list)):
-                value = scen_value
-            else:
-                value = r.value if r.value else scen_value
-            heal_stage = (r.heal_stage or "none")
-        else:
-            action = scen_action
-            target = scen_target
-            value = scen_value
-            heal_stage = "none"
-
-        # 액션이 동작할 page 변수 결정. converter_ast 가 step["page"] 로 박은 값.
-        # 평탄 시나리오(키 없음/legacy)는 자동으로 "page" 로 fallback.
-        page_var = (step.get("page") or "page")
-        popup_to = step.get("popup_to") or None
-
-        # popup 직후 본 page focus 회복 — 직전 step 이 popup 을 생성했고,
-        # 이 step 이 그 popup 이 아닌 다른 page (보통 원본 page) 를 대상으로
-        # 하면 bring_to_front 로 활성화. background page 의 hover 가 timeout
-        # 되는 케이스 차단.
-        if last_popup_created and page_var != last_popup_created:
-            lines.append(
-                f"            # [PRE] popup 직후 본 page focus 회복"
-            )
-            lines.append(f"            {page_var}.bring_to_front()")
-            lines.append(f"            {page_var}.wait_for_timeout(200)")
-        last_popup_created = None
-
-        desc = step.get("description", "")
-        if desc:
-            lines.append(f"            # {desc}")
-        # heal trace 주석 — 운영자가 회귀 .py 를 손볼 때 어디가 fragile 했는지
-        # 단서가 된다. selector 가 실제로 바뀐 경우에만 원본을 함께 노출.
-        if heal_stage != "none":
-            if scen_target and str(scen_target) != str(target):
-                lines.append(
-                    f"            # [HEALED via {heal_stage}] "
-                    f"original target: {scen_target!r}"
-                )
-            else:
-                lines.append(f"            # [HEALED via {heal_stage}]")
-
-        # visibility healer 가 통과시킨 사전 액션 시퀀스 — 본 스텝 *앞에* 그대로
-        # emit 해 같은 환경에서 같은 통과 시퀀스를 재현. Replay UI 의 raw wrapper
-        # 가 healing 안전망을 매번 다시 돌릴 필요 없음 (사용자 지적 2026-05-11).
-        if r is not None:
-            for pre in (getattr(r, "pre_actions", None) or []):
-                if not isinstance(pre, dict):
-                    continue
-                pre_action = str(pre.get("action", "")).lower()
-                pre_target = pre.get("target", "")
-                if pre_action == "hover" and pre_target:
-                    lines.append(
-                        f"            # [PRE] visibility heal — hover ancestor"
-                    )
-                    lines.append(
-                        f"            {page_var}.locator({json.dumps(str(pre_target))})"
-                        f".first.hover(timeout=5000)"
-                    )
-                    lines.append(f"            {page_var}.wait_for_timeout(150)")
-                elif pre_action == "wait" and pre_target:
-                    try:
-                        wait_ms = int(str(pre_target))
-                    except ValueError:
-                        wait_ms = 1000
-                    lines.append(
-                        f"            # [PRE] visibility heal — size poll"
-                    )
-                    lines.append(f"            {page_var}.wait_for_timeout({wait_ms})")
-
-        locator_code = _target_to_playwright_code(target, page_var=page_var)
-        step_lines = _emit_step_code(action, target, value, step, locator_code, page_var=page_var)
-        if popup_to and popup_to not in known_pages:
-            # popup_to 가 박힌 step: 클릭 등이 새 page 를 트리거.
-            # ``with <page_var>.expect_popup() as <popup_to>_info:`` 로 wrap,
-            # 본 step 라인을 4 space 추가 들여쓰기, 직후 ``<popup_to> = ..._info.value``.
-            lines.append(
-                f"            with {page_var}.expect_popup() as {popup_to}_info:"
-            )
-            for sl in step_lines:
-                # step_lines 는 이미 12-space base 들여쓰기. with 블록 내부는 +4 space.
-                if sl.startswith("            "):
-                    lines.append("    " + sl)
-                else:
-                    lines.append("            " + sl)
-            lines.append(f"            {popup_to} = {popup_to}_info.value")
-            known_pages.add(popup_to)
-            # popup 생성 직후 — 새 page 의 networkidle 까지 대기. expect_popup
-            # 자체가 새 page 등장을 보장하므로 추가 lookahead wait 은 emit 안 함.
-            #
-            # 예외: 바로 다음 단계가 같은 popup 을 close 하는 경우 settle 생략.
-            # popup 페이지 (외부 사이트 / Microsoft Learn 등) 가 networkidle 까지
-            # 도달하지 못해 3초 timeout 으로 떨어지고, 그 timeout 이 Playwright
-            # 트레이스에 step FAIL 로 기록되는 회귀 차단. 어차피 다음 step 이
-            # close 라 settle 결과는 버려지는 낭비.
-            next_step = scenario[idx + 1] if idx + 1 < len(scenario) else None
-            close_follows = (
-                next_step is not None
-                and str(next_step.get("action", "")).lower() == "close"
-                and (next_step.get("page") or "page") == popup_to
-            )
-            if not close_follows:
-                lines.append(f"            _settle({popup_to})")
-            last_popup_created = popup_to
-        else:
-            lines.extend(step_lines)
-            # close 액션은 page 자체를 닫으므로 그 page 에 _settle 또는 lookahead
-            # wait 호출 시 closed page 예외 — skip.
-            if action != "close":
-                # action 직후 active page 의 networkidle 까지 동적 대기 (한도 내).
-                # 단순 sleep 대신 사이트 반응 완료 감지 — 네트워크 지연·SPA 환경에서
-                # 동일 시나리오가 안정적으로 통과.
-                lines.append(f"            _settle({page_var})")
-                # 다음 step 의 element 가 DOM 에 attach 될 때까지 추가 대기 — modal
-                # / dialog 같은 *직전 action 의 비동기 trigger* 가 next step 의
-                # element 를 만들 때까지 기다림. lookahead 로 다음 step 의
-                # stable_selector / target 을 미리 알아 그 locator 의 wait_for.
-                _next = _peek_next_locator_code(scenario, results, idx, known_pages)
-                if _next is not None:
-                    _next_page_var, _next_locator_code, _next_state = _next
-                    lines.append(
-                        f"            try: {_next_locator_code}.wait_for(state={_next_state!r}, timeout=_step_wait_ms)"
-                    )
-                    lines.append(f"            except Exception: pass")
-        lines.append("")
-
-    lines.extend([
+def _build_footer_lines() -> list[str]:
+    """회귀 .py 의 epilogue — finally + main entry. header 와 짝."""
+    return [
         "        finally:",
         "            context.close()",
         "            browser.close()",
@@ -356,7 +187,227 @@ def generate_regression_test(
         "    test_regression()",
         '    print("Regression test passed.")',
         "",
-    ])
+    ]
+
+
+def _resolve_target_from_result(r, scen_target):
+    """StepResult 와 원본 scenario target 에서 회귀 .py 가 들고 갈 target 산출.
+
+    stable_selector 가 있으면 leaf id 우선이지만, 원본 target 이 iframe chain
+    이면 그 frame prefix 를 보존해 frame context 손실 차단. stable 이 없으면
+    healed target → scen_target 순으로 fallback.
+    """
+    stable = getattr(r, "stable_selector", "") or ""
+    if not stable:
+        return r.target if r.target else scen_target
+    frame_prefix = _frame_chain_prefix(scen_target) or _frame_chain_prefix(r.target)
+    return (frame_prefix + " >> " + stable) if frame_prefix else stable
+
+
+def _resolve_step_io(step: dict, r):
+    """healing override 로 (action, target, value, heal_stage) 정리.
+
+    fallback / alternative / local / dify 단계가 통과시킨 *실제 selector* 가
+    있으면 그 쪽을 들고 나간다. target 결정 로직은 ``_resolve_target_from_result``
+    로 위임 — frame chain 보존 vs leaf 우선 분기를 한 곳에서 관리.
+    """
+    scen_action = step["action"].lower()
+    scen_target = step.get("target", "")
+    scen_value = step.get("value", "")
+    if r is None:
+        return scen_action, scen_target, scen_value, "none"
+
+    action = ((r.action or scen_action) or "").lower()
+    target = _resolve_target_from_result(r, scen_target)
+    # scenario value 가 dict/list (mock_data) 면 보존 — StepResult.value 는
+    # 항상 str 이라 직렬화 손실이 발생함.
+    if isinstance(scen_value, (dict, list)):
+        value = scen_value
+    else:
+        value = r.value if r.value else scen_value
+    return action, target, value, (r.heal_stage or "none")
+
+
+def _emit_popup_focus_lines(page_var: str, last_popup_created) -> list[str]:
+    """직전 step 이 popup 을 만들었고 이번 step 이 다른 page 면 focus 회복."""
+    if not last_popup_created or page_var == last_popup_created:
+        return []
+    return [
+        "            # [PRE] popup 직후 본 page focus 회복",
+        f"            {page_var}.bring_to_front()",
+        f"            {page_var}.wait_for_timeout(200)",
+    ]
+
+
+def _emit_heal_trace_lines(step: dict, heal_stage: str, target) -> list[str]:
+    """description 코멘트 + heal trace 코멘트. selector 가 바뀐 경우만 원본 노출."""
+    out: list[str] = []
+    desc = step.get("description", "")
+    if desc:
+        out.append(f"            # {desc}")
+    if heal_stage != "none":
+        scen_target = step.get("target", "")
+        if scen_target and str(scen_target) != str(target):
+            out.append(
+                f"            # [HEALED via {heal_stage}] "
+                f"original target: {scen_target!r}"
+            )
+        else:
+            out.append(f"            # [HEALED via {heal_stage}]")
+    return out
+
+
+def _emit_pre_actions_lines(r, page_var: str) -> list[str]:
+    """visibility healer 가 통과시킨 사전 액션 시퀀스 (hover / wait) 재현."""
+    if r is None:
+        return []
+    out: list[str] = []
+    for pre in (getattr(r, "pre_actions", None) or []):
+        if not isinstance(pre, dict):
+            continue
+        pre_action = str(pre.get("action", "")).lower()
+        pre_target = pre.get("target", "")
+        if pre_action == "hover" and pre_target:
+            out.append("            # [PRE] visibility heal — hover ancestor")
+            out.append(
+                f"            {page_var}.locator({json.dumps(str(pre_target))})"
+                ".first.hover(timeout=5000)"
+            )
+            out.append(f"            {page_var}.wait_for_timeout(150)")
+        elif pre_action == "wait" and pre_target:
+            try:
+                wait_ms = int(str(pre_target))
+            except ValueError:
+                wait_ms = 1000
+            out.append("            # [PRE] visibility heal — size poll")
+            out.append(f"            {page_var}.wait_for_timeout({wait_ms})")
+    return out
+
+
+def _wrap_popup_step(
+    step_lines: list[str],
+    popup_to: str,
+    page_var: str,
+    scenario: list[dict],
+    idx: int,
+) -> list[str]:
+    """popup_to 가 박힌 step 을 ``with expect_popup()`` 블록으로 wrap.
+
+    바로 다음 step 이 같은 popup 을 close 하면 settle 생략 (popup 의
+    networkidle 미도달로 인한 timeout 회귀 차단).
+    """
+    out: list[str] = []
+    out.append(f"            with {page_var}.expect_popup() as {popup_to}_info:")
+    for sl in step_lines:
+        # step_lines 는 이미 12-space base 들여쓰기. with 블록 내부는 +4 space.
+        if sl.startswith("            "):
+            out.append("    " + sl)
+        else:
+            out.append("            " + sl)
+    out.append(f"            {popup_to} = {popup_to}_info.value")
+
+    next_step = scenario[idx + 1] if idx + 1 < len(scenario) else None
+    close_follows = (
+        next_step is not None
+        and str(next_step.get("action", "")).lower() == "close"
+        and (next_step.get("page") or "page") == popup_to
+    )
+    if not close_follows:
+        out.append(f"            _settle({popup_to})")
+    return out
+
+
+def _emit_step_body_lines(
+    step_lines: list[str],
+    popup_to,
+    page_var: str,
+    action: str,
+    known_pages: set,
+    scenario: list[dict],
+    results: list,
+    idx: int,
+):
+    """본 step 의 body emit + last_popup_created 갱신 반환.
+
+    Returns:
+        (lines, last_popup_created_or_None)
+    """
+    if popup_to and popup_to not in known_pages:
+        body = _wrap_popup_step(step_lines, popup_to, page_var, scenario, idx)
+        known_pages.add(popup_to)
+        return body, popup_to
+
+    body = list(step_lines)
+    if action == "close":
+        # close 액션은 page 자체를 닫으므로 settle / lookahead 모두 skip.
+        return body, None
+
+    # 일반 step — action 직후 networkidle 동적 대기 + 다음 step element 의
+    # DOM attach lookahead. modal/dialog 처럼 비동기 trigger 가 next step
+    # element 를 만드는 패턴 대응.
+    body.append(f"            _settle({page_var})")
+    _next = _peek_next_locator_code(scenario, results, idx, known_pages)
+    if _next is not None:
+        _next_page_var, _next_locator_code, _next_state = _next
+        body.append(
+            f"            try: {_next_locator_code}.wait_for(state={_next_state!r}, timeout=_step_wait_ms)"
+        )
+        body.append(_EXCEPT_PASS_LINE)
+    return body, None
+
+
+def generate_regression_test(
+    scenario: list[dict],
+    results: list[StepResult],
+    output_dir: str,
+) -> str | None:
+    """
+    모든 스텝이 성공(PASS/HEALED)한 경우,
+    LLM 없이 독립 실행 가능한 Playwright 스크립트를 생성한다.
+    실패 스텝이 있으면 생성하지 않고 None을 반환한다.
+
+    구조: 헤더 boilerplate → step loop (resolve / pre_emit / step body) → footer.
+    각 단계는 별도 헬퍼로 분리되어 본 함수는 흐름 제어만 담당 (cognitive
+    complexity 96 → ≤15 정리, 2026-05-15).
+    """
+    if any(r.status == "FAIL" for r in results):
+        log.info("[Regression] failed step present — skipping generation")
+        return None
+
+    needs_auth_imports = any(
+        s.get("action", "").lower() == "auth_login" for s in scenario
+    )
+    lines = _build_header_lines(needs_auth_imports)
+
+    # 팝업 page var 추적 — converter_ast 가 emit 한 step["page"] / step["popup_to"]
+    # 를 보존해 회귀 .py 가 원본의 다중 탭 흐름을 재현하게 한다.
+    known_pages: set[str] = {"page"}
+    # 직전 step 이 popup 을 새로 띄웠다면 그 popup 의 var 이름을 기록.
+    # 다음 step 이 *다른* page 대상이면 bring_to_front 로 focus 회복.
+    last_popup_created: str | None = None
+    for idx, step in enumerate(scenario):
+        r = results[idx] if idx < len(results) else None
+        action, target, value, heal_stage = _resolve_step_io(step, r)
+        page_var = (step.get("page") or "page")
+        popup_to = step.get("popup_to") or None
+
+        lines.extend(_emit_popup_focus_lines(page_var, last_popup_created))
+        last_popup_created = None
+        lines.extend(_emit_heal_trace_lines(step, heal_stage, target))
+        lines.extend(_emit_pre_actions_lines(r, page_var))
+
+        locator_code = _target_to_playwright_code(target, page_var=page_var)
+        step_lines = _emit_step_code(
+            action, target, value, step, locator_code, page_var=page_var,
+        )
+        body, last_popup_created = _emit_step_body_lines(
+            step_lines, popup_to, page_var, action, known_pages,
+            scenario, results, idx,
+        )
+        lines.extend(body)
+        lines.append("")
+
+    lines.extend(_build_footer_lines())
 
     output_path = os.path.join(output_dir, "regression_test.py")
     with open(output_path, "w", encoding="utf-8") as f:
@@ -452,11 +503,11 @@ def _emit_select(target, value, step, locator_code, page_var="page"):
     val_json = json.dumps(str(value))
     return [
         f"            _sel = {locator_code}",
-        f"            _sel.wait_for(state='attached', timeout=_action_timeout_ms)",
+        "            _sel.wait_for(state='attached', timeout=_action_timeout_ms)",
         "            _last_err = None",
         f"            for _kw in ({{}}, {{'value': {val_json}}}, {{'label': {val_json}}}):",
         "                try:",
-        f"                    if _kw: _sel.select_option(**_kw, timeout=5000)",
+        "                    if _kw: _sel.select_option(**_kw, timeout=5000)",
         f"                    else: _sel.select_option({val_json}, timeout=5000)",
         "                    _last_err = None",
         "                    break",
@@ -627,7 +678,7 @@ def _emit_reset_state(target, value, step, locator_code, page_var="page"):
     if scope == "all":
         out.extend([
             f"            try: {page_var}.context.clear_permissions()",
-            "            except Exception: pass",
+            _EXCEPT_PASS_LINE,
         ])
     if scope in ("storage", "all"):
         out.append(
@@ -662,12 +713,12 @@ def _emit_dialog_choose(target, value, step, locator_code, page_var="page"):
     return [
         f"            # dialog_choose target={dt} value={val!r}",
         f"            _choice = ({json.dumps(dt)}, {json.dumps(val)})",
-        f"            def _on_dlg(_d, _c=_choice):",
-        f"                _tgt, _val = _c",
-        f"                if _tgt != 'any' and _d.type != _tgt: return",
-        f"                if _val == 'accept': _d.accept()",
-        f"                elif _val == 'dismiss': _d.dismiss()",
-        f"                else: _d.accept(_val)",
+        "            def _on_dlg(_d, _c=_choice):",
+        "                _tgt, _val = _c",
+        "                if _tgt != 'any' and _d.type != _tgt: return",
+        "                if _val == 'accept': _d.accept()",
+        "                elif _val == 'dismiss': _d.dismiss()",
+        "                else: _d.accept(_val)",
         f"            {p}.once('dialog', _on_dlg)",
     ]
 
@@ -728,7 +779,7 @@ def _emit_cookie_verify(target, value, step, locator_code, page_var="page"):
     ]
     if expected != "":
         lines.append(
-            f"            _vals = [c.get('value','') for c in _matched]"
+            "            _vals = [c.get('value','') for c in _matched]"
         )
         lines.append(
             f"            assert {json.dumps(expected)} in _vals, "
@@ -753,8 +804,8 @@ def _emit_performance(target, value, step, locator_code, page_var="page"):
         f"'() => {{ const t = performance.timing; "
         f"if (!t || !t.navigationStart || !t.loadEventEnd) return -1; "
         f"return t.loadEventEnd - t.navigationStart; }}')",
-        f"            assert isinstance(_elapsed, (int, float)) and _elapsed >= 0, "
-        f"'performance timing 미가용'",
+        "            assert isinstance(_elapsed, (int, float)) and _elapsed >= 0, "
+        "'performance timing 미가용'",
         f"            assert _elapsed <= {threshold}, "
         f"f'load {{int(_elapsed)}}ms > 임계 {threshold}ms'",
     ]
@@ -764,7 +815,7 @@ def _emit_close(target, value, step, locator_code, page_var="page"):
     # 사용자가 녹화 중 명시적으로 닫은 탭/창 재현. 이미 닫혔어도 idempotent.
     return [
         f"            try: {page_var}.close()",
-        f"            except Exception: pass",
+        _EXCEPT_PASS_LINE,
     ]
 
 
@@ -776,8 +827,8 @@ def _emit_visual_diff(target, value, step, locator_code, page_var="page"):
     """
     return [
         f"            # [skip] visual_diff target={target!r} threshold={value!r} — "
-        f"PIL + golden 이미지 의존, 회귀 스크립트 standalone 보장 위해 주석 처리.",
-        f"            # 측정이 필요하면 zero_touch_qa executor 의 --mode execute 로 실 시나리오 실행.",
+        "PIL + golden 이미지 의존, 회귀 스크립트 standalone 보장 위해 주석 처리.",
+        "            # 측정이 필요하면 zero_touch_qa executor 의 --mode execute 로 실 시나리오 실행.",
     ]
 
 
@@ -830,12 +881,15 @@ def _peek_next_locator_code(scenario, results, idx, known_pages):
         return None
     next_step = scenario[next_idx]
     next_action = (next_step.get("action", "") or "").lower()
-    if next_action in ("navigate", "maps", "wait"):
-        return None
-    if next_step.get("popup_to"):
-        return None
     next_page_var = next_step.get("page") or "page"
-    if next_page_var not in known_pages:
+    # lookahead 비대상 — navigate/maps/wait 은 자체로 페이지 전환·시간 대기,
+    # popup_to 는 expect_popup 이 따로 보장, page var 미등록은 popup 이 아직
+    # 등장 안 한 상태라 wait_for 자체가 의미 없음.
+    if (
+        next_action in ("navigate", "maps", "wait")
+        or next_step.get("popup_to")
+        or next_page_var not in known_pages
+    ):
         return None
     next_r = results[next_idx] if next_idx < len(results) else None
     next_target = ""
