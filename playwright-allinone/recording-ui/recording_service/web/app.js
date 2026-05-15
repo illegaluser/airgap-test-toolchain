@@ -1916,7 +1916,7 @@ function _populateDiscoverAuthSelect(profiles) {
   const sel = $("#discover-auth-profile");
   if (!sel) return;
   const prev = sel.value;
-  const opts = [`<option value="">(없음)</option>`].concat(
+  const opts = [`<option value="">${escapeHtml(I18N.t("discover.authProfile.none", "(없음)"))}</option>`].concat(
     (profiles || []).map((p) => {
       const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
       return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
@@ -1989,16 +1989,17 @@ function _renderDiscoverStats(stats) {
   // 핵심 라인 — 발견 N개 + cap 도달 시 노란 배지.
   const total = (dist.by_status && Object.values(dist.by_status).reduce((a, b) => a + b, 0)) || 0;
   const capWarn = stats.cap_reached
-    ? ` <span class="stats-cap-warn">⚠ ${_escapeHtml(String(stats.abort_reason || "max_pages"))} 도달 — 잘렸을 수 있음</span>`
+    ? ` <span class="stats-cap-warn">${_escapeHtml(I18N.t("discover.stats.capReached", "⚠ {reason} 도달 — 잘렸을 수 있음", { reason: String(stats.abort_reason || "max_pages") }))}</span>`
     : "";
-  lines.push(`<div class="stats-row"><strong>발견 ${total}건</strong>${capWarn}</div>`);
+  lines.push(`<div class="stats-row"><strong>${_escapeHtml(I18N.t("discover.stats.foundN", "발견 {n}건", { n: total }))}</strong>${capWarn}</div>`);
   // sitemap 라인 — sitemap_total 있을 때만.
   if (stats.sitemap_total != null) {
     const total_st = Number(stats.sitemap_total);
     const pct = total_st > 0 ? Math.round((total / total_st) * 100) : 0;
     lines.push(
       `<div class="stats-row"><span class="stats-label">sitemap</span>` +
-      `명시 ${total_st.toLocaleString()} → 발견 ${total.toLocaleString()} (${pct}%)</div>`
+      _escapeHtml(I18N.t("discover.stats.sitemapLine", "명시 {decl} → 발견 {found} ({pct}%)", { decl: total_st.toLocaleString(), found: total.toLocaleString(), pct })) +
+      `</div>`
     );
   }
   // 분포 mini-grid.
@@ -2035,8 +2036,8 @@ async function _renderDiscoverTrees(jobId) {
   if (!toggle || !paneCrawl || !panePath) return;
   if (dl) dl.href = `/discover/${jobId}/tree.html`;
   toggle.hidden = false;
-  paneCrawl.textContent = "— 로드 중 —";
-  panePath.textContent = "— 로드 중 —";
+  paneCrawl.textContent = `— ${I18N.t("discover.tree.loadingShort", "로드 중")} —`;
+  panePath.textContent = `— ${I18N.t("discover.tree.loadingShort", "로드 중")} —`;
   let crawl = null;
   let path = null;
   try { crawl = await api(`/discover/${jobId}/tree?type=crawl`); } catch (_) { /* 무시 */ }
@@ -2052,7 +2053,7 @@ function _renderTreeRoot(tree, mode) {
   if (!tree || !tree.root) {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = "— 트리 없음 —";
+    p.textContent = `— ${I18N.t("discover.tree.none", "트리 없음")} —`;
     wrap.appendChild(p);
     return wrap;
   }
@@ -2064,8 +2065,10 @@ function _renderTreeRoot(tree, mode) {
   if (extras.length > 0) {
     const h = document.createElement("h4");
     h.className = "tree-extras-title muted";
-    h.textContent = (mode === "crawl" ? "Orphans (sitemap 등)" : "외부 host")
-                    + ` (${extras.length})`;
+    h.textContent = (mode === "crawl"
+      ? I18N.t("discover.tree.orphans", "Orphans (sitemap 등)")
+      : I18N.t("discover.tree.external", "외부 host"))
+      + ` (${extras.length})`;
     wrap.appendChild(h);
     const eul = document.createElement("ul");
     eul.className = "tree";
@@ -2148,7 +2151,7 @@ function _renderDiscoverTable(rootEl, list) {
   if (!Array.isArray(list) || list.length === 0) {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = "— 결과 없음 —";
+    p.textContent = `— ${I18N.t("discover.noResult", "결과 없음")} —`;
     rootEl.appendChild(p);
     return;
   }
@@ -2161,10 +2164,10 @@ function _renderDiscoverTable(rootEl, list) {
   const thead = document.createElement("thead");
   thead.innerHTML = `
     <tr>
-      <th style="width:36px;"><input type="checkbox" id="discover-th-check" title="전체 선택/해제"></th>
+      <th style="width:36px;"><input type="checkbox" id="discover-th-check" title="${escapeHtml(I18N.t("discover.th.checkbox", "전체 선택/해제"))}"></th>
       <th style="width:60px;">status</th>
       <th style="width:50px;">depth</th>
-      <th style="width:90px;">출처</th>
+      <th style="width:90px;">${escapeHtml(I18N.t("discover.th.source", "출처"))}</th>
       <th>title</th>
       <th>URL</th>
     </tr>
@@ -2228,7 +2231,7 @@ function _renderDiscoverTable(rootEl, list) {
   function _updateCount() {
     const n = wrap.querySelectorAll(".discover-url-check:checked").length;
     const cntEl = $("#discover-selected-count");
-    if (cntEl) cntEl.textContent = `${n}개 선택`;
+    if (cntEl) cntEl.textContent = I18N.t("count.selected", "{n}개 선택", { n });
     const btn = $("#btn-discover-tour-script");
     if (btn) btn.disabled = (n === 0);
   }
@@ -2247,12 +2250,12 @@ async function _pollDiscoverOnce(jobId) {
   try {
     s = await api(`/discover/${jobId}`);
   } catch (e) {
-    _setDiscoverStatus(_prettifyErrorMessage(`조회 실패: ${e.message || e}`));
+    _setDiscoverStatus(_prettifyErrorMessage(I18N.t("discover.queryFail", "조회 실패: {msg}", { msg: e.message || e })));
     _stopDiscoverPolling();
     return;
   }
-  let line = `[${s.state}] ${s.count}건`;
-  if (s.last_url) line += ` · 최근: ${s.last_url}`;
+  let line = I18N.t("discover.statusLine", "[{state}] {n}건", { state: s.state, n: s.count });
+  if (s.last_url) line += I18N.t("discover.recentUrl", " · 최근: {url}", { url: s.last_url });
   _setDiscoverStatus(line);
 
   if (s.state === "done" || s.state === "cancelled") {
@@ -2265,8 +2268,8 @@ async function _pollDiscoverOnce(jobId) {
     if (actions) actions.hidden = false;
     _toggleDiscoverButtons({ running: false });
     let suffix = "";
-    if (s.state === "cancelled") suffix += " · 취소됨";
-    if (s.aborted_reason === "auth_drift") suffix += " · 세션 만료 자동 중단";
+    if (s.state === "cancelled") suffix += I18N.t("discover.cancelled", " · 취소됨");
+    if (s.aborted_reason === "auth_drift") suffix += I18N.t("discover.authDrift", " · 세션 만료 자동 중단");
     if (suffix) _setDiscoverStatus(line + suffix);
     _renderDiscoverTable($("#discover-result"), list);
     _renderDiscoverStats(s.stats || null);
@@ -2275,7 +2278,7 @@ async function _pollDiscoverOnce(jobId) {
   }
   if (s.state === "failed") {
     _stopDiscoverPolling();
-    _setDiscoverStatus(_prettifyErrorMessage(`실패: ${s.error || "알 수 없는 오류"}`));
+    _setDiscoverStatus(_prettifyErrorMessage(I18N.t("discover.failed", "실패: {err}", { err: s.error || I18N.t("discover.unknownErr", "알 수 없는 오류") })));
     _toggleDiscoverButtons({ running: false });
     return;
   }
@@ -2332,7 +2335,7 @@ async function _onDiscoverSubmit(ev) {
   if (treeToggle) treeToggle.hidden = true;
   const statsCard = document.getElementById("discover-stats");
   if (statsCard) { statsCard.hidden = true; statsCard.replaceChildren(); }
-  _setDiscoverStatus("시작 중...");
+  _setDiscoverStatus(I18N.t("discover.starting", "시작 중..."));
   _toggleDiscoverButtons({ running: true });
 
   let resp;
@@ -2342,12 +2345,12 @@ async function _onDiscoverSubmit(ev) {
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    _setDiscoverStatus(_prettifyErrorMessage(`시작 실패: ${e.message || e}`));
+    _setDiscoverStatus(_prettifyErrorMessage(I18N.t("discover.startFail", "시작 실패: {msg}", { msg: e.message || e })));
     _toggleDiscoverButtons({ running: false });
     return;
   }
   if (resp.machine_mismatch) {
-    _setDiscoverStatus(`⚠ machine_mismatch — 다른 머신에서 시드된 프로파일입니다`);
+    _setDiscoverStatus(I18N.t("discover.machineMismatch", "⚠ machine_mismatch — 다른 머신에서 시드된 프로파일입니다"));
   }
   _startDiscoverPolling(resp.job_id);
 }
@@ -2380,7 +2383,7 @@ async function _onDiscoverTourScript() {
 
   const btn = $("#btn-discover-tour-script");
   const orig = btn ? btn.textContent : "";
-  if (btn) { btn.disabled = true; btn.textContent = "생성 중..."; }
+  if (btn) { btn.disabled = true; btn.textContent = I18N.t("discover.generating", "생성 중..."); }
   try {
     const r = await fetch(`/discover/${_discover.lastJobId}/tour-script`, {
       method: "POST",
@@ -2393,7 +2396,7 @@ async function _onDiscoverTourScript() {
         const j = await r.json();
         detail = (j && j.detail) ? (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)) : detail;
       } catch (_) { /* ignore */ }
-      _setDiscoverStatus(`tour-script 실패: ${detail}`);
+      _setDiscoverStatus(I18N.t("discover.tourFail", "tour-script 실패: {detail}", { detail }));
       return;
     }
     const blob = await r.blob();
@@ -2405,12 +2408,13 @@ async function _onDiscoverTourScript() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    _setDiscoverStatus(
-      `tour_selected.py 생성됨 (${urls.length}개 URL) · ` +
-      `실행 후 결과는 스크립트 옆 'tour_results.jsonl' + 'tour_screenshots/' 에 저장됩니다`,
-    );
+    _setDiscoverStatus(I18N.t(
+      "discover.tourGenerated",
+      "tour_selected.py 생성됨 ({n}개 URL) · 실행 후 결과는 스크립트 옆 'tour_results.jsonl' + 'tour_screenshots/' 에 저장됩니다",
+      { n: urls.length },
+    ));
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = orig || "선택 URL Tour Script 생성"; }
+    if (btn) { btn.disabled = false; btn.textContent = orig || I18N.t("discover.tourScript", "선택 URL Tour Script 생성"); }
   }
 }
 

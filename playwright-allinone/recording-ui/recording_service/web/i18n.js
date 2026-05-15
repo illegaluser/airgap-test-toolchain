@@ -445,6 +445,33 @@
     "expired.reasonDetail": "Reason: {r}",
     "alert.authProfileMissing":
       "Auth profile '{name}' not found — seed a new one.",
+
+    // Phase 2-d: Discover URL flow
+    "discover.stats.capReached": "⚠ {reason} reached — results may be truncated",
+    "discover.stats.foundN": "{n} URLs found",
+    "discover.stats.sitemapLine": "declared {decl} → found {found} ({pct}%)",
+    "discover.tree.loadingShort": "loading",
+    "discover.tree.none": "no tree",
+    "discover.tree.orphans": "Orphans (e.g. from sitemap)",
+    "discover.tree.external": "External hosts",
+    "discover.th.checkbox": "Select / clear all",
+    "discover.th.source": "Source",
+    "discover.noResult": "no results",
+    "discover.queryFail": "Query failed: {msg}",
+    "discover.statusLine": "[{state}] {n} URLs",
+    "discover.recentUrl": " · recent: {url}",
+    "discover.cancelled": " · cancelled",
+    "discover.authDrift": " · auto-aborted due to session expiry",
+    "discover.failed": "Failed: {err}",
+    "discover.unknownErr": "unknown error",
+    "discover.starting": "Starting...",
+    "discover.startFail": "Start failed: {msg}",
+    "discover.machineMismatch":
+      "⚠ machine_mismatch — profile was seeded on a different machine",
+    "discover.generating": "Generating...",
+    "discover.tourFail": "tour-script failed: {detail}",
+    "discover.tourGenerated":
+      "tour_selected.py generated ({n} URLs) · After running, results are written next to the script as 'tour_results.jsonl' + 'tour_screenshots/'",
   };
 
   const DICT = { en: EN };
