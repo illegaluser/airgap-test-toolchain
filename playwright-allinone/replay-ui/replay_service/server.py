@@ -492,8 +492,8 @@ def api_start_run_script(req: RunScriptRequest):
         raise HTTPException(
             status_code=412,
             detail=(
-                f"로그인 프로파일 '{alias_norm}' 등록 필요 — "
-                "비로그인 실행을 의도했다면 프로파일 select 를 비워 주세요."
+                f"Login profile '{alias_norm}' must be registered first — "
+                "if you meant to run anonymously, leave the profile select blank."
             ),
         )
 

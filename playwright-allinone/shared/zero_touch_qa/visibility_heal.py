@@ -163,7 +163,7 @@ def heal_visibility(
         locator.scroll_into_view_if_needed(timeout=1500)
         page.wait_for_timeout(150)
         if locator.is_visible():
-            log.info("[Step %s] visibility-healer 복구 — scroll_into_view", step_id)
+            log.info("[Step %s] visibility-healer recovered — scroll_into_view", step_id)
             # scroll 대상은 *원본 locator 자체* — selector 표현이 회귀 .py 의 본
             # 스텝과 같으므로 별도 기록 불필요. (회귀 .py 가 click 직전에 같은
             # locator 로 scroll 을 한 줄 emit 해도 무해하지만, 본 스텝의 click
@@ -177,7 +177,7 @@ def heal_visibility(
     try:
         candidates = locator.evaluate(VISIBILITY_HEALER_JS)
     except Exception as e:  # noqa: BLE001
-        log.debug("[Step %s] visibility-healer evaluate 실패: %s", step_id, e)
+        log.debug("[Step %s] visibility-healer evaluate failed: %s", step_id, e)
         candidates = []
 
     chain = list(reversed(candidates))[:5]  # 최대 5단계
@@ -230,7 +230,7 @@ def heal_visibility(
         for _ in range(10):  # 200ms x 10 = 2s
             page.wait_for_timeout(200)
             if locator.is_visible():
-                log.info("[Step %s] visibility-healer 복구 — size poll", step_id)
+                log.info("[Step %s] visibility-healer recovered — size poll", step_id)
                 _record("wait", "2000")
                 return None
     except Exception:  # noqa: BLE001

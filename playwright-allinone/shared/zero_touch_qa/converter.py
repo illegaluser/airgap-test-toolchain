@@ -50,7 +50,7 @@ def convert_playwright_to_dsl(
             file_path,
         )
     except CodegenAstError as e:
-        log.warning("[Convert] AST 변환 실패 — line fallback. 사유: %s", e)
+        log.warning("[Convert] AST conversion failed — falling back to line mode. Reason: %s", e)
     except FileNotFoundError:
         raise
     except Exception as e:  # noqa: BLE001

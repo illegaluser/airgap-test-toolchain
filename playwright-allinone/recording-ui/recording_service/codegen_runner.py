@@ -75,12 +75,12 @@ def start_codegen(
     """
     if not is_codegen_available():
         raise CodegenError(
-            "playwright 실행 파일을 찾을 수 없습니다. "
-            "호스트 venv 의 PATH 또는 mac-agent-setup.sh 의 REQ_PKGS 를 확인하세요."
+            "playwright executable not found. "
+            "Check the host venv PATH or REQ_PKGS in mac-agent-setup.sh."
         )
 
     if not target_url or not isinstance(target_url, str):
-        raise CodegenError(f"target_url 이 유효하지 않습니다: {target_url!r}")
+        raise CodegenError(f"target_url is invalid: {target_url!r}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

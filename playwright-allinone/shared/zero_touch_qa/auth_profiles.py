@@ -114,7 +114,7 @@ def _ensure_root() -> Path:
         os.chmod(root, _DIR_MODE)
     except OSError as e:
         # 외부에서 마운트한 디렉토리 등 chmod 안 되는 환경 — warn 만.
-        log.warning("[auth-profiles] root 권한 0700 설정 실패 (%s): %s", root, e)
+        log.warning("[auth-profiles] failed to set root perms 0700 (%s): %s", root, e)
     return root
 
 
@@ -143,11 +143,11 @@ def _validate_name(name: str) -> None:
     - 64 자 초과
     """
     if not isinstance(name, str) or not name:
-        raise InvalidProfileNameError("프로파일 이름이 비어있음")
+        raise InvalidProfileNameError("Profile name is empty")
     if not _NAME_RE.match(name):
         raise InvalidProfileNameError(
-            f"프로파일 이름이 유효하지 않음: {name!r} "
-            "(허용: 영문/숫자/_/- 만, 첫 글자 alphanumeric, 1~64자)"
+            f"Profile name is invalid: {name!r} "
+            "(allowed: letters/digits/_/- only, first char alphanumeric, 1–64 chars)"
         )
 
 
@@ -219,7 +219,7 @@ def _load_index() -> dict:
     except (OSError, json.JSONDecodeError) as e:
         # 카탈로그 파일이 깨졌으면 빈 카탈로그로 fallback. 데이터 손실은 storage
         # 파일이 남아 있으면 사용자가 수동 복구 가능. 로그로만 경고.
-        log.warning("[auth-profiles] _index.json 로드 실패 — 빈 카탈로그로 진행 (%s)", e)
+        log.warning("[auth-profiles] _index.json load failed — proceeding with empty catalog (%s)", e)
         return _empty_index()
     # 최소 구조 보정 (외부에서 손댄 경우).
     if not isinstance(data, dict):
@@ -549,7 +549,7 @@ def list_profiles() -> list["AuthProfile"]:
     out: list[AuthProfile] = []
     for raw in data.get("profiles", []):
         if not isinstance(raw, dict):
-            log.warning("[auth-profiles] 카탈로그에 비정상 항목 (dict 아님) — 스킵")
+            log.warning("[auth-profiles] non-dict entry in catalog — skipping")
             continue
         try:
             out.append(AuthProfile.from_dict(raw))
@@ -574,7 +574,7 @@ def get_profile(name: str) -> "AuthProfile":
     for raw in data.get("profiles", []):
         if isinstance(raw, dict) and raw.get("name") == name:
             return AuthProfile.from_dict(raw)
-    raise ProfileNotFoundError(f"프로파일 '{name}' 을 찾을 수 없습니다")
+    raise ProfileNotFoundError(f"Profile '{name}' not found")
 
 
 def delete_profile(name: str) -> None:
@@ -605,7 +605,7 @@ def delete_profile(name: str) -> None:
     _atomic_update(updater)
 
     if not found_holder["hit"]:
-        raise ProfileNotFoundError(f"프로파일 '{name}' 을 찾을 수 없습니다")
+        raise ProfileNotFoundError(f"Profile '{name}' not found")
 
     storage_filename = found_holder["filename"] or f"{name}{_STORAGE_SUFFIX}"
     # 안전망 — 카탈로그가 어쩌다 절대 경로를 담고 있어도 파일명만 사용.
@@ -613,10 +613,10 @@ def delete_profile(name: str) -> None:
     storage_p = _root() / storage_basename
     try:
         storage_p.unlink()
-        log.info("[auth-profiles] 삭제됨 — name=%s storage=%s", name, storage_p)
+        log.info("[auth-profiles] deleted — name=%s storage=%s", name, storage_p)
     except FileNotFoundError:
         # 멱등성 — 파일이 이미 없으면 카탈로그 정리만 한 셈.
-        log.info("[auth-profiles] 삭제됨 (storage 파일 이미 없음) — name=%s", name)
+        log.info("[auth-profiles] deleted (storage file already missing) — name=%s", name)
     except OSError as e:
         # 카탈로그는 이미 갱신됐는데 파일 unlink 가 실패. 사용자가 수동 정리 필요.
         log.warning(
@@ -672,7 +672,7 @@ def _read_machine_uuid_macos() -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        log.debug("[auth-profiles] ioreg 호출 실패 — %s", e)
+        log.debug("[auth-profiles] ioreg invocation failed — %s", e)
         return ""
     if result.returncode != 0:
         return ""
@@ -739,7 +739,7 @@ def current_playwright_version() -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        log.debug("[auth-profiles] playwright --version 호출 실패 — %s", e)
+        log.debug("[auth-profiles] playwright --version invocation failed — %s", e)
         return ""
     if result.returncode != 0:
         return ""
@@ -804,7 +804,7 @@ class MissingDomainError(AuthProfileError, ValueError):
     """storage dump 에 expected 도메인의 쿠키가 1개도 없음."""
 
     def __init__(self, missing: list[str]):
-        super().__init__(f"storage dump 에 다음 도메인 쿠키 누락: {missing}")
+        super().__init__(f"storage dump is missing cookies for domains: {missing}")
         self.missing = list(missing)
 
 
@@ -827,14 +827,14 @@ _JWT_LIKE_RE = re.compile(r"^eyJ[A-Za-z0-9_=\-]+(\.[A-Za-z0-9_=\-]+){1,2}$")
 def _load_storage_dump(storage_path: Path) -> dict:
     """storage JSON 로드. 손상 / 부재는 ``EmptyDumpError``."""
     if not storage_path.exists():
-        raise EmptyDumpError(f"storage 파일 없음: {storage_path}")
+        raise EmptyDumpError(f"storage file missing: {storage_path}")
     try:
         with open(storage_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        raise EmptyDumpError(f"storage 파일 로드 실패: {storage_path} ({e})") from e
+        raise EmptyDumpError(f"storage file failed to load: {storage_path} ({e})") from e
     if not isinstance(data, dict):
-        raise EmptyDumpError(f"storage 파일 형식 오류 (dict 아님): {storage_path}")
+        raise EmptyDumpError(f"storage file has wrong format (not a dict): {storage_path}")
     return data
 
 
@@ -890,7 +890,7 @@ def validate_dump(storage_path: Path, expected_domains: list[str]) -> None:
     cookies = data.get("cookies") or []
     origins = data.get("origins") or []
     if not cookies and not origins:
-        raise EmptyDumpError(f"storage 가 비어있음 (cookies + origins 모두 0건): {storage_path}")
+        raise EmptyDumpError(f"storage is empty (0 cookies and 0 origins): {storage_path}")
 
     missing: list[str] = []
     for exp in expected_domains:
@@ -1294,7 +1294,7 @@ def _record_verify(profile: "AuthProfile", *, ok: bool, detail: dict) -> None:
         _upsert_profile(profile)
     except Exception as e:
         # 카탈로그 갱신 실패는 verify 결과 자체에 영향 주지 않음 — warn 만.
-        log.warning("[auth-profiles] verify 결과 카탈로그 갱신 실패 — %s", e)
+        log.warning("[auth-profiles] failed to update catalog with verify result — %s", e)
 
 
 def verify_profile(
@@ -1446,7 +1446,7 @@ def _run_seed_subprocess(cmd: list[str], timeout_sec: int) -> None:
         SeedTimeoutError: ``timeout_sec`` 안에 종료 안 됨 (사용자가 창 미종료).
         SeedSubprocessError: subprocess 실행 자체 실패 또는 비정상 returncode.
     """
-    log.info("[auth-profiles] subprocess 실행 — %s", " ".join(cmd))
+    log.info("[auth-profiles] subprocess running — %s", " ".join(cmd))
     try:
         result = subprocess.run(
             cmd,
@@ -1461,7 +1461,7 @@ def _run_seed_subprocess(cmd: list[str], timeout_sec: int) -> None:
             f"시드 timeout {timeout_sec}s — 사용자가 창을 닫지 않음"
         ) from e
     except (OSError, subprocess.SubprocessError) as e:
-        raise SeedSubprocessError(f"playwright open 실행 실패: {e}") from e
+        raise SeedSubprocessError(f"playwright open failed to run: {e}") from e
 
     # `playwright open` 은 정상 종료 시 returncode=0. 사용자가 강제 종료해도
     # 보통 0. non-zero 면 진짜 에러.
@@ -1538,7 +1538,7 @@ def _do_seed_io(
         try:
             os.chmod(storage_path, _FILE_MODE)
         except OSError as e:
-            log.warning("[auth-profiles] storage 권한 0600 설정 실패 — %s", e)
+            log.warning("[auth-profiles] failed to set storage perms 0600 — %s", e)
 
     # D12 — dump 검증.
     try:
@@ -1622,13 +1622,13 @@ def seed_profile(
     if progress_callback is not None:
         progress_callback(
             "login_waiting",
-            "로그인 창 대기 중 — 로그인 완료 화면을 확인한 뒤 열린 브라우저 창을 닫으면 저장됩니다.",
+            "Waiting for login window — close the opened browser after you see the post-login screen and the session will be saved.",
         )
     _do_seed_io(seed_url, storage_path, final_fp, expected_domains, timeout_sec)
     if progress_callback is not None:
         progress_callback(
             "verifying",
-            "세션 저장 완료 — 검증 대상 페이지를 천천히 열어 확인 중입니다.",
+            "Session saved — opening the verify URL slowly to confirm login state.",
         )
 
     profile = AuthProfile(

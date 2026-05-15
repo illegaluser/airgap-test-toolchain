@@ -127,7 +127,7 @@ class DifyClient:
         Raises:
             DifyConnectionError: HTTP 에러 또는 네트워크 실패 시.
         """
-        log.info("[Doc] 문서 업로드 중... (%s)", file_path)
+        log.info("[Doc] uploading document... (%s)", file_path)
         filename = os.path.basename(file_path)
         with open(file_path, "rb") as f:
             file_bytes = f.read()
@@ -147,7 +147,7 @@ class DifyClient:
             raise DifyConnectionError(f"파일 업로드 실패: {e}") from e
 
         file_id = res.json().get("id")
-        log.info("[Doc] 문서 업로드 완료 (ID: %s)", file_id)
+        log.info("[Doc] document upload done (ID: %s)", file_id)
         return file_id
 
     # ── Doc 모드: 파일을 LLM 입력용 텍스트로 추출 ──
@@ -220,7 +220,7 @@ class DifyClient:
                 )
             else:
                 text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars ...]"
-        log.info("[Doc] 문서 텍스트 추출: %d 자 (%s)", len(text), os.path.basename(file_path))
+        log.info("[Doc] document text extracted: %d chars (%s)", len(text), os.path.basename(file_path))
         return text
 
     # ── 시나리오 생성 (chat / doc 모드) ──
@@ -289,7 +289,7 @@ class DifyClient:
             call_kind="planner",
             extra_metric=grounding_meta,
         )
-        log.info("Dify 응답 길이: %d자, <think> 포함: %s", len(answer), "<think>" in answer)
+        log.info("Dify response length: %d chars, contains <think>: %s", len(answer), "<think>" in answer)
         scenario = extract_json_safely(answer)
         if not scenario or not isinstance(scenario, list):
             # 실패 시 raw 응답을 artifacts 에 덤프 (사후 진단)
@@ -316,10 +316,10 @@ class DifyClient:
             path = os.path.join(self.artifacts_dir, fname)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(answer)
-            log.warning("[Dify] raw 응답을 덤프했습니다: %s (%d자)", path, len(answer))
+            log.warning("[Dify] raw response dumped: %s (%d chars)", path, len(answer))
             return path
         except OSError as e:
-            log.warning("[Dify] raw 응답 덤프 실패: %s", e)
+            log.warning("[Dify] raw response dump failed: %s", e)
             return None
 
     # ── 치유 요청 (heal 모드) ──
@@ -470,7 +470,7 @@ class DifyClient:
         try:
             append_jsonl(self.llm_calls_path, record)
         except OSError as e:
-            log.warning("[Metrics] LLM 호출 metric 기록 실패: %s", e)
+            log.warning("[Metrics] LLM-call metric write failed: %s", e)
 
     # ── DOM Grounding (Phase 1 T1.5) ──
     def _prepend_dom_inventory(
@@ -485,7 +485,7 @@ class DifyClient:
             from .grounding.pruner import prune
             from .grounding.budget import fit_to_budget, estimate_tokens, DEFAULT_TOKEN_BUDGET
         except ImportError as e:
-            log.warning("[grounding] 모듈 import 실패: %s", e)
+            log.warning("[grounding] module import failed: %s", e)
             return srs_text, {"used": False, "error": f"import: {e}"}
 
         budget = int(os.environ.get("GROUNDING_TOKEN_BUDGET", str(DEFAULT_TOKEN_BUDGET)))

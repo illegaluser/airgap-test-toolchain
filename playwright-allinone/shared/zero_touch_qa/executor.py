@@ -352,9 +352,9 @@ def _dump_storage_state(context, path: str) -> None:
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         context.storage_state(path=path)
-        log.info("[Auth] storage_state 덤프 완료 — %s", path)
+        log.info("[Auth] storage_state dump done — %s", path)
     except Exception as e:  # noqa: BLE001
-        log.warning("[Auth] storage_state 덤프 실패 (%s): %s", path, e)
+        log.warning("[Auth] storage_state dump failed (%s): %s", path, e)
 
 
 def _apply_fingerprint_env(context_kwargs: dict) -> None:
@@ -502,7 +502,7 @@ class QAExecutor:
             # context_kwargs 의 기본값을 덮어쓴다. UA 는 스푸핑하지 않는다 (D10).
             _apply_fingerprint_env(context_kwargs)
             if storage_state_in and os.path.isfile(storage_state_in):
-                log.info("[Auth] storage_state 복원 — %s", storage_state_in)
+                log.info("[Auth] storage_state restored — %s", storage_state_in)
                 context_kwargs["storage_state"] = storage_state_in
             elif storage_state_in:
                 log.warning(
@@ -659,9 +659,9 @@ class QAExecutor:
                     final_page = alive[-1] if alive else None
                 if final_page is not None:
                     self._safe_screenshot(final_page, final_path)
-                    log.info("[Final] 최종 활성 페이지: %s → %s", final_page.url, final_path)
+                    log.info("[Final] final active page: %s → %s", final_page.url, final_path)
                 else:
-                    log.info("[Final] 모든 page 닫힘 — final_state.png 생략")
+                    log.info("[Final] all pages closed — skipping final_state.png")
 
                 # P-2. headed 모드에선 browser.close() 전에 짧게 대기 (사용자 시각 확인).
                 if headed:
@@ -746,7 +746,7 @@ class QAExecutor:
         try:
             new_page = popup_info.value
         except Exception as e:  # noqa: BLE001
-            log.warning("[Step %s] popup value 접근 실패: %s", step.get("step", "-"), e)
+            log.warning("[Step %s] popup value access failed: %s", step.get("step", "-"), e)
             return result
         return self._register_popup_or_skip(
             step, popup_to, new_page, pages, active_page, artifacts, result,
@@ -891,7 +891,7 @@ class QAExecutor:
 
         if verification_error:
             ss = self._screenshot(page, artifacts, step_id, "fail")
-            log.error("[Step %s] FAIL — verify 조건 불일치", step_id)
+            log.error("[Step %s] FAIL — verify condition mismatch", step_id)
             return StepResult(
                 step_id, action, str(original_target or ""),
                 str(step.get("value", "")), desc,
@@ -921,7 +921,7 @@ class QAExecutor:
                 return r
 
         # ── 모든 치유 실패 ──
-        log.error("[Step %s] FAIL — 모든 치유 실패", step_id)
+        log.error("[Step %s] FAIL — all healing attempts exhausted", step_id)
         return StepResult(
             step_id, action, str(original_target or ""),
             str(step.get("value", "")), desc,
@@ -1078,7 +1078,7 @@ class QAExecutor:
                 if not page.is_closed():
                     page.close()
             except Exception as e:
-                log.warning("[Step %s] page.close() 무시 가능 오류: %s", step_id, e)
+                log.warning("[Step %s] page.close() benign error: %s", step_id, e)
             log.info("[Step %s] close -> PASS", step_id)
             return StepResult(step_id, action, "", "", desc, "PASS")
 
@@ -1115,12 +1115,12 @@ class QAExecutor:
         raw_url = step.get("value") or step.get("target", "")
         url = self._normalize_url(str(raw_url))
         if url != str(raw_url):
-            log.info("[Step %s] URL 자동 normalize: %r → %r", step_id, raw_url, url)
+            log.info("[Step %s] URL auto-normalized: %r → %r", step_id, raw_url, url)
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
         except Exception as e:  # noqa: BLE001
             if "Download is starting" in str(e):
-                log.info("[Step %s] navigate -> PASS (다운로드 응답 — page 미로드)", step_id)
+                log.info("[Step %s] navigate -> PASS (download response — page not loaded)", step_id)
                 try:
                     ss = self._screenshot(page, artifacts, step_id, "pass")
                 except Exception:  # noqa: BLE001
@@ -1177,7 +1177,7 @@ class QAExecutor:
             except Exception:  # noqa: BLE001
                 pass
         except Exception as e:  # noqa: BLE001
-            log.debug("[Step %s] resolver-miss 진단 실패: %s", step_id, e)
+            log.debug("[Step %s] resolver-miss diagnosis failed: %s", step_id, e)
 
     def _try_initial_target(
         self, page: Page, step: dict, resolver: LocatorResolver, artifacts: str,
@@ -1242,7 +1242,7 @@ class QAExecutor:
         # action *직전* 에 캡처.
         stable_sel = _extract_stable_selector(locator)
         if stable_sel:
-            log.info("[Step %s] stable selector 캡처: %r", step_id, stable_sel)
+            log.info("[Step %s] stable selector captured: %r", step_id, stable_sel)
         try:
             self._perform_action(page, locator, step, resolver)
             if action == "click" and _page_closed(page):
@@ -1272,7 +1272,7 @@ class QAExecutor:
                 None,
             )
         except VerificationAssertionError as e:
-            log.warning("[Step %s] verify 조건 실패: %s", step_id, e)
+            log.warning("[Step %s] verify condition failed: %s", step_id, e)
             return None, e
         except Exception as e:  # noqa: BLE001
             if action == "click" and _page_closed(page):
@@ -1288,7 +1288,7 @@ class QAExecutor:
                     ),
                     None,
                 )
-            log.warning("[Step %s] 기본 타겟 실패: %s", step_id, e)
+            log.warning("[Step %s] initial target failed: %s", step_id, e)
             return None, None
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1337,7 +1337,7 @@ class QAExecutor:
                 )
             except VerificationAssertionError as e:
                 verification_error = e
-                log.warning("[Step %s] fallback verify 조건 실패: %s", step_id, e)
+                log.warning("[Step %s] fallback verify condition failed: %s", step_id, e)
             except Exception:  # noqa: BLE001
                 continue
         return None, verification_error
@@ -1440,7 +1440,7 @@ class QAExecutor:
                 pre_actions=list(pre_actions),
             )
         except Exception as e:  # noqa: BLE001
-            log.warning("[Step %s] 로컬 치유 실행 실패: %s", step_id, e)
+            log.warning("[Step %s] local healing exec failed: %s", step_id, e)
             return None
 
     def _try_dify_healer(
@@ -1452,14 +1452,14 @@ class QAExecutor:
         desc = step.get("description", "")
         original_target = step.get("target")
         if _page_closed(page):
-            log.info("[Step %s] Dify 치유 스킵 — page 가 이미 closed", step_id)
+            log.info("[Step %s] Dify healing skipped — page already closed", step_id)
             return None
         timeout_disp = (
             f"{self.config.heal_timeout_sec}s"
             if self.config.heal_timeout_sec else "무제한"
         )
         log.info(
-            "[Step %s] Dify LLM 치유 요청 중 (timeout=%s)...",
+            "[Step %s] Requesting Dify LLM healing (timeout=%s)...",
             step_id, timeout_disp,
         )
         try:
@@ -1471,7 +1471,7 @@ class QAExecutor:
                 strategy_trace=[a.to_dict() for a in self._latest_strategy_trace],
             )
         except DifyConnectionError as e:
-            log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
+            log.error("[Step %s] Dify healing transport failed: %s", step_id, e)
             return None
         if not new_target_info:
             return None
@@ -1523,7 +1523,7 @@ class QAExecutor:
                 stable_selector=stable_sel,
             )
         except Exception as e:  # noqa: BLE001
-            log.error("[Step %s] LLM 치유 후 실행 실패: %s", step_id, e)
+            log.error("[Step %s] post-LLM-healing exec failed: %s", step_id, e)
             return None
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1565,7 +1565,7 @@ class QAExecutor:
                     )
                     continue
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] press→click 휴리스틱 성공: %s", step_id, sel)
+                log.info("[Step %s] press→click heuristic succeeded: %s", step_id, sel)
                 return StepResult(
                     step_id, "click", sel, "", desc, "HEALED",
                     heal_stage="press_to_click", screenshot_path=ss,
@@ -1605,7 +1605,7 @@ class QAExecutor:
                     )
                     continue
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] '첫 결과' 휴리스틱 성공: %s", step_id, sel)
+                log.info("[Step %s] 'first result' heuristic succeeded: %s", step_id, sel)
                 return StepResult(
                     step_id, action, sel, "", desc, "HEALED",
                     heal_stage="first_result", screenshot_path=ss,
@@ -1635,7 +1635,7 @@ class QAExecutor:
                     continue
                 if loc.first.is_visible():
                     ss = self._screenshot(page, artifacts, step_id, "healed")
-                    log.info("[Step %s] '검색결과 존재' 휴리스틱 성공: %s", step_id, sel)
+                    log.info("[Step %s] 'search-results-present' heuristic succeeded: %s", step_id, sel)
                     return StepResult(
                         step_id, action, sel,
                         str(step.get("value", "")), desc,
@@ -1668,7 +1668,7 @@ class QAExecutor:
                 loc.first.fill(str(step.get("value", "")))
                 resolver.record_alias(original_target, sel)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] '검색창' 휴리스틱 성공: %s", step_id, sel)
+                log.info("[Step %s] 'search-box' heuristic succeeded: %s", step_id, sel)
                 return StepResult(
                     step_id, action, sel,
                     str(step.get("value", "")), desc,
@@ -1920,7 +1920,7 @@ class QAExecutor:
         if action == "press" and not value and target.lower() in QAExecutor.KNOWN_KEYS:
             step["value"] = target
             step["target"] = ""
-            log.debug("[보정] press: target '%s' → value로 이동", target)
+            log.debug("[normalize] press: target '%s' → moved to value", target)
 
         # navigate 의 흔한 LLM 실수: URL 을 target 에 넣음.
         # 스킴 없어도 'foo.com', 'localhost:3000' 등 URL 같으면 swap.
@@ -1934,7 +1934,7 @@ class QAExecutor:
             if looks_url:
                 step["value"] = target
                 step["target"] = ""
-                log.debug("[보정] navigate: target → value로 이동")
+                log.debug("[normalize] navigate: target → moved to value")
 
     def _resolve_upload_path(self, raw_path) -> str:
         """upload.value 를 artifacts 루트 아래의 실제 파일 경로로 해석한다."""
@@ -2024,7 +2024,7 @@ class QAExecutor:
         guard is opt-out via MOCK_OVERRIDE=1 for explicit operator actions.
         """
         if os.getenv("MOCK_OVERRIDE", "").strip() == "1":
-            log.warning("[MockGuard] MOCK_OVERRIDE=1 — mock scope guard 우회: %s", pattern)
+            log.warning("[MockGuard] MOCK_OVERRIDE=1 — bypassing mock scope guard: %s", pattern)
             return
 
         normalized = pattern.strip().lower()
@@ -2081,7 +2081,7 @@ class QAExecutor:
                 "PASS", screenshot_path=ss,
             )
         except ValueError as e:
-            log.warning("[Step %s] mock 설치 실패: %s — fallback 시도", step_id, e)
+            log.warning("[Step %s] mock install failed: %s — trying fallback", step_id, e)
 
         # 1단계: fallback_targets (대체 URL 패턴)
         for fb_target in step.get("fallback_targets", []) or []:
@@ -2090,7 +2090,7 @@ class QAExecutor:
                 self._apply_mock_route(page, fb_step)
                 step["target"] = str(fb_target)  # healed.json 반영
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] mock fallback 패턴 복구: %s", step_id, fb_target)
+                log.info("[Step %s] mock fallback pattern recovered: %s", step_id, fb_target)
                 return StepResult(
                     step_id, action, str(fb_target), str(step.get("value", "")), desc,
                     "HEALED", heal_stage="fallback", screenshot_path=ss,
@@ -2107,7 +2107,7 @@ class QAExecutor:
                 strategy_trace=[a.to_dict() for a in self._latest_strategy_trace],
             )
         except DifyConnectionError as e:
-            log.error("[Step %s] Dify 치유 통신 실패: %s", step_id, e)
+            log.error("[Step %s] Dify healing transport failed: %s", step_id, e)
             new_target_info = None
 
         if new_target_info:
@@ -2115,14 +2115,14 @@ class QAExecutor:
             try:
                 self._apply_mock_route(page, step)
                 ss = self._screenshot(page, artifacts, step_id, "healed")
-                log.info("[Step %s] mock LLM 치유 성공: %s", step_id, step.get("target"))
+                log.info("[Step %s] mock LLM healing succeeded: %s", step_id, step.get("target"))
                 return StepResult(
                     step_id, action, str(step.get("target", "")),
                     str(step.get("value", "")), desc,
                     "HEALED", heal_stage="dify", screenshot_path=ss,
                 )
             except ValueError as e:
-                log.error("[Step %s] LLM 치유 후에도 mock 실패: %s", step_id, e)
+                log.error("[Step %s] mock still failed after LLM healing: %s", step_id, e)
 
         ss = self._screenshot(page, artifacts, step_id, "fail")
         return StepResult(
@@ -2211,7 +2211,7 @@ class QAExecutor:
                 log.info("[Step %s] reset_state indexeddb -> cleared", step_id)
 
         except Exception as e:  # noqa: BLE001
-            log.error("[Step %s] reset_state %s 실패: %s", step_id, scope, e)
+            log.error("[Step %s] reset_state %s failed: %s", step_id, scope, e)
             ss = self._screenshot(page, artifacts, step_id, "fail")
             return StepResult(
                 step_id, "reset_state", "", scope, desc,
@@ -2664,7 +2664,7 @@ class QAExecutor:
         try:
             cred = resolve_credential(alias)
         except CredentialError as e:
-            log.error("[Step %s] auth_login credential 실패: %s", step_id, e)
+            log.error("[Step %s] auth_login credential failed: %s", step_id, e)
             ss = self._screenshot(page, artifacts, step_id, "fail")
             return StepResult(
                 step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
@@ -2695,7 +2695,7 @@ class QAExecutor:
                 "FAIL", screenshot_path=ss,
             )
 
-        log.error("[Step %s] auth_login 알 수 없는 mode=%r", step_id, opts.mode)
+        log.error("[Step %s] auth_login unknown mode=%r", step_id, opts.mode)
         ss = self._screenshot(page, artifacts, step_id, "fail")
         return StepResult(
             step_id, "auth_login", target_str, mask_secret(alias, keep=0), desc,
@@ -2731,7 +2731,7 @@ class QAExecutor:
             submit_loc.click(timeout=5000)
             page.wait_for_load_state("domcontentloaded", timeout=10000)
         except Exception as e:
-            log.error("[Step %s] auth_login form 실패: %s", step_id, e)
+            log.error("[Step %s] auth_login form failed: %s", step_id, e)
             ss = self._screenshot_masked(
                 page, artifacts, step_id, "fail",
                 mask=[loc for loc in (email_loc, pwd_loc) if loc is not None],
@@ -2788,7 +2788,7 @@ class QAExecutor:
                 submit_loc.click(timeout=5000)
                 page.wait_for_load_state("domcontentloaded", timeout=10000)
         except Exception as e:
-            log.error("[Step %s] auth_login totp 실패: %s", step_id, e)
+            log.error("[Step %s] auth_login totp failed: %s", step_id, e)
             ss = self._screenshot_masked(
                 page, artifacts, step_id, "fail",
                 mask=[loc for loc in (otp_loc,) if loc is not None],
@@ -2877,7 +2877,7 @@ class QAExecutor:
                 actual = ""
         if str(expected) not in actual:
             raise VerificationAssertionError(
-                f"텍스트/값 불일치: 기대='{expected}', 실제='{actual}'"
+                f"text/value mismatch: expected={expected!r}, actual={actual!r}"
             )
 
     # ── A: action 별 strategy chain (multi-strategy + post-condition) ──
@@ -3048,7 +3048,7 @@ class QAExecutor:
                 allowed_roots.append(os.path.abspath(sh))
             if not any(path.startswith(root + os.sep) or path == root for root in allowed_roots):
                 trace.append(_StrategyAttempt(
-                    name, f"보안 가드: 허용 루트 밖 — {path}"
+                    name, f"security guard: outside allowed roots — {path}"
                 ))
                 continue
             try:
@@ -3069,32 +3069,42 @@ class QAExecutor:
 
         self._latest_strategy_trace = trace
         raise last_err if last_err else FileNotFoundError(
-            f"업로드 후보 경로 모두 사용 불가: {value!r}"
+            f"no upload candidate path is usable: {value!r}"
         )
 
     def _do_fill(self, locator: Locator, value: str) -> None:
-        """fill 다중 전략. type → clear+fill → JS evaluate. post-check: input_value().
+        """fill 다중 전략. type → clear+fill → JS evaluate.
+
+        post-check 는 대상이 form input 인지 contenteditable 인지에 따라 분기:
+        form input 은 ``input_value()`` 로 .value 를 읽고, contenteditable 은
+        ``textContent`` 를 읽는다. nested iframe 안 contenteditable body (예:
+        kEditor) 에서 ``input_value()`` 가 'Node is not an <input>, <textarea>
+        or <select> element' 로 즉시 실패해 LLM healer 까지 도달하던 회귀를 본
+        분기로 흡수.
 
         ``type`` 을 1순위로 두는 이유: ``locator.fill()`` 은 한 번에 value 만 set
         하고 ``input`` 이벤트만 발사한다. 검색창 자동완성처럼 매 keystroke 의
         ``keydown/keyup`` 에 의존하는 사이트는 fill 만으로는 dropdown 이 트리거
         되지 않는다. ``type`` 은 한 글자씩 keystroke 시뮬레이션이라 인간 typing
-        과 동일한 이벤트 시퀀스를 발사 → 자동완성 호환. 짧은 입력에는 시간 비용
-        무시 가능 (~80ms × N).
+        과 동일한 이벤트 시퀀스를 발사 → 자동완성 호환.
 
-        ``type`` 이 fail 하면 (read-only input 등) ``clear+fill`` 로 fallback,
-        그것도 fail 하면 ``js-set`` 으로 마지막 시도.
+        ``type`` 이 fail 하면 ``clear+fill`` 로 fallback, 그것도 fail 하면
+        ``js-set`` 으로 마지막 시도.
         """
+        # 대상이 contenteditable 이면 .value 가 없고 input_value() 가 실패한다.
+        # 한 번 평가해 두고 strategy/post-check 가 분기에 쓴다.
+        is_ce = False
+        try:
+            is_ce = bool(locator.evaluate("el => !!(el && el.isContentEditable)"))
+        except Exception:  # noqa: BLE001
+            pass
+
         trace: list[_StrategyAttempt] = []
         last_err: Exception | None = None
 
         def type_keystroke():
-            locator.fill("")
+            locator.fill("")  # Playwright.fill() 도 contenteditable 지원
             locator.type(value, delay=80)
-            # typing 끝에 keyup 이벤트 명시 dispatch — 한글 IME / Playwright
-            # native keystroke 가 일부 사이트의 자동완성 listener 와 매치 안
-            # 되는 케이스 보강. listener 가 keyup 의존이면 이걸로 ajax 트리거.
-            # 검사 실패는 swallow (정상 흐름 영향 0).
             try:
                 locator.evaluate(
                     "el => el.dispatchEvent("
@@ -3108,12 +3118,21 @@ class QAExecutor:
             locator.fill(value)
 
         def js_set():
-            locator.evaluate(
-                "(el, v) => { el.value = v; "
-                "el.dispatchEvent(new Event('input', {bubbles:true})); "
-                "el.dispatchEvent(new Event('change', {bubbles:true})); }",
-                value,
-            )
+            if is_ce:
+                # contenteditable: .value 가 없고 textContent 가 정답.
+                locator.evaluate(
+                    "(el, v) => { el.textContent = v; "
+                    "el.dispatchEvent(new Event('input', {bubbles:true})); "
+                    "el.dispatchEvent(new Event('change', {bubbles:true})); }",
+                    value,
+                )
+            else:
+                locator.evaluate(
+                    "(el, v) => { el.value = v; "
+                    "el.dispatchEvent(new Event('input', {bubbles:true})); "
+                    "el.dispatchEvent(new Event('change', {bubbles:true})); }",
+                    value,
+                )
 
         strategies = [
             ("type",       type_keystroke),
@@ -3123,10 +3142,19 @@ class QAExecutor:
         for name, fn in strategies:
             try:
                 fn()
-                actual = locator.input_value() or ""
-                if actual != value:
+                if is_ce:
+                    # contenteditable: 에디터마다 trailing 줄바꿈/공백을 다르게
+                    # 붙이므로 strip 후 비교, 또 fill 한 값이 포함되기만 해도 OK.
+                    actual = (locator.evaluate("el => el.textContent") or "").strip()
+                    expected = value.strip()
+                    ok = actual == expected or expected in actual
+                else:
+                    actual = locator.input_value() or ""
+                    expected = value
+                    ok = actual == expected
+                if not ok:
                     raise RuntimeError(
-                        f"fill post-check: actual={actual!r} != expected={value!r}"
+                        f"fill post-check: actual={actual!r} != expected={expected!r}"
                     )
                 trace.append(_StrategyAttempt(name, ""))
                 self._latest_strategy_trace = trace
@@ -3136,7 +3164,7 @@ class QAExecutor:
                 last_err = e
 
         self._latest_strategy_trace = trace
-        raise last_err if last_err else RuntimeError("fill 모든 전략 실패")
+        raise last_err if last_err else RuntimeError("all fill strategies failed")
 
     # ── 14대 DSL 액션 수행 ──
     def _perform_action(

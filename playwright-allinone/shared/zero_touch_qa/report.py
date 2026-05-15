@@ -45,7 +45,7 @@ def save_run_log(results: list[StepResult], output_dir: str) -> str:
             if stable:
                 entry["stable_selector"] = stable
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    log.info("[Log] run_log.jsonl 생성 완료: %s", path)
+    log.info("[Log] run_log.jsonl generated: %s", path)
     return path
 
 
@@ -66,7 +66,7 @@ def save_scenario(
     path = os.path.join(output_dir, filename)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(scenario, f, indent=2, ensure_ascii=False)
-    log.info("[Scenario] %s 저장 완료", filename)
+    log.info("[Scenario] %s saved", filename)
     return path
 
 
@@ -133,7 +133,7 @@ def build_html_report(
     path = os.path.join(output_dir, "index.html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    log.info("[Report] HTML 리포트 생성 완료: %s", path)
+    log.info("[Report] HTML report generated: %s", path)
     return path
 
 
@@ -181,7 +181,7 @@ def _build_upload_section(
                 content = content[:200_000]
                 truncated = True
         except OSError as e:
-            log.warning("[Upload] %s 읽기 실패: %s", uploaded_file, e)
+            log.warning("[Upload] failed to read %s: %s", uploaded_file, e)
         if content:
             preview = f'<pre class="upload-code"><code>{html_escape(content)}</code></pre>'
             if truncated:
@@ -334,7 +334,7 @@ def _read_json_metric(path: str) -> object | None:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        log.warning("[Report] metric 파일 읽기 실패: %s (%s)", path, e)
+        log.warning("[Report] metric file read failed: %s (%s)", path, e)
         return None
 
 

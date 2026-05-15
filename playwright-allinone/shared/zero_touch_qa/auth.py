@@ -138,7 +138,7 @@ def parse_auth_target(target: str) -> AuthOptions:
 
     for p in parts:
         if "=" not in p:
-            log.warning("[auth_login] 알 수 없는 target 토큰 무시: %r", p)
+            log.warning("[auth_login] ignoring unknown target token: %r", p)
             continue
         key, _, value = p.partition("=")
         key = key.strip().lower()
@@ -156,7 +156,7 @@ def parse_auth_target(target: str) -> AuthOptions:
         elif key == "provider":
             opts.provider = value.lower()
         else:
-            log.warning("[auth_login] 알 수 없는 옵션 키 무시: %s=%s", key, value)
+            log.warning("[auth_login] ignoring unknown option key: %s=%s", key, value)
 
     return opts
 

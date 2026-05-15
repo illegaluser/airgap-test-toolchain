@@ -137,7 +137,7 @@ class LocatorResolver:
         if not key or not val or key == val:
             return
         if self.healed_aliases.get(key) != val:
-            log.info("[Resolver] alias 등록: %s → %s", key, val)
+            log.info("[Resolver] alias registered: %s → %s", key, val)
             self.healed_aliases[key] = val
 
     def resolve(self, target) -> Locator | None:
@@ -163,7 +163,7 @@ class LocatorResolver:
         if isinstance(target, str):
             aliased = self.healed_aliases.get(target.strip())
             if aliased:
-                log.debug("[Resolver] alias 사용: %s → %s", target, aliased)
+                log.debug("[Resolver] alias used: %s → %s", target, aliased)
                 target = aliased
 
         # Dict 타겟 (Dify가 JSON 객체로 보낸 경우)
@@ -341,7 +341,7 @@ class LocatorResolver:
             if self._safe_count(loc) > 0:
                 return loc.first
         except Exception:
-            log.debug("CSS/XPath 탐색 실패: %s", target_str)
+            log.debug("CSS/XPath probe failed: %s", target_str)
         return None
 
     def _resolve_raw(self, base_str: str) -> Locator | None:
@@ -396,7 +396,7 @@ class LocatorResolver:
             if self._safe_count(loc) > 0:
                 return loc
         except Exception:
-            log.debug("[Resolver] raw CSS/XPath 탐색 실패: %s", base_str)
+            log.debug("[Resolver] raw CSS/XPath probe failed: %s", base_str)
         return None
 
     # ─────────────────────────────────────────────────────────────────────

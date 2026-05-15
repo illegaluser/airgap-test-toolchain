@@ -608,7 +608,7 @@ def recording_start(req: RecordingStartReq, response: Response) -> RecordingStar
         _registry.update(sess.id, state=session.STATE_ERROR, error=str(e))
         log.error("[/recording/start] codegen 시작 실패 — %s", e)
         # playwright 미설치는 운영자 문제 → 503. 외 입력은 400.
-        if "찾을 수 없습니다" in str(e):
+        if "not found" in str(e):
             raise HTTPException(status_code=503, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -688,7 +688,7 @@ def recording_stop(sid: str) -> dict:
         log.warning("[/recording/stop] portabilize 실패 (계속 진행) — %s", e)
 
     if output_size == 0:
-        msg = "녹화 액션 0건 — codegen 출력 파일이 비어있습니다."
+        msg = "0 recorded actions — the codegen output file is empty."
         _registry.update(
             sid,
             state=session.STATE_ERROR,
@@ -748,9 +748,9 @@ def recording_stop(sid: str) -> dict:
     if convert_result.returncode != 0 or not convert_result.scenario_exists:
         # 컨테이너 변환 실패 — stderr 그대로 노출 + 원본 .py 보존
         msg = (
-            f"변환 실패 (returncode={convert_result.returncode}). "
-            "원본 original.py 는 보존됩니다. stderr 일부 — "
-            + (convert_result.stderr[:500] if convert_result.stderr else "(stderr 없음)")
+            f"Conversion failed (returncode={convert_result.returncode}). "
+            "The original original.py is preserved. stderr (truncated) — "
+            + (convert_result.stderr[:500] if convert_result.stderr else "(no stderr)")
         )
         _registry.update(sid, state=session.STATE_ERROR, error=msg)
         _save_metadata_preserving_auth(sid, {
@@ -1253,16 +1253,16 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Step 추가는 변환 완료(state=done) 세션만 가능합니다. "
-                f"현재 state={sess.state}"
+                f"Adding a step requires a converted session (state=done). "
+                f"Current state={sess.state}"
             ),
         )
     if req.action not in ASSERTION_ALLOWED_ACTIONS:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"action 은 {sorted(ASSERTION_ALLOWED_ACTIONS)} 중 하나여야 합니다. "
-                f"받은 값: {req.action!r}"
+                f"action must be one of {sorted(ASSERTION_ALLOWED_ACTIONS)}. "
+                f"Got: {req.action!r}"
             ),
         )
     if not req.target.strip():
@@ -1275,8 +1275,8 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"scroll 의 value 는 {sorted(_ASSERTION_SCROLL_VALUES)} "
-                    f"중 하나여야 합니다. 받은 값: {req.value!r}"
+                    f"scroll value must be one of {sorted(_ASSERTION_SCROLL_VALUES)}. "
+                    f"Got: {req.value!r}"
                 ),
             )
 
@@ -1337,8 +1337,8 @@ def _resolve_insert_index(scenario: list, position: Optional[int]) -> int:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"position 은 [1, {len(scenario) + 1}] 범위여야 합니다. "
-                f"받은 값: {position}"
+                f"position must be in range [1, {len(scenario) + 1}]. "
+                f"Got: {position}"
             ),
         )
     return position - 1
@@ -1479,7 +1479,7 @@ class _SeedJob:
     started_at: float
     timeout_sec: int
     phase: str = "starting"             # "starting" / "login_waiting" / "verifying" / "ready" / "error"
-    message: str = "시드 시작 중"
+    message: str = "Seed starting"
     profile_name: Optional[str] = None
     error: Optional[str] = None
     error_kind: Optional[str] = None    # 'timeout' / 'subprocess' / 'validate' / 'verify' / 'unknown'
