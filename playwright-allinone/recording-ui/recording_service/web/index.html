@@ -2,20 +2,25 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <title>Recording UI</title>
+  <title data-i18n="doc.title">Recording UI</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
     <div class="header-left">
       <button id="back-btn" type="button" class="back-btn" hidden
-              title="이전 페이지 (Jenkins 등) 로 돌아가기">← 뒤로</button>
-      <h1>📹 Recording UI</h1>
+              data-i18n-attr-title="header.back.title"
+              title="이전 페이지 (Jenkins 등) 로 돌아가기"
+              data-i18n="header.back.label">← 뒤로</button>
+      <h1 data-i18n="header.title">📹 Recording UI</h1>
       <a class="cross-link" href="http://localhost:18093/" target="_blank" rel="noopener noreferrer"
-         title="Replay UI 를 새 탭에서 열기 (port 18093)">🎬 Replay UI ↗</a>
+         data-i18n-attr-title="header.replay.title"
+         title="Replay UI 를 새 탭에서 열기 (port 18093)"
+         data-i18n="header.replay.label">🎬 Replay UI ↗</a>
     </div>
     <div class="meta">
-      <span id="health-badge">checking…</span>
+      <span id="lang-toggle" class="lang-toggle" aria-label="Language"></span>
+      <span id="health-badge" data-i18n="header.health.checking">checking…</span>
       <span class="muted">port 18092</span>
     </div>
   </header>
@@ -24,133 +29,144 @@
     <!-- 섹션 1-C: Login Profile Registration -->
     <section class="card">
       <details id="login-profile-section">
-        <summary><h2 style="display:inline-block; margin:0;">🔐 Login Profiles</h2></summary>
-        <p class="muted">
+        <summary><h2 style="display:inline-block; margin:0;" data-i18n="login.section.title">🔐 Login Profiles</h2></summary>
+        <p class="muted" data-i18n="login.section.desc">
           테스트 대상 서비스의 로그인 세션을 시드/검증/삭제합니다. 시드된 프로파일은
           Recording 과 Discover URLs 섹션에서 선택해 재사용할 수 있습니다.
           Replay UI 와 같은 카탈로그를 공유하므로, 양쪽 어디서 시드하든 그대로 보입니다.
         </p>
         <div class="auth-card-actions">
           <button type="button" id="btn-auth-seed" class="auth-btn"
-                  title="새 인증 세션 시드 — 별도 브라우저 창에서 직접 로그인 + 2중 확인 통과">
+                  data-i18n-attr-title="login.btn.new.title"
+                  title="새 인증 세션 시드 — 별도 브라우저 창에서 직접 로그인 + 2중 확인 통과"
+                  data-i18n="login.btn.new">
             + 새 프로파일
           </button>
           <button type="button" id="btn-auth-refresh" class="auth-btn"
-                  title="로그인 프로파일 목록 새로고침">
+                  data-i18n-attr-title="login.btn.refresh.title"
+                  title="로그인 프로파일 목록 새로고침"
+                  data-i18n="login.btn.refresh">
             ↻ 새로고침
           </button>
         </div>
         <table id="auth-profiles-table" class="data-table">
           <thead>
             <tr>
-              <th>프로파일 이름</th><th>로그인 상태</th><th>최근 확인</th><th>사이트</th><th>액션</th>
+              <th data-i18n="login.col.name">프로파일 이름</th>
+              <th data-i18n="login.col.state">로그인 상태</th>
+              <th data-i18n="login.col.last">최근 확인</th>
+              <th data-i18n="login.col.site">사이트</th>
+              <th data-i18n="login.col.actions">액션</th>
             </tr>
           </thead>
           <tbody id="auth-profiles-tbody">
-            <tr class="muted"><td colspan="5">— 로딩 중 —</td></tr>
+            <tr class="muted"><td colspan="5" data-i18n="login.row.loading">— 로딩 중 —</td></tr>
           </tbody>
         </table>
 
         <!-- 시드 입력 모달 -->
         <dialog id="auth-seed-dialog" class="auth-dialog">
           <form id="auth-seed-form" method="dialog">
-            <h3>새 인증 세션 만들기</h3>
-            <p class="muted">
+            <h3 data-i18n="login.seed.title">새 인증 세션 만들기</h3>
+            <p class="muted" data-i18n="login.seed.desc">
               이 단계는 1회만 수행합니다 (만료 시 재시드). 사람이 직접 네이버에 로그인 +
               2중 확인을 통과하면 그 결과 세션을 저장해서 이후 녹화/재생에 자동으로 재사용.
             </p>
             <label>
-              <span>이름</span>
+              <span data-i18n="login.seed.name">이름</span>
               <input type="text" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"
                      placeholder="booking-via-naver"
+                     data-i18n-attr-title="login.seed.name.title"
                      title="영문/숫자/_/- 1~64자, 첫 글자는 영문/숫자">
             </label>
             <label>
-              <span>시작 URL <em>(⚠️ 테스트 대상 *서비스* 진입 페이지 — 네이버 로그인 페이지 아님)</em></span>
+              <span data-i18n-html="login.seed.url.full"><span data-i18n="login.seed.url">시작 URL</span> <em data-i18n="login.seed.url.note">(⚠️ 테스트 대상 *서비스* 진입 페이지 — 네이버 로그인 페이지 아님)</em></span>
               <input type="url" name="seed_url" required
                      placeholder="https://booking.example.com/">
             </label>
             <label>
-              <span>검증 URL</span>
+              <span data-i18n="login.seed.verifyUrl">검증 URL</span>
               <input type="url" name="verify_service_url" required
                      placeholder="https://booking.example.com/mypage">
             </label>
             <label>
-              <span>검증 텍스트 <em>(선택 — 비우면 검증 URL 접근 성공만 확인)</em></span>
+              <span><span data-i18n="login.seed.verifyText">검증 텍스트</span> <em data-i18n="login.seed.verifyText.note">(선택 — 비우면 검증 URL 접근 성공만 확인)</em></span>
               <input type="text" name="verify_service_text"
+                     data-i18n-attr-placeholder="login.seed.verifyText.placeholder"
                      placeholder="김QA님 환영합니다">
             </label>
             <label class="optional">
-              <span>TTL 힌트 (시간) — 일 1회 재시드 가정 권장</span>
+              <span data-i18n="login.seed.ttl">TTL 힌트 (시간) — 일 1회 재시드 가정 권장</span>
               <input type="number" name="ttl_hint_hours" min="1" max="168" value="12">
             </label>
             <label class="optional">
-              <span>IdP 도메인 <em>(선택 — 비우면 IdP 검증 없음)</em></span>
+              <span><span data-i18n="login.seed.idp">IdP 도메인</span> <em data-i18n="login.seed.idp.note">(선택 — 비우면 IdP 검증 없음)</em></span>
               <input type="text" name="idp_domain" placeholder="naver.com" value="naver.com"
+                     data-i18n-attr-title="login.seed.idp.title"
                      title="2중 확인을 거치는 외부 IdP 도메인 (예: naver.com / kakao.com / accounts.google.com). ID/PW 만 쓰는 사이트면 비우세요.">
             </label>
             <label class="auth-checkbox">
               <input type="checkbox" name="naver_probe" checked>
-              <span>네이버 측 weak probe 활성 (best-effort, IdP=naver.com 일 때만 의미 있음)</span>
+              <span data-i18n="login.seed.naverProbe">네이버 측 weak probe 활성 (best-effort, IdP=naver.com 일 때만 의미 있음)</span>
             </label>
-            <p class="auth-warning">
+            <p class="auth-warning" data-i18n="login.seed.warning">
               ⚠ 운영 계정 사용 금지 — 테스트 전용 계정 권장
             </p>
             <div class="dialog-actions">
-              <button type="button" id="btn-auth-seed-cancel-input">취소</button>
-              <button value="submit" id="btn-auth-seed-submit">열기 →</button>
+              <button type="button" id="btn-auth-seed-cancel-input" data-i18n="login.seed.cancel">취소</button>
+              <button value="submit" id="btn-auth-seed-submit" data-i18n="login.seed.submit">열기 →</button>
             </div>
           </form>
         </dialog>
 
         <!-- 시드 진행 모달 -->
         <dialog id="auth-seed-progress" class="auth-dialog">
-          <h3>🪟 로그인 세션 저장 중</h3>
+          <h3 data-i18n="login.progress.title">🪟 로그인 세션 저장 중</h3>
           <ol class="auth-steps">
-            <li>대상 서비스의 [네이버로 로그인] 버튼 클릭</li>
-            <li>네이버 로그인 화면에서 ID / 비밀번호 입력</li>
-            <li>2중 확인 (SMS 등) 직접 통과</li>
-            <li>서비스로 자동 복귀 → 검증 대상 페이지 확인</li>
-            <li><strong>로그인 완료 화면을 확인한 뒤 열린 브라우저 창을 닫으세요</strong></li>
+            <li data-i18n="login.progress.step1">대상 서비스의 [네이버로 로그인] 버튼 클릭</li>
+            <li data-i18n="login.progress.step2">네이버 로그인 화면에서 ID / 비밀번호 입력</li>
+            <li data-i18n="login.progress.step3">2중 확인 (SMS 등) 직접 통과</li>
+            <li data-i18n="login.progress.step4">서비스로 자동 복귀 → 검증 대상 페이지 확인</li>
+            <li data-i18n-html="login.progress.step5"><strong>로그인 완료 화면을 확인한 뒤 열린 브라우저 창을 닫으세요</strong></li>
           </ol>
-          <p class="auth-status" id="auth-seed-progress-status">⏳ 사용자 입력 대기 중</p>
-          <p class="muted" id="auth-seed-progress-elapsed">경과 0초 / 한도 600초</p>
-          <p class="muted" id="auth-seed-progress-hint">
+          <p class="auth-status" id="auth-seed-progress-status" data-i18n="login.progress.status.waiting">⏳ 사용자 입력 대기 중</p>
+          <p class="muted" id="auth-seed-progress-elapsed" data-i18n="login.progress.elapsed">경과 0초 / 한도 600초</p>
+          <p class="muted" id="auth-seed-progress-hint" data-i18n="login.progress.hint">
             브라우저 창이 닫히면 세션을 저장하고, 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.
           </p>
           <div class="dialog-actions">
-            <button type="button" id="btn-auth-seed-cancel">취소 (창은 직접 닫으세요)</button>
-            <button type="button" id="btn-auth-seed-skip" hidden>사용하지 않음</button>
-            <button type="button" id="btn-auth-seed-done" hidden>이 프로파일 사용</button>
+            <button type="button" id="btn-auth-seed-cancel" data-i18n="login.progress.cancel">취소 (창은 직접 닫으세요)</button>
+            <button type="button" id="btn-auth-seed-skip" hidden data-i18n="login.progress.skip">사용하지 않음</button>
+            <button type="button" id="btn-auth-seed-done" hidden data-i18n="login.progress.done">이 프로파일 사용</button>
           </div>
         </dialog>
 
         <!-- 만료 알림 모달 (Start 시 409 → 재시드 유도) -->
         <dialog id="auth-expired-dialog" class="auth-dialog">
-          <h3>⚠ 인증 세션 만료</h3>
+          <h3 data-i18n="login.expired.title">⚠ 인증 세션 만료</h3>
           <p>
-            인증 세션 <code id="auth-expired-name">—</code> 가 만료되었습니다.
+            <span data-i18n="login.expired.body.prefix">인증 세션 </span><code id="auth-expired-name">—</code><span data-i18n="login.expired.body.suffix"> 가 만료되었습니다.</span>
           </p>
-          <p class="muted" id="auth-expired-reason">원인: 세션 만료 또는 IP 변경.</p>
-          <p>재시드하면 시작 URL / 검증 URL / 검증 텍스트 입력값이 그대로 유지됩니다.</p>
+          <p class="muted" id="auth-expired-reason" data-i18n="login.expired.reason">원인: 세션 만료 또는 IP 변경.</p>
+          <p data-i18n="login.expired.hint">재시드하면 시작 URL / 검증 URL / 검증 텍스트 입력값이 그대로 유지됩니다.</p>
           <div class="dialog-actions">
-            <button type="button" id="btn-auth-expired-cancel">취소</button>
-            <button type="button" id="btn-auth-expired-reseed">재시드</button>
+            <button type="button" id="btn-auth-expired-cancel" data-i18n="login.expired.cancel">취소</button>
+            <button type="button" id="btn-auth-expired-reseed" data-i18n="login.expired.reseed">재시드</button>
           </div>
         </dialog>
 
         <!-- 머신 불일치 경고 모달 -->
         <dialog id="auth-machine-mismatch-dialog" class="auth-dialog">
-          <h3>⚠ 머신 불일치 경고</h3>
-          <p>
+          <h3 data-i18n="login.mm.title">⚠ 머신 불일치 경고</h3>
+          <p data-i18n="login.mm.body">
             이 인증 세션은 다른 머신에서 시드되었습니다. 네이버는 IP / 디바이스 핑거프린트가
             바뀌면 세션을 자주 무효화합니다 — 거의 바로 재시드가 필요해질 수 있습니다.
           </p>
-          <p class="muted">권장: 이 머신에서 새로 시드.</p>
+          <p class="muted" data-i18n="login.mm.hint">권장: 이 머신에서 새로 시드.</p>
           <div class="dialog-actions">
-            <button type="button" id="btn-mm-cancel">취소</button>
-            <button type="button" id="btn-mm-proceed">그대로 시도</button>
-            <button type="button" id="btn-mm-reseed">이 머신에서 새로 시드</button>
+            <button type="button" id="btn-mm-cancel" data-i18n="login.mm.cancel">취소</button>
+            <button type="button" id="btn-mm-proceed" data-i18n="login.mm.proceed">그대로 시도</button>
+            <button type="button" id="btn-mm-reseed" data-i18n="login.mm.reseed">이 머신에서 새로 시드</button>
           </div>
         </dialog>
       </details>
@@ -159,77 +175,81 @@
     <!-- 섹션 1-B: Discover URLs (URL 자동 수집) -->
     <section class="card">
       <details id="discover-section">
-        <summary><h2 style="display:inline-block; margin:0;">🔍 Discover URLs</h2></summary>
-        <p class="muted">
+        <summary><h2 style="display:inline-block; margin:0;" data-i18n="discover.section.title">🔍 Discover URLs</h2></summary>
+        <p class="muted" data-i18n="discover.section.desc">
           시작 URL 한 개와 (선택) 로그인 프로파일을 지정하면 같은 사이트 안의
           링크를 BFS 로 수집합니다. 결과는 CSV/JSON 으로 받고, 선택한 URL 만
           순회하는 Python Playwright tour script 도 생성할 수 있습니다.
         </p>
         <form id="discover-form">
           <label>
-            <span>시작 URL</span>
+            <span data-i18n="discover.seedUrl">시작 URL</span>
             <input type="url" name="seed_url" required placeholder="https://...">
           </label>
           <label>
-            <span>로그인 프로파일 <em>(선택)</em></span>
+            <span><span data-i18n="discover.authProfile">로그인 프로파일</span> <em data-i18n="discover.authProfile.opt">(선택)</em></span>
             <select name="auth_profile" id="discover-auth-profile">
-              <option value="">(없음)</option>
+              <option value="" data-i18n="discover.authProfile.none">(없음)</option>
             </select>
           </label>
           <label class="optional">
-            <span>최대 페이지 수</span>
+            <span data-i18n="discover.maxPages">최대 페이지 수</span>
             <input type="number" name="max_pages" value="200" min="1" max="2000">
           </label>
           <label class="optional">
-            <span>최대 깊이</span>
+            <span data-i18n="discover.maxDepth">최대 깊이</span>
             <input type="number" name="max_depth" value="3" min="0" max="10">
           </label>
           <details class="discover-advanced">
-            <summary>고급 옵션</summary>
+            <summary data-i18n="discover.adv.summary">고급 옵션</summary>
             <label class="optional">
               <input type="checkbox" name="use_sitemap" checked>
-              sitemap.xml / robots.txt 의 Sitemap 사용 (기본 ON)
+              <span data-i18n="discover.adv.sitemap">sitemap.xml / robots.txt 의 Sitemap 사용 (기본 ON)</span>
             </label>
             <label class="optional">
               <input type="checkbox" name="capture_requests" checked>
-              페이지가 부르는 같은 호스트의 요청 URL 도 수집 (기본 ON)
+              <span data-i18n="discover.adv.requests">페이지가 부르는 같은 호스트의 요청 URL 도 수집 (기본 ON)</span>
             </label>
             <label class="optional">
               <input type="checkbox" name="spa_selectors">
-              SPA 신호 셀렉터(data-href, role=link 등) 추가 수집
+              <span data-i18n="discover.adv.spa">SPA 신호 셀렉터(data-href, role=link 등) 추가 수집</span>
             </label>
             <label class="optional">
               <input type="checkbox" name="ignore_query">
-              URL 의 쿼리 문자열 무시 (페이지네이션/필터 변종 통합)
+              <span data-i18n="discover.adv.ignoreQuery">URL 의 쿼리 문자열 무시 (페이지네이션/필터 변종 통합)</span>
             </label>
             <label class="optional">
               <input type="checkbox" name="include_subdomains">
-              같은 루트 도메인의 서브도메인 포함
+              <span data-i18n="discover.adv.subdomains">같은 루트 도메인의 서브도메인 포함</span>
             </label>
           </details>
           <div class="form-actions">
-            <button type="submit" id="btn-discover-start">Discover URLs</button>
-            <button type="button" id="btn-discover-cancel" hidden>취소</button>
+            <button type="submit" id="btn-discover-start" data-i18n="discover.btn.start">Discover URLs</button>
+            <button type="button" id="btn-discover-cancel" hidden data-i18n="discover.btn.cancel">취소</button>
           </div>
         </form>
-        <p class="muted" id="discover-status" style="white-space: pre-wrap;">— idle —</p>
+        <p class="muted" id="discover-status" style="white-space: pre-wrap;" data-i18n="discover.status.idle">— idle —</p>
         <div id="discover-actions" class="form-actions" hidden>
-          <a id="discover-csv-link" class="dl-link" href="#" download>⬇ CSV 다운로드</a>
-          <button type="button" id="btn-discover-select-all">전체 선택</button>
-          <button type="button" id="btn-discover-select-none">선택 해제</button>
-          <button type="button" id="btn-discover-tour-script" disabled>선택 URL Tour Script 생성</button>
-          <label class="discover-headless-toggle" title="기본 OFF — 브라우저 창이 뜨고 진행을 직접 볼 수 있습니다. ON 시 백그라운드(headless) 실행.">
-            <input type="checkbox" id="discover-headless"> 헤드리스(백그라운드) 실행
+          <a id="discover-csv-link" class="dl-link" href="#" download data-i18n="discover.csv">⬇ CSV 다운로드</a>
+          <button type="button" id="btn-discover-select-all" data-i18n="discover.selectAll">전체 선택</button>
+          <button type="button" id="btn-discover-select-none" data-i18n="discover.selectNone">선택 해제</button>
+          <button type="button" id="btn-discover-tour-script" disabled data-i18n="discover.tourScript">선택 URL Tour Script 생성</button>
+          <label class="discover-headless-toggle"
+                 data-i18n-attr-title="discover.headless.title"
+                 title="기본 OFF — 브라우저 창이 뜨고 진행을 직접 볼 수 있습니다. ON 시 백그라운드(headless) 실행.">
+            <input type="checkbox" id="discover-headless">
+            <span data-i18n="discover.headless">헤드리스(백그라운드) 실행</span>
           </label>
-          <label title="스크린샷 직전 콘텐츠가 안정될 때까지 기다리는 강도. '엄격' 은 네트워크 idle + DOM 변화가 멈출 때까지 추가 대기 — 비어 있는 화면이 잡히는 일을 줄이지만 URL 당 0.5~5초 추가될 수 있음.">
-            콘텐츠 안정성 대기
+          <label data-i18n-attr-title="discover.settle.title"
+                 title="스크린샷 직전 콘텐츠가 안정될 때까지 기다리는 강도. '엄격' 은 네트워크 idle + DOM 변화가 멈출 때까지 추가 대기 — 비어 있는 화면이 잡히는 일을 줄이지만 URL 당 0.5~5초 추가될 수 있음.">
+            <span data-i18n="discover.settle.label">콘텐츠 안정성 대기</span>
             <select id="discover-content-settle">
-              <option value="off">꺼짐 (빠름)</option>
-              <option value="network" selected>보통 (네트워크)</option>
-              <option value="strict">엄격 (네트워크 + DOM)</option>
+              <option value="off" data-i18n="discover.settle.off">꺼짐 (빠름)</option>
+              <option value="network" selected data-i18n="discover.settle.network">보통 (네트워크)</option>
+              <option value="strict" data-i18n="discover.settle.strict">엄격 (네트워크 + DOM)</option>
             </select>
           </label>
-          <span class="muted" id="discover-selected-count">0개 선택</span>
+          <span class="muted" id="discover-selected-count" data-i18n="discover.selectedCount">0개 선택</span>
         </div>
         <!-- 사이트 스캔 통계 (R9) — cap 도달 / sitemap 커버리지 / 분포 요약. 완료 후 노출. -->
         <div id="discover-stats" class="stats-card" hidden></div>
@@ -238,24 +258,26 @@
 
         <!-- 사이트 계층 트리 — Discover 완료 후 노출. 두 탭 (크롤 토폴로지 / URL 경로). -->
         <details id="discover-tree-toggle" class="card-toggle" hidden>
-          <summary><h3 style="display:inline-block; margin:0;">사이트 계층 트리</h3></summary>
+          <summary><h3 style="display:inline-block; margin:0;" data-i18n="discover.tree.title">사이트 계층 트리</h3></summary>
           <div class="card-actions">
             <a id="dl-tree-html" class="dl-link" href="#" download
-               title="크롤 토폴로지 + URL 경로 두 트리를 단일 HTML 로 외부 공유용 다운로드">📤 트리 다운로드 (HTML)</a>
+               data-i18n-attr-title="discover.tree.download.title"
+               title="크롤 토폴로지 + URL 경로 두 트리를 단일 HTML 로 외부 공유용 다운로드"
+               data-i18n="discover.tree.download">📤 트리 다운로드 (HTML)</a>
           </div>
           <div class="tree-tabs" role="tablist">
             <button type="button" class="tree-tab active" data-tree="crawl"
-                    role="tab" aria-selected="true">크롤 토폴로지</button>
+                    role="tab" aria-selected="true" data-i18n="discover.tree.tab.crawl">크롤 토폴로지</button>
             <button type="button" class="tree-tab" data-tree="path"
-                    role="tab" aria-selected="false">URL 경로</button>
+                    role="tab" aria-selected="false" data-i18n="discover.tree.tab.path">URL 경로</button>
           </div>
-          <p class="muted">
+          <p class="muted" data-i18n-html="discover.tree.desc">
             <strong>크롤 토폴로지</strong> — BFS 가 어느 페이지에서 어떤 링크를
             발견했는지 그대로. <strong>URL 경로</strong> — <code>/a/b/c</code>
             식 path segment 로 묶은 IA. SPA / 쿼리 식별자는 부정확할 수 있음.
           </p>
-          <div id="tree-pane-crawl" class="tree-pane">— 로드 중 —</div>
-          <div id="tree-pane-path" class="tree-pane" hidden>— 로드 중 —</div>
+          <div id="tree-pane-crawl" class="tree-pane" data-i18n="discover.tree.loading">— 로드 중 —</div>
+          <div id="tree-pane-path" class="tree-pane" hidden data-i18n="discover.tree.loading">— 로드 중 —</div>
         </details>
       </details>
     </section>
@@ -263,8 +285,8 @@
     <!-- 섹션 1: Recording (codegen 으로 새 시나리오 녹화). 외부 .py 업로드는 Play & more 섹션에서 처리. -->
     <section class="card">
       <details id="new-recording-section">
-        <summary><h2 style="display:inline-block; margin:0;">🎬 Recording</h2></summary>
-      <p class="muted hover-hint">
+        <summary><h2 style="display:inline-block; margin:0;" data-i18n="recording.section.title">🎬 Recording</h2></summary>
+      <p class="muted hover-hint" data-i18n-html="recording.hoverHint">
         💡 <strong>호버 메뉴 (드롭다운/GNB) 녹화 팁</strong> — codegen 은
         <em>클릭만</em> 기록하고 마우스 hover 는 기록하지 않습니다.
         상위 메뉴는 <strong>마우스만 올리고 클릭하지 마세요</strong>
@@ -275,38 +297,39 @@
       </p>
       <form id="start-form">
         <label>
-          <span>target_url</span>
+          <span data-i18n="recording.targetUrl">target_url</span>
           <input
             type="text" name="target_url" required
+            data-i18n-attr-placeholder="recording.targetUrl.placeholder"
             placeholder="https://example.com/login 또는 file:///app/test/fixtures/click.html"
           >
         </label>
         <label>
-          <span>planning_doc_ref <em>(선택)</em></span>
+          <span><span data-i18n="recording.planning">planning_doc_ref</span> <em data-i18n="recording.planning.opt">(선택)</em></span>
           <input type="text" name="planning_doc_ref" placeholder="feature_login.md">
         </label>
         <label>
-          <span>로그인 프로파일 <em>(선택 — 등록·검증·삭제는 위 "Login Profiles" 섹션)</em></span>
+          <span><span data-i18n="recording.auth">로그인 프로파일</span> <em data-i18n="recording.auth.opt">(선택 — 등록·검증·삭제는 위 "Login Profiles" 섹션)</em></span>
           <select name="auth_profile" id="recording-auth-profile">
-            <option value="">(없음 — 비로그인 녹화)</option>
+            <option value="" data-i18n="recording.auth.none">(없음 — 비로그인 녹화)</option>
           </select>
         </label>
         <div class="form-actions">
-          <button type="submit" id="btn-start">▶ Start Recording</button>
+          <button type="submit" id="btn-start" data-i18n="recording.btn.start">▶ Start Recording</button>
         </div>
       </form>
       <!-- 녹화 진행 중 — Recording 흐름의 다음 단계. 같은 카드 안에 인라인 -->
       <div id="active-session" class="active-session-block" hidden
            style="margin-top:14px;padding-top:14px;border-top:1px solid #eee;">
-        <h3 style="margin:0 0 8px 0;font-size:1rem;">녹화 진행 중</h3>
+        <h3 style="margin:0 0 8px 0;font-size:1rem;" data-i18n="recording.active.title">녹화 진행 중</h3>
         <dl class="kv">
-          <dt>세션 ID</dt><dd><code id="active-id">—</code></dd>
+          <dt data-i18n="recording.active.sid">세션 ID</dt><dd><code id="active-id">—</code></dd>
           <dt>target_url</dt><dd id="active-url">—</dd>
-          <dt>state</dt><dd><span class="state-pill" id="active-state">—</span></dd>
-          <dt>경과 시간</dt><dd id="active-elapsed">0초</dd>
+          <dt data-i18n="recording.active.state">state</dt><dd><span class="state-pill" id="active-state">—</span></dd>
+          <dt data-i18n="recording.active.elapsed">경과 시간</dt><dd id="active-elapsed" data-i18n="recording.active.elapsed.init">0초</dd>
         </dl>
-        <button id="btn-stop">■ Stop &amp; Convert</button>
-        <p class="muted">
+        <button id="btn-stop" data-i18n="recording.btn.stop">■ Stop &amp; Convert</button>
+        <p class="muted" data-i18n="recording.active.note">
           Stop 클릭 시 codegen 이 정상 종료되고 컨테이너 측 변환이 실행됩니다.
           시간이 약간 걸릴 수 있습니다.
         </p>
@@ -321,84 +344,101 @@
          업로드 진입은 항상 가능, 옵션·Play·Doc 영역은 세션 선택 시 활성화. -->
     <section class="card" id="rplus-section">
       <details id="rplus-toggle">
-        <summary><h2 style="display:inline-block; margin:0;">▶️ Play &amp; more</h2></summary>
+        <summary><h2 style="display:inline-block; margin:0;" data-i18n="rplus.section.title">▶️ Play &amp; more</h2></summary>
       <!-- 업로드 진입 — 세션 유무와 무관하게 항상 노출 -->
       <div class="rplus-upload-block" style="margin-bottom:14px;padding:10px;border:1px dashed #ccc;border-radius:6px;">
-        <strong>새 스크립트 업로드</strong>
-        <p class="muted" style="margin:4px 0 8px 0;">
+        <strong data-i18n="rplus.upload.title">새 스크립트 업로드</strong>
+        <p class="muted" style="margin:4px 0 8px 0;" data-i18n="rplus.upload.desc">
           이미 작성된 Playwright .py 를 업로드해 새 세션으로 등록 + 즉시 재생합니다.
         </p>
         <button type="button" id="btn-import-script"
-                title="이미 작성된 Playwright .py 스크립트를 업로드해 바로 재생 (Codegen 녹화 우회)">
+                data-i18n-attr-title="rplus.upload.btn.title"
+                title="이미 작성된 Playwright .py 스크립트를 업로드해 바로 재생 (Codegen 녹화 우회)"
+                data-i18n="rplus.upload.btn">
           📁 Play Script from File
         </button>
         <input type="file" id="import-file-input" accept=".py" hidden>
       </div>
       <!-- 세션 종속 영역 — sid 미선택 시 비활성. 헤더 + 옵션 + 버튼 전부 포함. -->
       <div id="rplus-session-area" aria-disabled="true">
-      <p class="muted">현재 세션(<code id="rplus-sid">—</code>) 에 대해 다음을 수행합니다.
-        <span id="rplus-empty-hint" class="muted" style="margin-left:6px;">
+      <p class="muted"><span data-i18n="rplus.session.prefix">현재 세션(</span><code id="rplus-sid">—</code><span data-i18n="rplus.session.suffix">) 에 대해 다음을 수행합니다.</span>
+        <span id="rplus-empty-hint" class="muted" style="margin-left:6px;" data-i18n="rplus.session.empty">
           — 선택된 세션 없음. 위에서 .py 를 업로드하거나 '최근 세션' 에서 선택하세요.
         </span>
       </p>
       <div class="plus-options" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
         <label style="display:flex;gap:6px;align-items:center;">
-          <span class="muted">로그인 프로파일</span>
+          <span class="muted" data-i18n="rplus.opt.auth">로그인 프로파일</span>
           <select id="rplus-auth-profile">
-            <option value="__default__">(세션 기본값 사용)</option>
-            <option value="">(인증 없이 실행)</option>
+            <option value="__default__" data-i18n="rplus.opt.auth.default">(세션 기본값 사용)</option>
+            <option value="" data-i18n="rplus.opt.auth.none">(인증 없이 실행)</option>
           </select>
         </label>
         <label style="display:flex;gap:6px;align-items:center;">
           <input type="checkbox" id="rplus-headed" checked>
-          <span>화면 표시 (headed)</span>
+          <span data-i18n="rplus.opt.headed">화면 표시 (headed)</span>
         </label>
         <label style="display:flex;gap:6px;align-items:center;"
+               data-i18n-attr-title="rplus.opt.slowmo.title"
                title="각 액션 사이에 지연을 줍니다. 사람이 눈으로 따라가며 디버깅할 때 유용 — 다만 액션 수만큼 누적되어 전체 실행 시간이 길어집니다.">
           <input type="checkbox" id="rplus-slowmo-enabled">
-          <span>액션 사이 지연</span>
+          <span data-i18n="rplus.opt.slowmo">액션 사이 지연</span>
           <input type="number" id="rplus-slowmo-ms" value="1000" min="0" step="100"
                  style="width:80px;" disabled>
-          <span class="muted">ms</span>
+          <span class="muted" data-i18n="rplus.opt.slowmo.ms">ms</span>
         </label>
       </div>
       <div class="plus-buttons">
         <div class="dropdown-group" data-group="play">
           <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
-            ▶ Play <span class="caret">▾</span>
+            <span data-i18n="rplus.btn.play">▶ Play</span> <span class="caret">▾</span>
           </button>
           <div class="dropdown-menu" role="menu">
-            <button id="btn-play-codegen" type="button" title="codegen 녹화 또는 업로드된 테스트 코드를 호스트에서 그대로 실행 (codegen 녹화 시 자동 annotate hover 주입, 업로드 스크립트는 우회)">
+            <button id="btn-play-codegen" type="button"
+                    data-i18n-attr-title="rplus.btn.play.codegen.title"
+                    title="codegen 녹화 또는 업로드된 테스트 코드를 호스트에서 그대로 실행 (codegen 녹화 시 자동 annotate hover 주입, 업로드 스크립트는 우회)"
+                    data-i18n="rplus.btn.play.codegen">
               ▶ 테스트코드 원본 실행
             </button>
-            <button id="btn-play-llm" type="button" title="14-DSL 변환본을 executor 로 실행 (healing/verify/mock 동작, 화면 표시)">
+            <button id="btn-play-llm" type="button"
+                    data-i18n-attr-title="rplus.btn.play.llm.title"
+                    title="14-DSL 변환본을 executor 로 실행 (healing/verify/mock 동작, 화면 표시)"
+                    data-i18n="rplus.btn.play.llm">
               ▶ LLM 적용 코드 실행
             </button>
           </div>
         </div>
         <div class="dropdown-group" data-group="doc">
           <button class="dropdown-toggle" type="button" aria-haspopup="true" aria-expanded="false">
-            📝 Generate Doc <span class="caret">▾</span>
+            <span data-i18n="rplus.btn.doc">📝 Generate Doc</span> <span class="caret">▾</span>
           </button>
           <div class="dropdown-menu" role="menu">
-            <button id="btn-enrich" type="button" title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)">
+            <button id="btn-enrich" type="button"
+                    data-i18n-attr-title="rplus.btn.doc.enrich.title"
+                    title="Ollama 호출로 IEEE 829-lite 테스트 계획서 역추정 (TR.5)"
+                    data-i18n="rplus.btn.doc.enrich">
               📝 코드 기반 시나리오 생성
             </button>
-            <button id="btn-compare-open" type="button" title="doc-DSL JSON 업로드 후 의미 비교 + 5분류 HTML 리포트 (TR.6)">
+            <button id="btn-compare-open" type="button"
+                    data-i18n-attr-title="rplus.btn.doc.compare.title"
+                    title="doc-DSL JSON 업로드 후 의미 비교 + 5분류 HTML 리포트 (TR.6)"
+                    data-i18n="rplus.btn.doc.compare">
               ⚖ 시나리오 문서 ↔ JSON 비교
             </button>
           </div>
         </div>
       </div>
       <div class="rplus-output-header" style="display:flex;align-items:center;gap:8px;margin:6px 0 4px 0;">
-        <strong>실행 결과</strong>
+        <strong data-i18n="rplus.output.title">실행 결과</strong>
         <button type="button" class="copy-btn" data-copy-target="rplus-output"
-                title="실행 결과 텍스트를 클립보드에 복사">📋 복사</button>
-        <span class="copy-toast" data-toast-for="rplus-output" hidden>✓ 복사됨</span>
+                data-i18n-attr-title="rplus.output.copy.title"
+                title="실행 결과 텍스트를 클립보드에 복사"
+                data-i18n="rplus.output.copy">📋 복사</button>
+        <span class="copy-toast" data-toast-for="rplus-output" hidden data-i18n="rplus.output.copied">✓ 복사됨</span>
       </div>
       <pre id="rplus-output" class="json-preview" hidden>—</pre>
       <details id="play-progress-details" hidden>
-        <summary>실시간 진행 로그</summary>
+        <summary data-i18n="rplus.progress.summary">실시간 진행 로그</summary>
         <pre id="play-progress" class="play-progress"></pre>
       </details>
       </div><!-- /#rplus-session-area -->
@@ -409,48 +449,52 @@
          를 한 토글로 묶음. 세션 선택 시 자동 펼침. -->
     <section class="card">
       <details id="result-area-toggle">
-        <summary><h2 style="display:inline-block; margin:0;">📊 결과 확인 및 스텝 추가</h2></summary>
+        <summary><h2 style="display:inline-block; margin:0;" data-i18n="result.area.title">📊 결과 확인 및 스텝 추가</h2></summary>
 
     <!-- 섹션 3: 결과 메타 -->
     <section class="card" id="result-section" hidden>
-      <h2>결과</h2>
+      <h2 data-i18n="result.meta.title">결과</h2>
       <dl class="kv">
-        <dt>세션 ID</dt><dd><code id="result-id">—</code></dd>
-        <dt>state</dt><dd><span class="state-pill" id="result-state">—</span></dd>
-        <dt>step 수</dt><dd id="result-step-count">—</dd>
-        <dt>scenario.json</dt><dd><code id="result-path">—</code></dd>
-        <dt>인증 프로파일</dt><dd id="result-auth-profile">—</dd>
+        <dt data-i18n="result.meta.sid">세션 ID</dt><dd><code id="result-id">—</code></dd>
+        <dt data-i18n="result.meta.state">state</dt><dd><span class="state-pill" id="result-state">—</span></dd>
+        <dt data-i18n="result.meta.steps">step 수</dt><dd id="result-step-count">—</dd>
+        <dt data-i18n="result.meta.path">scenario.json</dt><dd><code id="result-path">—</code></dd>
+        <dt data-i18n="result.meta.auth">인증 프로파일</dt><dd id="result-auth-profile">—</dd>
       </dl>
     </section>
 
     <!-- 섹션 3-A: Scenario JSON (변환된 14-DSL) — 셀프힐링 결과를 sub-block 으로 흡수 -->
     <section class="card card-toggle" id="scenario-card" hidden>
       <details id="scenario-details">
-        <summary><h2>Scenario JSON</h2></summary>
+        <summary><h2 data-i18n="scenario.title">Scenario JSON</h2></summary>
         <div class="card-actions">
           <button type="button" class="copy-btn" data-copy-target="result-json"
-                  title="클립보드에 복사">📋 복사</button>
-          <span class="copy-toast" data-toast-for="result-json" hidden>✓ 복사됨</span>
-          <a id="dl-scenario" class="dl-link" href="#" download>⬇ 다운로드</a>
+                  data-i18n-attr-title="scenario.copy.title"
+                  title="클립보드에 복사"
+                  data-i18n="scenario.copy">📋 복사</button>
+          <span class="copy-toast" data-toast-for="result-json" hidden data-i18n="scenario.copied">✓ 복사됨</span>
+          <a id="dl-scenario" class="dl-link" href="#" download data-i18n="scenario.download">⬇ 다운로드</a>
         </div>
-        <pre id="result-json" class="json-preview collapsible">— scenario.json 미로드 —</pre>
-        <button type="button" class="preview-toggle" data-toggle-target="result-json" hidden>▾ 전체 펼치기</button>
+        <pre id="result-json" class="json-preview collapsible" data-i18n="scenario.empty">— scenario.json 미로드 —</pre>
+        <button type="button" class="preview-toggle" data-toggle-target="result-json" hidden data-i18n="scenario.toggle">▾ 전체 펼치기</button>
 
         <!-- 셀프힐링 후 — 원본과 다를 때만 노출되는 sub-block -->
         <div id="scenario-healed-block" class="sub-block" hidden>
-          <h3>셀프힐링 후 (scenario.healed.json)</h3>
+          <h3 data-i18n="scenario.healed.title">셀프힐링 후 (scenario.healed.json)</h3>
           <div class="card-actions">
             <button type="button" class="copy-btn" data-copy-target="result-json-healed"
-                    title="클립보드에 복사">📋 복사</button>
-            <span class="copy-toast" data-toast-for="result-json-healed" hidden>✓ 복사됨</span>
-            <a id="dl-scenario-healed" class="dl-link" href="#" download>⬇ 다운로드</a>
+                    data-i18n-attr-title="scenario.copy.title"
+                    title="클립보드에 복사"
+                    data-i18n="scenario.copy">📋 복사</button>
+            <span class="copy-toast" data-toast-for="result-json-healed" hidden data-i18n="scenario.copied">✓ 복사됨</span>
+            <a id="dl-scenario-healed" class="dl-link" href="#" download data-i18n="scenario.download">⬇ 다운로드</a>
           </div>
-          <p class="muted">
+          <p class="muted" data-i18n-html="scenario.healed.desc">
             ▶ <strong>LLM 적용 코드 실행</strong> 중 셀프힐링으로 보정된 시나리오 —
             selector 치환·단계 추가 등이 반영. 원본과 다를 때만 표시됩니다.
           </p>
-          <pre id="result-json-healed" class="json-preview collapsible">— scenario.healed.json 미로드 —</pre>
-          <button type="button" class="preview-toggle" data-toggle-target="result-json-healed" hidden>▾ 전체 펼치기</button>
+          <pre id="result-json-healed" class="json-preview collapsible" data-i18n="scenario.healed.empty">— scenario.healed.json 미로드 —</pre>
+          <button type="button" class="preview-toggle" data-toggle-target="result-json-healed" hidden data-i18n="scenario.toggle">▾ 전체 펼치기</button>
         </div>
       </details>
     </section>
@@ -458,31 +502,35 @@
     <!-- 섹션 3-B: Script (.py) — codegen 원본 + LLM 셀프힐링 후 (Regression) sub-block -->
     <section class="card card-toggle" id="original-card" hidden>
       <details id="original-details">
-        <summary><h2>Original Script (.py)</h2></summary>
+        <summary><h2 data-i18n="original.title">Original Script (.py)</h2></summary>
         <div class="card-actions">
           <button type="button" class="copy-btn" data-copy-target="result-original"
-                  title="클립보드에 복사">📋 복사</button>
-          <span class="copy-toast" data-toast-for="result-original" hidden>✓ 복사됨</span>
-          <a id="dl-original" class="dl-link" href="#" download>⬇ 다운로드</a>
+                  data-i18n-attr-title="scenario.copy.title"
+                  title="클립보드에 복사"
+                  data-i18n="scenario.copy">📋 복사</button>
+          <span class="copy-toast" data-toast-for="result-original" hidden data-i18n="scenario.copied">✓ 복사됨</span>
+          <a id="dl-original" class="dl-link" href="#" download data-i18n="scenario.download">⬇ 다운로드</a>
         </div>
-        <pre id="result-original" class="json-preview collapsible">— original.py 미로드 —</pre>
-        <button type="button" class="preview-toggle" data-toggle-target="result-original" hidden>▾ 전체 펼치기</button>
+        <pre id="result-original" class="json-preview collapsible" data-i18n="original.empty">— original.py 미로드 —</pre>
+        <button type="button" class="preview-toggle" data-toggle-target="result-original" hidden data-i18n="scenario.toggle">▾ 전체 펼치기</button>
 
         <!-- 셀프힐링 후 — LLM 적용 코드 실행 후 자동 생성된 회귀 테스트 -->
         <div id="regression-block" class="sub-block" hidden>
-          <h3>셀프힐링 후 (regression_test.py)</h3>
+          <h3 data-i18n="regression.title">셀프힐링 후 (regression_test.py)</h3>
           <div class="card-actions">
             <button type="button" class="copy-btn" data-copy-target="result-regression"
-                    title="클립보드에 복사">📋 복사</button>
-            <span class="copy-toast" data-toast-for="result-regression" hidden>✓ 복사됨</span>
-            <a id="dl-regression" class="dl-link" href="#" download>⬇ 다운로드</a>
+                    data-i18n-attr-title="scenario.copy.title"
+                    title="클립보드에 복사"
+                    data-i18n="scenario.copy">📋 복사</button>
+            <span class="copy-toast" data-toast-for="result-regression" hidden data-i18n="scenario.copied">✓ 복사됨</span>
+            <a id="dl-regression" class="dl-link" href="#" download data-i18n="scenario.download">⬇ 다운로드</a>
           </div>
-          <p class="muted">
+          <p class="muted" data-i18n-html="regression.desc">
             ▶ <strong>LLM 적용 코드 실행</strong> 후 healed selector 와 함께 자동
             생성된 회귀 테스트. 검증 후 회귀 슈트로 채택.
           </p>
-          <pre id="result-regression" class="json-preview collapsible">— regression_test.py 미로드 —</pre>
-          <button type="button" class="preview-toggle" data-toggle-target="result-regression" hidden>▾ 전체 펼치기</button>
+          <pre id="result-regression" class="json-preview collapsible" data-i18n="regression.empty">— regression_test.py 미로드 —</pre>
+          <button type="button" class="preview-toggle" data-toggle-target="result-regression" hidden data-i18n="scenario.toggle">▾ 전체 펼치기</button>
         </div>
       </details>
     </section>
@@ -490,62 +538,69 @@
     <!-- 섹션 3-D: Run Log (Play 실행 후 step 별 결과). result-area-toggle 그룹 안. -->
     <section class="card card-toggle" id="run-log-card" hidden>
       <details id="run-log-details">
-        <summary><h2>실행 결과 (run_log)</h2></summary>
+        <summary><h2 data-i18n="runlog.title">실행 결과 (run_log)</h2></summary>
         <div class="card-actions">
           <a id="dl-report" class="dl-link" href="#" download
-             title="LLM/원본 두 모드의 step + 스크린샷을 단일 HTML 로 묶어 외부 공유용으로 다운로드">📤 리포트 다운로드</a>
+             data-i18n-attr-title="runlog.download.title"
+             title="LLM/원본 두 모드의 step + 스크린샷을 단일 HTML 로 묶어 외부 공유용으로 다운로드"
+             data-i18n="runlog.download">📤 리포트 다운로드</a>
         </div>
         <div class="run-log-mode-tabs" id="run-log-mode-tabs" role="tablist">
           <button type="button" class="run-log-mode-tab" data-mode="llm"
-                  role="tab" aria-selected="true">LLM</button>
+                  role="tab" aria-selected="true" data-i18n="runlog.tab.llm">LLM</button>
           <button type="button" class="run-log-mode-tab" data-mode="codegen"
-                  role="tab" aria-selected="false">원본</button>
+                  role="tab" aria-selected="false" data-i18n="runlog.tab.codegen">원본</button>
         </div>
-        <p class="muted">
+        <p class="muted" data-i18n-html="runlog.desc">
           가장 최근 ▶ Play 실행의 step 별 결과 + 스크린샷. <strong>LLM</strong> 탭은
           시나리오 executor 의 PASS / HEALED / FAIL 과 <code>heal_stage</code> 까지
           보여주고, <strong>원본</strong> 탭은 codegen <code>original.py</code> 를
           Playwright tracing 으로 캡처한 액션별 결과입니다.
         </p>
-        <div id="run-log-container">— Play 실행 후 표시됩니다 —</div>
+        <div id="run-log-container" data-i18n="runlog.empty">— Play 실행 후 표시됩니다 —</div>
       </details>
     </section>
 
     <!-- 섹션 3-E: LLM 실행 로그 (play-llm.log) -->
     <section class="card card-toggle" id="play-llm-log-card" hidden>
       <details id="play-llm-log-details">
-        <summary><h2>LLM 실행 로그 (play-llm.log)</h2></summary>
+        <summary><h2 data-i18n="playLlmLog.title">LLM 실행 로그 (play-llm.log)</h2></summary>
         <div class="card-actions">
           <button type="button" class="copy-btn" data-copy-target="result-play-llm-log"
-                  title="클립보드에 복사">📋 복사</button>
-          <span class="copy-toast" data-toast-for="result-play-llm-log" hidden>✓ 복사됨</span>
-          <a id="dl-play-llm-log" class="dl-link" href="#" download>⬇ 다운로드</a>
+                  data-i18n-attr-title="scenario.copy.title"
+                  title="클립보드에 복사"
+                  data-i18n="scenario.copy">📋 복사</button>
+          <span class="copy-toast" data-toast-for="result-play-llm-log" hidden data-i18n="scenario.copied">✓ 복사됨</span>
+          <a id="dl-play-llm-log" class="dl-link" href="#" download data-i18n="scenario.download">⬇ 다운로드</a>
         </div>
-        <p class="muted">
+        <p class="muted" data-i18n-html="playLlmLog.desc">
           ▶ <strong>LLM 적용 코드 실행</strong> 의 전체 로그 — 단계별 PASS/HEALED/FAIL,
           LLM 프롬프트/응답, selector 치환 결정 근거 등.
         </p>
-        <pre id="result-play-llm-log" class="json-preview collapsible">— play-llm.log 미로드 —</pre>
-        <button type="button" class="preview-toggle" data-toggle-target="result-play-llm-log" hidden>▾ 전체 펼치기</button>
+        <pre id="result-play-llm-log" class="json-preview collapsible" data-i18n="playLlmLog.empty">— play-llm.log 미로드 —</pre>
+        <button type="button" class="preview-toggle" data-toggle-target="result-play-llm-log" hidden data-i18n="scenario.toggle">▾ 전체 펼치기</button>
       </details>
     </section>
 
     <!-- 섹션 3-E: codegen 원본 ↔ LLM healed regression 변경 분석 (항목 4) -->
     <section class="card" id="diff-card" hidden>
-      <h2>원본 ↔ Regression 변경 분석
-        <button type="button" id="btn-analyze-diff" title="LLM 으로 변경 의미 분석">🔎 LLM 분석</button>
+      <h2><span data-i18n="diff.title">원본 ↔ Regression 변경 분석</span>
+        <button type="button" id="btn-analyze-diff"
+                data-i18n-attr-title="diff.btn.analyze.title"
+                title="LLM 으로 변경 의미 분석"
+                data-i18n="diff.btn.analyze">🔎 LLM 분석</button>
       </h2>
-      <p class="muted">
+      <p class="muted" data-i18n="diff.desc">
         codegen 원본과 LLM healed regression 의 차이를 LLM (Ollama) 이
         의미 단위로 정리 — selector 치환 / hover 추가 / 삭제된 단계 등.
         분석 결과를 보고 회귀 테스트 채택 가능성을 판단.
       </p>
-      <div id="diff-analysis-output" class="analysis-output">
+      <div id="diff-analysis-output" class="analysis-output" data-i18n-html="diff.placeholder">
         — <strong>🔎 LLM 분석</strong> 버튼을 누르면 분석을 시작합니다 —
       </div>
       <details id="diff-raw-details">
-        <summary class="muted">원시 unified diff 보기</summary>
-        <pre id="diff-output" class="diff-pre">— LLM 적용 코드 실행 후 표시됩니다 —</pre>
+        <summary class="muted" data-i18n="diff.raw.summary">원시 unified diff 보기</summary>
+        <pre id="diff-output" class="diff-pre" data-i18n="diff.raw.empty">— LLM 적용 코드 실행 후 표시됩니다 —</pre>
       </details>
     </section>
 
@@ -553,17 +608,20 @@
     <dialog id="shot-dialog" class="shot-dialog">
       <form method="dialog">
         <button class="shot-close" value="cancel" type="submit"
-                title="닫기 (Esc)" aria-label="모달 닫기">✕</button>
+                data-i18n-attr-title="shot.close.title"
+                title="닫기 (Esc)"
+                data-i18n-attr-aria-label="shot.close.aria"
+                aria-label="모달 닫기">✕</button>
       </form>
       <img id="shot-img" alt="step screenshot">
-      <p class="shot-caption" id="shot-caption">—</p>
+      <p class="shot-caption" id="shot-caption" data-i18n="shot.caption.empty">—</p>
     </dialog>
 
     <!-- 섹션 4: Step 추가 (TR.4 — codegen 미생성 액션 보충) -->
     <section class="card" id="assertion-section" hidden>
       <details id="assertion-toggle">
-        <summary><h2 style="display:inline-block; margin:0;">＋ Step 추가 <span class="muted" style="font-size:0.85em; font-weight:normal;">(codegen 미생성 액션)</span></h2></summary>
-      <p class="muted">
+        <summary><h2 style="display:inline-block; margin:0;"><span data-i18n="step.section.title">＋ Step 추가</span> <span class="muted" style="font-size:0.85em; font-weight:normal;" data-i18n="step.section.note">(codegen 미생성 액션)</span></h2></summary>
+      <p class="muted" data-i18n-html="step.desc">
         codegen 은 click / fill / press / select / check / navigate 만 녹화합니다.
         다음 14-DSL 액션은 직접 추가하세요:
         <strong>verify</strong> · <strong>mock_status</strong> · <strong>mock_data</strong> ·
@@ -581,26 +639,30 @@
           </select>
         </label>
         <label>
-          <span>target <em>(셀렉터 또는 URL 패턴)</em></span>
-          <input type="text" name="target" required placeholder="#status / https://api.example.com/list / #footer / role=link, name=회사소개">
+          <span><span data-i18n="step.target">target</span> <em data-i18n="step.target.note">(셀렉터 또는 URL 패턴)</em></span>
+          <input type="text" name="target" required
+                 data-i18n-attr-placeholder="step.target.placeholder"
+                 placeholder="#status / https://api.example.com/list / #footer / role=link, name=회사소개">
         </label>
         <label>
-          <span>value <em>(hover 는 빈값, scroll 은 into_view)</em></span>
+          <span><span data-i18n="step.value">value</span> <em data-i18n="step.value.note">(hover 는 빈값, scroll 은 into_view)</em></span>
           <input type="text" name="value" placeholder='clicked / 500 / {"items":[]} / into_view'>
         </label>
         <label class="optional">
-          <span>condition <em>(verify 한정, 선택)</em></span>
+          <span><span data-i18n="step.condition">condition</span> <em data-i18n="step.condition.note">(verify 한정, 선택)</em></span>
           <input type="text" name="condition" placeholder="text / visible / url">
         </label>
         <label class="optional">
-          <span>position <em>(1-base step 번호. 비우면 끝에 추가)</em></span>
-          <input type="number" name="position" min="1" step="1" placeholder="예: 4 — step 4 자리에 삽입, 기존 step 4~ 가 +1">
+          <span><span data-i18n="step.position">position</span> <em data-i18n="step.position.note">(1-base step 번호. 비우면 끝에 추가)</em></span>
+          <input type="number" name="position" min="1" step="1"
+                 data-i18n-attr-placeholder="step.position.placeholder"
+                 placeholder="예: 4 — step 4 자리에 삽입, 기존 step 4~ 가 +1">
         </label>
         <label class="optional">
-          <span>description <em>(선택)</em></span>
+          <span><span data-i18n="step.description">description</span> <em data-i18n="step.description.note">(선택)</em></span>
           <input type="text" name="description">
         </label>
-        <button type="submit">＋ Step 추가</button>
+        <button type="submit" data-i18n="step.btn.submit">＋ Step 추가</button>
       </form>
       </details>
     </section>
@@ -611,27 +673,29 @@
     <!-- Compare 모달 (간단 폼) -->
     <dialog id="compare-dialog">
       <form id="compare-form" method="dialog">
-        <h3>doc-DSL 비교 입력</h3>
-        <p class="muted">14-DSL JSON 배열을 붙여넣으세요.</p>
+        <h3 data-i18n="compare.title">doc-DSL 비교 입력</h3>
+        <p class="muted" data-i18n="compare.desc">14-DSL JSON 배열을 붙여넣으세요.</p>
         <textarea name="doc_dsl" rows="12" placeholder='[{"step":1,"action":"navigate","target":"","value":"https://..."}]' required></textarea>
         <label class="optional">
-          <span>fuzzy 임계값 (0.0~1.0, 기본 0.7)</span>
+          <span data-i18n="compare.threshold">fuzzy 임계값 (0.0~1.0, 기본 0.7)</span>
           <input type="number" name="threshold" min="0" max="1" step="0.05" value="0.7">
         </label>
         <div class="dialog-actions">
-          <button value="cancel">취소</button>
-          <button value="submit" id="btn-compare-submit">비교 실행</button>
+          <button value="cancel" data-i18n="compare.cancel">취소</button>
+          <button value="submit" id="btn-compare-submit" data-i18n="compare.submit">비교 실행</button>
         </div>
       </form>
     </dialog>
 
     <!-- 섹션 6: 세션 목록 -->
     <section class="card">
-      <h2>최근 세션</h2>
+      <h2 data-i18n="sessions.title">최근 세션</h2>
       <div class="session-filters">
-        <input id="session-filter" type="text" placeholder="target_url / id 검색…" autocomplete="off">
+        <input id="session-filter" type="text"
+               data-i18n-attr-placeholder="sessions.filter.placeholder"
+               placeholder="target_url / id 검색…" autocomplete="off">
         <select id="session-state-filter">
-          <option value="">모든 state</option>
+          <option value="" data-i18n="sessions.state.any">모든 state</option>
           <option value="recording">recording</option>
           <option value="converting">converting</option>
           <option value="done">done</option>
@@ -639,21 +703,23 @@
         </select>
       </div>
       <div class="session-bulk-actions">
-        <button type="button" id="btn-session-select-all">전체 선택</button>
-        <button type="button" id="btn-session-select-none">선택 해제</button>
-        <button type="button" id="btn-session-delete-selected" class="danger" disabled>선택 삭제</button>
-        <span class="muted" id="session-selected-count">0개 선택</span>
+        <button type="button" id="btn-session-select-all" data-i18n="sessions.btn.selectAll">전체 선택</button>
+        <button type="button" id="btn-session-select-none" data-i18n="sessions.btn.selectNone">선택 해제</button>
+        <button type="button" id="btn-session-delete-selected" class="danger" disabled data-i18n="sessions.btn.deleteSelected">선택 삭제</button>
+        <span class="muted" id="session-selected-count" data-i18n="sessions.selectedCount">0개 선택</span>
       </div>
       <table id="session-table">
         <thead>
           <tr>
-            <th style="width:32px;"><input type="checkbox" id="session-th-check" title="현재 보이는 세션 전체 선택/해제"></th>
+            <th style="width:32px;"><input type="checkbox" id="session-th-check"
+                                           data-i18n-attr-title="sessions.th.checkbox.title"
+                                           title="현재 보이는 세션 전체 선택/해제"></th>
             <th>id</th><th>state</th><th>target_url</th>
             <th>auth</th><th>steps</th><th>created</th><th></th>
           </tr>
         </thead>
         <tbody id="session-tbody">
-          <tr class="muted"><td colspan="8">— 세션 없음 —</td></tr>
+          <tr class="muted"><td colspan="8" data-i18n="sessions.empty">— 세션 없음 —</td></tr>
         </tbody>
       </table>
     </section>
@@ -661,9 +727,10 @@
   </main>
 
   <footer>
-    <span class="muted">Recording UI · 호스트 데몬 · 폐쇄망 호환</span>
+    <span class="muted" data-i18n="footer.text">Recording UI · 호스트 데몬 · 폐쇄망 호환</span>
   </footer>
 
+  <script src="/static/i18n.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
