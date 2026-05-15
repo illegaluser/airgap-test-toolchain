@@ -1449,7 +1449,7 @@ async function loadAuthProfiles() {
     return;
   }
   _authState.profiles = profiles;
-  const optionsHtml = `<option value="">(없음 — 비로그인 녹화)</option>` +
+  const optionsHtml = `<option value="">${escapeHtml(I18N.t("recording.auth.none", "(없음 — 비로그인 녹화)"))}</option>` +
     profiles.map((p) => {
       const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
       return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
@@ -1475,8 +1475,8 @@ async function loadAuthProfiles() {
   if (rplusSel) {
     const prev = rplusSel.value || "__default__";
     rplusSel.innerHTML =
-      `<option value="__default__">(세션 기본값 사용)</option>` +
-      `<option value="">(인증 없이 실행)</option>` +
+      `<option value="__default__">${escapeHtml(I18N.t("rplus.opt.auth.default", "(세션 기본값 사용)"))}</option>` +
+      `<option value="">${escapeHtml(I18N.t("rplus.opt.auth.none", "(인증 없이 실행)"))}</option>` +
       profiles.map((p) => {
         const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
         return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
@@ -1502,22 +1502,22 @@ function _renderAuthProfilesTable() {
   tbody.innerHTML = "";
   const profiles = _authState.profiles || [];
   if (profiles.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 프로파일 없음 —</td></tr>';
+    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t("auth.empty", "등록된 프로파일 없음"))} —</td></tr>`;
     return;
   }
   for (const p of profiles) {
     const tr = document.createElement("tr");
     const warn = p.session_storage_warning
-      ? ' <span class="muted">⚠ sessionStorage 의존</span>'
+      ? ` <span class="muted">${escapeHtml(I18N.t("auth.sessionStorageWarn", "⚠ sessionStorage 의존"))}</span>`
       : "";
     tr.innerHTML = `
       <td><strong>${escapeHtml(p.name)}</strong></td>
-      <td><span class="ok">등록됨</span>${warn}</td>
+      <td><span class="ok">${escapeHtml(I18N.t("auth.registered", "등록됨"))}</span>${warn}</td>
       <td>${escapeHtml(p.last_verified_at || "—")}</td>
       <td>${escapeHtml(p.service_domain || "—")}</td>
       <td>
-        <button type="button" class="auth-btn auth-reseed-row" data-name="${escapeHtml(p.name)}">↻ 다시 로그인</button>
-        <button type="button" class="auth-btn auth-btn-danger auth-del-row" data-name="${escapeHtml(p.name)}" title="프로파일 삭제 (카탈로그 + storageState)">🗑</button>
+        <button type="button" class="auth-btn auth-reseed-row" data-name="${escapeHtml(p.name)}">${escapeHtml(I18N.t("auth.reseed", "↻ 다시 로그인"))}</button>
+        <button type="button" class="auth-btn auth-btn-danger auth-del-row" data-name="${escapeHtml(p.name)}" title="${escapeHtml(I18N.t("auth.deleteTitle", "프로파일 삭제 (카탈로그 + storageState)"))}">🗑</button>
       </td>`;
     tbody.appendChild(tr);
   }
@@ -1530,8 +1530,11 @@ function _renderAuthProfilesTable() {
       const prof = _authState.profiles.find((x) => x.name === name);
       const domain = prof ? prof.service_domain : "";
       const ok = window.confirm(
-        `프로파일 "${name}"${domain ? ` (${domain})` : ""} 을 삭제하시겠습니까?\n` +
-        `카탈로그 항목과 저장된 storageState 파일이 함께 제거됩니다.`,
+        I18N.t(
+          "auth.deleteConfirm",
+          "프로파일 \"{name}\"{domainSuffix} 을 삭제하시겠습니까?\n카탈로그 항목과 저장된 storageState 파일이 함께 제거됩니다.",
+          { name, domainSuffix: domain ? ` (${domain})` : "" },
+        ),
       );
       if (!ok) return;
       b.disabled = true;
@@ -1543,7 +1546,7 @@ function _renderAuthProfilesTable() {
         }
         await loadAuthProfiles();
       } catch (err) {
-        alert(`삭제 실패: ${err.message || err}`);
+        alert(I18N.t("alert.deleteFail", "삭제 실패: {msg}", { msg: err.message || err }));
         b.disabled = false;
       }
     });
@@ -1643,13 +1646,13 @@ async function _startSeedFlow(payload) {
   const doneBtn = $("#btn-auth-seed-done");
   const inputDlg = $("#auth-seed-dialog");
   if (inputDlg && inputDlg.open) inputDlg.close();
-  status.textContent = "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요";
-  elapsed.textContent = `경과 0초 / 한도 ${payload.timeout_sec || 600}초`;
-  hint.textContent = "창이 닫히면 세션을 저장하고 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.";
+  status.textContent = I18N.t("seed.waiting", "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요");
+  elapsed.textContent = I18N.t("seed.elapsedLimit", "경과 0초 / 한도 {t}초", { t: payload.timeout_sec || 600 });
+  hint.textContent = I18N.t("seed.hintWaiting", "창이 닫히면 세션을 저장하고 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.");
   cancelBtn.hidden = false;
   skipBtn.hidden = true;
   doneBtn.hidden = true;
-  cancelBtn.textContent = "취소 (창은 직접 닫으세요)";
+  cancelBtn.textContent = I18N.t("seed.cancelClose", "취소 (창은 직접 닫으세요)");
   cancelBtn.dataset.action = "cancel";
   skipBtn.dataset.profile = "";
   doneBtn.dataset.profile = "";
@@ -1659,7 +1662,7 @@ async function _startSeedFlow(payload) {
   try {
     resp = await seedAuthProfileStart(payload);
   } catch (err) {
-    status.textContent = `✗ 시작 실패: ${err.message}`;
+    status.textContent = I18N.t("seed.startFail", "✗ 시작 실패: {msg}", { msg: err.message });
     return;
   }
   const seedSid = resp.seed_sid;
@@ -1672,16 +1675,19 @@ async function _startSeedFlow(payload) {
       console.warn("seed poll 실패:", err);
       return;
     }
-    elapsed.textContent =
-      `경과 ${Math.floor(poll.elapsed_sec)}초 / 한도 ${poll.timeout_sec}초`;
+    elapsed.textContent = I18N.t(
+      "seed.elapsedNow",
+      "경과 {e}초 / 한도 {t}초",
+      { e: Math.floor(poll.elapsed_sec), t: poll.timeout_sec },
+    );
     if (poll.message) status.textContent = poll.message;
     if (poll.phase === "verifying") {
-      hint.textContent = "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.";
+      hint.textContent = I18N.t("seed.hintVerifying", "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.");
     }
     if (poll.state === "ready") {
       clearInterval(_authState.pollTimer);
-      status.textContent = poll.message || `✓ 시드 완료 — 프로파일 "${poll.profile_name}"`;
-      hint.textContent = "이번 녹화에 사용할지 선택하세요. 사용하지 않아도 프로파일은 목록에 저장됩니다.";
+      status.textContent = poll.message || I18N.t("seed.done", "✓ 시드 완료 — 프로파일 \"{name}\"", { name: poll.profile_name });
+      hint.textContent = I18N.t("seed.hintDone", "이번 녹화에 사용할지 선택하세요. 사용하지 않아도 프로파일은 목록에 저장됩니다.");
       await loadAuthProfiles();
       cancelBtn.hidden = true;
       skipBtn.hidden = false;
@@ -1691,9 +1697,9 @@ async function _startSeedFlow(payload) {
     } else if (poll.state === "error") {
       clearInterval(_authState.pollTimer);
       const kind = poll.error_kind ? `[${poll.error_kind}] ` : "";
-      status.textContent = poll.message || `✗ 실패 — ${kind}${poll.error}`;
-      hint.textContent = "입력값을 확인한 뒤 다시 시드하세요.";
-      cancelBtn.textContent = "다시 입력";
+      status.textContent = poll.message || I18N.t("seed.fail", "✗ 실패 — {kind}{err}", { kind, err: poll.error });
+      hint.textContent = I18N.t("seed.hintRetry", "입력값을 확인한 뒤 다시 시드하세요.");
+      cancelBtn.textContent = I18N.t("seed.retry", "다시 입력");
       cancelBtn.dataset.action = "retry";
     }
   }, 1000);
@@ -1729,8 +1735,8 @@ $("#btn-auth-seed-done").addEventListener("click", () => {
 function _showExpiredDialog(name, reason) {
   $("#auth-expired-name").textContent = name || "—";
   $("#auth-expired-reason").textContent = reason
-    ? `원인: ${reason}`
-    : "원인: 세션 만료 또는 IP 변경.";
+    ? I18N.t("expired.reasonDetail", "원인: {r}", { r: reason })
+    : I18N.t("login.expired.reason", "원인: 세션 만료 또는 IP 변경.");
   $("#auth-expired-dialog").showModal();
 }
 
@@ -1861,9 +1867,9 @@ $("#start-form").addEventListener("submit", async (e) => {
       }
       _showExpiredDialog(authProfile, reason);
     } else if (err.status === 404 && err.detail?.reason === "profile_not_found") {
-      alert(`인증 프로파일 '${authProfile}' 를 찾을 수 없습니다 — 새로 시드하세요.`);
+      alert(I18N.t("alert.authProfileMissing", "인증 프로파일 '{name}' 를 찾을 수 없습니다 — 새로 시드하세요.", { name: authProfile }));
     } else {
-      alert("Start 실패: " + err.message);
+      alert(I18N.t("alert.startFail", "Start 실패: {msg}", { msg: err.message }));
     }
   } finally {
     // success 경로에선 showActivePanel 이 비활성 상태를 잡고 있으니 덮어쓰지 않음.

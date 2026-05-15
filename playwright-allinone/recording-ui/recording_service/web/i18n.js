@@ -417,6 +417,34 @@
     "diff.fail": "✗ Analysis failed:",
     "import.uploading": "⏳ Uploading...",
     "alert.uploadFail": "Upload failed: {msg}",
+
+    // Phase 2-c: auth catalog / seed flow / expired modal
+    "auth.empty": "No registered profiles",
+    "auth.sessionStorageWarn": "⚠ sessionStorage dependent",
+    "auth.registered": "Registered",
+    "auth.reseed": "↻ Re-login",
+    "auth.deleteTitle": "Delete profile (catalog + storageState)",
+    "auth.deleteConfirm":
+      "Delete profile \"{name}\"{domainSuffix}?\nThe catalog entry and saved storageState file will be removed together.",
+    "seed.waiting":
+      "⏳ Waiting for login window — close the opened browser after you see the post-login screen",
+    "seed.elapsedLimit": "Elapsed 0s / limit {t}s",
+    "seed.hintWaiting":
+      "When the window closes, the session is saved, the verification page is shown briefly, and the flow completes.",
+    "seed.cancelClose": "Cancel (close the window yourself)",
+    "seed.startFail": "✗ Start failed: {msg}",
+    "seed.elapsedNow": "Elapsed {e}s / limit {t}s",
+    "seed.hintVerifying":
+      "Verification browser will display the target page slowly, then close automatically.",
+    "seed.done": "✓ Seed done — profile \"{name}\"",
+    "seed.hintDone":
+      "Choose whether to use it for this recording. The profile is saved either way.",
+    "seed.fail": "✗ Failed — {kind}{err}",
+    "seed.hintRetry": "Verify your inputs and seed again.",
+    "seed.retry": "Re-enter",
+    "expired.reasonDetail": "Reason: {r}",
+    "alert.authProfileMissing":
+      "Auth profile '{name}' not found — seed a new one.",
   };
 
   const DICT = { en: EN };
