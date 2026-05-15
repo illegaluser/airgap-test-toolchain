@@ -699,33 +699,38 @@ dialog textarea {
 .log-actions .toast { font-size: 0.78rem; color: var(--muted); margin-left: 4px; }
 
 /* Hide native <details> triangle, add custom +/− toggle indicator.
-   Use + (closed) / − (open) — unambiguous, not confused with title triangles
-   like ▶ in 'Run Console'. */
+   Use flexbox so the indicator sits next to the title, can't be missed. */
 summary {
   list-style: none;
   cursor: pointer;
-  position: relative;
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   width: 100%;
-  padding-right: 1.8em;
+  padding: 4px 6px;
+  border-radius: 4px;
 }
+summary:hover { background: #f0f0f2; }
 summary::-webkit-details-marker { display: none; }
 summary::marker { display: none; }
 summary::after {
   content: "+";
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--muted);
-  font-size: 1.1em;
-  font-weight: 600;
+  flex-shrink: 0;
+  color: var(--text);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 1.5em;
+  height: 1.5em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.05em;
+  font-weight: 700;
   line-height: 1;
-  width: 1em;
-  text-align: center;
 }
 details[open] > summary::after { content: "−"; }
-summary:hover::after { color: var(--text); }
 #play-progress-details summary {
   cursor: pointer;
   font-size: 0.88rem;
