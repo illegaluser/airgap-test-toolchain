@@ -21,14 +21,26 @@ option { background: #fff; color: var(--text); padding: 4px 8px; }
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
-    "Noto Sans KR", sans-serif;
+  font-family: Consolas, "Menlo", "DejaVu Sans Mono", "Courier New",
+    "Apple SD Gothic Neo", "Noto Sans KR", monospace;
   background: var(--bg);
   color: var(--text);
   margin: 0;
   padding: 0;
   line-height: 1.55;
+  /* Render color emoji as monochrome text glyphs where supported. */
+  font-variant-emoji: text;
 }
+/* Belt-and-suspenders monochrome: any inline emoji span gets greyscale. */
+.icon, .emoji { filter: grayscale(1) contrast(1.1); }
+/* Browsers that don't honor font-variant-emoji still color emoji glyphs. */
+/* Last resort fallback — apply grayscale to common element types containing emoji. */
+header h1, header .cross-link, header .back-btn,
+summary h2, summary h3, .card-actions a, .card-actions button,
+.shot-link, .copy-btn, .copy-step-btn, .preview-toggle,
+button[data-act], #btn-start, #btn-stop,
+.auth-btn, .dropdown-toggle, .alarm, .state-pill,
+#health-badge { font-variant-emoji: text; }
 
 header {
   padding: 16px 24px;

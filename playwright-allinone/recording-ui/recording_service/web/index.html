@@ -689,7 +689,8 @@
 
     <!-- 섹션 6: 세션 목록 -->
     <section class="card">
-      <h2 data-i18n="sessions.title">최근 세션</h2>
+      <details id="sessions-section" open>
+        <summary><h2 style="display:inline-block; margin:0;" data-i18n="sessions.title">최근 세션</h2></summary>
       <div class="session-filters">
         <input id="session-filter" type="text"
                data-i18n-attr-placeholder="sessions.filter.placeholder"
@@ -722,6 +723,7 @@
           <tr class="muted"><td colspan="8" data-i18n="sessions.empty">— 세션 없음 —</td></tr>
         </tbody>
       </table>
+      </details>
     </section>
 
   </main>
