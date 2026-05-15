@@ -1159,3 +1159,150 @@ dialog textarea {
   background: transparent; border: 1px solid var(--border, #ccc);
   border-radius: 4px;
 }
+
+/* ── responsive ─────────────────────────────────────────────────────────────
+   Three tiers:
+   • ≤1280px wide-narrow desktop  — hide low-priority columns so table fits
+   • ≤1024px tablet              — hide more, tighten paddings, header wrap
+   • ≤768px  mobile              — tables stack as cards (one row = one card)
+*/
+
+/* All data tables overflow horizontally if still too wide after column-hiding. */
+table.data-table, #session-table, .discover-table, .run-log-table {
+  display: block;
+  overflow-x: auto;
+  width: 100%;
+}
+table.data-table thead, table.data-table tbody,
+#session-table thead, #session-table tbody,
+.discover-table thead, .discover-table tbody,
+.run-log-table thead, .run-log-table tbody {
+  display: table;
+  width: 100%;
+  min-width: 100%;
+}
+
+@media (max-width: 1280px) {
+  /* Session table: hide 'auth' (5) and 'steps' (6). Keep id/state/target_url/created/actions. */
+  #session-table thead th:nth-child(5),
+  #session-table thead th:nth-child(6),
+  #session-table tbody td:nth-child(5),
+  #session-table tbody td:nth-child(6) { display: none; }
+  /* Run-log: hide heal_stage (5) — status pill already conveys outcome. */
+  .run-log-table thead th:nth-child(5),
+  .run-log-table tbody td:nth-child(5) { display: none; }
+}
+
+@media (max-width: 1024px) {
+  main { padding: 0 12px; max-width: 100%; }
+  .card { padding: 14px 16px; }
+  header { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
+  header h1 { font-size: 1.25rem; }
+  /* Session table: also hide 'created' (7) — timestamp is least critical. */
+  #session-table thead th:nth-child(7),
+  #session-table tbody td:nth-child(7) { display: none; }
+  /* Auth profiles: hide 'last checked' (3) + 'site' (4) — keep name/state/actions. */
+  #auth-profiles-table thead th:nth-child(3),
+  #auth-profiles-table thead th:nth-child(4),
+  #auth-profiles-tbody td:nth-child(3),
+  #auth-profiles-tbody td:nth-child(4) { display: none; }
+  /* Discover table: hide depth (3) + source (4). Keep status/title/URL. */
+  .discover-table thead th:nth-child(3),
+  .discover-table thead th:nth-child(4),
+  .discover-table tbody td:nth-child(3),
+  .discover-table tbody td:nth-child(4) { display: none; }
+  /* Header inline meta wraps under h1 if needed. */
+  header .meta { width: 100%; justify-content: flex-end; }
+}
+
+@media (max-width: 768px) {
+  header h1 { font-size: 1.1rem; }
+  .card { padding: 10px 12px; }
+  /* Stack form rows vertically — label on top, input below. */
+  form > label { display: flex; flex-direction: column; align-items: stretch; }
+  form > label > span { margin-bottom: 2px; }
+
+  /* Tables → card list. Each row is a card; cells stack with pseudo-label. */
+  table.data-table, #session-table, .discover-table, .run-log-table {
+    overflow-x: visible;
+  }
+  table.data-table thead, #session-table thead,
+  .discover-table thead, .run-log-table thead { display: none; }
+  table.data-table tbody, #session-table tbody,
+  .discover-table tbody, .run-log-table tbody { display: block; }
+  table.data-table tbody tr, #session-table tbody tr,
+  .discover-table tbody tr, .run-log-table tbody tr {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: var(--card);
+  }
+  table.data-table tbody td, #session-table tbody td,
+  .discover-table tbody td, .run-log-table tbody td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    border: 0;
+    text-align: right;
+  }
+  /* Show all columns again — they're stacked vertically inside the card. */
+  #session-table tbody td:nth-child(n),
+  #auth-profiles-tbody td:nth-child(n),
+  .discover-table tbody td:nth-child(n),
+  .run-log-table tbody td:nth-child(n) { display: flex; }
+
+  /* Per-table pseudo-element labels — Korean default, English under [lang=en]. */
+  #session-table tbody td:nth-child(2)::before { content: "id"; }
+  #session-table tbody td:nth-child(3)::before { content: "state"; }
+  #session-table tbody td:nth-child(4)::before { content: "target_url"; }
+  #session-table tbody td:nth-child(5)::before { content: "auth"; }
+  #session-table tbody td:nth-child(6)::before { content: "steps"; }
+  #session-table tbody td:nth-child(7)::before { content: "created"; }
+
+  #auth-profiles-tbody td:nth-child(1)::before { content: "프로파일"; }
+  #auth-profiles-tbody td:nth-child(2)::before { content: "상태"; }
+  #auth-profiles-tbody td:nth-child(3)::before { content: "최근 확인"; }
+  #auth-profiles-tbody td:nth-child(4)::before { content: "사이트"; }
+  html[lang="en"] #auth-profiles-tbody td:nth-child(1)::before { content: "Profile"; }
+  html[lang="en"] #auth-profiles-tbody td:nth-child(2)::before { content: "State"; }
+  html[lang="en"] #auth-profiles-tbody td:nth-child(3)::before { content: "Last checked"; }
+  html[lang="en"] #auth-profiles-tbody td:nth-child(4)::before { content: "Site"; }
+
+  .discover-table tbody td:nth-child(2)::before { content: "status"; }
+  .discover-table tbody td:nth-child(3)::before { content: "depth"; }
+  .discover-table tbody td:nth-child(4)::before { content: "source"; }
+  .discover-table tbody td:nth-child(5)::before { content: "title"; }
+  .discover-table tbody td:nth-child(6)::before { content: "URL"; }
+
+  .run-log-table tbody td:nth-child(1)::before { content: "step"; }
+  .run-log-table tbody td:nth-child(2)::before { content: "action"; }
+  .run-log-table tbody td:nth-child(3)::before { content: "target"; }
+  .run-log-table tbody td:nth-child(4)::before { content: "status"; }
+  .run-log-table tbody td:nth-child(5)::before { content: "heal"; }
+
+  /* Label style + first column (checkbox) has no label and aligns left. */
+  table.data-table tbody td::before, #session-table tbody td::before,
+  .discover-table tbody td::before, .run-log-table tbody td::before {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.8em;
+    letter-spacing: 0.04em;
+    text-align: left;
+  }
+  /* Checkbox cell — no label, just the checkbox aligned right. */
+  #session-table tbody td:first-child,
+  .discover-table tbody td:first-child {
+    justify-content: flex-end;
+  }
+  /* Action button cell — full row, buttons wrap. */
+  .row-actions, #auth-profiles-tbody td:last-child,
+  #session-table tbody td:last-child {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+}
