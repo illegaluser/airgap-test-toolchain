@@ -1304,6 +1304,17 @@ function _refreshPreviewToggle(targetId) {
 }
 
 // ── 항목 (import-script) — 사용자 .py 업로드 + 결과 화면 자동 진입 ──────
+// 실행 결과(#rplus-output) 영역의 [전체 보기] 토글 — Replay UI Run Console 과 동일 UX.
+$("#btn-rplus-output-expand")?.addEventListener("click", () => {
+  const pre = document.getElementById("rplus-output");
+  const btn = document.getElementById("btn-rplus-output-expand");
+  if (!pre || !btn) return;
+  const expanded = pre.classList.toggle("expanded");
+  btn.textContent = expanded
+    ? I18N.t("log.collapse", "↕ 기본 높이")
+    : I18N.t("log.expand", "↕ 전체 보기");
+});
+
 // Play 진행 로그 — [로그 복사] / [전체 보기] 컨트롤.
 $("#btn-play-log-copy")?.addEventListener("click", async () => {
   const pre = document.getElementById("play-progress");

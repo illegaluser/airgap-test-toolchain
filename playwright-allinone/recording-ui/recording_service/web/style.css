@@ -202,7 +202,8 @@ button[data-act="open"] { background: #fff; color: var(--accent); }
 
 /* 토글 가능한 미리보기 — 기본은 max-height 로 잘려보이고,
    .expanded 가 붙으면 전체 표시. textContent 는 항상 전체이므로 복사는 정상. */
-.json-preview.collapsible.expanded {
+.json-preview.collapsible.expanded,
+.json-preview.expanded {
   max-height: none;
   overflow: visible;
 }
@@ -697,10 +698,25 @@ dialog textarea {
 .log-actions button:hover { background: #e6e6ea; }
 .log-actions .toast { font-size: 0.78rem; color: var(--muted); margin-left: 4px; }
 
-/* Hide native <details> triangle — section titles carry their own icon. */
-summary { list-style: none; cursor: pointer; }
+/* Hide native <details> triangle, add custom chevron that rotates on open.
+   The chevron tells users the header is a toggle. */
+summary { list-style: none; cursor: pointer; position: relative; padding-right: 1.4em; }
 summary::-webkit-details-marker { display: none; }
 summary::marker { display: none; }
+summary::after {
+  content: "▸";
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 0.9em;
+  transition: transform 0.15s ease;
+}
+details[open] > summary::after {
+  transform: translateY(-50%) rotate(90deg);
+}
+summary:hover::after { color: var(--text); }
 #play-progress-details summary {
   cursor: pointer;
   font-size: 0.88rem;
