@@ -17,6 +17,10 @@
          data-i18n-attr-title="header.replay.title"
          title="Replay UI 를 새 탭에서 열기 (port 18093)"
          data-i18n="header.replay.label">🎬 Replay UI ↗</a>
+      <button id="btn-wizard" type="button" class="ghost"
+              data-i18n-attr-title="header.wizard.title"
+              title="첫 사용 가이드 (로그인 등록 → 녹화 → 자동 변환 → 재생)"
+              data-i18n="header.wizard.label">🧭 첫 사용 가이드</button>
     </div>
     <div class="meta">
       <span id="lang-toggle" class="lang-toggle" aria-label="Language"></span>
@@ -80,7 +84,7 @@
                      title="영문/숫자/_/- 1~64자, 첫 글자는 영문/숫자">
             </label>
             <label>
-              <span data-i18n-html="login.seed.url.full"><span data-i18n="login.seed.url">시작 URL</span> <em data-i18n="login.seed.url.note">(⚠️ 테스트 대상 *서비스* 진입 페이지 — 네이버 로그인 페이지 아님)</em></span>
+              <span data-i18n-html="login.seed.url.full"><span data-i18n="login.seed.url">시작 URL</span> <em data-i18n="login.seed.url.note">(⚠ 테스트 대상 *서비스* 진입 페이지 — 네이버 로그인 페이지 아님)</em></span>
               <input type="url" name="seed_url" required
                      placeholder="https://booking.example.com/">
             </label>
@@ -344,7 +348,7 @@
          업로드 진입은 항상 가능, 옵션·Play·Doc 영역은 세션 선택 시 활성화. -->
     <section class="card" id="rplus-section">
       <details id="rplus-toggle">
-        <summary><h2 style="display:inline-block; margin:0;" data-i18n="rplus.section.title">▶️ Play &amp; more</h2></summary>
+        <summary><h2 style="display:inline-block; margin:0;" data-i18n="rplus.section.title">▶ Play &amp; more</h2></summary>
       <!-- 업로드 진입 — 세션 유무와 무관하게 항상 노출 -->
       <div class="rplus-upload-block" style="margin-bottom:14px;padding:10px;border:1px dashed #ccc;border-radius:6px;">
         <strong data-i18n="rplus.upload.title">새 스크립트 업로드</strong>
@@ -733,7 +737,7 @@
           </tr>
         </thead>
         <tbody id="session-tbody">
-          <tr class="muted"><td colspan="8" data-i18n="sessions.empty">— 세션 없음 —</td></tr>
+          <tr class="muted"><td colspan="8" data-i18n="sessions.empty">— 녹화 세션이 없습니다. 위 'Recording' 카드를 펼치고 target_url 을 입력해 ▶ Start 를 누르세요. —</td></tr>
         </tbody>
       </table>
       </details>
@@ -744,6 +748,21 @@
   <footer>
     <span class="muted" data-i18n="footer.text">Recording UI · 호스트 데몬 · 폐쇄망 호환</span>
   </footer>
+
+  <!-- 첫 사용 가이드 wizard — Replay UI 와 동일 패턴 -->
+  <dialog id="wizard-dialog" class="auth-dialog">
+    <h3 data-i18n="wizard.title">🧭 첫 사용 가이드</h3>
+    <ol class="auth-steps">
+      <li data-i18n-html="wizard.step1"><strong>1단계</strong> — 로그인이 필요한 시나리오라면 위 <code>🔐 Login Profiles</code> 카드의 <code>+ 새 프로파일</code> 로 로그인 세션을 먼저 등록합니다. 비로그인 사이트는 건너뜁니다.</li>
+      <li data-i18n-html="wizard.step2"><strong>2단계 (선택)</strong> — 사이트 구조를 모를 때는 <code>🔍 Discover URLs</code> 에서 시작 URL 한 개로 사이트를 자동 탐색하고, 원하는 URL 만 골라 tour 스크립트를 받을 수 있습니다.</li>
+      <li data-i18n-html="wizard.step3"><strong>3단계</strong> — <code>🎬 Recording</code> 카드에서 target_url 을 입력하고 ▶ Start. 호스트에 codegen 브라우저 창이 뜨면 직접 클릭하며 시나리오를 기록합니다. 다 끝나면 ■ Stop &amp; Convert.</li>
+      <li data-i18n-html="wizard.step4"><strong>4단계</strong> — 자동 변환된 시나리오는 <code>▶ Play &amp; more</code> 에서 그대로 재생하거나 LLM 적용 코드로 재생할 수 있고, <code>📝 Generate Doc</code> 으로 IEEE 829-lite 테스트 계획서까지 역추정할 수 있습니다.</li>
+      <li data-i18n-html="wizard.step5"><strong>5단계</strong> — 결과는 <code>📊 결과 확인 및 스텝 추가</code> 의 Scenario JSON · Original Script · 실행 결과(run_log) · diff 분석 카드에서 확인. 회귀 슈트로 채택할 regression_test.py 도 같이 받을 수 있습니다.</li>
+    </ol>
+    <div class="dialog-actions">
+      <button type="button" id="btn-wizard-close" data-i18n="wizard.start">시작하기</button>
+    </div>
+  </dialog>
 
   <script src="/static/i18n.js"></script>
   <script src="/static/app.js"></script>

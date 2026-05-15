@@ -23,6 +23,28 @@
     "header.lang.ko": "KO",
     "header.lang.en": "EN",
     "header.lang.title": "Switch interface language",
+    "header.wizard.label": "🧭 First-time guide",
+    "header.wizard.title":
+      "First-time guide (register login → record → auto-convert → replay)",
+
+    // ── first-time guide modal ───────────────────────────────────────────────
+    "wizard.title": "🧭 First-time guide",
+    "wizard.step1":
+      "<strong>Step 1</strong> — For scenarios that require login, register a session in " +
+      "the <code>🔐 Login Profiles</code> card via <code>+ New profile</code>. Skip this for public sites.",
+    "wizard.step2":
+      "<strong>Step 2 (optional)</strong> — If you don't know the site structure yet, use " +
+      "<code>🔍 Discover URLs</code> to auto-crawl from a single start URL and grab a tour script for the URLs you pick.",
+    "wizard.step3":
+      "<strong>Step 3</strong> — In <code>🎬 Recording</code>, enter the target_url and click ▶ Start. " +
+      "A codegen browser window opens on the host — click through your scenario, then ■ Stop &amp; Convert.",
+    "wizard.step4":
+      "<strong>Step 4</strong> — In <code>▶ Play &amp; more</code>, replay the converted scenario " +
+      "as-is or via LLM-applied code, and use <code>📝 Generate Doc</code> to reverse-infer an IEEE 829-lite test plan.",
+    "wizard.step5":
+      "<strong>Step 5</strong> — Inspect outcomes in <code>📊 Results &amp; step additions</code> " +
+      "— Scenario JSON, Original Script, run_log, diff analysis. The regression_test.py for your suite is generated here too.",
+    "wizard.start": "Get started",
 
     // ── login profiles ───────────────────────────────────────────────────────
     "login.section.title": "🔐 Login Profiles",
@@ -52,7 +74,7 @@
     "login.seed.name": "Name",
     "login.seed.name.title": "Letters/digits/_/- 1–64 chars; first char must be a letter or digit",
     "login.seed.url": "Start URL",
-    "login.seed.url.note": "(⚠️ entry page of the *service under test* — NOT the Naver login page)",
+    "login.seed.url.note": "(⚠ entry page of the *service under test* — NOT the Naver login page)",
     "login.seed.verifyUrl": "Verify URL",
     "login.seed.verifyText": "Verify text",
     "login.seed.verifyText.note": "(optional — leave blank to only check that the Verify URL loads)",
@@ -186,7 +208,7 @@
       "conversion. May take a moment.",
 
     // ── play & more ──────────────────────────────────────────────────────────
-    "rplus.section.title": "▶️ Play & more",
+    "rplus.section.title": "▶ Play & more",
     "rplus.upload.title": "Upload new script",
     "rplus.upload.desc":
       "Upload an existing Playwright .py to register a new session and replay it immediately.",
@@ -338,7 +360,8 @@
     "sessions.btn.deleteSelected": "Delete selected",
     "sessions.selectedCount": "0 selected",
     "sessions.th.checkbox.title": "Select / clear all currently visible sessions",
-    "sessions.empty": "— no sessions —",
+    "sessions.empty":
+      "— No recording sessions yet. Open the 'Recording' card above, enter target_url, and click ▶ Start. —",
 
     // ── footer ───────────────────────────────────────────────────────────────
     "footer.text": "Recording UI · host daemon · air-gap compatible",
@@ -346,7 +369,8 @@
     // ── dynamic strings used by app.js ───────────────────────────────────────
     "badge.codegenMissing": "⚠ codegen not installed · v{v}",
     "sessions.filterNoMatch": "0 matches ({n} total)",
-    "sessions.empty.bare": "no sessions",
+    "sessions.empty.bare":
+      "No recording sessions yet. Open the 'Recording' card above, enter target_url, and click ▶ Start.",
     "sessions.row.open": "Open",
     "sessions.row.delete": "Delete",
     "count.selected": "{n} selected",
@@ -407,7 +431,8 @@
     "confirm.deleteSelected":
       "Delete the {n} selected session(s)?\n(host directories will also be removed)",
     "alert.deletePartial": "{ok}/{total} deleted. Failures:\n",
-    "runlog.emptyShort": "empty run-log",
+    "runlog.emptyShort":
+      "No run log yet. Run ▶ Play first to see step-by-step results here.",
     "runlog.shotZoom": "Zoom screenshot",
     "runlog.stepCopy": "Copy this step JSON",
     "diff.noChange": "(no difference)",
@@ -419,7 +444,8 @@
     "alert.uploadFail": "Upload failed: {msg}",
 
     // Phase 2-c: auth catalog / seed flow / expired modal
-    "auth.empty": "No registered profiles",
+    "auth.empty":
+      "No login profiles yet. Click '+ New profile' to register one.",
     "auth.sessionStorageWarn": "⚠ sessionStorage dependent",
     "auth.registered": "Registered",
     "auth.reseed": "↻ Re-login",
@@ -456,7 +482,8 @@
     "discover.tree.external": "External hosts",
     "discover.th.checkbox": "Select / clear all",
     "discover.th.source": "Source",
-    "discover.noResult": "no results",
+    "discover.noResult":
+      "No URLs collected. Enter a start URL in the form above and click [Discover URLs].",
     "discover.queryFail": "Query failed: {msg}",
     "discover.statusLine": "[{state}] {n} URLs",
     "discover.recentUrl": " · recent: {url}",

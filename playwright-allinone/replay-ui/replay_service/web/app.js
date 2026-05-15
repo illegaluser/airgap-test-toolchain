@@ -43,7 +43,10 @@ async function loadProfiles() {
   tbody.innerHTML = "";
   let expiredCount = 0;
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t("profiles.empty", "등록된 프로파일 없음"))} —</td></tr>`;
+    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t(
+      "profiles.empty",
+      "로그인 프로파일이 없습니다. + 새 프로파일 클릭으로 등록하세요.",
+    ))} —</td></tr>`;
   } else {
     for (const p of data) {
       const tr = document.createElement("tr");
@@ -237,7 +240,10 @@ async function loadRuns() {
     if (!presentRuns.has(id)) _selectedRuns.delete(id);
   }
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = `<tr class="muted"><td colspan="6">— ${escapeHtml(I18N.t("runs.empty", "실행 결과 없음"))} —</td></tr>`;
+    tbody.innerHTML = `<tr class="muted"><td colspan="6">— ${escapeHtml(I18N.t(
+      "runs.empty",
+      "실행 결과가 아직 없습니다. 위 스크립트 행의 ▶ 실행 으로 시작하세요.",
+    ))} —</td></tr>`;
     syncBulkDeleteRunsState();
     return;
   }
@@ -485,7 +491,10 @@ async function loadScripts() {
     if (!present.has(n)) _selectedScripts.delete(n);
   }
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t("scripts.empty", "등록된 스크립트 없음"))} —</td></tr>`;
+    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t(
+      "scripts.empty",
+      "Recording UI 에서 받은 .py 를 ⬆ 업로드 (.py) 로 올리면 여기 나타납니다.",
+    ))} —</td></tr>`;
     syncBulkDeleteState();
     return;
   }

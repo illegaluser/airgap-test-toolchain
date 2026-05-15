@@ -68,7 +68,10 @@ function _renderSessionRows() {
     const all = _sessionsCache.length;
     const emptyMsg = all > 0
       ? I18N.t("sessions.filterNoMatch", "필터 일치 0건 ({n}건 중)", { n: all })
-      : I18N.t("sessions.empty.bare", "세션 없음");
+      : I18N.t(
+          "sessions.empty.bare",
+          "녹화 세션이 없습니다. 위 'Recording' 카드를 펼치고 target_url 을 입력해 ▶ Start 를 누르세요.",
+        );
     tbody.innerHTML = `<tr class="muted"><td colspan="8">— ${emptyMsg} —</td></tr>`;
     _updateSessionBulkUi();
     return;
@@ -926,7 +929,10 @@ async function _renderRunLog(sid, opts = {}) {
   const payload = resolved === "llm" ? llmRes : cgRes;
   const records = (payload && Array.isArray(payload.records)) ? payload.records : [];
   if (records.length === 0) {
-    container.innerHTML = `<p class="muted">— ${escapeHtml(I18N.t("runlog.emptyShort", "빈 run-log"))} —</p>`;
+    container.innerHTML = `<p class="muted">— ${escapeHtml(I18N.t(
+      "runlog.emptyShort",
+      "실행 기록이 없습니다. ▶ Play 를 먼저 실행하세요.",
+    ))} —</p>`;
     return;
   }
 
@@ -1304,6 +1310,15 @@ function _refreshPreviewToggle(targetId) {
 }
 
 // ── 항목 (import-script) — 사용자 .py 업로드 + 결과 화면 자동 진입 ──────
+// 첫 사용 가이드 — Replay UI 와 동일 패턴.
+$("#btn-wizard")?.addEventListener("click", () => {
+  const dlg = $("#wizard-dialog");
+  if (dlg && typeof dlg.showModal === "function") dlg.showModal();
+});
+$("#btn-wizard-close")?.addEventListener("click", () => {
+  $("#wizard-dialog")?.close();
+});
+
 // 실행 결과(#rplus-output) 영역의 [전체 보기] 토글 — Replay UI Run Console 과 동일 UX.
 $("#btn-rplus-output-expand")?.addEventListener("click", () => {
   const pre = document.getElementById("rplus-output");
@@ -1538,7 +1553,10 @@ function _renderAuthProfilesTable() {
   tbody.innerHTML = "";
   const profiles = _authState.profiles || [];
   if (profiles.length === 0) {
-    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t("auth.empty", "등록된 프로파일 없음"))} —</td></tr>`;
+    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t(
+      "auth.empty",
+      "로그인 프로파일이 없습니다. + 새 프로파일 클릭으로 등록하세요.",
+    ))} —</td></tr>`;
     return;
   }
   for (const p of profiles) {
@@ -2187,7 +2205,10 @@ function _renderDiscoverTable(rootEl, list) {
   if (!Array.isArray(list) || list.length === 0) {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = `— ${I18N.t("discover.noResult", "결과 없음")} —`;
+    p.textContent = `— ${I18N.t(
+      "discover.noResult",
+      "수집된 URL 이 없습니다. 위 폼에서 시작 URL 을 입력해 [Discover URLs] 를 누르세요.",
+    )} —`;
     rootEl.appendChild(p);
     return;
   }

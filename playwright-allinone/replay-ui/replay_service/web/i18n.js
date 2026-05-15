@@ -155,7 +155,8 @@
     "wizard.start": "Get started",
 
     // app.js dynamic strings
-    "profiles.empty": "No registered profiles",
+    "profiles.empty":
+      "No login profiles yet. Click '+ New profile' to register one.",
     "profiles.state.ok": "Registered",
     "profiles.state.expired": "🔴 Re-login required",
     "profiles.reseed": "↻ Re-login",
@@ -182,7 +183,8 @@
     "seedFlow.fail": "✗ Failed — {kind}{err}",
     "seedFlow.hintRetry": "Verify your inputs and try again.",
     "seedFlow.retry": "Re-enter",
-    "runs.empty": "No run results",
+    "runs.empty":
+      "No run results yet. Click ▶ Run on a script row above to start.",
     "runs.runningCannotDelete": "In progress — cannot delete",
     "common.anonymous": "(anonymous)",
     "runs.detail": "Detail →",
@@ -201,7 +203,8 @@
     "detail.meta.elapsed": "Elapsed",
     "detail.meta.profile": "Profile",
     "detail.meta.script": "Script",
-    "scripts.empty": "No registered scripts",
+    "scripts.empty":
+      "Upload a .py downloaded from Recording UI via ⬆ Upload (.py) to see it here.",
     "scripts.run.title": "Run this single .py scenario",
     "scripts.run.btn": "▶ Run",
     "confirm.deleteScript": "Delete script '{name}'?",
