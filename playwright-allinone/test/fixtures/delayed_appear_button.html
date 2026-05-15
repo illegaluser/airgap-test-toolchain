@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Delayed-appear button (post-action SPA route render)</title>
+</head>
+<body>
+  <h1>Delayed-appear regression fixture</h1>
+  <p>Click step 1 -> after a ~4s delay the step 2 button appears in the DOM.
+     Mirrors SPA route / async server response patterns where the next-step
+     element is mounted lazily after the previous action settles.</p>
+  <button id="btn-step1">트리거 (step 1)</button>
+  <div id="container"></div>
+  <p id="clicked-step2" data-clicked="">last click: <span id="clicked-text">(none)</span></p>
+  <script>
+    // 의도적 지연 — 4초 (executor 의 현 settle window 3s+2s 보다 길게).
+    // 직전 click 의 settle 만 가지고는 step 2 의 resolver 가 0건이 된다.
+    const DELAY_MS = 4000;
+    document.getElementById("btn-step1").addEventListener("click", () => {
+      setTimeout(() => {
+        const btn = document.createElement("button");
+        btn.id = "btn-step2";
+        btn.textContent = "사용종료";
+        btn.addEventListener("click", () => {
+          document.getElementById("clicked-text").textContent = "사용종료";
+          document.getElementById("clicked-step2").dataset.clicked = "yes";
+        });
+        document.getElementById("container").appendChild(btn);
+      }, DELAY_MS);
+    });
+  </script>
+</body>
+</html>

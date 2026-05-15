@@ -1205,8 +1205,37 @@ class QAExecutor:
                 None,
             )
         if not locator:
-            self._log_resolver_miss(page, original_target, step_id)
-            return None, None
+            # SPA route 전환이나 비동기 fetch 후 element 가 뒤늦게 마운트되는
+            # 패턴을 흡수. caller 의 healing chain (LLM 치유) 은 비용이 크므로
+            # (300s timeout) 곧장 떨어뜨리지 않고, 짧은 polling-wait 으로 element
+            # 등장을 한 번 더 노린다. 실패해도 기존 healing 체인이 안전망.
+            poll_timeout_ms = int(os.environ.get("RESOLVER_WAIT_TIMEOUT_MS", "5000"))
+            if poll_timeout_ms > 0:
+                deadline = time.time() + poll_timeout_ms / 1000.0
+                while time.time() < deadline:
+                    page.wait_for_timeout(250)
+                    try:
+                        locator = resolver.resolve(original_target)
+                    except ShadowAccessError as e:
+                        log.error("[Step %s] %s", step_id, e)
+                        ss = self._screenshot(page, artifacts, step_id, "fail")
+                        return (
+                            StepResult(
+                                step_id, action, str(original_target or ""),
+                                str(step.get("value", "")), f"{desc} [closed shadow]",
+                                "FAIL", screenshot_path=ss,
+                            ),
+                            None,
+                        )
+                    if locator:
+                        log.info(
+                            "[Step %s] resolver recovered after wait — element mounted late",
+                            step_id,
+                        )
+                        break
+            if not locator:
+                self._log_resolver_miss(page, original_target, step_id)
+                return None, None
         # T-H — hidden element 면 ancestor hover / sibling swap 시도.
         # pre_actions: 통과시킨 hover/wait 시퀀스를 회귀 .py 가 prepend 하도록
         # 보존. healer 가 swap 만 한 경우(빈 list) 와 cascade hover 가 통과시킨
