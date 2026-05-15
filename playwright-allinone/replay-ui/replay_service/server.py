@@ -78,7 +78,7 @@ _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,80}$")
 
 def _safe_name(name: str) -> str:
     if not _SAFE_NAME_RE.match(name):
-        raise HTTPException(status_code=400, detail=f"안전하지 않은 이름: {name}")
+        raise HTTPException(status_code=400, detail=f"unsafe name: {name}")
     return name
 
 
@@ -171,7 +171,7 @@ class _SeedJob:
         self.started_at = time.time()
         self.timeout_sec = timeout_sec
         self.phase = "starting"
-        self.message = "시드 시작 중"
+        self.message = "seed starting"
         self.profile_name: Optional[str] = None
         self.error: Optional[str] = None
         self.error_kind: Optional[str] = None
@@ -214,21 +214,21 @@ def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
         with _seed_jobs_lock:
             job.state = "ready"
             job.phase = "ready"
-            job.message = f"시드 완료 — 프로파일 '{prof.name}' 이 저장되었습니다."
+            job.message = f"seed done — profile '{prof.name}' saved."
             job.profile_name = prof.name
     except AuthProfileError as e:
         kind = _AUTH_ERROR_KIND_MAP.get(type(e).__name__, "auth_error")
         with _seed_jobs_lock:
             job.state = "error"
             job.phase = "error"
-            job.message = f"시드 실패 — {e}"
+            job.message = f"seed failed — {e}"
             job.error = str(e)
             job.error_kind = kind
     except Exception as e:  # noqa: BLE001
         with _seed_jobs_lock:
             job.state = "error"
             job.phase = "error"
-            job.message = f"시드 실패 — {e!r}"
+            job.message = f"seed failed — {e!r}"
             job.error = repr(e)
             job.error_kind = "unknown"
 
@@ -295,7 +295,7 @@ def api_seed_poll(seed_sid: str) -> AuthSeedPollResp:
     with _seed_jobs_lock:
         job = _seed_jobs.get(seed_sid)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"시드 작업을 찾을 수 없음: {seed_sid}")
+        raise HTTPException(status_code=404, detail=f"seed job not found: {seed_sid}")
     return AuthSeedPollResp(
         seed_sid=seed_sid,
         state=job.state,
@@ -361,26 +361,26 @@ async def api_upload_script(
 ):
     name = file.filename or ""
     if not name.endswith(".py"):
-        raise HTTPException(status_code=400, detail=".py 만 허용")
+        raise HTTPException(status_code=400, detail="only .py is allowed")
     safe = _safe_name(name)
     target = _scripts_dir() / safe
     if target.exists() and not overwrite:
         raise HTTPException(
-            status_code=409, detail=f"이미 존재: {safe}. overwrite=1 으로 재시도",
+            status_code=409, detail=f"already exists: {safe}. Retry with overwrite=1",
         )
     content = await file.read()
     # 가벼운 sanity — UTF-8 디코딩 + AST 파싱 + playwright 토큰 존재.
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="UTF-8 로 디코딩되지 않는 .py")
+        raise HTTPException(status_code=400, detail=".py is not valid UTF-8")
     import ast as _ast
     try:
         _ast.parse(text)
     except SyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"AST 파싱 실패: {e}")
+        raise HTTPException(status_code=400, detail=f"AST parse failed: {e}")
     if "playwright" not in text:
-        raise HTTPException(status_code=400, detail="playwright 토큰이 없는 스크립트")
+        raise HTTPException(status_code=400, detail="script has no `playwright` token")
     target.write_bytes(content)
     return {"name": safe, "size": len(content)}
 
@@ -390,7 +390,7 @@ def api_delete_script(name: str):
     name = _safe_name(name)
     target = _scripts_dir() / name
     if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"미존재: {name}")
+        raise HTTPException(status_code=404, detail=f"not found: {name}")
     target.unlink()
     return Response(status_code=204)
 
@@ -482,7 +482,7 @@ def api_start_run_script(req: RunScriptRequest):
     name = _safe_name(req.script_name)
     script_path = _scripts_dir() / name
     if not script_path.is_file():
-        raise HTTPException(status_code=404, detail=f"스크립트를 찾을 수 없음: {name}")
+        raise HTTPException(status_code=404, detail=f"script not found: {name}")
 
     alias_norm = (req.alias or "").strip() or None
     verify_norm = (req.verify_url or "").strip() or None
@@ -551,7 +551,7 @@ def api_run_meta(run_id: str):
     run_id = _safe_name(run_id)
     out_dir = _runs_dir() / run_id
     if not out_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"run 미존재: {run_id}")
+        raise HTTPException(status_code=404, detail=f"run not found: {run_id}")
     meta_p = out_dir / "meta.json"
     base: dict = {"run_id": run_id, "out_dir": str(out_dir)}
     if meta_p.is_file():
@@ -605,7 +605,7 @@ def api_run_steps(run_id: str):
     run_id = _safe_name(run_id)
     out_dir = _runs_dir() / run_id
     if not out_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"run 미존재: {run_id}")
+        raise HTTPException(status_code=404, detail=f"run not found: {run_id}")
     log_p = out_dir / "codegen_run_log.jsonl"
     if not log_p.is_file():
         return {"steps": []}
@@ -628,7 +628,7 @@ def api_run_screenshot(run_id: str, name: str):
     name = _safe_name(name)
     p = _runs_dir() / run_id / "screenshots" / name
     if not p.is_file():
-        raise HTTPException(status_code=404, detail="스크린샷 미존재")
+        raise HTTPException(status_code=404, detail="screenshot not found")
     media = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
     return FileResponse(str(p), media_type=media)
 
@@ -639,14 +639,14 @@ def api_run_report(run_id: str):
     run_id = _safe_name(run_id)
     sess_dir = _runs_dir() / run_id
     if not sess_dir.is_dir():
-        raise HTTPException(status_code=404, detail="run 미존재")
+        raise HTTPException(status_code=404, detail="run not found")
     try:
         from recording_shared.report_export import build_self_contained_report
     except Exception:
-        raise HTTPException(status_code=500, detail="리포트 모듈 미사용 가능")
+        raise HTTPException(status_code=500, detail="report module unavailable")
     body = build_self_contained_report(sess_dir)
     if body is None:
-        raise HTTPException(status_code=404, detail="리포트 산출물 부족")
+        raise HTTPException(status_code=404, detail="report artifacts incomplete")
     return Response(
         content=body,
         media_type="text/html",
@@ -666,7 +666,7 @@ def api_delete_run(run_id: str):
     with _run_lock:
         rec = _runs.get(run_id)
         if rec is not None and rec.get("state") == "running":
-            raise HTTPException(status_code=409, detail=f"진행중인 run 은 삭제 불가: {run_id}")
+            raise HTTPException(status_code=409, detail=f"cannot delete a running run: {run_id}")
         _runs.pop(run_id, None)
     out_dir = _runs_dir() / run_id
     if out_dir.is_dir():
@@ -708,7 +708,7 @@ def api_compat_diag(req: CompatDiagReq):
             settle_ms=req.settle_ms,
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"compat-diag 실패: {exc}")
+        raise HTTPException(status_code=500, detail=f"compat-diag failed: {exc}")
     return CompatDiagResp(
         url=report.url,
         verdict=report.verdict,

@@ -393,30 +393,30 @@ async def import_script(
         await _asyncio.to_thread(_load_profile_for_browser, auth_profile)
 
     if not file.filename:
-        raise HTTPException(status_code=400, detail="filename 필수")
+        raise HTTPException(status_code=400, detail="filename is required")
     safe_name = _IMPORT_FILENAME_SAFE_RE.sub("_", file.filename)
     if not safe_name.endswith(".py"):
-        raise HTTPException(status_code=400, detail=".py 파일만 업로드 가능")
+        raise HTTPException(status_code=400, detail="only .py files can be uploaded")
 
     body = await file.read()
     if not body.strip():
-        raise HTTPException(status_code=400, detail="빈 파일")
+        raise HTTPException(status_code=400, detail="empty file")
 
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="UTF-8 디코딩 실패")
+        raise HTTPException(status_code=400, detail="UTF-8 decode failed")
 
     import ast as _ast
     try:
         _ast.parse(text)
     except SyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"Python 구문 오류: {e}")
+        raise HTTPException(status_code=400, detail=f"Python syntax error: {e}")
 
     if "playwright" not in text:
         raise HTTPException(
             status_code=400,
-            detail="`playwright` import 미발견 — Playwright 스크립트가 아닌 것 같습니다",
+            detail="no `playwright` import found — does not appear to be a Playwright script",
         )
 
     # 세션 등록 — uuid 그대로 사용. target_url 은 imported 표시.
@@ -662,7 +662,7 @@ def recording_stop(sid: str) -> dict:
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
 
     handle = _pop_handle(sid)
     if handle is None:
@@ -670,7 +670,7 @@ def recording_stop(sid: str) -> dict:
         log.warning("[/recording/stop] %s 핸들 없음 (state=%s)", sid, sess.state)
         raise HTTPException(
             status_code=409,
-            detail=f"세션 {sid} 의 활성 codegen 핸들이 없습니다. (현재 state={sess.state})",
+            detail=f"session {sid} has no active codegen handle (current state={sess.state})",
         )
 
     import time as _time
@@ -841,7 +841,7 @@ def list_sessions() -> list[SessionResp]:
 def get_session(sid: str) -> SessionResp:
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     return _session_to_resp(sess)
 
 
@@ -859,12 +859,12 @@ def get_session_scenario(sid: str, download: int = 0):
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     p = storage.scenario_path(sid)
     if not p.is_file():
         raise HTTPException(
             status_code=404,
-            detail=f"scenario.json 없음 (state={sess.state})",
+            detail=f"scenario.json not found (state={sess.state})",
         )
     if download:
         return FileResponse(
@@ -887,12 +887,12 @@ def get_session_original(sid: str, download: int = 0):
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     p = storage.original_py_path(sid)
     if not p.is_file():
         raise HTTPException(
             status_code=404,
-            detail=f"original.py 없음 (state={sess.state})",
+            detail=f"original.py not found (state={sess.state})",
         )
     # D17 — sanitize 항상 통과시켜 응답 (이전엔 번들 다운로드 시점에만 sanitize 했음).
     # 평문 자격증명을 placeholder 로 치환 — 사용자가 받는 .py 는 항상 안전.
@@ -955,12 +955,12 @@ def get_session_run_log(
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     p, shots_dir, resolved_mode = _resolve_run_log(sid, mode)
     if not p.is_file():
         raise HTTPException(
             status_code=404,
-            detail=f"run-log 없음 (mode={resolved_mode}) — Play 미실행",
+            detail=f"run-log not found (mode={resolved_mode}) — Play has not been run",
         )
     out: list = []
     try:
@@ -995,7 +995,7 @@ def get_session_run_log(
                 out.append(rec)
     except OSError as e:
         raise HTTPException(
-            status_code=500, detail=f"run-log 읽기 실패: {e}"
+            status_code=500, detail=f"run-log read failed: {e}"
         ) from e
     return {"mode": resolved_mode, "records": out}
 
@@ -1019,11 +1019,11 @@ def get_play_log_tail(
     """
     if kind not in ("llm", "codegen"):
         raise HTTPException(
-            status_code=400, detail=f"kind 는 llm/codegen — received {kind!r}",
+            status_code=400, detail=f"kind must be llm or codegen — received {kind!r}",
         )
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     fname = "play-llm.log" if kind == "llm" else "play-codegen.log"
     p = storage.session_dir(sid) / fname
     if not p.is_file():
@@ -1042,7 +1042,7 @@ def get_play_log_tail(
             "kind": kind,
         }
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"log tail 실패: {e}") from e
+        raise HTTPException(status_code=500, detail=f"log tail failed: {e}") from e
 
 
 @app.get("/recording/sessions/{sid}/screenshot/{name}", include_in_schema=False)
@@ -1063,15 +1063,15 @@ def get_session_screenshot(
     if not _SCREENSHOT_NAME_RE.match(name):
         raise HTTPException(
             status_code=400,
-            detail=f"허용되지 않는 스크린샷 이름: {name!r}",
+            detail=f"disallowed screenshot name: {name!r}",
         )
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     sess_dir = storage.session_dir(sid)
     p = (sess_dir / "codegen_screenshots" / name) if mode == "codegen" else (sess_dir / name)
     if not p.is_file():
-        raise HTTPException(status_code=404, detail=f"스크린샷 없음: {name}")
+        raise HTTPException(status_code=404, detail=f"screenshot not found: {name}")
     media = "image/jpeg" if name.lower().endswith((".jpeg", ".jpg")) else "image/png"
     return FileResponse(str(p), media_type=media)
 
@@ -1087,12 +1087,12 @@ def get_session_scenario_healed(sid: str, download: int = 0):
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     p = storage.scenario_healed_path(sid)
     if not p.is_file():
         raise HTTPException(
             status_code=404,
-            detail="scenario.healed.json 없음 — Play with LLM 미실행",
+            detail="scenario.healed.json not found — Play with LLM has not been run",
         )
     if download:
         return FileResponse(
@@ -1112,12 +1112,12 @@ def get_session_play_llm_log(sid: str, download: int = 0):
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     p = storage.play_llm_log_path(sid)
     if not p.is_file():
         raise HTTPException(
             status_code=404,
-            detail="play-llm.log 없음 — Play with LLM 미실행",
+            detail="play-llm.log not found — Play with LLM has not been run",
         )
     if download:
         return FileResponse(
@@ -1140,13 +1140,13 @@ def get_session_report(sid: str):
 
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     sess_dir = storage.session_dir(sid)
     html = report_export.build_self_contained_report(sess_dir)
     if html is None:
         raise HTTPException(
             status_code=404,
-            detail="run_log 산출물 없음 — Play 미실행",
+            detail="run_log artifacts not found — Play has not been run",
         )
     headers = {
         "Content-Disposition": f'attachment; filename="{sid}-report.html"',
@@ -1166,12 +1166,12 @@ def get_session_regression(sid: str, download: int = 0):
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     p = storage.regression_py_path(sid)
     if not p.is_file():
         raise HTTPException(
             status_code=404,
-            detail="regression_test.py 없음 — Play with LLM 미실행",
+            detail="regression_test.py not found — Play with LLM has not been run",
         )
     # D17 — sanitize 항상 통과시켜 응답.
     src_text = p.read_text(encoding="utf-8")
@@ -1189,7 +1189,7 @@ def get_session_regression(sid: str, download: int = 0):
 def delete_session(sid: str):
     """세션 메모리 + 영속화 디렉토리 삭제. 활성 codegen 이 있으면 먼저 종료."""
     if not _registry.get(sid):
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
 
     # 활성 codegen 이 남아 있으면 SIGTERM
     handle = _pop_handle(sid)
@@ -1248,7 +1248,7 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
     """
     sess = _registry.get(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     if sess.state != session.STATE_DONE:
         raise HTTPException(
             status_code=409,
@@ -1266,9 +1266,9 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
             ),
         )
     if not req.target.strip():
-        raise HTTPException(status_code=400, detail="target 이 비어있습니다.")
+        raise HTTPException(status_code=400, detail="target is empty.")
     if req.action not in _ASSERTION_VALUE_OPTIONAL and not req.value.strip():
-        raise HTTPException(status_code=400, detail="value 가 비어있습니다.")
+        raise HTTPException(status_code=400, detail="value is empty.")
     if req.action == "scroll":
         scroll_v = req.value.strip().lower()
         if scroll_v not in _ASSERTION_SCROLL_VALUES:
@@ -1284,7 +1284,7 @@ def add_assertion(sid: str, req: AssertionAddReq) -> dict:
     if scenario is None:
         raise HTTPException(
             status_code=409,
-            detail=f"세션 {sid} 의 scenario.json 이 없습니다. 먼저 변환을 완료하세요.",
+            detail=f"session {sid} has no scenario.json. Complete conversion first.",
         )
 
     insert_at = _resolve_insert_index(scenario, req.position)
@@ -1604,7 +1604,7 @@ def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
         with _seed_jobs_lock:
             job.state = "ready"
             job.phase = "ready"
-            job.message = f"시드 완료 — 프로파일 '{prof.name}' 이 저장되었습니다."
+            job.message = f"seed done — profile '{prof.name}' saved."
             job.profile_name = prof.name
         log.info("[/auth/profiles/seed] 완료 — seed_sid=%s name=%s", job.seed_sid, prof.name)
     except AuthProfileError as e:
@@ -1612,7 +1612,7 @@ def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
         with _seed_jobs_lock:
             job.state = "error"
             job.phase = "error"
-            job.message = f"시드 실패 — {e}"
+            job.message = f"seed failed — {e}"
             job.error = str(e)
             job.error_kind = kind
         log.warning(
@@ -1624,7 +1624,7 @@ def _seed_worker(job: _SeedJob, req: AuthSeedReq) -> None:
         with _seed_jobs_lock:
             job.state = "error"
             job.phase = "error"
-            job.message = f"시드 실패 — {e!r}"
+            job.message = f"seed failed — {e!r}"
             job.error = repr(e)
             job.error_kind = "unknown"
 
@@ -1706,7 +1706,7 @@ def auth_profiles_seed_poll(seed_sid: str) -> AuthSeedPollResp:
     with _seed_jobs_lock:
         job = _seed_jobs.get(seed_sid)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"seed job 미발견: {seed_sid}")
+        raise HTTPException(status_code=404, detail=f"seed job not found: {seed_sid}")
     return AuthSeedPollResp(
         seed_sid=seed_sid,
         state=job.state,
@@ -2113,7 +2113,7 @@ def _generate_tour_script(
             status_code=500,
             detail={
                 "reason": "fingerprint_not_serializable",
-                "message": f"Fingerprint kwargs 가 JSON 으로 직렬화되지 않습니다: {e}",
+                "message": f"Fingerprint kwargs are not JSON-serializable: {e}",
             },
         )
 
@@ -2283,7 +2283,7 @@ def discover_tree(job_id: str, type: str = "crawl"):
     if type not in ("crawl", "path"):
         raise HTTPException(
             status_code=400,
-            detail=f"type 은 crawl/path — received {type!r}",
+            detail=f"type must be crawl or path — received {type!r}",
         )
     from recording_service import tree_builder
 
@@ -2296,9 +2296,9 @@ def discover_tree(job_id: str, type: str = "crawl"):
     try:
         records = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise HTTPException(status_code=500, detail=f"urls.json 읽기 실패: {e}") from e
+        raise HTTPException(status_code=500, detail=f"urls.json read failed: {e}") from e
     if not isinstance(records, list):
-        raise HTTPException(status_code=500, detail="urls.json 형식 오류")
+        raise HTTPException(status_code=500, detail="urls.json format error")
 
     if type == "crawl":
         tree = tree_builder.build_crawl_tree(records, job.seed_url)
@@ -2325,9 +2325,9 @@ def discover_tree_html(job_id: str):
     try:
         records = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise HTTPException(status_code=500, detail=f"urls.json 읽기 실패: {e}") from e
+        raise HTTPException(status_code=500, detail=f"urls.json read failed: {e}") from e
     if not isinstance(records, list):
-        raise HTTPException(status_code=500, detail="urls.json 형식 오류")
+        raise HTTPException(status_code=500, detail="urls.json format error")
 
     crawl = tree_builder.build_crawl_tree(records, job.seed_url)
     path = tree_builder.build_path_tree(records, job.seed_url)
