@@ -9,13 +9,13 @@ option { background: #fff; color: var(--text); padding: 4px 8px; }
 :root {
   --bg: #f5f5f7;
   --card: #ffffff;
-  --border: #e1e4e8;
+  --border: #d0d0d4;
   --text: #1d1d1f;
   --muted: #6e6e73;
-  --accent: #0066cc;
-  --ok: #007a3a;
-  --warn: #b86e00;
-  --err: #c92a2a;
+  --accent: #4a4a4f;
+  --ok: #2c2c2f;
+  --warn: #5f5f63;
+  --err: #1d1d1f;
   --code-bg: #f0f0f2;
   --pill-bg: #e8e8ea;
 }
@@ -309,9 +309,9 @@ ul.tree a:hover { text-decoration: underline; }
   margin-left: 4px;
 }
 .tree-badge.src { background: #ececf0; color: #1d1d1f; }
-.tree-badge.st-ok { background: #d6f3df; color: #0a7c2f; }
-.tree-badge.st-warn { background: #fde4c2; color: #7a3e00; }
-.tree-badge.st-fail { background: #fbd0d0; color: #8b0000; }
+.tree-badge.st-ok { background: #e8e8ea; color: #2c2c2f; }
+.tree-badge.st-warn { background: #ececef; color: #4a4a4f; }
+.tree-badge.st-fail { background: #dcdcdf; color: #1d1d1f; font-weight: 600; }
 .tree-count { font-size: 0.85em; }
 .tree-extras-title {
   margin: 12px 0 4px;
@@ -338,8 +338,8 @@ ul.tree a:hover { text-decoration: underline; }
   display: inline-block;
   padding: 1px 8px;
   border-radius: 8px;
-  background: #fde4c2;
-  color: #7a3e00;
+  background: #ececef;
+  color: #4a4a4f;
   font-weight: 500;
 }
 .stats-card .stats-mini-grid {
@@ -397,16 +397,16 @@ code {
 .copy-toast.show { opacity: 1; }
 
 .hover-hint {
-  background: #fff8e1;
-  border-left: 3px solid #f9c846;
+  background: #f0f0f2;
+  border-left: 3px solid #6e6e73;
   padding: 10px 14px;
   margin: 10px 0 16px;
   border-radius: 4px;
-  color: #5c4d1a;
+  color: #4a4a4f;
   line-height: 1.55;
 }
-.hover-hint strong { color: #3a2f10; }
-.hover-hint em { font-style: normal; color: #5c4d1a; opacity: 0.85; }
+.hover-hint strong { color: #1d1d1f; }
+.hover-hint em { font-style: normal; color: #4a4a4f; opacity: 0.85; }
 .ok { color: var(--ok); font-weight: 600; }
 .warn { color: var(--warn); font-weight: 600; }
 .err { color: var(--err); font-weight: 600; }
@@ -420,10 +420,10 @@ code {
   font-weight: 500;
 }
 .state-pending { background: #e8e8ea; color: #555; }
-.state-recording { background: #fde7e6; color: var(--err); }
-.state-converting { background: #fff3cd; color: var(--warn); }
-.state-done { background: #d4edda; color: var(--ok); }
-.state-error { background: #f8d7da; color: var(--err); }
+.state-recording { background: #e0e0e3; color: var(--err); }
+.state-converting { background: #ececef; color: var(--warn); }
+.state-done { background: #e8e8ea; color: var(--ok); }
+.state-error { background: #dcdcdf; color: var(--err); }
 
 table {
   width: 100%;
@@ -543,8 +543,8 @@ dialog textarea {
   filter: none;
 }
 .dropdown-group.expanded .dropdown-toggle {
-  background: #004d99;
-  border-color: #004d99;
+  background: #2c2c2f;
+  border-color: #2c2c2f;
 }
 
 /* P3 (항목 7) — 세션 목록 검색/필터 */
@@ -646,9 +646,9 @@ dialog textarea {
   white-space: pre;
 }
 .diff-pre .diff-meta { color: #6e6e73; font-weight: 500; display: block; }
-.diff-pre .diff-hunk { color: #1f5377; background: #e6f0fa; display: block; padding: 0 4px; }
-.diff-pre .diff-add  { color: #007a3a; background: #e6ffed; display: block; padding: 0 4px; }
-.diff-pre .diff-del  { color: #c92a2a; background: #ffe6e6; display: block; padding: 0 4px; }
+.diff-pre .diff-hunk { color: #2c2c2f; background: #ececef; display: block; padding: 0 4px; }
+.diff-pre .diff-add  { color: #2c2c2f; background: #ececef; display: block; padding: 0 4px; border-left: 2px solid #2c2c2f; }
+.diff-pre .diff-del  { color: #1d1d1f; background: #dcdcdf; display: block; padding: 0 4px; border-left: 2px solid #1d1d1f; }
 .diff-pre .diff-ctx  { color: #1d1d1f; display: block; padding: 0 4px; }
 
 /* P2 (항목 6) — Play 진행 로그 스트리밍 */
@@ -739,9 +739,9 @@ dialog textarea {
 .run-log-table .step-target { max-width: 320px; word-break: break-all; }
 
 /* status pill — run-log 행의 상태 (executor 의 PASS/FAIL/HEALED) */
-.status-pass    { background: #d4edda; color: var(--ok); }
-.status-healed  { background: #fff3cd; color: #856404; }
-.status-fail    { background: #f8d7da; color: var(--err); }
+.status-pass    { background: #e8e8ea; color: var(--ok); }
+.status-healed  { background: #ececef; color: #4a4a4f; }
+.status-fail    { background: #dcdcdf; color: var(--err); }
 
 /* heal_stage pill — none / local / dify / visibility */
 .heal-pill {
@@ -752,11 +752,11 @@ dialog textarea {
   font-weight: 500;
 }
 .heal-none        { background: #f0f0f2; color: #888; }
-.heal-local       { background: #fff3cd; color: #856404; }
-.heal-dify        { background: #fde7e6; color: var(--err); }
-.heal-visibility  { background: #d6e8f4; color: #1f5377; }
+.heal-local       { background: #ececef; color: #4a4a4f; }
+.heal-dify        { background: #e0e0e3; color: var(--err); }
+.heal-visibility  { background: #e0e0e3; color: #2c2c2f; }
 
-.run-log-fail { background: #fff5f5; }
+.run-log-fail { background: #f0f0f2; }
 
 .shot-link, .copy-step-btn {
   background: none;
@@ -865,10 +865,10 @@ dialog textarea {
 }
 .auth-btn-danger {
   color: var(--err);
-  border-color: #f1aeb5;
+  border-color: #b5b5b9;
 }
 .auth-btn-danger:hover:not(:disabled) {
-  background: #fde7e6;
+  background: #e0e0e3;
 }
 .auth-status {
   font-size: 0.88em;
@@ -979,7 +979,7 @@ dialog textarea {
   margin: 0;
 }
 .auth-warning {
-  background: #fff8dc;
+  background: #f0f0f2;
   border-left: 3px solid var(--warn);
   padding: 8px 10px;
   font-size: 0.88em;
@@ -1128,10 +1128,10 @@ dialog textarea {
 .modal-hint { margin: 0.2rem 0 0.4rem 140px; font-size: 0.85rem; }
 .modal-warning {
   margin-top: 1rem; padding: 0.75rem 1rem;
-  background: #fff5f5; border: 1px solid #f5c2c7;
+  background: #f0f0f2; border: 1px solid #b5b5b9;
   border-radius: 6px;
 }
-.modal-warning h4 { margin-top: 0; color: #842029; }
+.modal-warning h4 { margin-top: 0; color: #1d1d1f; }
 .modal-warning pre { max-height: 220px; overflow: auto; }
 .modal-warning label { display: block; margin-top: 0.5rem; }
 .modal-actions {
@@ -1141,7 +1141,7 @@ dialog textarea {
   padding: 0.5rem 1rem; cursor: pointer;
 }
 .modal-actions button.primary {
-  background: var(--accent, #2563eb); color: white; border: none; border-radius: 4px;
+  background: var(--accent, #4a4a4f); color: white; border: none; border-radius: 4px;
 }
 .modal-cancel {
   background: transparent; border: 1px solid var(--border, #ccc);

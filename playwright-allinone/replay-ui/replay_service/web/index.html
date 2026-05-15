@@ -30,7 +30,8 @@
 
   <!-- 🔐 Login Profiles -->
   <section class="card">
-    <h2 data-i18n="login.title">🔐 Login Profiles</h2>
+    <details id="login-section" open>
+      <summary><h2 style="display:inline-block; margin:0;" data-i18n="login.title">🔐 Login Profiles</h2></summary>
     <div class="card-actions">
       <button id="btn-add-alias" type="button" data-i18n="login.btn.add">+ 새 프로파일</button>
       <button id="btn-refresh-profiles" type="button" class="ghost" data-i18n="login.btn.refresh">↻ 새로고침</button>
@@ -49,11 +50,13 @@
         <tr class="muted"><td colspan="5" data-i18n="login.row.loading">— 로딩 중 —</td></tr>
       </tbody>
     </table>
+    </details>
   </section>
 
   <!-- 📄 시나리오 스크립트 (D17 — 번들 zip 폐기 후 단일 진입점) -->
   <section class="card">
-    <h2 data-i18n="scripts.title">📄 Scenario Scripts</h2>
+    <details id="scripts-section" open>
+      <summary><h2 style="display:inline-block; margin:0;" data-i18n="scripts.title">📄 Scenario Scripts</h2></summary>
     <p class="muted" data-i18n-html="scripts.desc">
       Recording UI 에서 <code>⬇ 다운로드</code> 받은 <code>.py</code> 스크립트를 업로드합니다.
       적용할 로그인 프로파일은 실행 시점에 사용자가 직접 고르며, 비로그인 시나리오면 프로파일을 비워 두세요.
@@ -109,19 +112,23 @@
         <tr class="muted"><td colspan="5" data-i18n="login.row.loading">— 로딩 중 —</td></tr>
       </tbody>
     </table>
+    </details>
   </section>
 
 
   <!-- ▶ 실행 (실시간) -->
   <section class="card">
-    <h2 data-i18n="run.title">▶ Run Console</h2>
+    <details id="run-section" open>
+      <summary><h2 style="display:inline-block; margin:0;" data-i18n="run.title">▶ Run Console</h2></summary>
     <div id="run-status" class="muted" data-i18n="run.idle">— 대기 —</div>
     <pre id="run-stream" class="run-stream"></pre>
+    </details>
   </section>
 
   <!-- 📊 결과 -->
   <section class="card">
-    <h2 data-i18n="results.title">📊 Results</h2>
+    <details id="results-section" open>
+      <summary><h2 style="display:inline-block; margin:0;" data-i18n="results.title">📊 Results</h2></summary>
     <div class="card-actions">
       <button id="btn-refresh-runs" type="button" class="ghost" data-i18n="results.btn.refresh">↻ 새로고침</button>
       <button id="btn-bulk-delete-runs" type="button" class="ghost" disabled
@@ -146,6 +153,7 @@
         <tr class="muted"><td colspan="6" data-i18n="login.row.loading">— 로딩 중 —</td></tr>
       </tbody>
     </table>
+    </details>
   </section>
 
 </main>
