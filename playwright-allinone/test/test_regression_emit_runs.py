@@ -313,10 +313,12 @@ def test_regression_test_splits_exact_modifier_from_name(tmp_path: Path):
     src = Path(output).read_text(encoding="utf-8")
 
     # exact=true 케이스 — name 은 순수, exact=True kwarg 분리.
-    assert 'name="\\uac80\\uc0c9", exact=True' in src, (
+    # json shim 이 ensure_ascii=False 라 한글은 raw 로 emit (17b4a82 가독성 회귀
+    # 픽스). escape 형태 ``\\uac80\\uc0c9`` 가 아닌 원문 ``검색`` 으로 검증.
+    assert 'name="검색", exact=True' in src, (
         "exact=true 가 분리되지 않고 name 안에 박혀 있음\n" + src
     )
-    assert '"\\uac80\\uc0c9, exact=true"' not in src, (
+    assert '"검색, exact=true"' not in src, (
         "exact 가 name 안에 새어 들어감"
     )
     # exact=false 케이스 — exact=True 안 박혀야 하고, name 도 순수.
@@ -464,12 +466,17 @@ def test_regression_test_emits_visibility_heal_pre_actions(tmp_path: Path):
     src = Path(output).read_text(encoding="utf-8")
 
     # 두 단계 hover 가 본 스텝 click 앞에 순서대로 emit 되어야 한다.
+    # hover timeout 은 01819c6 에서 1500 → 5000 으로 의도 확대 (팝업 백그라운드
+    # 페이지에서 hover 가 끝나지 않는 케이스 보완).
     assert '#gnbBox > li:nth-of-type(3)' in src
-    assert '.hover(timeout=1500)' in src
+    assert '.hover(timeout=5000)' in src
     assert 'wait_for_timeout(150)' in src
-    # 순서 검증 — hover 가 click 보다 앞에 있어야 한다.
+    # 순서 검증 — hover 가 실제 click 보다 앞에 있어야 한다.
+    # 주의: `#userinintro` 는 step 1 (navigate) 의 look-ahead pre-wait 자리에서
+    # 한 번 더 emit 되므로 src.index() 는 click 이 아닌 look-ahead 자리를 잡는다.
+    # 실제 click 자리는 _safe_click(...) 호출이라 그쪽을 짚어 비교한다.
     hover_idx = src.index('#gnbBox > li:nth-of-type(3)')
-    click_idx = src.index('"#userinintro"')
+    click_idx = src.index('_safe_click(page.locator("#userinintro")')
     assert hover_idx < click_idx, "hover 시퀀스가 본 스텝 click 뒤로 밀림"
     # PRE 마커 주석으로 운영자가 식별 가능.
     assert "[PRE] visibility heal — hover ancestor" in src
