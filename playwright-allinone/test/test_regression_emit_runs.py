@@ -234,9 +234,9 @@ def test_regression_test_emits_fill_as_press_sequentially(tmp_path: Path):
 def test_regression_test_fill_handles_unicode_value(tmp_path: Path):
     """비-ASCII 값도 press_sequentially 인자로 들어가야 한다.
 
-    json.dumps 가 ensure_ascii=True (기본) 이므로 한글은 \\uXXXX 로 escape.
-    회귀 .py 는 모든 환경에서 안전한 ASCII 출력만 갖되, runtime 에 디코드되어
-    그대로 한 글자씩 입력된다.
+    2026-05-13 사용자 보고로 regression_generator 가 json.dumps 의 기본을
+    ensure_ascii=False 로 바꾼 뒤부터 한글은 escape 없이 원문 그대로 박힌다
+    (회귀 .py 가독성). 파일이 UTF-8 로 저장되므로 runtime 동작은 동일.
     """
     scenario = [
         {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
@@ -248,9 +248,13 @@ def test_regression_test_fill_handles_unicode_value(tmp_path: Path):
     assert output is not None
     src = Path(output).read_text(encoding="utf-8")
 
-    # json.dumps escape 된 형태 — 환경 인코딩 무관하게 안정.
-    assert "press_sequentially(\"\\uc694\\uae30\\uc694\", delay=80)" in src, (
+    # 한글이 그대로 박혀야 함 (escape 형태가 아니라 원문).
+    assert 'press_sequentially("요기요", delay=80)' in src, (
         f"unicode value 가 press_sequentially 로 안 들어감\n{src}"
+    )
+    # 옛 escape 형태가 잔존하면 안 됨 — 가독성 회귀 가드.
+    assert '\\uc694\\uae30\\uc694' not in src, (
+        f"한글이 \\uXXXX escape 로 떨어졌다 — 가독성 회귀\n{src}"
     )
     compile(src, output, "exec")
 

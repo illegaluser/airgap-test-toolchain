@@ -99,7 +99,7 @@ def fixture_site(tmp_path_factory) -> dict:
 @pytest.fixture(scope="session")
 def daemon(tmp_path_factory):
     if _is_port_listening(E2E_PORT):
-        pytest.skip(f"port {E2E_PORT} 사용 중 — Tier 2 e2e 스킵")
+        pytest.skip(f"port {E2E_PORT} in use - Tier 2 e2e skipped")
 
     rec_root = tmp_path_factory.mktemp("disc_e2e_rec")
     disc_root = tmp_path_factory.mktemp("disc_e2e_disc")
@@ -133,7 +133,7 @@ def daemon(tmp_path_factory):
         time.sleep(0.2)
     else:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
         pytest.skip("daemon healthz timeout")
@@ -141,11 +141,11 @@ def daemon(tmp_path_factory):
     yield {"base": E2E_BASE, "rec_root": rec_root, "disc_root": disc_root}
 
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.terminate()
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
     except ProcessLookupError:

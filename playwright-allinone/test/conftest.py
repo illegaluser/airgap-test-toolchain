@@ -13,11 +13,23 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
 import pytest
+
+# Windows 콘솔이 CP949 인 환경에서 deepeval 등 pytest 플러그인이 skip reason 의
+# 유니코드(em-dash 등)를 print 하다 UnicodeEncodeError 로 죽는 사고 방지.
+# stdout/stderr 을 utf-8 로 재설정해 어떤 유니코드든 안전히 출력.
+for _stream in (sys.stdout, sys.stderr):
+    reconfig = getattr(_stream, "reconfigure", None)
+    if reconfig is not None:
+        try:
+            reconfig(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 from zero_touch_qa.config import Config
 from zero_touch_qa.dify_client import DifyClient

@@ -196,7 +196,7 @@ def _is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
 def daemon(stub_path_dir, tmp_path_factory):
     """별도 포트 (18094) 로 데몬 spawn — Tier 1 의 18098 (test_recording_ui_e2e.py) 과 격리."""
     if _is_port_listening(E2E_PORT):
-        pytest.skip(f"port {E2E_PORT} 가 이미 사용 중 — Tier 2 e2e 스킵")
+        pytest.skip(f"port {E2E_PORT} already in use - Tier 2 e2e skipped")
 
     rec_root = tmp_path_factory.mktemp("api_e2e_rec")
     auth_root = tmp_path_factory.mktemp("api_e2e_auth")
@@ -232,7 +232,7 @@ def daemon(stub_path_dir, tmp_path_factory):
         time.sleep(0.2)
     else:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
         pytest.skip("Tier 2 daemon healthz 대기 timeout")
@@ -244,11 +244,11 @@ def daemon(stub_path_dir, tmp_path_factory):
     }
 
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.terminate()
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:  # noqa: BLE001
             pass
     except ProcessLookupError:
