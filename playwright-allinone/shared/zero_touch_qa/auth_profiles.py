@@ -1559,7 +1559,7 @@ def _verify_seeded_profile_or_rollback(profile: "AuthProfile") -> None:
     except ProfileNotFoundError:
         _safe_unlink(profile.storage_path)
     raise SeedVerifyFailedError(
-        f"시드 후 verify 실패: {detail.get('fail_reason') or 'unknown'}"
+        f"post-seed verify failed: {detail.get('fail_reason') or 'unknown'}"
     )
 
 

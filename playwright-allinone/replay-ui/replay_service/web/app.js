@@ -43,7 +43,10 @@ async function loadProfiles() {
   tbody.innerHTML = "";
   let expiredCount = 0;
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 프로파일 없음 —</td></tr>';
+    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t(
+      "profiles.empty",
+      "로그인 프로파일이 없습니다. + 새 프로파일 클릭으로 등록하세요.",
+    ))} —</td></tr>`;
   } else {
     for (const p of data) {
       const tr = document.createElement("tr");
@@ -51,11 +54,13 @@ async function loadProfiles() {
       if (!storageOk) expiredCount += 1;
       tr.innerHTML = `
         <td><strong>${escapeHtml(p.alias)}</strong></td>
-        <td>${storageOk ? "<span class='ok'>등록됨</span>" : "<span class='expired'>🔴 다시 로그인 필요</span>"}</td>
+        <td>${storageOk
+          ? `<span class='ok'>${escapeHtml(I18N.t("profiles.state.ok", "등록됨"))}</span>`
+          : `<span class='expired'>${escapeHtml(I18N.t("profiles.state.expired", "🔴 다시 로그인 필요"))}</span>`}</td>
         <td>${escapeHtml(p.last_verified_at || "-")}</td>
         <td>${escapeHtml(p.service_domain || "-")}</td>
         <td>
-          <button class="reseed-btn ghost" data-alias="${escapeHtml(p.alias)}">↻ 다시 로그인</button>
+          <button class="reseed-btn ghost" data-alias="${escapeHtml(p.alias)}">${escapeHtml(I18N.t("profiles.reseed", "↻ 다시 로그인"))}</button>
           <button class="del-profile-btn ghost" data-alias="${escapeHtml(p.alias)}">🗑</button>
         </td>`;
       tbody.appendChild(tr);
@@ -64,7 +69,7 @@ async function loadProfiles() {
   // 글로벌 알람 인디케이터.
   const badge = $("#alarm-badge");
   if (expiredCount > 0) {
-    badge.textContent = `🔴 ${expiredCount} 만료`;
+    badge.textContent = I18N.t("alarm.expired", "🔴 {n} 만료", { n: expiredCount });
     badge.classList.remove("hidden");
   } else {
     badge.classList.add("hidden");
@@ -75,10 +80,10 @@ async function loadProfiles() {
   });
   $$(".del-profile-btn").forEach((b) => {
     b.addEventListener("click", async () => {
-      if (!confirm(`프로파일 '${b.dataset.alias}' 을 삭제할까요?`)) return;
+      if (!confirm(I18N.t("confirm.deleteProfile", "프로파일 '{name}' 을 삭제할까요?", { name: b.dataset.alias }))) return;
       const r = await fetch(`/api/profiles/${encodeURIComponent(b.dataset.alias)}`, { method: "DELETE" });
       if (r.ok) loadProfiles();
-      else alert(`삭제 실패: HTTP ${r.status}`);
+      else alert(I18N.t("alert.deleteFailHttp", "삭제 실패: HTTP {code}", { code: r.status }));
     });
   });
 }
@@ -96,7 +101,9 @@ let _lastSeedPayload = null;  // 만료 → 다시 로그인 시 입력 prefill
 function openSeedInput(prefill) {
   const form = $("#seed-input-form");
   form.reset();
-  $("#seed-input-title").textContent = prefill ? "↻ 다시 로그인" : "+ 새 로그인 프로파일";
+  $("#seed-input-title").textContent = prefill
+    ? I18N.t("seed.input.titleReseed", "↻ 다시 로그인")
+    : I18N.t("seed.input.title", "+ 새 로그인 프로파일");
   if (prefill) {
     if (prefill.name) form.elements["name"].value = prefill.name;
     if (prefill.seed_url) form.elements["seed_url"].value = prefill.seed_url;
@@ -106,7 +113,7 @@ function openSeedInput(prefill) {
     if (prefill.naver_probe !== undefined) form.elements["naver_probe"].checked = !!prefill.naver_probe;
     if (prefill.idp_domain !== undefined) form.elements["idp_domain"].value = prefill.idp_domain;
   }
-  $("#seed-input-modal").hidden = false;
+  $("#seed-input-modal").showModal();
 }
 
 async function openReseed(name) {
@@ -131,7 +138,7 @@ async function openReseed(name) {
 
 async function startSeedFlow(payload) {
   _lastSeedPayload = payload;
-  $("#seed-input-modal").hidden = true;
+  $("#seed-input-modal").close();
 
   const status = $("#seed-progress-status");
   const elapsed = $("#seed-progress-elapsed");
@@ -139,14 +146,14 @@ async function startSeedFlow(payload) {
   const cancelBtn = $("#btn-seed-cancel");
   const doneBtn = $("#btn-seed-done");
 
-  status.textContent = "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요";
-  elapsed.textContent = `경과 0초 / 한도 ${payload.timeout_sec || 600}초`;
-  hint.textContent = "창이 닫히면 세션을 저장하고, 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.";
+  status.textContent = I18N.t("seedFlow.waiting", "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요");
+  elapsed.textContent = I18N.t("seedFlow.elapsedLimit", "경과 0초 / 한도 {t}초", { t: payload.timeout_sec || 600 });
+  hint.textContent = I18N.t("seedFlow.hintWaiting", "창이 닫히면 세션을 저장하고, 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.");
   cancelBtn.hidden = false;
-  cancelBtn.textContent = "취소 (창은 직접 닫으세요)";
+  cancelBtn.textContent = I18N.t("seedFlow.cancelClose", "취소 (창은 직접 닫으세요)");
   cancelBtn.dataset.action = "cancel";
   doneBtn.hidden = true;
-  $("#seed-progress-modal").hidden = false;
+  $("#seed-progress-modal").showModal();
 
   let resp;
   try {
@@ -157,14 +164,14 @@ async function startSeedFlow(payload) {
     });
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));
-      status.textContent = `✗ 시작 실패: HTTP ${r.status} — ${body.detail || ""}`;
-      cancelBtn.textContent = "닫기";
+      status.textContent = I18N.t("seedFlow.startFailHttp", "✗ 시작 실패: HTTP {code} — {detail}", { code: r.status, detail: body.detail || "" });
+      cancelBtn.textContent = I18N.t("common.close", "닫기");
       return;
     }
     resp = await r.json();
   } catch (e) {
-    status.textContent = `✗ 시작 실패: ${e.message}`;
-    cancelBtn.textContent = "닫기";
+    status.textContent = I18N.t("seedFlow.startFail", "✗ 시작 실패: {msg}", { msg: e.message });
+    cancelBtn.textContent = I18N.t("common.close", "닫기");
     return;
   }
 
@@ -179,16 +186,16 @@ async function startSeedFlow(payload) {
     } catch {
       return;
     }
-    elapsed.textContent = `경과 ${Math.floor(poll.elapsed_sec)}초 / 한도 ${poll.timeout_sec}초`;
+    elapsed.textContent = I18N.t("seedFlow.elapsedNow", "경과 {e}초 / 한도 {t}초", { e: Math.floor(poll.elapsed_sec), t: poll.timeout_sec });
     if (poll.message) status.textContent = poll.message;
     if (poll.phase === "verifying") {
-      hint.textContent = "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.";
+      hint.textContent = I18N.t("seedFlow.hintVerifying", "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.");
     }
     if (poll.state === "ready") {
       clearInterval(_seedPollTimer);
       _seedPollTimer = null;
-      status.textContent = poll.message || `✓ 시드 완료 — 프로파일 "${poll.profile_name}"`;
-      hint.textContent = "이 프로파일은 이제 시나리오 묶음 실행에 자동으로 재사용됩니다.";
+      status.textContent = poll.message || I18N.t("seedFlow.done", "✓ 시드 완료 — 프로파일 \"{name}\"", { name: poll.profile_name });
+      hint.textContent = I18N.t("seedFlow.hintDone", "이 프로파일은 이제 시나리오 묶음 실행에 자동으로 재사용됩니다.");
       cancelBtn.hidden = true;
       doneBtn.hidden = false;
       loadProfiles();
@@ -196,9 +203,9 @@ async function startSeedFlow(payload) {
       clearInterval(_seedPollTimer);
       _seedPollTimer = null;
       const kind = poll.error_kind ? `[${poll.error_kind}] ` : "";
-      status.textContent = poll.message || `✗ 실패 — ${kind}${poll.error}`;
-      hint.textContent = "입력값을 확인한 뒤 다시 시도해 주세요.";
-      cancelBtn.textContent = "다시 입력";
+      status.textContent = poll.message || I18N.t("seedFlow.fail", "✗ 실패 — {kind}{err}", { kind, err: poll.error });
+      hint.textContent = I18N.t("seedFlow.hintRetry", "입력값을 확인한 뒤 다시 시도해 주세요.");
+      cancelBtn.textContent = I18N.t("seedFlow.retry", "다시 입력");
       cancelBtn.dataset.action = "retry";
     }
   }, 1000);
@@ -233,7 +240,10 @@ async function loadRuns() {
     if (!presentRuns.has(id)) _selectedRuns.delete(id);
   }
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="6">— 실행 결과 없음 —</td></tr>';
+    tbody.innerHTML = `<tr class="muted"><td colspan="6">— ${escapeHtml(I18N.t(
+      "runs.empty",
+      "실행 결과가 아직 없습니다. 위 스크립트 행의 ▶ 실행 으로 시작하세요.",
+    ))} —</td></tr>`;
     syncBulkDeleteRunsState();
     return;
   }
@@ -243,19 +253,19 @@ async function loadRuns() {
     const running = run.state === "running";
     const checked = (!running && _selectedRuns.has(run.run_id)) ? "checked" : "";
     const checkCell = running
-      ? `<td class="col-check" title="진행중 — 삭제 불가"><input type="checkbox" class="run-check" data-run="${escapeHtml(run.run_id)}" disabled /></td>`
+      ? `<td class="col-check" title="${escapeHtml(I18N.t("runs.runningCannotDelete", "진행중 — 삭제 불가"))}"><input type="checkbox" class="run-check" data-run="${escapeHtml(run.run_id)}" disabled /></td>`
       : `<td class="col-check"><input type="checkbox" class="run-check" data-run="${escapeHtml(run.run_id)}" ${checked} /></td>`;
     const delBtn = running
-      ? `<button class="del-run-btn ghost" data-run="${escapeHtml(run.run_id)}" disabled title="진행중 — 삭제 불가">🗑</button>`
+      ? `<button class="del-run-btn ghost" data-run="${escapeHtml(run.run_id)}" disabled title="${escapeHtml(I18N.t("runs.runningCannotDelete", "진행중 — 삭제 불가"))}">🗑</button>`
       : `<button class="del-run-btn ghost" data-run="${escapeHtml(run.run_id)}">🗑</button>`;
     tr.innerHTML = `
       ${checkCell}
       <td>${fmtTime(run.started_at)}</td>
       <td>${escapeHtml(run.script || run.bundle || "-")}</td>
-      <td>${escapeHtml(run.alias || "(비로그인)")}</td>
+      <td>${escapeHtml(run.alias || I18N.t("common.anonymous", "(비로그인)"))}</td>
       <td>${result}</td>
       <td>
-        <button class="detail-btn ghost" data-run="${escapeHtml(run.run_id)}">상세 →</button>
+        <button class="detail-btn ghost" data-run="${escapeHtml(run.run_id)}">${escapeHtml(I18N.t("runs.detail", "상세 →"))}</button>
         ${delBtn}
       </td>`;
     tbody.appendChild(tr);
@@ -266,14 +276,18 @@ async function loadRuns() {
   $$(".del-run-btn").forEach((b) => {
     if (b.disabled) return;
     b.addEventListener("click", async () => {
-      if (!confirm(`실행 결과 '${b.dataset.run}' 을 삭제할까요?\n(스크린샷·trace·리포트 산출물이 모두 제거됩니다.)`)) return;
+      if (!confirm(I18N.t(
+        "confirm.deleteRun",
+        "실행 결과 '{id}' 을 삭제할까요?\n(스크린샷·trace·리포트 산출물이 모두 제거됩니다.)",
+        { id: b.dataset.run },
+      ))) return;
       const r = await fetch(`/api/runs/${encodeURIComponent(b.dataset.run)}`, { method: "DELETE" });
       if (r.ok) {
         _selectedRuns.delete(b.dataset.run);
         loadRuns();
       } else {
         const body = await r.json().catch(() => ({}));
-        alert(`삭제 실패: HTTP ${r.status} — ${body.detail || ""}`);
+        alert(I18N.t("alert.deleteFailHttpDetail", "삭제 실패: HTTP {code} — {detail}", { code: r.status, detail: body.detail || "" }));
       }
     });
   });
@@ -294,8 +308,8 @@ function syncBulkDeleteRunsState() {
   if (btn) {
     btn.disabled = checked.length === 0;
     btn.textContent = checked.length === 0
-      ? "🗑 선택 삭제"
-      : `🗑 선택 삭제 (${checked.length})`;
+      ? I18N.t("bulk.deleteLabel", "🗑 선택 삭제")
+      : I18N.t("bulk.deleteLabelN", "🗑 선택 삭제 ({n})", { n: checked.length });
   }
   const selectAll = $("#runs-select-all");
   if (selectAll) {
@@ -309,8 +323,12 @@ async function bulkDeleteRuns() {
     .filter((c) => c.checked)
     .map((c) => c.dataset.run);
   if (ids.length === 0) return;
-  const sample = ids.slice(0, 5).join(", ") + (ids.length > 5 ? ` 외 ${ids.length - 5}개` : "");
-  if (!confirm(`선택한 실행 결과 ${ids.length}개를 삭제할까요?\n(스크린샷·trace·리포트 산출물이 모두 제거됩니다.)\n${sample}`)) return;
+  const sample = ids.slice(0, 5).join(", ") + (ids.length > 5 ? I18N.t("bulk.moreN", " 외 {n}개", { n: ids.length - 5 }) : "");
+  if (!confirm(I18N.t(
+    "confirm.deleteRunsBulk",
+    "선택한 실행 결과 {n}개를 삭제할까요?\n(스크린샷·trace·리포트 산출물이 모두 제거됩니다.)\n{sample}",
+    { n: ids.length, sample },
+  ))) return;
   const btn = $("#btn-bulk-delete-runs");
   if (btn) btn.disabled = true;
   const failed = [];
@@ -324,7 +342,7 @@ async function bulkDeleteRuns() {
     }
   }
   if (failed.length > 0) {
-    alert(`다음 실행 결과 삭제 실패:\n${failed.join("\n")}`);
+    alert(I18N.t("alert.deleteRunsFailed", "다음 실행 결과 삭제 실패:\n{list}", { list: failed.join("\n") }));
   }
   loadRuns();
 }
@@ -333,9 +351,9 @@ function renderResult(run) {
   const code = run.exit_code;
   if (code === 0) return "<span class='ok'>✓ PASS</span>";
   if (code === 1) return "<span class='fail'>✗ FAIL</span>";
-  if (code === 2) return "<span class='warn'>⚠ 시스템 오류</span>";
-  if (code === 3) return "<span class='warn'>⚠ 로그인 만료</span>";
-  if (run.state === "running") return "<span class='running'>… 진행중</span>";
+  if (code === 2) return `<span class='warn'>${escapeHtml(I18N.t("result.systemErr", "⚠ 시스템 오류"))}</span>`;
+  if (code === 3) return `<span class='warn'>${escapeHtml(I18N.t("result.loginExpired", "⚠ 로그인 만료"))}</span>`;
+  if (run.state === "running") return `<span class='running'>${escapeHtml(I18N.t("result.running", "… 진행중"))}</span>`;
   return "<span class='muted'>-</span>";
 }
 
@@ -349,10 +367,10 @@ async function openDetail(runId) {
   $("#detail-title").textContent = `${meta.script || meta.bundle || runId}`;
   const provenance = meta.script_provenance || {};
   $("#detail-meta").innerHTML = [
-    `결과: ${renderResult(meta)}`,
-    `소요: ${meta.started_at ? "" : "-"}${meta.finished_at && meta.started_at ? " (" + meta.started_at + " → " + meta.finished_at + ")" : ""}`,
-    `프로파일: ${escapeHtml(meta.alias || "-")}`,
-    `스크립트: ${escapeHtml(provenance.source_file || "-")} (${escapeHtml(provenance.source_kind || "-")})`,
+    `${I18N.t("detail.meta.result", "결과")}: ${renderResult(meta)}`,
+    `${I18N.t("detail.meta.elapsed", "소요")}: ${meta.started_at ? "" : "-"}${meta.finished_at && meta.started_at ? " (" + meta.started_at + " → " + meta.finished_at + ")" : ""}`,
+    `${I18N.t("detail.meta.profile", "프로파일")}: ${escapeHtml(meta.alias || "-")}`,
+    `${I18N.t("detail.meta.script", "스크립트")}: ${escapeHtml(provenance.source_file || "-")} (${escapeHtml(provenance.source_kind || "-")})`,
   ].join("&nbsp;&nbsp;|&nbsp;&nbsp;");
   $("#detail-report").href = `/api/runs/${encodeURIComponent(runId)}/report.html`;
 
@@ -380,7 +398,7 @@ async function openDetail(runId) {
   }
   if (firstShot) showShot(runId, firstShot);
   else $("#detail-shot").src = "";
-  $("#detail-modal").hidden = false;
+  $("#detail-modal").showModal();
 }
 
 function showShot(runId, name) {
@@ -393,7 +411,9 @@ document.addEventListener("click", (ev) => {
   const t = ev.target.closest("[data-modal-close]");
   if (!t) return;
   const id = t.getAttribute("data-modal-close");
-  document.getElementById(id).hidden = true;
+  const el = document.getElementById(id);
+  if (el && typeof el.close === "function") el.close();
+  else if (el) el.hidden = true;
 });
 
 // --- 헤더 / 카드 액션 wire ----------------------------------------------------
@@ -435,7 +455,7 @@ $("#btn-seed-cancel")?.addEventListener("click", () => {
     clearInterval(_seedPollTimer);
     _seedPollTimer = null;
   }
-  $("#seed-progress-modal").hidden = true;
+  $("#seed-progress-modal").close();
   // 다시 입력 분기 — error 후 사용자가 값을 고쳐 다시 시도.
   if ($("#btn-seed-cancel").dataset.action === "retry" && _lastSeedPayload) {
     openSeedInput(_lastSeedPayload);
@@ -443,12 +463,12 @@ $("#btn-seed-cancel")?.addEventListener("click", () => {
 });
 
 $("#btn-seed-done")?.addEventListener("click", () => {
-  $("#seed-progress-modal").hidden = true;
+  $("#seed-progress-modal").close();
 });
 
 $("#btn-seed-expired-reseed")?.addEventListener("click", () => {
   const name = $("#seed-expired-name").textContent.trim();
-  $("#seed-expired-modal").hidden = true;
+  $("#seed-expired-modal").close();
   if (name && name !== "—") openReseed(name);
 });
 
@@ -473,7 +493,10 @@ async function loadScripts() {
     if (!present.has(n)) _selectedScripts.delete(n);
   }
   if (!Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 스크립트 없음 —</td></tr>';
+    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t(
+      "scripts.empty",
+      "Recording UI 에서 받은 .py 를 ⬆ 업로드 (.py) 로 올리면 여기 나타납니다.",
+    ))} —</td></tr>`;
     syncBulkDeleteState();
     return;
   }
@@ -486,7 +509,7 @@ async function loadScripts() {
       <td>${fmtTime(s.uploaded_at)}</td>
       <td>${fmtBytes(s.size)}</td>
       <td>
-        <button class="run-script-btn primary" data-name="${escapeHtml(s.name)}" title="단일 .py 시나리오 실행">▶ 실행</button>
+        <button class="run-script-btn primary" data-name="${escapeHtml(s.name)}" title="${escapeHtml(I18N.t("scripts.run.title", "단일 .py 시나리오 실행"))}">${escapeHtml(I18N.t("scripts.run.btn", "▶ 실행"))}</button>
         <button class="del-script-btn ghost" data-name="${escapeHtml(s.name)}">🗑</button>
       </td>`;
     tbody.appendChild(tr);
@@ -496,7 +519,7 @@ async function loadScripts() {
   });
   $$(".del-script-btn").forEach((b) => {
     b.addEventListener("click", async () => {
-      if (!confirm(`스크립트 '${b.dataset.name}' 을 삭제할까요?`)) return;
+      if (!confirm(I18N.t("confirm.deleteScript", "스크립트 '{name}' 을 삭제할까요?", { name: b.dataset.name }))) return;
       const r = await fetch(`/api/scripts/${encodeURIComponent(b.dataset.name)}`, { method: "DELETE" });
       if (r.ok) {
         _selectedScripts.delete(b.dataset.name);
@@ -521,8 +544,8 @@ function syncBulkDeleteState() {
   if (btn) {
     btn.disabled = checked.length === 0;
     btn.textContent = checked.length === 0
-      ? "🗑 선택 삭제"
-      : `🗑 선택 삭제 (${checked.length})`;
+      ? I18N.t("bulk.deleteLabel", "🗑 선택 삭제")
+      : I18N.t("bulk.deleteLabelN", "🗑 선택 삭제 ({n})", { n: checked.length });
   }
   const selectAll = $("#scripts-select-all");
   if (selectAll) {
@@ -536,8 +559,12 @@ async function bulkDeleteScripts() {
     .filter((c) => c.checked)
     .map((c) => c.dataset.name);
   if (names.length === 0) return;
-  const sample = names.slice(0, 5).join(", ") + (names.length > 5 ? ` 외 ${names.length - 5}개` : "");
-  if (!confirm(`선택한 스크립트 ${names.length}개를 삭제할까요?\n${sample}`)) return;
+  const sample = names.slice(0, 5).join(", ") + (names.length > 5 ? I18N.t("bulk.moreN", " 외 {n}개", { n: names.length - 5 }) : "");
+  if (!confirm(I18N.t(
+    "confirm.deleteScriptsBulk",
+    "선택한 스크립트 {n}개를 삭제할까요?\n{sample}",
+    { n: names.length, sample },
+  ))) return;
   const btn = $("#btn-bulk-delete-scripts");
   if (btn) btn.disabled = true;
   const failed = [];
@@ -551,7 +578,7 @@ async function bulkDeleteScripts() {
     }
   }
   if (failed.length > 0) {
-    alert(`다음 스크립트 삭제 실패:\n${failed.join("\n")}`);
+    alert(I18N.t("alert.deleteScriptsFailed", "다음 스크립트 삭제 실패:\n{list}", { list: failed.join("\n") }));
   }
   loadScripts();
 }
@@ -564,14 +591,14 @@ async function uploadScript(file, overwrite = false) {
     body: fd,
   });
   if (r.status === 409) {
-    if (confirm(`같은 이름의 스크립트 '${file.name}' 이 이미 있습니다. 덮어쓸까요?`)) {
+    if (confirm(I18N.t("confirm.scriptOverwrite", "같은 이름의 스크립트 '{name}' 이 이미 있습니다. 덮어쓸까요?", { name: file.name }))) {
       return uploadScript(file, true);
     }
     return;
   }
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
-    alert(`업로드 실패: HTTP ${r.status} — ${body.detail || ""}`);
+    alert(I18N.t("alert.uploadFailHttp", "업로드 실패: HTTP {code} — {detail}", { code: r.status, detail: body.detail || "" }));
     return;
   }
   loadScripts();
@@ -587,7 +614,7 @@ function refreshScriptProfileSelect() {
   sel.innerHTML = "";
   if (fixed) sel.appendChild(fixed); else {
     const o = document.createElement("option");
-    o.value = ""; o.textContent = "(비로그인 — storage_state 미주입)";
+    o.value = ""; o.textContent = I18N.t("scripts.run.profile.none", "(비로그인 — storage_state 미주입)");
     sel.appendChild(o);
   }
   for (const p of _availableProfiles) {
@@ -617,9 +644,15 @@ async function startRunScript(scriptName) {
     const n = Number($("#run-script-slowmo-ms")?.value || 0);
     if (Number.isFinite(n) && n > 0) slowMoMs = n;
   }
-  const aliasNote = alias ? `  (프로파일: ${alias})` : "  (비로그인)";
+  const aliasNote = alias
+    ? I18N.t("run.aliasNote.alias", "  (프로파일: {a})", { a: alias })
+    : I18N.t("run.aliasNote.anon", "  (비로그인)");
   const slowNote = slowMoMs ? `  (slow_mo=${slowMoMs}ms)` : "";
-  $("#run-status").textContent = `시작 중: ${scriptName}${aliasNote}${headed ? "  (화면 표시)" : ""}${slowNote} ...`;
+  $("#run-status").textContent = I18N.t(
+    "run.status.starting",
+    "시작 중: {script}{aliasNote}{headedNote}{slowNote} ...",
+    { script: scriptName, aliasNote, headedNote: headed ? I18N.t("run.headedNote", "  (화면 표시)") : "", slowNote },
+  );
   let resp;
   try {
     resp = await fetch("/api/runs/script", {
@@ -634,16 +667,16 @@ async function startRunScript(scriptName) {
       }),
     });
   } catch (e) {
-    $("#run-status").textContent = `실패: ${e.message}`;
+    $("#run-status").textContent = I18N.t("run.status.fail", "실패: {msg}", { msg: e.message });
     return;
   }
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
-    $("#run-status").textContent = `실패: HTTP ${resp.status} — ${body.detail || ""}`;
+    $("#run-status").textContent = I18N.t("run.status.failHttp", "실패: HTTP {code} — {detail}", { code: resp.status, detail: body.detail || "" });
     return;
   }
   const r = await resp.json();
-  $("#run-status").textContent = `진행중: ${r.script} (run_id=${r.run_id})`;
+  $("#run-status").textContent = I18N.t("run.status.running", "진행중: {script} (run_id={id})", { script: r.script, id: r.run_id });
   _currentEventSource = new EventSource(`/api/runs/${encodeURIComponent(r.run_id)}/stream`);
   _currentEventSource.onmessage = (ev) => {
     const pre = $("#run-stream");
@@ -651,7 +684,7 @@ async function startRunScript(scriptName) {
     pre.scrollTop = pre.scrollHeight;
   };
   _currentEventSource.addEventListener("done", () => {
-    $("#run-status").textContent = `완료: ${r.script} (run_id=${r.run_id})`;
+    $("#run-status").textContent = I18N.t("run.status.done", "완료: {script} (run_id={id})", { script: r.script, id: r.run_id });
     _currentEventSource.close();
     _currentEventSource = null;
     loadRuns();
@@ -682,6 +715,31 @@ $("#scripts-select-all")?.addEventListener("change", (ev) => {
   syncBulkDeleteState();
 });
 
+// Run Console 의 [로그 복사] / [전체 보기] 컨트롤.
+$("#btn-run-copy")?.addEventListener("click", async () => {
+  const pre = document.getElementById("run-stream");
+  if (!pre) return;
+  try {
+    await navigator.clipboard.writeText(pre.textContent || "");
+    const toast = document.getElementById("run-copy-toast");
+    if (toast) {
+      toast.hidden = false;
+      setTimeout(() => { toast.hidden = true; }, 1200);
+    }
+  } catch (err) {
+    alert(I18N.t("alert.copyFail", "복사 실패: {msg}", { msg: err.message }));
+  }
+});
+$("#btn-run-expand")?.addEventListener("click", () => {
+  const pre = document.getElementById("run-stream");
+  const btn = document.getElementById("btn-run-expand");
+  if (!pre || !btn) return;
+  const expanded = pre.classList.toggle("expanded");
+  btn.textContent = expanded
+    ? I18N.t("log.collapse", "↕ 기본 높이")
+    : I18N.t("log.expand", "↕ 전체 보기");
+});
+
 // 슬로모 체크박스 ↔ 숫자 입력 활성화 토글 (Recording UI 와 동일 패턴).
 (function _wireScriptSlowmoToggle() {
   const cb = document.getElementById("run-script-slowmo-enabled");
@@ -693,7 +751,7 @@ $("#scripts-select-all")?.addEventListener("change", (ev) => {
 })();
 
 $("#btn-wizard")?.addEventListener("click", () => {
-  $("#wizard-modal").hidden = false;
+  $("#wizard-modal").showModal();
 });
 
 // --- 초기 로드 + 폴링 ---------------------------------------------------------

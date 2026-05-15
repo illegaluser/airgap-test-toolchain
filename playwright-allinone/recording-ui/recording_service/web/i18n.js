@@ -1,0 +1,633 @@
+// Recording UI — minimal i18n.
+// Default language is Korean (existing inline text in index.html).
+// When lang=en, swap textContent / title / placeholder from the dictionary.
+// Persists in localStorage("ui.lang"). Toggle button is rendered into #lang-toggle.
+
+(function () {
+  const STORAGE_KEY = "ui.lang";
+  const DEFAULT_LANG = "ko";
+
+  // English translations. Keys are stable identifiers, not Korean text.
+  // Missing keys fall back to the original Korean inline text — never to the key.
+  const EN = {
+    // ── document ─────────────────────────────────────────────────────────────
+    "doc.title": "Recording UI",
+
+    // ── header ───────────────────────────────────────────────────────────────
+    "header.back.label": "← Back",
+    "header.back.title": "Back to previous page (e.g. Jenkins)",
+    "header.title": "📹 Recording UI",
+    "header.replay.label": "🎬 Replay UI ↗",
+    "header.replay.title": "Open Replay UI in a new tab (port 18093)",
+    "header.health.checking": "checking…",
+    "header.lang.ko": "KO",
+    "header.lang.en": "EN",
+    "header.lang.title": "Switch interface language",
+    "header.wizard.label": "🧭 First-time guide",
+    "header.wizard.title":
+      "First-time guide (register login → record → auto-convert → replay)",
+
+    // ── first-time guide modal ───────────────────────────────────────────────
+    "wizard.title": "🧭 First-time guide",
+    "wizard.step1":
+      "<strong>Step 1</strong> — For scenarios that require login, register a session in " +
+      "the <code>🔐 Login Profiles</code> card via <code>+ New profile</code>. Skip this for public sites.",
+    "wizard.step2":
+      "<strong>Step 2 (optional)</strong> — If you don't know the site structure yet, use " +
+      "<code>🔍 Discover URLs</code> to auto-crawl from a single start URL and grab a tour script for the URLs you pick.",
+    "wizard.step3":
+      "<strong>Step 3</strong> — In <code>🎬 Recording</code>, enter the target_url and click ▶ Start. " +
+      "A codegen browser window opens on the host — click through your scenario, then ■ Stop &amp; Convert.",
+    "wizard.step4":
+      "<strong>Step 4</strong> — In <code>▶ Play &amp; more</code>, replay the converted scenario " +
+      "as-is or via LLM-applied code, and use <code>📝 Generate Doc</code> to reverse-infer an IEEE 829-lite test plan.",
+    "wizard.step5":
+      "<strong>Step 5</strong> — Inspect outcomes in <code>📊 Results &amp; step additions</code> " +
+      "— Scenario JSON, Original Script, run_log, diff analysis. The regression_test.py for your suite is generated here too.",
+    "wizard.start": "Get started",
+
+    // ── login profiles ───────────────────────────────────────────────────────
+    "login.section.title": "🔐 Login Profiles",
+    "login.section.desc":
+      "Seed, verify, and delete login sessions for the service under test. " +
+      "Seeded profiles can be reused from the Recording and Discover URLs " +
+      "sections. The catalog is shared with Replay UI — profiles seeded on " +
+      "either side appear on both.",
+    "login.btn.new": "+ New profile",
+    "login.btn.new.title":
+      "Seed a new auth session — log in manually and pass 2FA in a dedicated browser window",
+    "login.btn.refresh": "↻ Refresh",
+    "login.btn.refresh.title": "Refresh login profile list",
+    "login.col.name": "Profile name",
+    "login.col.state": "Login state",
+    "login.col.last": "Last checked",
+    "login.col.site": "Site",
+    "login.col.actions": "Actions",
+    "login.row.loading": "— loading —",
+
+    // ── login: seed dialog ───────────────────────────────────────────────────
+    "login.seed.title": "Create new auth session",
+    "login.seed.desc":
+      "Run this once (re-seed when expired). A human logs in to Naver and " +
+      "completes 2FA; the resulting session is saved and reused automatically " +
+      "for later recording/replay.",
+    "login.seed.name": "Name",
+    "login.seed.name.title": "Letters/digits/_/- 1–64 chars; first char must be a letter or digit",
+    "login.seed.url": "Start URL",
+    "login.seed.url.note": "(⚠ entry page of the *service under test* — NOT the Naver login page)",
+    "login.seed.verifyUrl": "Verify URL",
+    "login.seed.verifyText": "Verify text",
+    "login.seed.verifyText.note": "(optional — leave blank to only check that the Verify URL loads)",
+    "login.seed.verifyText.placeholder": "Welcome, QA Kim",
+    "login.seed.ttl": "TTL hint (hours) — recommended: assume one re-seed per day",
+    "login.seed.idp": "IdP domain",
+    "login.seed.idp.note": "(optional — leave blank to skip IdP verification)",
+    "login.seed.idp.title":
+      "External IdP domain used for 2FA (e.g. naver.com / kakao.com / accounts.google.com). " +
+      "Leave blank if the site uses only ID/password.",
+    "login.seed.naverProbe": "Naver-side weak probe (best-effort, only meaningful when IdP=naver.com)",
+    "login.seed.warning": "⚠ Do not use production accounts — use a test-only account",
+    "login.seed.cancel": "Cancel",
+    "login.seed.submit": "Open →",
+
+    // ── login: seed progress ─────────────────────────────────────────────────
+    "login.progress.title": "🪟 Saving login session",
+    "login.progress.step1": "Click [Log in with Naver] on the target service",
+    "login.progress.step2": "Enter your ID and password on the Naver login screen",
+    "login.progress.step3": "Pass 2FA (SMS, etc.) yourself",
+    "login.progress.step4": "Service redirects back → verify the target page loads",
+    "login.progress.step5":
+      "<strong>Confirm the post-login screen, then close the opened browser window</strong>",
+    "login.progress.status.waiting": "⏳ Waiting for user input",
+    "login.progress.elapsed": "Elapsed 0s / limit 600s",
+    "login.progress.hint":
+      "When the browser window closes, the session is saved, the verification page " +
+      "is shown briefly, and the flow completes.",
+    "login.progress.cancel": "Cancel (close the window yourself)",
+    "login.progress.skip": "Don't use",
+    "login.progress.done": "Use this profile",
+
+    // ── login: expired ───────────────────────────────────────────────────────
+    "login.expired.title": "⚠ Auth session expired",
+    "login.expired.body.prefix": "Auth session ",
+    "login.expired.body.suffix": " has expired.",
+    "login.expired.reason": "Reason: session expired or IP changed.",
+    "login.expired.hint":
+      "Re-seeding preserves your Start URL / Verify URL / Verify text inputs.",
+    "login.expired.cancel": "Cancel",
+    "login.expired.reseed": "Re-seed",
+
+    // ── login: machine mismatch ──────────────────────────────────────────────
+    "login.mm.title": "⚠ Machine mismatch warning",
+    "login.mm.body":
+      "This auth session was seeded on a different machine. Naver invalidates " +
+      "sessions aggressively when IP / device fingerprint changes — re-seeding " +
+      "may be required almost immediately.",
+    "login.mm.hint": "Recommended: seed fresh on this machine.",
+    "login.mm.cancel": "Cancel",
+    "login.mm.proceed": "Try anyway",
+    "login.mm.reseed": "Seed fresh on this machine",
+
+    // ── discover urls ────────────────────────────────────────────────────────
+    "discover.section.title": "🔍 Discover URLs",
+    "discover.section.desc":
+      "Given one start URL and (optionally) a login profile, collect in-site " +
+      "links via BFS. Receive results as CSV/JSON, and optionally generate a " +
+      "Python Playwright tour script that walks the selected URLs.",
+    "discover.seedUrl": "Start URL",
+    "discover.authProfile": "Login profile",
+    "discover.authProfile.opt": "(optional)",
+    "discover.authProfile.none": "(none)",
+    "discover.maxPages": "Max pages",
+    "discover.maxDepth": "Max depth",
+    "discover.adv.summary": "Advanced options",
+    "discover.adv.sitemap": "Use sitemap.xml / robots.txt Sitemap (default ON)",
+    "discover.adv.requests": "Also collect same-host request URLs (default ON)",
+    "discover.adv.spa": "Collect SPA-signal selectors (data-href, role=link, etc.)",
+    "discover.adv.ignoreQuery": "Ignore URL query strings (collapse pagination/filter variants)",
+    "discover.adv.subdomains": "Include subdomains of the same root domain",
+    "discover.btn.start": "Discover URLs",
+    "discover.btn.cancel": "Cancel",
+    "discover.status.idle": "— idle —",
+    "discover.csv": "⬇ Download CSV",
+    "discover.selectAll": "Select all",
+    "discover.selectNone": "Clear selection",
+    "discover.tourScript": "Generate Tour Script for selected URLs",
+    "discover.headless.title":
+      "Default OFF — a browser window opens so you can watch progress. " +
+      "When ON, runs headless in the background.",
+    "discover.headless": "Headless (background) run",
+    "discover.settle.title":
+      "How long to wait for content to settle before each screenshot. " +
+      "'Strict' waits until network is idle AND DOM stops changing — " +
+      "reduces blank screenshots but adds 0.5–5s per URL.",
+    "discover.settle.label": "Content-settle wait",
+    "discover.settle.off": "Off (fast)",
+    "discover.settle.network": "Normal (network)",
+    "discover.settle.strict": "Strict (network + DOM)",
+    "discover.selectedCount": "0 selected",
+    "discover.tree.title": "Site hierarchy tree",
+    "discover.tree.download": "📤 Download tree (HTML)",
+    "discover.tree.download.title":
+      "Download both Crawl topology and URL path trees as a single shareable HTML",
+    "discover.tree.tab.crawl": "Crawl topology",
+    "discover.tree.tab.path": "URL path",
+    "discover.tree.desc":
+      "<strong>Crawl topology</strong> — which page discovered which link (BFS as-is). " +
+      "<strong>URL path</strong> — IA grouped by <code>/a/b/c</code> path segments. " +
+      "SPA / query-based identifiers may be inaccurate.",
+    "discover.tree.loading": "— loading —",
+
+    // ── recording ────────────────────────────────────────────────────────────
+    "recording.section.title": "🎬 Recording",
+    "recording.hoverHint":
+      "💡 <strong>Tip — recording hover menus (dropdown / GNB)</strong> — codegen " +
+      "records <em>clicks only</em>, never mouse hover. <strong>Hover, do not " +
+      "click, the parent menu</strong> (clicking navigates the page and ruins " +
+      "the scenario). When the submenu opens, click only the leaf item you want. " +
+      "Multi-level menus (2–3 levels) work the same — only the leaf click is " +
+      "recorded, and on replay the visibility healer cascade-hovers the parents " +
+      "automatically.",
+    "recording.targetUrl": "target_url",
+    "recording.targetUrl.placeholder":
+      "https://example.com/login or file:///app/test/fixtures/click.html",
+    "recording.planning": "planning_doc_ref",
+    "recording.planning.opt": "(optional)",
+    "recording.auth": "Login profile",
+    "recording.auth.opt": "(optional — register/verify/delete in the \"Login Profiles\" section above)",
+    "recording.auth.none": "(none — anonymous recording)",
+    "recording.btn.start": "▶ Start Recording",
+    "recording.active.title": "Recording in progress",
+    "recording.active.sid": "Session ID",
+    "recording.active.state": "state",
+    "recording.active.elapsed": "Elapsed",
+    "recording.active.elapsed.init": "0s",
+    "recording.btn.stop": "■ Stop & Convert",
+    "recording.active.note":
+      "Clicking Stop terminates codegen cleanly and runs the container-side " +
+      "conversion. May take a moment.",
+
+    // ── play & more ──────────────────────────────────────────────────────────
+    "rplus.section.title": "▶ Play & more",
+    "rplus.upload.title": "Upload new script",
+    "rplus.upload.desc":
+      "Upload an existing Playwright .py to register a new session and replay it immediately.",
+    "rplus.upload.btn": "📁 Play Script from File",
+    "rplus.upload.btn.title":
+      "Upload an existing Playwright .py script and replay it directly (bypasses codegen recording)",
+    "rplus.session.prefix": "For the current session (",
+    "rplus.session.suffix": "):",
+    "rplus.session.empty":
+      "— no session selected. Upload a .py above or pick one from 'Recent sessions'.",
+    "rplus.opt.auth": "Login profile",
+    "rplus.opt.auth.default": "(use session default)",
+    "rplus.opt.auth.none": "(run without auth)",
+    "rplus.opt.headed": "Show window (headed)",
+    "rplus.opt.slowmo.title":
+      "Delay between actions. Useful for visual debugging, but cumulative — " +
+      "total run time grows with the number of actions.",
+    "rplus.opt.slowmo": "Delay between actions",
+    "rplus.opt.slowmo.ms": "ms",
+    "rplus.btn.play": "▶ Play",
+    "rplus.btn.play.codegen": "▶ Run test code as recorded",
+    "rplus.btn.play.codegen.title":
+      "Run codegen-recorded or uploaded test code on the host as-is " +
+      "(codegen runs inject hover annotations; uploaded scripts bypass that)",
+    "rplus.btn.play.llm": "▶ Run LLM-applied code",
+    "rplus.btn.play.llm.title":
+      "Run the 14-DSL converted scenario via executor (healing/verify/mock active, headed)",
+    "rplus.btn.doc": "📝 Generate Doc",
+    "rplus.btn.doc.enrich": "📝 Generate scenario from code",
+    "rplus.btn.doc.enrich.title":
+      "Use Ollama to reverse-engineer an IEEE 829-lite test plan (TR.5)",
+    "rplus.btn.doc.compare": "⚖ Compare scenario doc ↔ JSON",
+    "rplus.btn.doc.compare.title":
+      "Upload doc-DSL JSON and run semantic comparison + 5-category HTML report (TR.6)",
+    "rplus.output.title": "Run result",
+    "rplus.output.copy": "📋 Copy",
+    "rplus.output.copy.title": "Copy run result text to clipboard",
+    "rplus.output.copied": "✓ Copied",
+    "rplus.progress.summary": "Live progress log",
+
+    // ── results area ─────────────────────────────────────────────────────────
+    "result.area.title": "📊 Results and step additions",
+    "result.meta.title": "Result",
+    "result.meta.sid": "Session ID",
+    "result.meta.state": "state",
+    "result.meta.steps": "Step count",
+    "result.meta.path": "scenario.json",
+    "result.meta.auth": "Auth profile",
+
+    // scenario card
+    "scenario.title": "Scenario JSON",
+    "scenario.copy.title": "Copy to clipboard",
+    "scenario.copy": "📋 Copy",
+    "scenario.copied": "✓ Copied",
+    "scenario.download": "⬇ Download",
+    "scenario.empty": "— scenario.json not loaded —",
+    "scenario.toggle": "▾ Expand all",
+    "scenario.healed.title": "After self-healing (scenario.healed.json)",
+    "scenario.healed.desc":
+      "Scenario after self-healing during ▶ <strong>Run LLM-applied code</strong> — " +
+      "reflects selector substitutions, step additions, etc. Shown only when different from the original.",
+    "scenario.healed.empty": "— scenario.healed.json not loaded —",
+
+    // original script card
+    "original.title": "Original Script (.py)",
+    "original.empty": "— original.py not loaded —",
+    "regression.title": "After self-healing (regression_test.py)",
+    "regression.desc":
+      "Regression test auto-generated after ▶ <strong>Run LLM-applied code</strong> " +
+      "with the healed selectors. Adopt into your regression suite after review.",
+    "regression.empty": "— regression_test.py not loaded —",
+
+    // run log card
+    "runlog.title": "Run result (run_log)",
+    "runlog.download": "📤 Download report",
+    "runlog.download.title":
+      "Bundle steps + screenshots for both LLM and original modes into a single shareable HTML",
+    "runlog.tab.llm": "LLM",
+    "runlog.tab.codegen": "Original",
+    "runlog.desc":
+      "Step-by-step results + screenshots from the most recent ▶ Play run. The " +
+      "<strong>LLM</strong> tab shows scenario executor PASS / HEALED / FAIL plus " +
+      "<code>heal_stage</code>; the <strong>Original</strong> tab shows per-action " +
+      "results captured via Playwright tracing of codegen <code>original.py</code>.",
+    "runlog.empty": "— shown after ▶ Play runs —",
+
+    // play-llm log card
+    "playLlmLog.title": "LLM run log (play-llm.log)",
+    "playLlmLog.desc":
+      "Full log of ▶ <strong>Run LLM-applied code</strong> — per-step PASS/HEALED/FAIL, " +
+      "LLM prompts/responses, selector-substitution rationale, etc.",
+    "playLlmLog.empty": "— play-llm.log not loaded —",
+
+    // diff card
+    "diff.title": "Original ↔ Regression change analysis",
+    "diff.btn.analyze": "🔎 LLM analysis",
+    "diff.btn.analyze.title": "Use LLM to interpret the semantic meaning of changes",
+    "diff.desc":
+      "Ollama groups the differences between codegen original and LLM-healed regression " +
+      "by meaning — selector substitution / hover injection / removed steps, etc. " +
+      "Use the analysis to decide whether to adopt the regression test.",
+    "diff.placeholder":
+      "— Click <strong>🔎 LLM analysis</strong> to start —",
+    "diff.raw.summary": "View raw unified diff",
+    "diff.raw.empty": "— shown after Run LLM-applied code —",
+
+    // ── screenshot modal ─────────────────────────────────────────────────────
+    "shot.close.title": "Close (Esc)",
+    "shot.close.aria": "Close modal",
+    "shot.caption.empty": "—",
+
+    // ── step add ─────────────────────────────────────────────────────────────
+    "step.section.title": "＋ Add step",
+    "step.section.note": "(actions codegen does not record)",
+    "step.desc":
+      "Codegen records only click / fill / press / select / check / navigate. " +
+      "Add the following 14-DSL actions manually: " +
+      "<strong>verify</strong> · <strong>mock_status</strong> · <strong>mock_data</strong> · " +
+      "<strong>scroll</strong> (lazy / infinite scroll) · <strong>hover</strong> (dropdown menus).",
+    "step.target": "target",
+    "step.target.note": "(selector or URL pattern)",
+    "step.target.placeholder":
+      "#status / https://api.example.com/list / #footer / role=link, name=About",
+    "step.value": "value",
+    "step.value.note": "(empty for hover; into_view for scroll)",
+    "step.condition": "condition",
+    "step.condition.note": "(verify only, optional)",
+    "step.position": "position",
+    "step.position.note": "(1-based step number; leave blank to append)",
+    "step.position.placeholder":
+      "e.g. 4 — inserts at step 4, shifting existing step 4+ by +1",
+    "step.description": "description",
+    "step.description.note": "(optional)",
+    "step.btn.submit": "＋ Add step",
+
+    // ── compare dialog ───────────────────────────────────────────────────────
+    "compare.title": "doc-DSL compare input",
+    "compare.desc": "Paste a 14-DSL JSON array.",
+    "compare.threshold": "Fuzzy threshold (0.0–1.0, default 0.7)",
+    "compare.cancel": "Cancel",
+    "compare.submit": "Run compare",
+
+    // ── recent sessions ──────────────────────────────────────────────────────
+    "sessions.title": "Recent sessions",
+    "sessions.filter.placeholder": "Search target_url / id…",
+    "sessions.state.any": "All states",
+    "sessions.btn.selectAll": "Select all",
+    "sessions.btn.selectNone": "Clear selection",
+    "sessions.btn.deleteSelected": "Delete selected",
+    "sessions.selectedCount": "0 selected",
+    "sessions.th.checkbox.title": "Select / clear all currently visible sessions",
+    "sessions.empty":
+      "— No recording sessions yet. Open the 'Recording' card above, enter target_url, and click ▶ Start. —",
+
+    // ── footer ───────────────────────────────────────────────────────────────
+    "footer.text": "Recording UI · host daemon · air-gap compatible",
+
+    // ── dynamic strings used by app.js ───────────────────────────────────────
+    "badge.codegenMissing": "⚠ codegen not installed · v{v}",
+    "sessions.filterNoMatch": "0 matches ({n} total)",
+    "sessions.empty.bare":
+      "No recording sessions yet. Open the 'Recording' card above, enter target_url, and click ▶ Start.",
+    "sessions.row.open": "Open",
+    "sessions.row.delete": "Delete",
+    "count.selected": "{n} selected",
+    "time.minSec": "{m}m {s}s",
+    "time.sec": "{s}s",
+    "scenario.loadFail": "(scenario.json load failed: {msg})",
+    "alert.stepCopyFail": "Step copy failed: {msg}",
+    "err.clipboardUnsupported": "Browser does not support clipboard API — HTTPS/localhost required",
+    "alert.copyFail": "Copy failed: {msg}",
+    "preview.collapse": "▴ Collapse",
+    "preview.expand": "▾ Expand all",
+    "relTime.sec": "{n}s ago",
+    "relTime.min": "{n}m ago",
+    "relTime.hour": "{n}h ago",
+    "relTime.day": "{n}d ago",
+
+    // Phase 2-b: Play / Doc / Compare flow
+    "scenario.empty.disabled":
+      "scenario.json is empty — unavailable. This import script wasn't converted into " +
+      "a scenario (not a codegen artifact and not a tour pattern). Only 'Run test code " +
+      "as recorded' is available.",
+    "alert.startFail": "Start failed: {msg}",
+    "alert.stopFail": "Stop failed: {msg}",
+    "alert.noSession": "No session selected.",
+    "alert.positionInvalid": "position must be a positive integer (>= 1).",
+    "alert.stepAdded": "Step {n} added (total: {total} steps)",
+    "alert.stepAddFail": "Add Step failed: {msg}",
+    "annotate.noInject":
+      "\nannotate: examined {n} clicks → 0 hovers injected (using original as-is)",
+    "annotate.injected":
+      "\nannotate: examined {n} clicks → {k} hovers injected\n",
+    "play.running.headed":
+      "⏳ {label} running... (a browser window will appear on the host — keep it open until done)",
+    "play.running.headless":
+      "⏳ {label} running... (headless mode — no window. The live progress log below is your only signal.)",
+    "play.done": "✓ {label} done",
+    "play.fail": "✗ {label} failed",
+    "play.aborted.expired":
+      "⚠ {label} aborted — auth session '{name}' expired ({reason}). Re-seed and try again.",
+    "play.failDetail": "✗ {label} failed: {msg}",
+    "play.label.codegen": "Run test code as recorded",
+    "play.label.llm": "Run LLM-applied code",
+    "enrich.running": "⏳ Ollama reverse-inference running... (may take tens of seconds to several minutes)",
+    "enrich.done": "✓ Generate Doc done (model={model}, {ms}ms)",
+    "enrich.savedTo": "Saved: {path}",
+    "enrich.fail": "✗ Reverse-inference failed: {msg}",
+    "compare.notArray": "doc-DSL must be a JSON array.",
+    "alert.jsonParseFail": "JSON parse failed: {msg}",
+    "compare.done": "✓ Compare done",
+    "compare.counts":
+      "Exact: {exact} · Value diff: {valueDiff} · Missing: {missing} · " +
+      "Extra: {extra} · Intent-only: {intentOnly}",
+    "compare.reportHtml": "Report HTML: {url}",
+    "alert.compareFail": "Compare failed: {msg}",
+    "confirm.deleteSession":
+      "Delete session {sid}? (the host directory will also be removed)",
+    "alert.deleteFail": "Delete failed: {msg}",
+    "confirm.deleteSelected":
+      "Delete the {n} selected session(s)?\n(host directories will also be removed)",
+    "alert.deletePartial": "{ok}/{total} deleted. Failures:\n",
+    "runlog.emptyShort":
+      "No run log yet. Run ▶ Play first to see step-by-step results here.",
+    "runlog.shotZoom": "Zoom screenshot",
+    "runlog.stepCopy": "Copy this step JSON",
+    "diff.noChange": "(no difference)",
+    "diff.analysisHint":
+      "— Click <strong>🔎 LLM analysis</strong> to start analysis —",
+    "diff.calling": "⏳ Calling Ollama... model inference takes about 30–60s.",
+    "diff.fail": "✗ Analysis failed:",
+    "import.uploading": "⏳ Uploading...",
+    "alert.uploadFail": "Upload failed: {msg}",
+
+    // Phase 2-c: auth catalog / seed flow / expired modal
+    "auth.empty":
+      "No login profiles yet. Click '+ New profile' to register one.",
+    "auth.sessionStorageWarn": "⚠ sessionStorage dependent",
+    "auth.registered": "Registered",
+    "auth.reseed": "↻ Re-login",
+    "auth.deleteTitle": "Delete profile (catalog + storageState)",
+    "auth.deleteConfirm":
+      "Delete profile \"{name}\"{domainSuffix}?\nThe catalog entry and saved storageState file will be removed together.",
+    "seed.waiting":
+      "⏳ Waiting for login window — close the opened browser after you see the post-login screen",
+    "seed.elapsedLimit": "Elapsed 0s / limit {t}s",
+    "seed.hintWaiting":
+      "When the window closes, the session is saved, the verification page is shown briefly, and the flow completes.",
+    "seed.cancelClose": "Cancel (close the window yourself)",
+    "seed.startFail": "✗ Start failed: {msg}",
+    "seed.elapsedNow": "Elapsed {e}s / limit {t}s",
+    "seed.hintVerifying":
+      "Verification browser will display the target page slowly, then close automatically.",
+    "seed.done": "✓ Seed done — profile \"{name}\"",
+    "seed.hintDone":
+      "Choose whether to use it for this recording. The profile is saved either way.",
+    "seed.fail": "✗ Failed — {kind}{err}",
+    "seed.hintRetry": "Verify your inputs and seed again.",
+    "seed.retry": "Re-enter",
+    "expired.reasonDetail": "Reason: {r}",
+    "alert.authProfileMissing":
+      "Auth profile '{name}' not found — seed a new one.",
+
+    // Phase 2-d: Discover URL flow
+    "discover.stats.capReached": "⚠ {reason} reached — results may be truncated",
+    "discover.stats.foundN": "{n} URLs found",
+    "discover.stats.sitemapLine": "declared {decl} → found {found} ({pct}%)",
+    "discover.tree.loadingShort": "loading",
+    "discover.tree.none": "no tree",
+    "discover.tree.orphans": "Orphans (e.g. from sitemap)",
+    "discover.tree.external": "External hosts",
+    "discover.th.checkbox": "Select / clear all",
+    "discover.th.source": "Source",
+    "discover.noResult":
+      "No URLs collected. Enter a start URL in the form above and click [Discover URLs].",
+    "discover.queryFail": "Query failed: {msg}",
+    "discover.statusLine": "[{state}] {n} URLs",
+    "discover.recentUrl": " · recent: {url}",
+    "discover.cancelled": " · cancelled",
+    "discover.authDrift": " · auto-aborted due to session expiry",
+    "discover.failed": "Failed: {err}",
+    "discover.unknownErr": "unknown error",
+    "discover.starting": "Starting...",
+    "discover.startFail": "Start failed: {msg}",
+    "discover.machineMismatch":
+      "⚠ machine_mismatch — profile was seeded on a different machine",
+    "discover.generating": "Generating...",
+    "discover.tourFail": "tour-script failed: {detail}",
+    "log.copy": "📋 Copy log",
+    "log.copy.title": "Copy log content to clipboard",
+    "log.copied": "✓ Copied",
+    "log.expand": "↕ Expand",
+    "log.expand.title": "Toggle log area height limit",
+    "log.collapse": "↕ Collapse",
+
+    "discover.tourGenerated":
+      "tour_selected.py generated ({n} URLs) · After running, results are written next to the script as 'tour_results.jsonl' + 'tour_screenshots/'",
+  };
+
+  const DICT = { en: EN };
+
+  function getLang() {
+    try {
+      const v = localStorage.getItem(STORAGE_KEY);
+      return v === "en" ? "en" : DEFAULT_LANG;
+    } catch (_) {
+      return DEFAULT_LANG;
+    }
+  }
+
+  function setLang(lang) {
+    try { localStorage.setItem(STORAGE_KEY, lang); } catch (_) { /* ignore */ }
+    apply(lang);
+    document.documentElement.lang = lang;
+    renderToggle(lang);
+    document.dispatchEvent(new CustomEvent("i18n:change", { detail: { lang } }));
+  }
+
+  // Look up a key. Used by app.js for dynamic strings.
+  //   t("k", "ko fallback")           → "ko fallback" in ko, dict.en[k] in en
+  //   t("k", "ko {x} {y}", {x,y})     → same, with {placeholder} substitution
+  //   t("k", {x,y})                   → if 2nd arg is an object, treat as vars
+  //                                     (key must exist in ko inline use case — rare)
+  function t(key, fallback, vars) {
+    let v;
+    if (typeof fallback === "object" && fallback !== null) {
+      vars = fallback;
+      fallback = null;
+    }
+    const lang = getLang();
+    if (lang === "ko") {
+      v = fallback != null ? fallback : key;
+    } else {
+      v = DICT.en[key] != null ? DICT.en[key] : (fallback != null ? fallback : key);
+    }
+    if (vars) {
+      for (const k in vars) {
+        v = v.split("{" + k + "}").join(String(vars[k]));
+      }
+    }
+    return v;
+  }
+
+  function _cacheOriginal(el, attr) {
+    const k = "__i18nOrig" + (attr || "Text");
+    if (el[k] == null) {
+      el[k] = attr ? el.getAttribute(attr) : el.textContent;
+    }
+    return el[k];
+  }
+
+  function apply(lang) {
+    // text content
+    document.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.getAttribute("data-i18n");
+      const orig = _cacheOriginal(el, null);
+      if (lang === "en" && DICT.en[key] != null) {
+        el.textContent = DICT.en[key];
+      } else {
+        el.textContent = orig;
+      }
+    });
+    // innerHTML for elements with markup
+    document.querySelectorAll("[data-i18n-html]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-html");
+      const k = "__i18nOrigHtml";
+      if (el[k] == null) el[k] = el.innerHTML;
+      if (lang === "en" && DICT.en[key] != null) {
+        el.innerHTML = DICT.en[key];
+      } else {
+        el.innerHTML = el[k];
+      }
+    });
+    // attributes — data-i18n-attr-<name>="key"
+    document.querySelectorAll("*").forEach((el) => {
+      for (const a of el.attributes) {
+        if (!a.name.startsWith("data-i18n-attr-")) continue;
+        const attrName = a.name.slice("data-i18n-attr-".length);
+        const key = a.value;
+        const orig = _cacheOriginal(el, attrName);
+        if (lang === "en" && DICT.en[key] != null) {
+          el.setAttribute(attrName, DICT.en[key]);
+        } else if (orig != null) {
+          el.setAttribute(attrName, orig);
+        }
+      }
+    });
+  }
+
+  function renderToggle(lang) {
+    const host = document.getElementById("lang-toggle");
+    if (!host) return;
+    host.innerHTML = "";
+    const mk = (l, label) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "lang-pill" + (l === lang ? " active" : "");
+      b.textContent = label;
+      b.title = DICT.en["header.lang.title"];
+      b.addEventListener("click", () => setLang(l));
+      return b;
+    };
+    host.appendChild(mk("ko", "KO"));
+    host.appendChild(mk("en", "EN"));
+  }
+
+  // Public API
+  window.I18N = { t, getLang, setLang, apply };
+
+  // Bootstrap: apply current lang ASAP, then render toggle on DOMContentLoaded.
+  function boot() {
+    const lang = getLang();
+    document.documentElement.lang = lang;
+    apply(lang);
+    renderToggle(lang);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();

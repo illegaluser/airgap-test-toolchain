@@ -2,28 +2,48 @@
 
 :root {
   --bg: #ffffff;
-  --fg: #1f2328;
-  --muted: #57606a;
-  --border: #d0d7de;
-  --accent: #2563eb;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --border: #d0d0d4;
+  --accent: #4a4a4f;
   --accent-fg: #ffffff;
-  --ok: #1a7f37;
-  --fail: #cf222e;
-  --warn: #9a6700;
-  --running: #2563eb;
-  --card-bg: #f6f8fa;
+  --ok: #2c2c2f;
+  --fail: #1d1d1f;
+  --warn: #5f5f63;
+  --running: #4a4a4f;
+  --card-bg: #f5f5f7;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 * { box-sizing: border-box; }
 
+/* Keyboard focus indicator — only on keyboard navigation, not on mouse click. */
+:focus-visible {
+  outline: 2px solid #2c2c2f;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+button:focus-visible, summary:focus-visible {
+  outline-offset: 3px;
+}
+
 body {
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  /* Body / forms / descriptions — proportional sans for Korean readability. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
   font-size: 14px;
-  background: #f8fafc;
+  background: #f5f5f7;
   color: var(--fg);
+  /* Render color emoji as monochrome text glyphs where supported. */
+  font-variant-emoji: text;
 }
+/* Code-like content uses monospace (paths, IDs, JSON, log streams). */
+code, pre, kbd, samp,
+.run-stream {
+  font-family: Consolas, "Menlo", "DejaVu Sans Mono", "Courier New", monospace;
+}
+.icon, .emoji { filter: grayscale(1) contrast(1.1); }
 
 header {
   display: flex;
@@ -36,6 +56,14 @@ header {
   top: 0;
   z-index: 10;
 }
+.lang-toggle { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.lang-toggle .lang-pill {
+  background: #fff; color: var(--muted); border: 0; padding: 3px 10px;
+  font-size: 0.78rem; font-weight: 600; line-height: 1.4; cursor: pointer;
+}
+.lang-toggle .lang-pill + .lang-pill { border-left: 1px solid var(--border); }
+.lang-toggle .lang-pill.active { background: var(--accent); color: var(--accent-fg); }
+.lang-toggle .lang-pill:hover:not(.active) { background: #f0f0f2; }
 
 header h1 {
   margin: 0;
@@ -67,9 +95,9 @@ option { background: #fff; color: var(--fg); padding: 4px 8px; }
 }
 
 .alarm {
-  background: #ffebe9;
+  background: #ececef;
   color: var(--fail);
-  border: 1px solid #ffccd0;
+  border: 1px solid #dcdcdf;
   padding: 0.2rem 0.6rem;
   border-radius: 4px;
   font-size: 0.85rem;
@@ -170,16 +198,19 @@ button.ghost {
 .data-table .col-check input[type="checkbox"] { margin: 0; cursor: pointer; }
 
 .muted { color: var(--muted); font-style: italic; }
-.ok { color: var(--ok); font-weight: 600; }
-.fail { color: var(--fail); font-weight: 600; }
-.warn { color: var(--warn); font-weight: 600; }
+/* Phase A — semantic color hint for PASS / HEALED / FAIL only.
+   Other states stay in the monotone palette. */
+.ok { color: #1a5928; font-weight: 600; }
+.fail { color: #8a2424; font-weight: 600; }
+.warn { color: #6e4d00; font-weight: 600; }
 .running { color: var(--running); font-weight: 600; }
-.expired { color: var(--fail); font-weight: 600; }
+.expired { color: #8a2424; font-weight: 600; }
 
 .run-stream {
-  background: #0d1117;
-  color: #c9d1d9;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  background: var(--card-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: Consolas, "Menlo", "DejaVu Sans Mono", monospace;
   font-size: 0.85rem;
   padding: 0.75rem 1rem;
   border-radius: 6px;
@@ -188,28 +219,76 @@ button.ghost {
   white-space: pre-wrap;
   word-break: break-all;
 }
+.run-stream.expanded { max-height: none; }
+.log-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 8px 0 6px;
+}
+.log-actions button {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 3px 10px;
+  font-size: 0.82rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.log-actions button:hover { background: var(--border); }
+.log-actions .toast { font-size: 0.78rem; color: var(--muted); margin-left: 4px; }
 
-/* 모달 */
-.modal {
-  position: fixed; inset: 0; z-index: 9999;
-  display: flex; align-items: center; justify-content: center;
+/* Hide native <details> triangle, add custom +/− toggle indicator.
+   Use flexbox so the indicator sits next to the title, can't be missed. */
+summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 4px 6px;
+  border-radius: 4px;
 }
-.modal[hidden] { display: none; }
-.modal-backdrop {
-  position: absolute; inset: 0;
-  background: rgba(0,0,0,0.45); cursor: pointer;
+summary:hover { background: #f0f0f2; }
+summary::-webkit-details-marker { display: none; }
+summary::marker { display: none; }
+summary::after {
+  content: "+";
+  flex-shrink: 0;
+  color: var(--fg);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 1.5em;
+  height: 1.5em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.05em;
+  font-weight: 700;
+  line-height: 1;
 }
-.modal-body {
-  position: relative;
-  background: white;
+details[open] > summary::after { content: "−"; }
+
+/* 모달 — 네이티브 <dialog> 사용. ESC·focus trap·backdrop 모두 브라우저 위임. */
+dialog.modal {
+  padding: 0;
+  border: 0;
   border-radius: 8px;
-  padding: 1.5rem 2rem;
+  background: white;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+  max-height: calc(100vh - 4rem);
   width: min(540px, calc(100vw - 2rem));
+}
+dialog.modal::backdrop { background: rgba(0,0,0,0.45); }
+.modal-body {
+  padding: 1.5rem 2rem;
   max-height: calc(100vh - 4rem);
   overflow-y: auto;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
 }
-.modal-wide .modal-body { width: min(960px, calc(100vw - 2rem)); }
+.modal-wide { width: min(960px, calc(100vw - 2rem)); }
 .modal-row {
   display: grid;
   grid-template-columns: 130px 1fr;
@@ -258,9 +337,9 @@ button.ghost {
   cursor: pointer;
   font-size: 0.85rem;
 }
-.step-list li:hover { background: #f0f6ff; }
-.step-list li.active { background: #e6efff; }
-.step-list li.fail { border-left: 4px solid var(--fail); background: #fff5f5; }
+.step-list li:hover { background: #f0f0f2; }
+.step-list li.active { background: #ececef; }
+.step-list li.fail { border-left: 4px solid var(--fail); background: #f0f0f2; }
 .step-list li.pass { border-left: 4px solid var(--ok); }
 .step-no { color: var(--muted); text-align: right; }
 .step-status { color: var(--muted); text-align: right; }
@@ -297,9 +376,9 @@ button.ghost {
   color: var(--muted);
 }
 .modal-warning {
-  background: #fff3cd;
-  border: 1px solid #ffe69c;
-  color: #664d03;
+  background: #ececef;
+  border: 1px solid #dcdcdf;
+  color: #4a4a4f;
   padding: 0.5rem 0.75rem;
   margin: 0.75rem 0;
   border-radius: 4px;
@@ -316,4 +395,123 @@ button.ghost {
   margin: 0.6rem 0 0.25rem;
   font-weight: 600;
   font-style: normal;
+}
+
+/* ── responsive ─────────────────────────────────────────────────────────────
+   Same three-tier strategy as Recording UI.
+   Note: do NOT apply `display: block` on tables at desktop widths — it breaks
+   column auto-layout (long content cells like script paths hog all width and
+   squeeze others, causing buttons/labels to wrap vertically). */
+
+/* Truncate very long single-line cells (e.g. file paths) so they don't hog
+   column width and squeeze siblings. */
+#scripts-tbody td:nth-child(2) > strong,
+#runs-tbody td:nth-child(3) {
+  max-width: 360px;
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+@media (max-width: 1280px) {
+  /* Runs table: hide 'time' (col 2 after checkbox) — least critical, detail modal shows it. */
+  #runs-table thead th:nth-child(2),
+  #runs-tbody td:nth-child(2) { display: none; }
+}
+
+@media (max-width: 1024px) {
+  main { padding: 0 12px; }
+  .card { padding: 12px 14px; }
+  header { padding: 8px 16px; flex-wrap: wrap; gap: 8px; }
+  /* Profiles table: hide 'last checked' (3) + 'site' (4). */
+  #profiles-table thead th:nth-child(3),
+  #profiles-table thead th:nth-child(4),
+  #profiles-tbody td:nth-child(3),
+  #profiles-tbody td:nth-child(4) { display: none; }
+  /* Scripts table: hide 'registered' (3) + 'size' (4). Keep script + actions. */
+  #scripts-table thead th:nth-child(3),
+  #scripts-table thead th:nth-child(4),
+  #scripts-tbody td:nth-child(3),
+  #scripts-tbody td:nth-child(4) { display: none; }
+}
+
+@media (max-width: 768px) {
+  .card { padding: 10px 12px; }
+  .card-actions { flex-wrap: wrap; gap: 6px; }
+  .inline-label { flex-wrap: wrap; }
+
+  /* Cancel desktop ellipsis on long paths — they're allowed to wrap inside the card cell. */
+  #scripts-tbody td:nth-child(2) > strong,
+  #runs-tbody td:nth-child(3) {
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    display: inline;
+  }
+
+  /* Tables → card list. */
+  table.data-table { display: block; overflow-x: visible; }
+  table.data-table thead { display: none; }
+  table.data-table tbody { display: block; }
+  table.data-table tbody tr {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: var(--card-bg);
+  }
+  table.data-table tbody td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    border: 0;
+    text-align: right;
+  }
+  /* Show all hidden columns again — stacked vertically inside card. */
+  table.data-table tbody td:nth-child(n) { display: flex; }
+
+  /* Per-table labels — Korean default, English under [lang=en]. */
+  #profiles-tbody td:nth-child(1)::before { content: "프로파일"; }
+  #profiles-tbody td:nth-child(2)::before { content: "상태"; }
+  #profiles-tbody td:nth-child(3)::before { content: "최근 확인"; }
+  #profiles-tbody td:nth-child(4)::before { content: "사이트"; }
+  html[lang="en"] #profiles-tbody td:nth-child(1)::before { content: "Profile"; }
+  html[lang="en"] #profiles-tbody td:nth-child(2)::before { content: "State"; }
+  html[lang="en"] #profiles-tbody td:nth-child(3)::before { content: "Last checked"; }
+  html[lang="en"] #profiles-tbody td:nth-child(4)::before { content: "Site"; }
+
+  #scripts-tbody td:nth-child(2)::before { content: "스크립트"; }
+  #scripts-tbody td:nth-child(3)::before { content: "등록일"; }
+  #scripts-tbody td:nth-child(4)::before { content: "크기"; }
+  html[lang="en"] #scripts-tbody td:nth-child(2)::before { content: "Script"; }
+  html[lang="en"] #scripts-tbody td:nth-child(3)::before { content: "Registered"; }
+  html[lang="en"] #scripts-tbody td:nth-child(4)::before { content: "Size"; }
+
+  #runs-tbody td:nth-child(2)::before { content: "시간"; }
+  #runs-tbody td:nth-child(3)::before { content: "시나리오"; }
+  #runs-tbody td:nth-child(4)::before { content: "프로파일"; }
+  #runs-tbody td:nth-child(5)::before { content: "결과"; }
+  html[lang="en"] #runs-tbody td:nth-child(2)::before { content: "Time"; }
+  html[lang="en"] #runs-tbody td:nth-child(3)::before { content: "Scenario"; }
+  html[lang="en"] #runs-tbody td:nth-child(4)::before { content: "Profile"; }
+  html[lang="en"] #runs-tbody td:nth-child(5)::before { content: "Result"; }
+
+  table.data-table tbody td::before {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.8em;
+    letter-spacing: 0.04em;
+    text-align: left;
+  }
+  /* Checkbox column — no label, align right. */
+  table.data-table tbody td.col-check { justify-content: flex-end; }
+  table.data-table tbody td.col-check::before { content: ""; }
+  /* Last cell (actions) — wrap buttons. */
+  table.data-table tbody td:last-child { flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 }

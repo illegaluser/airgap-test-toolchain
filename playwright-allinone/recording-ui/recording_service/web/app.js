@@ -37,7 +37,7 @@ async function loadHealth() {
       badge.textContent = `✓ healthy · v${h.version}`;
       badge.className = "ok";
     } else {
-      badge.textContent = `⚠ codegen 미설치 · v${h.version}`;
+      badge.textContent = I18N.t("badge.codegenMissing", "⚠ codegen 미설치 · v{v}", { v: h.version });
       badge.className = "warn";
     }
   } catch (e) {
@@ -66,7 +66,13 @@ function _renderSessionRows() {
   const tbody = $("#session-tbody");
   if (!filtered.length) {
     const all = _sessionsCache.length;
-    tbody.innerHTML = `<tr class="muted"><td colspan="8">— ${all > 0 ? "필터 일치 0건 (" + all + "건 중)" : "세션 없음"} —</td></tr>`;
+    const emptyMsg = all > 0
+      ? I18N.t("sessions.filterNoMatch", "필터 일치 0건 ({n}건 중)", { n: all })
+      : I18N.t(
+          "sessions.empty.bare",
+          "녹화 세션이 없습니다. 위 'Recording' 카드를 펼치고 target_url 을 입력해 ▶ Start 를 누르세요.",
+        );
+    tbody.innerHTML = `<tr class="muted"><td colspan="8">— ${emptyMsg} —</td></tr>`;
     _updateSessionBulkUi();
     return;
   }
@@ -80,8 +86,8 @@ function _renderSessionRows() {
       <td>${s.action_count || 0}</td>
       <td class="muted">${formatIso(s.created_at_iso)}</td>
       <td class="row-actions">
-        <button data-act="open" data-sid="${s.id}">열기</button>
-        <button data-act="del" data-sid="${s.id}" class="danger">삭제</button>
+        <button data-act="open" data-sid="${s.id}">${I18N.t("sessions.row.open", "열기")}</button>
+        <button data-act="del" data-sid="${s.id}" class="danger">${I18N.t("sessions.row.delete", "삭제")}</button>
       </td>
     </tr>
   `).join("");
@@ -96,7 +102,7 @@ function _selectedSessionIds() {
 function _updateSessionBulkUi() {
   const n = _selectedSessionIds().length;
   const cnt = $("#session-selected-count");
-  if (cnt) cnt.textContent = `${n}개 선택`;
+  if (cnt) cnt.textContent = I18N.t("count.selected", "{n}개 선택", { n });
   const btn = $("#btn-session-delete-selected");
   if (btn) btn.disabled = (n === 0);
   // header check 상태: 전부 체크면 ON, 일부면 indeterminate, 아니면 OFF
@@ -331,7 +337,9 @@ function updateElapsed() {
   const sec = Math.round((Date.now() - _state.startedAt) / 1000);
   const m = Math.floor(sec / 60);
   const s = sec % 60;
-  $("#active-elapsed").textContent = m > 0 ? `${m}분 ${s}초` : `${s}초`;
+  $("#active-elapsed").textContent = m > 0
+    ? I18N.t("time.minSec", "{m}분 {s}초", { m, s })
+    : I18N.t("time.sec", "{s}초", { s });
 }
 
 // ── 결과 패널 ────────────────────────────────────────────────────────────────
@@ -355,7 +363,7 @@ async function openSession(sid) {
       _scenarioStepCount = Array.isArray(scenario) ? scenario.length : 0;
       $("#result-json").textContent = JSON.stringify(scenario, null, 2);
     } catch (err) {
-      $("#result-json").textContent = `(scenario.json 로드 실패: ${err.message})`;
+      $("#result-json").textContent = I18N.t("scenario.loadFail", "(scenario.json 로드 실패: {msg})", { msg: err.message });
     }
     _refreshPreviewToggle("result-json");
     // 산출물이 있는 카드는 토글 펼침 (R6).
@@ -414,7 +422,8 @@ function _setLlmDocAvailability(scenarioStepCount) {
   const btnLlm = document.getElementById("btn-play-llm");
   const btnEnrich = document.getElementById("btn-enrich");
   const btnCompare = document.getElementById("btn-compare-open");
-  const emptyMsg = (
+  const emptyMsg = I18N.t(
+    "scenario.empty.disabled",
     "scenario.json 이 비어 있어 사용 불가 — 시나리오로 변환되지 않은 임포트 스크립트 " +
     "(codegen 산출물도 tour 패턴도 아닌 경우). 테스트코드 원본 실행만 가능합니다."
   );
@@ -508,7 +517,7 @@ $("#start-form").addEventListener("submit", async (e) => {
     _setRplusInactive();
     await loadSessions();
   } catch (err) {
-    alert("Start 실패: " + err.message);
+    alert(I18N.t("alert.startFail", "Start 실패: {msg}", { msg: err.message }));
   } finally {
     // success 경로에선 showActivePanel 이 비활성 상태를 잡고 있으니 덮어쓰지 않음.
     if (!_state.activeSid) $("#btn-start").disabled = false;
@@ -524,7 +533,7 @@ $("#btn-stop").addEventListener("click", async () => {
     if (data.id) await openSession(data.id);
     await loadSessions();
   } catch (err) {
-    alert("Stop 실패: " + err.message);
+    alert(I18N.t("alert.stopFail", "Stop 실패: {msg}", { msg: err.message }));
   } finally {
     $("#btn-stop").disabled = false;
   }
@@ -544,7 +553,7 @@ $("#assertion-form select[name='action']").addEventListener("change", (e) => {
 $("#assertion-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const sid = e.target.dataset.sid;
-  if (!sid) { alert("세션 미선택."); return; }
+  if (!sid) { alert(I18N.t("alert.noSession", "세션 미선택.")); return; }
   const fd = new FormData(e.target);
   const payload = {
     action: fd.get("action"),
@@ -560,7 +569,7 @@ $("#assertion-form").addEventListener("submit", async (e) => {
   if (posRaw) {
     const pos = parseInt(posRaw, 10);
     if (Number.isNaN(pos) || pos < 1) {
-      alert("position 은 1 이상의 정수여야 합니다.");
+      alert(I18N.t("alert.positionInvalid", "position 은 1 이상의 정수여야 합니다."));
       return;
     }
     payload.position = pos;
@@ -570,9 +579,9 @@ $("#assertion-form").addEventListener("submit", async (e) => {
     const data = await addAssertion(sid, payload);
     e.target.reset();
     await openSession(sid);
-    alert(`Step ${data.step_added} 추가됨 (총 ${data.step_count} 스텝)`);
+    alert(I18N.t("alert.stepAdded", "Step {n} 추가됨 (총 {total} 스텝)", { n: data.step_added, total: data.step_count }));
   } catch (err) {
-    alert("Step 추가 실패: " + err.message);
+    alert(I18N.t("alert.stepAddFail", "Step 추가 실패: {msg}", { msg: err.message }));
   }
 });
 
@@ -591,12 +600,19 @@ function _annotateLine(a) {
   if (!a) return "";
   if (a.skipped) return `\nannotate: skipped — ${a.skipped}`;
   if (a.injected === 0) {
-    return `\nannotate: examined ${a.examined_clicks} clicks → 0 hover 주입 (원본 그대로 사용)`;
+    return I18N.t(
+      "annotate.noInject",
+      "\nannotate: examined {n} clicks → 0 hover 주입 (원본 그대로 사용)",
+      { n: a.examined_clicks },
+    );
   }
   const triggers = (a.triggers || []).map((t, i) => `  ${i + 1}. ${t}`).join("\n");
   return (
-    `\nannotate: examined ${a.examined_clicks} clicks → ${a.injected} hover 주입\n` +
-    triggers
+    I18N.t(
+      "annotate.injected",
+      "\nannotate: examined {n} clicks → {k} hover 주입\n",
+      { n: a.examined_clicks, k: a.injected },
+    ) + triggers
   );
 }
 
@@ -611,8 +627,8 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
   const headedEl = document.getElementById("rplus-headed");
   const headed = headedEl ? headedEl.checked : true;
   _rplusOutputBox().textContent = headed
-    ? `⏳ ${label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)`
-    : `⏳ ${label} 진행 중... (헤드리스 모드 — 화면에 창이 뜨지 않습니다. 아래 ‘실시간 진행 로그’ 가 진행 상황의 유일한 신호입니다)`;
+    ? I18N.t("play.running.headed", "⏳ {label} 진행 중... (호스트 화면에 브라우저 창이 뜹니다 — 끝까지 닫지 마세요)", { label })
+    : I18N.t("play.running.headless", "⏳ {label} 진행 중... (헤드리스 모드 — 화면에 창이 뜨지 않습니다. 아래 ‘실시간 진행 로그’ 가 진행 상황의 유일한 신호입니다)", { label });
 
   // P2 — 실시간 로그 진행 박스 초기화 + 1s 폴링.
   const progress = $("#play-progress");
@@ -641,7 +657,9 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
 
   try {
     const data = await fn(sid);
-    const status = data.returncode === 0 ? `✓ ${label} 완료` : `✗ ${label} 실패`;
+    const status = data.returncode === 0
+      ? I18N.t("play.done", "✓ {label} 완료", { label })
+      : I18N.t("play.fail", "✗ {label} 실패", { label });
     _rplusOutputBox().textContent =
       `${status}\n\n` +
       `returncode: ${data.returncode}\n` +
@@ -669,8 +687,11 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
     if (err.status === 409 && err.detail?.reason === "profile_expired") {
       const profName = err.detail.profile_name || _authState.selected || "—";
       const reason = err.detail.fail_reason || err.detail.reason || "verify failed";
-      _rplusOutputBox().textContent =
-        `⚠ ${label} 중단 — 인증 세션 '${profName}' 만료 (${reason}). 재시드 후 다시 실행하세요.`;
+      _rplusOutputBox().textContent = I18N.t(
+        "play.aborted.expired",
+        "⚠ {label} 중단 — 인증 세션 '{name}' 만료 ({reason}). 재시드 후 다시 실행하세요.",
+        { label, name: profName, reason },
+      );
       // 만료된 프로파일 이름을 관리 상태에도 반영 — 재시드 다이얼로그가
       // detail fetch / prefill 을 정상 수행하도록.
       if (profName && profName !== "—") {
@@ -678,7 +699,7 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
       }
       _showExpiredDialog(profName, reason);
     } else {
-      _rplusOutputBox().textContent = `✗ ${label} 실패: ` + err.message;
+      _rplusOutputBox().textContent = I18N.t("play.failDetail", "✗ {label} 실패: {msg}", { label, msg: err.message });
     }
   } finally {
     stopped = true;
@@ -688,27 +709,27 @@ async function _runPlay(label, btnSel, fn, kind /* "llm" | "codegen" */) {
 }
 
 $("#btn-play-codegen").addEventListener("click", () =>
-  _runPlay("테스트코드 실행", "#btn-play-codegen", playCodegen, "codegen"),
+  _runPlay(I18N.t("play.label.codegen", "테스트코드 실행"), "#btn-play-codegen", playCodegen, "codegen"),
 );
 
 $("#btn-play-llm").addEventListener("click", () =>
-  _runPlay("LLM 적용 코드 실행", "#btn-play-llm", playLLM, "llm"),
+  _runPlay(I18N.t("play.label.llm", "LLM 적용 코드 실행"), "#btn-play-llm", playLLM, "llm"),
 );
 
 $("#btn-enrich").addEventListener("click", async () => {
   const sid = _currentRplusSid();
   if (!sid) return;
   $("#btn-enrich").disabled = true;
-  _rplusOutputBox().textContent = "⏳ Ollama 역추정 진행 중... (수십 초~수 분 소요 가능)";
+  _rplusOutputBox().textContent = I18N.t("enrich.running", "⏳ Ollama 역추정 진행 중... (수십 초~수 분 소요 가능)");
   try {
     const data = await enrichSession(sid);
     _rplusOutputBox().textContent =
-      `✓ Generate Doc 완료 (model=${data.model}, ${data.elapsed_ms.toFixed(0)}ms)\n` +
-      `저장: ${data.saved_to}\n\n` +
+      I18N.t("enrich.done", "✓ Generate Doc 완료 (model={model}, {ms}ms)", { model: data.model, ms: data.elapsed_ms.toFixed(0) }) + "\n" +
+      I18N.t("enrich.savedTo", "저장: {path}", { path: data.saved_to }) + "\n\n" +
       "─".repeat(40) + "\n\n" +
       data.markdown;
   } catch (err) {
-    _rplusOutputBox().textContent = "✗ 역추정 실패: " + err.message;
+    _rplusOutputBox().textContent = I18N.t("enrich.fail", "✗ 역추정 실패: {msg}", { msg: err.message });
   } finally {
     $("#btn-enrich").disabled = false;
   }
@@ -729,9 +750,9 @@ $("#compare-form").addEventListener("submit", async (e) => {
   let docDsl;
   try {
     docDsl = JSON.parse(fd.get("doc_dsl"));
-    if (!Array.isArray(docDsl)) throw new Error("doc-DSL 은 JSON 배열이어야 합니다.");
+    if (!Array.isArray(docDsl)) throw new Error(I18N.t("compare.notArray", "doc-DSL 은 JSON 배열이어야 합니다."));
   } catch (err) {
-    alert("JSON 파싱 실패: " + err.message);
+    alert(I18N.t("alert.jsonParseFail", "JSON 파싱 실패: {msg}", { msg: err.message }));
     return;
   }
   const threshold = fd.get("threshold") || 0.7;
@@ -741,14 +762,17 @@ $("#compare-form").addEventListener("submit", async (e) => {
     const data = await compareSession(sid, docDsl, threshold);
     const c = data.counts;
     _rplusOutputBox().textContent =
-      `✓ Compare 완료\n\n` +
-      `정확: ${c.exact} · 값차이: ${c.value_diff} · 누락: ${c.missing} · ` +
-      `추가: ${c.extra} · 녹화 외 의도: ${c.intent_only}\n` +
-      `리포트 HTML: ${data.report_html_url}\n`;
+      I18N.t("compare.done", "✓ Compare 완료") + "\n\n" +
+      I18N.t(
+        "compare.counts",
+        "정확: {exact} · 값차이: {valueDiff} · 누락: {missing} · 추가: {extra} · 녹화 외 의도: {intentOnly}",
+        { exact: c.exact, valueDiff: c.value_diff, missing: c.missing, extra: c.extra, intentOnly: c.intent_only },
+      ) + "\n" +
+      I18N.t("compare.reportHtml", "리포트 HTML: {url}", { url: data.report_html_url }) + "\n";
     window.open(data.report_html_url, "_blank");
     $("#compare-dialog").close();
   } catch (err) {
-    alert("Compare 실패: " + err.message);
+    alert(I18N.t("alert.compareFail", "Compare 실패: {msg}", { msg: err.message }));
   } finally {
     $("#btn-compare-submit").disabled = false;
   }
@@ -762,14 +786,14 @@ $("#session-tbody").addEventListener("click", async (e) => {
   if (btn.dataset.act === "open") {
     await openSession(sid);
   } else if (btn.dataset.act === "del") {
-    if (!confirm(`세션 ${sid} 를 삭제할까요? (호스트 디렉토리도 함께 제거)`)) return;
+    if (!confirm(I18N.t("confirm.deleteSession", "세션 {sid} 를 삭제할까요? (호스트 디렉토리도 함께 제거)", { sid }))) return;
     try {
       await deleteSession(sid);
       $("#result-section").hidden = true;
       $("#assertion-section").hidden = true;
       await loadSessions();
     } catch (err) {
-      alert("삭제 실패: " + err.message);
+      alert(I18N.t("alert.deleteFail", "삭제 실패: {msg}", { msg: err.message }));
     }
   }
 });
@@ -801,7 +825,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (del) del.addEventListener("click", async () => {
     const sids = _selectedSessionIds();
     if (!sids.length) return;
-    if (!confirm(`선택한 ${sids.length}개 세션을 삭제할까요?\n(호스트 디렉토리도 함께 제거)`)) return;
+    if (!confirm(I18N.t("confirm.deleteSelected", "선택한 {n}개 세션을 삭제할까요?\n(호스트 디렉토리도 함께 제거)", { n: sids.length }))) return;
     del.disabled = true;
     const failures = [];
     for (const sid of sids) {
@@ -815,7 +839,10 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#assertion-section").hidden = true;
     await loadSessions();
     if (failures.length) {
-      alert(`${sids.length - failures.length}/${sids.length} 삭제 완료. 실패:\n` + failures.join("\n"));
+      alert(
+        I18N.t("alert.deletePartial", "{ok}/{total} 삭제 완료. 실패:\n", { ok: sids.length - failures.length, total: sids.length })
+        + failures.join("\n"),
+      );
     }
   });
 });
@@ -902,7 +929,10 @@ async function _renderRunLog(sid, opts = {}) {
   const payload = resolved === "llm" ? llmRes : cgRes;
   const records = (payload && Array.isArray(payload.records)) ? payload.records : [];
   if (records.length === 0) {
-    container.innerHTML = '<p class="muted">— 빈 run-log —</p>';
+    container.innerHTML = `<p class="muted">— ${escapeHtml(I18N.t(
+      "runlog.emptyShort",
+      "실행 기록이 없습니다. ▶ Play 를 먼저 실행하세요.",
+    ))} —</p>`;
     return;
   }
 
@@ -916,10 +946,10 @@ async function _renderRunLog(sid, opts = {}) {
                   data-shot-sid="${escapeHtml(sid)}"
                   data-shot-mode="${escapeHtml(resolved)}"
                   data-shot-step="${escapeHtml(String(rec.step))}"
-                  title="스크린샷 확대">📷</button>`
+                  title="${escapeHtml(I18N.t("runlog.shotZoom", "스크린샷 확대"))}">📷</button>`
       : "—";
     const recJson = JSON.stringify(rec).replace(/'/g, "&#39;");
-    const copyCell = `<button class="copy-step-btn" data-step-json='${recJson}' title="이 step JSON 복사">📋</button>`;
+    const copyCell = `<button class="copy-step-btn" data-step-json='${recJson}' title="${escapeHtml(I18N.t("runlog.stepCopy", "이 step JSON 복사"))}">📋</button>`;
     return `
       <tr class="run-log-row run-log-${status.toLowerCase()}" data-step="${escapeHtml(String(rec.step))}">
         <td class="step-no">${escapeHtml(String(rec.step ?? "—"))}</td>
@@ -963,7 +993,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── 항목 4 — codegen 원본 ↔ LLM healed regression 비교 ────────────────────
 function _renderUnifiedDiff(text) {
-  if (!text) return '<span class="muted">(차이 없음)</span>';
+  if (!text) return `<span class="muted">${escapeHtml(I18N.t("diff.noChange", "(차이 없음)"))}</span>`;
   return text.split("\n").map((line) => {
     const safe = escapeHtml(line);
     if (line.startsWith("+++") || line.startsWith("---")) return `<span class="diff-meta">${safe}</span>`;
@@ -1024,8 +1054,10 @@ async function _renderDiff(sid) {
   card.hidden = false;
   $("#diff-output").innerHTML = _renderUnifiedDiff(data.unified_diff);
   // 분석 영역 초기화 (다른 세션 진입 시 이전 결과 흔적 제거)
-  $("#diff-analysis-output").innerHTML =
-    "— <strong>🔎 LLM 분석</strong> 버튼을 누르면 분석을 시작합니다 —";
+  $("#diff-analysis-output").innerHTML = I18N.t(
+    "diff.analysisHint",
+    "— <strong>🔎 LLM 분석</strong> 버튼을 누르면 분석을 시작합니다 —",
+  );
 }
 
 // LLM 분석 버튼 핸들러
@@ -1035,8 +1067,7 @@ $("#btn-analyze-diff").addEventListener("click", async () => {
   const out = $("#diff-analysis-output");
   const btn = $("#btn-analyze-diff");
   btn.disabled = true;
-  out.innerHTML =
-    '<span class="muted">⏳ Ollama 호출 중... 모델 추론에 30~60s 소요됩니다.</span>';
+  out.innerHTML = `<span class="muted">${escapeHtml(I18N.t("diff.calling", "⏳ Ollama 호출 중... 모델 추론에 30~60s 소요됩니다."))}</span>`;
   try {
     const data = await api(
       `/experimental/sessions/${sid}/diff-analysis`, { method: "POST" },
@@ -1047,7 +1078,7 @@ $("#btn-analyze-diff").addEventListener("click", async () => {
                     _renderMarkdown(data.markdown) + '</div>';
   } catch (err) {
     out.innerHTML =
-      '<span class="err">✗ 분석 실패:</span> ' + escapeHtml(err.message);
+      `<span class="err">${escapeHtml(I18N.t("diff.fail", "✗ 분석 실패:"))}</span> ` + escapeHtml(err.message);
   } finally {
     btn.disabled = false;
   }
@@ -1183,7 +1214,7 @@ document.addEventListener("click", async (e) => {
     btn.textContent = "✓";
     setTimeout(() => { btn.textContent = "📋"; }, 800);
   } catch (err) {
-    alert("Step 복사 실패: " + err.message);
+    alert(I18N.t("alert.stepCopyFail", "Step 복사 실패: {msg}", { msg: err.message }));
   }
 });
 
@@ -1219,7 +1250,7 @@ document.addEventListener("keydown", (e) => {
 // ── 클립보드 복사 (항목 2) ─────────────────────────────────────────────────
 async function _copyToClipboard(text) {
   if (!navigator.clipboard) {
-    throw new Error("브라우저가 clipboard API 미지원 — HTTPS/localhost 필요");
+    throw new Error(I18N.t("err.clipboardUnsupported", "브라우저가 clipboard API 미지원 — HTTPS/localhost 필요"));
   }
   await navigator.clipboard.writeText(text);
 }
@@ -1243,7 +1274,7 @@ document.addEventListener("click", async (e) => {
       }, 800);
     }
   } catch (err) {
-    alert("복사 실패: " + err.message);
+    alert(I18N.t("alert.copyFail", "복사 실패: {msg}", { msg: err.message }));
   }
 });
 
@@ -1258,7 +1289,9 @@ document.addEventListener("click", (e) => {
   if (!pre) return;
   const willExpand = !pre.classList.contains("expanded");
   pre.classList.toggle("expanded", willExpand);
-  btn.textContent = willExpand ? "▴ 접기" : "▾ 전체 펼치기";
+  btn.textContent = willExpand
+    ? I18N.t("preview.collapse", "▴ 접기")
+    : I18N.t("preview.expand", "▾ 전체 펼치기");
 });
 
 // 길이가 임계 이상일 때만 토글 버튼 노출. 짧으면 어차피 전체 보이므로 UI 군더더기.
@@ -1271,12 +1304,57 @@ function _refreshPreviewToggle(targetId) {
   // 펼친 상태였으면 측정 위해 잠깐 접고 비교 — 그러나 일반적으로 텍스트 갱신 시점에는
   // 닫힘 상태이므로 그대로 측정.
   pre.classList.remove("expanded");
-  btn.textContent = "▾ 전체 펼치기";
+  btn.textContent = I18N.t("preview.expand", "▾ 전체 펼치기");
   const clipped = pre.scrollHeight > pre.clientHeight + 1;
   btn.hidden = !clipped;
 }
 
 // ── 항목 (import-script) — 사용자 .py 업로드 + 결과 화면 자동 진입 ──────
+// 첫 사용 가이드 — Replay UI 와 동일 패턴.
+$("#btn-wizard")?.addEventListener("click", () => {
+  const dlg = $("#wizard-dialog");
+  if (dlg && typeof dlg.showModal === "function") dlg.showModal();
+});
+$("#btn-wizard-close")?.addEventListener("click", () => {
+  $("#wizard-dialog")?.close();
+});
+
+// 실행 결과(#rplus-output) 영역의 [전체 보기] 토글 — Replay UI Run Console 과 동일 UX.
+$("#btn-rplus-output-expand")?.addEventListener("click", () => {
+  const pre = document.getElementById("rplus-output");
+  const btn = document.getElementById("btn-rplus-output-expand");
+  if (!pre || !btn) return;
+  const expanded = pre.classList.toggle("expanded");
+  btn.textContent = expanded
+    ? I18N.t("log.collapse", "↕ 기본 높이")
+    : I18N.t("log.expand", "↕ 전체 보기");
+});
+
+// Play 진행 로그 — [로그 복사] / [전체 보기] 컨트롤.
+$("#btn-play-log-copy")?.addEventListener("click", async () => {
+  const pre = document.getElementById("play-progress");
+  if (!pre) return;
+  try {
+    await navigator.clipboard.writeText(pre.textContent || "");
+    const toast = document.getElementById("play-log-copy-toast");
+    if (toast) {
+      toast.hidden = false;
+      setTimeout(() => { toast.hidden = true; }, 1200);
+    }
+  } catch (err) {
+    alert(I18N.t("alert.copyFail", "복사 실패: {msg}", { msg: err.message }));
+  }
+});
+$("#btn-play-log-expand")?.addEventListener("click", () => {
+  const pre = document.getElementById("play-progress");
+  const btn = document.getElementById("btn-play-log-expand");
+  if (!pre || !btn) return;
+  const expanded = pre.classList.toggle("expanded");
+  btn.textContent = expanded
+    ? I18N.t("log.collapse", "↕ 기본 높이")
+    : I18N.t("log.expand", "↕ 전체 보기");
+});
+
 $("#btn-import-script").addEventListener("click", () => {
   $("#import-file-input").click();
 });
@@ -1292,7 +1370,7 @@ $("#import-file-input").addEventListener("change", async (e) => {
   if (ap) fd.append("auth_profile", ap);
   const btn = $("#btn-import-script");
   btn.disabled = true;
-  btn.textContent = "⏳ 업로드 중...";
+  btn.textContent = I18N.t("import.uploading", "⏳ 업로드 중...");
   try {
     const r = await fetch("/recording/import-script", {
       method: "POST", body: fd,
@@ -1309,7 +1387,7 @@ $("#import-file-input").addEventListener("change", async (e) => {
       } else {
         msg = `HTTP ${r.status}`;
       }
-      alert("업로드 실패: " + msg);
+      alert(I18N.t("alert.uploadFail", "업로드 실패: {msg}", { msg }));
       return;
     }
     await loadSessions();
@@ -1317,10 +1395,10 @@ $("#import-file-input").addEventListener("change", async (e) => {
     // 결과 화면으로 스크롤
     $("#result-section").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
-    alert("업로드 실패: " + err.message);
+    alert(I18N.t("alert.uploadFail", "업로드 실패: {msg}", { msg: err.message }));
   } finally {
     btn.disabled = false;
-    btn.innerHTML = "📁 Play Script from File";
+    btn.innerHTML = I18N.t("rplus.upload.btn", "📁 Play Script from File");
     e.target.value = "";  // 같은 파일 재업로드 가능하도록 reset
   }
 });
@@ -1404,10 +1482,10 @@ function _formatRelative(iso) {
   try {
     const dt = new Date(iso);
     const sec = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
-    if (sec < 60) return `${sec}초 전`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}분 전`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}시간 전`;
-    return `${Math.floor(sec / 86400)}일 전`;
+    if (sec < 60) return I18N.t("relTime.sec", "{n}초 전", { n: sec });
+    if (sec < 3600) return I18N.t("relTime.min", "{n}분 전", { n: Math.floor(sec / 60) });
+    if (sec < 86400) return I18N.t("relTime.hour", "{n}시간 전", { n: Math.floor(sec / 3600) });
+    return I18N.t("relTime.day", "{n}일 전", { n: Math.floor(sec / 86400) });
   } catch {
     return iso;
   }
@@ -1422,7 +1500,7 @@ async function loadAuthProfiles() {
     return;
   }
   _authState.profiles = profiles;
-  const optionsHtml = `<option value="">(없음 — 비로그인 녹화)</option>` +
+  const optionsHtml = `<option value="">${escapeHtml(I18N.t("recording.auth.none", "(없음 — 비로그인 녹화)"))}</option>` +
     profiles.map((p) => {
       const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
       return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
@@ -1448,8 +1526,8 @@ async function loadAuthProfiles() {
   if (rplusSel) {
     const prev = rplusSel.value || "__default__";
     rplusSel.innerHTML =
-      `<option value="__default__">(세션 기본값 사용)</option>` +
-      `<option value="">(인증 없이 실행)</option>` +
+      `<option value="__default__">${escapeHtml(I18N.t("rplus.opt.auth.default", "(세션 기본값 사용)"))}</option>` +
+      `<option value="">${escapeHtml(I18N.t("rplus.opt.auth.none", "(인증 없이 실행)"))}</option>` +
       profiles.map((p) => {
         const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
         return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
@@ -1475,22 +1553,25 @@ function _renderAuthProfilesTable() {
   tbody.innerHTML = "";
   const profiles = _authState.profiles || [];
   if (profiles.length === 0) {
-    tbody.innerHTML = '<tr class="muted"><td colspan="5">— 등록된 프로파일 없음 —</td></tr>';
+    tbody.innerHTML = `<tr class="muted"><td colspan="5">— ${escapeHtml(I18N.t(
+      "auth.empty",
+      "로그인 프로파일이 없습니다. + 새 프로파일 클릭으로 등록하세요.",
+    ))} —</td></tr>`;
     return;
   }
   for (const p of profiles) {
     const tr = document.createElement("tr");
     const warn = p.session_storage_warning
-      ? ' <span class="muted">⚠ sessionStorage 의존</span>'
+      ? ` <span class="muted">${escapeHtml(I18N.t("auth.sessionStorageWarn", "⚠ sessionStorage 의존"))}</span>`
       : "";
     tr.innerHTML = `
       <td><strong>${escapeHtml(p.name)}</strong></td>
-      <td><span class="ok">등록됨</span>${warn}</td>
+      <td><span class="ok">${escapeHtml(I18N.t("auth.registered", "등록됨"))}</span>${warn}</td>
       <td>${escapeHtml(p.last_verified_at || "—")}</td>
       <td>${escapeHtml(p.service_domain || "—")}</td>
       <td>
-        <button type="button" class="auth-btn auth-reseed-row" data-name="${escapeHtml(p.name)}">↻ 다시 로그인</button>
-        <button type="button" class="auth-btn auth-btn-danger auth-del-row" data-name="${escapeHtml(p.name)}" title="프로파일 삭제 (카탈로그 + storageState)">🗑</button>
+        <button type="button" class="auth-btn auth-reseed-row" data-name="${escapeHtml(p.name)}">${escapeHtml(I18N.t("auth.reseed", "↻ 다시 로그인"))}</button>
+        <button type="button" class="auth-btn auth-btn-danger auth-del-row" data-name="${escapeHtml(p.name)}" title="${escapeHtml(I18N.t("auth.deleteTitle", "프로파일 삭제 (카탈로그 + storageState)"))}">🗑</button>
       </td>`;
     tbody.appendChild(tr);
   }
@@ -1503,8 +1584,11 @@ function _renderAuthProfilesTable() {
       const prof = _authState.profiles.find((x) => x.name === name);
       const domain = prof ? prof.service_domain : "";
       const ok = window.confirm(
-        `프로파일 "${name}"${domain ? ` (${domain})` : ""} 을 삭제하시겠습니까?\n` +
-        `카탈로그 항목과 저장된 storageState 파일이 함께 제거됩니다.`,
+        I18N.t(
+          "auth.deleteConfirm",
+          "프로파일 \"{name}\"{domainSuffix} 을 삭제하시겠습니까?\n카탈로그 항목과 저장된 storageState 파일이 함께 제거됩니다.",
+          { name, domainSuffix: domain ? ` (${domain})` : "" },
+        ),
       );
       if (!ok) return;
       b.disabled = true;
@@ -1516,7 +1600,7 @@ function _renderAuthProfilesTable() {
         }
         await loadAuthProfiles();
       } catch (err) {
-        alert(`삭제 실패: ${err.message || err}`);
+        alert(I18N.t("alert.deleteFail", "삭제 실패: {msg}", { msg: err.message || err }));
         b.disabled = false;
       }
     });
@@ -1616,13 +1700,13 @@ async function _startSeedFlow(payload) {
   const doneBtn = $("#btn-auth-seed-done");
   const inputDlg = $("#auth-seed-dialog");
   if (inputDlg && inputDlg.open) inputDlg.close();
-  status.textContent = "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요";
-  elapsed.textContent = `경과 0초 / 한도 ${payload.timeout_sec || 600}초`;
-  hint.textContent = "창이 닫히면 세션을 저장하고 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.";
+  status.textContent = I18N.t("seed.waiting", "⏳ 로그인 창 대기 중 — 로그인 완료 화면 확인 후 열린 브라우저 창을 닫으세요");
+  elapsed.textContent = I18N.t("seed.elapsedLimit", "경과 0초 / 한도 {t}초", { t: payload.timeout_sec || 600 });
+  hint.textContent = I18N.t("seed.hintWaiting", "창이 닫히면 세션을 저장하고 검증 대상 페이지를 잠시 보여준 뒤 완료됩니다.");
   cancelBtn.hidden = false;
   skipBtn.hidden = true;
   doneBtn.hidden = true;
-  cancelBtn.textContent = "취소 (창은 직접 닫으세요)";
+  cancelBtn.textContent = I18N.t("seed.cancelClose", "취소 (창은 직접 닫으세요)");
   cancelBtn.dataset.action = "cancel";
   skipBtn.dataset.profile = "";
   doneBtn.dataset.profile = "";
@@ -1632,7 +1716,7 @@ async function _startSeedFlow(payload) {
   try {
     resp = await seedAuthProfileStart(payload);
   } catch (err) {
-    status.textContent = `✗ 시작 실패: ${err.message}`;
+    status.textContent = I18N.t("seed.startFail", "✗ 시작 실패: {msg}", { msg: err.message });
     return;
   }
   const seedSid = resp.seed_sid;
@@ -1645,16 +1729,19 @@ async function _startSeedFlow(payload) {
       console.warn("seed poll 실패:", err);
       return;
     }
-    elapsed.textContent =
-      `경과 ${Math.floor(poll.elapsed_sec)}초 / 한도 ${poll.timeout_sec}초`;
+    elapsed.textContent = I18N.t(
+      "seed.elapsedNow",
+      "경과 {e}초 / 한도 {t}초",
+      { e: Math.floor(poll.elapsed_sec), t: poll.timeout_sec },
+    );
     if (poll.message) status.textContent = poll.message;
     if (poll.phase === "verifying") {
-      hint.textContent = "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.";
+      hint.textContent = I18N.t("seed.hintVerifying", "검증 브라우저가 대상 페이지를 천천히 표시한 뒤 자동 종료됩니다.");
     }
     if (poll.state === "ready") {
       clearInterval(_authState.pollTimer);
-      status.textContent = poll.message || `✓ 시드 완료 — 프로파일 "${poll.profile_name}"`;
-      hint.textContent = "이번 녹화에 사용할지 선택하세요. 사용하지 않아도 프로파일은 목록에 저장됩니다.";
+      status.textContent = poll.message || I18N.t("seed.done", "✓ 시드 완료 — 프로파일 \"{name}\"", { name: poll.profile_name });
+      hint.textContent = I18N.t("seed.hintDone", "이번 녹화에 사용할지 선택하세요. 사용하지 않아도 프로파일은 목록에 저장됩니다.");
       await loadAuthProfiles();
       cancelBtn.hidden = true;
       skipBtn.hidden = false;
@@ -1664,9 +1751,9 @@ async function _startSeedFlow(payload) {
     } else if (poll.state === "error") {
       clearInterval(_authState.pollTimer);
       const kind = poll.error_kind ? `[${poll.error_kind}] ` : "";
-      status.textContent = poll.message || `✗ 실패 — ${kind}${poll.error}`;
-      hint.textContent = "입력값을 확인한 뒤 다시 시드하세요.";
-      cancelBtn.textContent = "다시 입력";
+      status.textContent = poll.message || I18N.t("seed.fail", "✗ 실패 — {kind}{err}", { kind, err: poll.error });
+      hint.textContent = I18N.t("seed.hintRetry", "입력값을 확인한 뒤 다시 시드하세요.");
+      cancelBtn.textContent = I18N.t("seed.retry", "다시 입력");
       cancelBtn.dataset.action = "retry";
     }
   }, 1000);
@@ -1702,8 +1789,8 @@ $("#btn-auth-seed-done").addEventListener("click", () => {
 function _showExpiredDialog(name, reason) {
   $("#auth-expired-name").textContent = name || "—";
   $("#auth-expired-reason").textContent = reason
-    ? `원인: ${reason}`
-    : "원인: 세션 만료 또는 IP 변경.";
+    ? I18N.t("expired.reasonDetail", "원인: {r}", { r: reason })
+    : I18N.t("login.expired.reason", "원인: 세션 만료 또는 IP 변경.");
   $("#auth-expired-dialog").showModal();
 }
 
@@ -1834,9 +1921,9 @@ $("#start-form").addEventListener("submit", async (e) => {
       }
       _showExpiredDialog(authProfile, reason);
     } else if (err.status === 404 && err.detail?.reason === "profile_not_found") {
-      alert(`인증 프로파일 '${authProfile}' 를 찾을 수 없습니다 — 새로 시드하세요.`);
+      alert(I18N.t("alert.authProfileMissing", "인증 프로파일 '{name}' 를 찾을 수 없습니다 — 새로 시드하세요.", { name: authProfile }));
     } else {
-      alert("Start 실패: " + err.message);
+      alert(I18N.t("alert.startFail", "Start 실패: {msg}", { msg: err.message }));
     }
   } finally {
     // success 경로에선 showActivePanel 이 비활성 상태를 잡고 있으니 덮어쓰지 않음.
@@ -1883,7 +1970,7 @@ function _populateDiscoverAuthSelect(profiles) {
   const sel = $("#discover-auth-profile");
   if (!sel) return;
   const prev = sel.value;
-  const opts = [`<option value="">(없음)</option>`].concat(
+  const opts = [`<option value="">${escapeHtml(I18N.t("discover.authProfile.none", "(없음)"))}</option>`].concat(
     (profiles || []).map((p) => {
       const warn = p.session_storage_warning ? " ⚠sessionStorage" : "";
       return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)} — ${escapeHtml(p.service_domain)}${warn}</option>`;
@@ -1956,16 +2043,17 @@ function _renderDiscoverStats(stats) {
   // 핵심 라인 — 발견 N개 + cap 도달 시 노란 배지.
   const total = (dist.by_status && Object.values(dist.by_status).reduce((a, b) => a + b, 0)) || 0;
   const capWarn = stats.cap_reached
-    ? ` <span class="stats-cap-warn">⚠ ${_escapeHtml(String(stats.abort_reason || "max_pages"))} 도달 — 잘렸을 수 있음</span>`
+    ? ` <span class="stats-cap-warn">${_escapeHtml(I18N.t("discover.stats.capReached", "⚠ {reason} 도달 — 잘렸을 수 있음", { reason: String(stats.abort_reason || "max_pages") }))}</span>`
     : "";
-  lines.push(`<div class="stats-row"><strong>발견 ${total}건</strong>${capWarn}</div>`);
+  lines.push(`<div class="stats-row"><strong>${_escapeHtml(I18N.t("discover.stats.foundN", "발견 {n}건", { n: total }))}</strong>${capWarn}</div>`);
   // sitemap 라인 — sitemap_total 있을 때만.
   if (stats.sitemap_total != null) {
     const total_st = Number(stats.sitemap_total);
     const pct = total_st > 0 ? Math.round((total / total_st) * 100) : 0;
     lines.push(
       `<div class="stats-row"><span class="stats-label">sitemap</span>` +
-      `명시 ${total_st.toLocaleString()} → 발견 ${total.toLocaleString()} (${pct}%)</div>`
+      _escapeHtml(I18N.t("discover.stats.sitemapLine", "명시 {decl} → 발견 {found} ({pct}%)", { decl: total_st.toLocaleString(), found: total.toLocaleString(), pct })) +
+      `</div>`
     );
   }
   // 분포 mini-grid.
@@ -2002,8 +2090,8 @@ async function _renderDiscoverTrees(jobId) {
   if (!toggle || !paneCrawl || !panePath) return;
   if (dl) dl.href = `/discover/${jobId}/tree.html`;
   toggle.hidden = false;
-  paneCrawl.textContent = "— 로드 중 —";
-  panePath.textContent = "— 로드 중 —";
+  paneCrawl.textContent = `— ${I18N.t("discover.tree.loadingShort", "로드 중")} —`;
+  panePath.textContent = `— ${I18N.t("discover.tree.loadingShort", "로드 중")} —`;
   let crawl = null;
   let path = null;
   try { crawl = await api(`/discover/${jobId}/tree?type=crawl`); } catch (_) { /* 무시 */ }
@@ -2019,7 +2107,7 @@ function _renderTreeRoot(tree, mode) {
   if (!tree || !tree.root) {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = "— 트리 없음 —";
+    p.textContent = `— ${I18N.t("discover.tree.none", "트리 없음")} —`;
     wrap.appendChild(p);
     return wrap;
   }
@@ -2031,8 +2119,10 @@ function _renderTreeRoot(tree, mode) {
   if (extras.length > 0) {
     const h = document.createElement("h4");
     h.className = "tree-extras-title muted";
-    h.textContent = (mode === "crawl" ? "Orphans (sitemap 등)" : "외부 host")
-                    + ` (${extras.length})`;
+    h.textContent = (mode === "crawl"
+      ? I18N.t("discover.tree.orphans", "Orphans (sitemap 등)")
+      : I18N.t("discover.tree.external", "외부 host"))
+      + ` (${extras.length})`;
     wrap.appendChild(h);
     const eul = document.createElement("ul");
     eul.className = "tree";
@@ -2115,7 +2205,10 @@ function _renderDiscoverTable(rootEl, list) {
   if (!Array.isArray(list) || list.length === 0) {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = "— 결과 없음 —";
+    p.textContent = `— ${I18N.t(
+      "discover.noResult",
+      "수집된 URL 이 없습니다. 위 폼에서 시작 URL 을 입력해 [Discover URLs] 를 누르세요.",
+    )} —`;
     rootEl.appendChild(p);
     return;
   }
@@ -2128,10 +2221,10 @@ function _renderDiscoverTable(rootEl, list) {
   const thead = document.createElement("thead");
   thead.innerHTML = `
     <tr>
-      <th style="width:36px;"><input type="checkbox" id="discover-th-check" title="전체 선택/해제"></th>
+      <th style="width:36px;"><input type="checkbox" id="discover-th-check" title="${escapeHtml(I18N.t("discover.th.checkbox", "전체 선택/해제"))}"></th>
       <th style="width:60px;">status</th>
       <th style="width:50px;">depth</th>
-      <th style="width:90px;">출처</th>
+      <th style="width:90px;">${escapeHtml(I18N.t("discover.th.source", "출처"))}</th>
       <th>title</th>
       <th>URL</th>
     </tr>
@@ -2195,7 +2288,7 @@ function _renderDiscoverTable(rootEl, list) {
   function _updateCount() {
     const n = wrap.querySelectorAll(".discover-url-check:checked").length;
     const cntEl = $("#discover-selected-count");
-    if (cntEl) cntEl.textContent = `${n}개 선택`;
+    if (cntEl) cntEl.textContent = I18N.t("count.selected", "{n}개 선택", { n });
     const btn = $("#btn-discover-tour-script");
     if (btn) btn.disabled = (n === 0);
   }
@@ -2214,12 +2307,12 @@ async function _pollDiscoverOnce(jobId) {
   try {
     s = await api(`/discover/${jobId}`);
   } catch (e) {
-    _setDiscoverStatus(_prettifyErrorMessage(`조회 실패: ${e.message || e}`));
+    _setDiscoverStatus(_prettifyErrorMessage(I18N.t("discover.queryFail", "조회 실패: {msg}", { msg: e.message || e })));
     _stopDiscoverPolling();
     return;
   }
-  let line = `[${s.state}] ${s.count}건`;
-  if (s.last_url) line += ` · 최근: ${s.last_url}`;
+  let line = I18N.t("discover.statusLine", "[{state}] {n}건", { state: s.state, n: s.count });
+  if (s.last_url) line += I18N.t("discover.recentUrl", " · 최근: {url}", { url: s.last_url });
   _setDiscoverStatus(line);
 
   if (s.state === "done" || s.state === "cancelled") {
@@ -2232,8 +2325,8 @@ async function _pollDiscoverOnce(jobId) {
     if (actions) actions.hidden = false;
     _toggleDiscoverButtons({ running: false });
     let suffix = "";
-    if (s.state === "cancelled") suffix += " · 취소됨";
-    if (s.aborted_reason === "auth_drift") suffix += " · 세션 만료 자동 중단";
+    if (s.state === "cancelled") suffix += I18N.t("discover.cancelled", " · 취소됨");
+    if (s.aborted_reason === "auth_drift") suffix += I18N.t("discover.authDrift", " · 세션 만료 자동 중단");
     if (suffix) _setDiscoverStatus(line + suffix);
     _renderDiscoverTable($("#discover-result"), list);
     _renderDiscoverStats(s.stats || null);
@@ -2242,7 +2335,7 @@ async function _pollDiscoverOnce(jobId) {
   }
   if (s.state === "failed") {
     _stopDiscoverPolling();
-    _setDiscoverStatus(_prettifyErrorMessage(`실패: ${s.error || "알 수 없는 오류"}`));
+    _setDiscoverStatus(_prettifyErrorMessage(I18N.t("discover.failed", "실패: {err}", { err: s.error || I18N.t("discover.unknownErr", "알 수 없는 오류") })));
     _toggleDiscoverButtons({ running: false });
     return;
   }
@@ -2299,7 +2392,7 @@ async function _onDiscoverSubmit(ev) {
   if (treeToggle) treeToggle.hidden = true;
   const statsCard = document.getElementById("discover-stats");
   if (statsCard) { statsCard.hidden = true; statsCard.replaceChildren(); }
-  _setDiscoverStatus("시작 중...");
+  _setDiscoverStatus(I18N.t("discover.starting", "시작 중..."));
   _toggleDiscoverButtons({ running: true });
 
   let resp;
@@ -2309,12 +2402,12 @@ async function _onDiscoverSubmit(ev) {
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    _setDiscoverStatus(_prettifyErrorMessage(`시작 실패: ${e.message || e}`));
+    _setDiscoverStatus(_prettifyErrorMessage(I18N.t("discover.startFail", "시작 실패: {msg}", { msg: e.message || e })));
     _toggleDiscoverButtons({ running: false });
     return;
   }
   if (resp.machine_mismatch) {
-    _setDiscoverStatus(`⚠ machine_mismatch — 다른 머신에서 시드된 프로파일입니다`);
+    _setDiscoverStatus(I18N.t("discover.machineMismatch", "⚠ machine_mismatch — 다른 머신에서 시드된 프로파일입니다"));
   }
   _startDiscoverPolling(resp.job_id);
 }
@@ -2347,7 +2440,7 @@ async function _onDiscoverTourScript() {
 
   const btn = $("#btn-discover-tour-script");
   const orig = btn ? btn.textContent : "";
-  if (btn) { btn.disabled = true; btn.textContent = "생성 중..."; }
+  if (btn) { btn.disabled = true; btn.textContent = I18N.t("discover.generating", "생성 중..."); }
   try {
     const r = await fetch(`/discover/${_discover.lastJobId}/tour-script`, {
       method: "POST",
@@ -2360,7 +2453,7 @@ async function _onDiscoverTourScript() {
         const j = await r.json();
         detail = (j && j.detail) ? (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)) : detail;
       } catch (_) { /* ignore */ }
-      _setDiscoverStatus(`tour-script 실패: ${detail}`);
+      _setDiscoverStatus(I18N.t("discover.tourFail", "tour-script 실패: {detail}", { detail }));
       return;
     }
     const blob = await r.blob();
@@ -2372,12 +2465,13 @@ async function _onDiscoverTourScript() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    _setDiscoverStatus(
-      `tour_selected.py 생성됨 (${urls.length}개 URL) · ` +
-      `실행 후 결과는 스크립트 옆 'tour_results.jsonl' + 'tour_screenshots/' 에 저장됩니다`,
-    );
+    _setDiscoverStatus(I18N.t(
+      "discover.tourGenerated",
+      "tour_selected.py 생성됨 ({n}개 URL) · 실행 후 결과는 스크립트 옆 'tour_results.jsonl' + 'tour_screenshots/' 에 저장됩니다",
+      { n: urls.length },
+    ));
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = orig || "선택 URL Tour Script 생성"; }
+    if (btn) { btn.disabled = false; btn.textContent = orig || I18N.t("discover.tourScript", "선택 URL Tour Script 생성"); }
   }
 }
 

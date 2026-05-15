@@ -163,7 +163,7 @@ def _ensure_session_not_recording(sid: str, kind: str):
     """공용 가드 — 세션이 존재하고 녹화 중이 아닐 것."""
     sess = _registry_lookup(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     if sess.state == session.STATE_RECORDING:
         raise HTTPException(
             status_code=409,
@@ -390,11 +390,11 @@ def enrich_session(sid: str, req: EnrichReq) -> dict:
     """녹화된 시나리오를 IEEE 829-lite Markdown 으로 역추정 (TR.5 R-Plus)."""
     sess = _registry_lookup(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     if sess.state != session.STATE_DONE:
         raise HTTPException(
             status_code=409,
-            detail=f"역추정은 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
+            detail=f"reverse-inference is only available for converted (state=done) sessions. current state={sess.state}",
         )
 
     scenario = storage.load_scenario(sid)
@@ -453,21 +453,21 @@ def compare_session(sid: str, req: CompareReq) -> dict:
     """녹화된 14-DSL 과 사용자가 제공한 doc-DSL 을 5분류로 비교 (TR.6 R-Plus)."""
     sess = _registry_lookup(sid)
     if sess is None:
-        raise HTTPException(status_code=404, detail=f"세션 미발견: {sid}")
+        raise HTTPException(status_code=404, detail=f"session not found: {sid}")
     if sess.state != session.STATE_DONE:
         raise HTTPException(
             status_code=409,
-            detail=f"비교는 변환 완료(state=done) 세션만 가능합니다. 현재 state={sess.state}",
+            detail=f"compare is only available for converted (state=done) sessions. current state={sess.state}",
         )
     if not req.doc_dsl:
-        raise HTTPException(status_code=400, detail="doc_dsl 이 비어있습니다.")
+        raise HTTPException(status_code=400, detail="doc_dsl is empty.")
 
     rec_dsl = storage.load_scenario(sid)
     if not rec_dsl:
-        raise HTTPException(status_code=409, detail=f"세션 {sid} 의 scenario.json 이 누락됨.")
+        raise HTTPException(status_code=409, detail=f"session {sid} has no scenario.json.")
 
     if not (0.0 <= req.threshold <= 1.0):
-        raise HTTPException(status_code=400, detail="threshold 는 0.0~1.0 범위.")
+        raise HTTPException(status_code=400, detail="threshold must be within 0.0–1.0.")
 
     result = comparator.compare(req.doc_dsl, rec_dsl, threshold=req.threshold)
     html = comparator.render_html(result, doc_label=req.doc_label, rec_label=req.rec_label)
@@ -495,7 +495,7 @@ def get_comparison_html(sid: str) -> FileResponse:
     """compare 결과 HTML 리포트를 직접 서빙 (UI 의 새 탭 진입 용)."""
     p = storage.session_dir(sid) / "doc_comparison.html"
     if not p.is_file():
-        raise HTTPException(status_code=404, detail="비교 리포트 미생성")
+        raise HTTPException(status_code=404, detail="compare report not generated")
     return FileResponse(str(p), media_type="text/html")
 
 
@@ -523,7 +523,7 @@ def get_diff_codegen_vs_llm(sid: str) -> dict:
     if not left_exists and not right_exists:
         raise HTTPException(
             status_code=404,
-            detail="original.py / regression_test.py 둘 다 없음",
+            detail="neither original.py nor regression_test.py exists",
         )
     left_content = left_p.read_text(encoding="utf-8") if left_exists else ""
     right_content = right_p.read_text(encoding="utf-8") if right_exists else ""
@@ -562,7 +562,7 @@ def post_diff_analysis(sid: str) -> dict:
     if not right_p.is_file():
         raise HTTPException(
             status_code=404,
-            detail="regression_test.py 없음 — Play with LLM 미실행",
+            detail="regression_test.py not found — Play with LLM has not been run",
         )
     left_content = left_p.read_text(encoding="utf-8") if left_p.is_file() else ""
     right_content = right_p.read_text(encoding="utf-8")
@@ -582,7 +582,7 @@ def post_diff_analysis(sid: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
-            detail=f"LLM 분석 호출 실패: {e}",
+            detail=f"LLM analysis call failed: {e}",
         ) from e
     log.info(
         "[/experimental/diff-analysis] %s — model=%s elapsed=%.0fms",
