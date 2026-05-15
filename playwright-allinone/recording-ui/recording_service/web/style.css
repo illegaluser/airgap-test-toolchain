@@ -220,30 +220,7 @@ button[data-act="open"] { background: #fff; color: var(--accent); }
 }
 .preview-toggle:hover { background: #e6e6ea; }
 
-/* ── 토글 아이콘 통일 (R6) ───────────────────────────────────────────────── */
-/* 페이지 내 모든 <details> 의 마커를 동일한 회전 ▸ 로 통일 — 브라우저 기본
-   마커(▶/▼) 와 카드 토글이 섞여 보이던 문제 해소. */
-details > summary {
-  cursor: pointer;
-  list-style: none;
-}
-details > summary::-webkit-details-marker { display: none; }
-details > summary::before {
-  content: "▶︎";
-  display: inline-block;
-  width: 1em;
-  margin-right: 4px;
-  transition: transform 0.15s ease;
-}
-details[open] > summary::before {
-  transform: rotate(90deg);
-}
-.card-toggle > details > summary {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-}
+/* (이전 ▶︎ 회전 마커는 하단의 +/− 박스 토글 표시기로 통합되었습니다.) */
 .card-toggle > details > summary > h2 {
   display: inline-block;
   margin: 0;
@@ -1088,15 +1065,13 @@ details[open] > summary::after { content: "−"; }
   filter: brightness(0.95);
 }
 
-/* ── Section toggles — 모든 details/summary 가 브라우저 기본 disclosure
-   marker (▶) 를 그대로 사용하도록 커스텀 CSS 제거. cursor 만 보존. */
+/* (섹션별 summary 커스텀은 상단의 공용 summary 룰로 통합. user-select 만 유지.) */
 #new-recording-section > summary,
 #discover-section > summary,
 #login-profile-section > summary,
 #result-area-toggle > summary,
 #rplus-toggle > summary,
 #assertion-toggle > summary {
-  cursor: pointer;
   user-select: none;
 }
 
