@@ -113,7 +113,7 @@ function openSeedInput(prefill) {
     if (prefill.naver_probe !== undefined) form.elements["naver_probe"].checked = !!prefill.naver_probe;
     if (prefill.idp_domain !== undefined) form.elements["idp_domain"].value = prefill.idp_domain;
   }
-  $("#seed-input-modal").hidden = false;
+  $("#seed-input-modal").showModal();
 }
 
 async function openReseed(name) {
@@ -138,7 +138,7 @@ async function openReseed(name) {
 
 async function startSeedFlow(payload) {
   _lastSeedPayload = payload;
-  $("#seed-input-modal").hidden = true;
+  $("#seed-input-modal").close();
 
   const status = $("#seed-progress-status");
   const elapsed = $("#seed-progress-elapsed");
@@ -153,7 +153,7 @@ async function startSeedFlow(payload) {
   cancelBtn.textContent = I18N.t("seedFlow.cancelClose", "취소 (창은 직접 닫으세요)");
   cancelBtn.dataset.action = "cancel";
   doneBtn.hidden = true;
-  $("#seed-progress-modal").hidden = false;
+  $("#seed-progress-modal").showModal();
 
   let resp;
   try {
@@ -398,7 +398,7 @@ async function openDetail(runId) {
   }
   if (firstShot) showShot(runId, firstShot);
   else $("#detail-shot").src = "";
-  $("#detail-modal").hidden = false;
+  $("#detail-modal").showModal();
 }
 
 function showShot(runId, name) {
@@ -411,7 +411,9 @@ document.addEventListener("click", (ev) => {
   const t = ev.target.closest("[data-modal-close]");
   if (!t) return;
   const id = t.getAttribute("data-modal-close");
-  document.getElementById(id).hidden = true;
+  const el = document.getElementById(id);
+  if (el && typeof el.close === "function") el.close();
+  else if (el) el.hidden = true;
 });
 
 // --- 헤더 / 카드 액션 wire ----------------------------------------------------
@@ -453,7 +455,7 @@ $("#btn-seed-cancel")?.addEventListener("click", () => {
     clearInterval(_seedPollTimer);
     _seedPollTimer = null;
   }
-  $("#seed-progress-modal").hidden = true;
+  $("#seed-progress-modal").close();
   // 다시 입력 분기 — error 후 사용자가 값을 고쳐 다시 시도.
   if ($("#btn-seed-cancel").dataset.action === "retry" && _lastSeedPayload) {
     openSeedInput(_lastSeedPayload);
@@ -461,12 +463,12 @@ $("#btn-seed-cancel")?.addEventListener("click", () => {
 });
 
 $("#btn-seed-done")?.addEventListener("click", () => {
-  $("#seed-progress-modal").hidden = true;
+  $("#seed-progress-modal").close();
 });
 
 $("#btn-seed-expired-reseed")?.addEventListener("click", () => {
   const name = $("#seed-expired-name").textContent.trim();
-  $("#seed-expired-modal").hidden = true;
+  $("#seed-expired-modal").close();
   if (name && name !== "—") openReseed(name);
 });
 
@@ -749,7 +751,7 @@ $("#btn-run-expand")?.addEventListener("click", () => {
 })();
 
 $("#btn-wizard")?.addEventListener("click", () => {
-  $("#wizard-modal").hidden = false;
+  $("#wizard-modal").showModal();
 });
 
 // --- 초기 로드 + 폴링 ---------------------------------------------------------

@@ -175,8 +175,7 @@
 -->
 
 <!-- 시드 입력 모달 -->
-<div id="seed-input-modal" class="modal" hidden>
-  <div class="modal-backdrop" data-modal-close="seed-input-modal"></div>
+<dialog id="seed-input-modal" class="modal">
   <div class="modal-body">
     <form id="seed-input-form">
       <h3 id="seed-input-title" data-i18n="seed.input.title">+ 새 로그인 프로파일</h3>
@@ -248,11 +247,10 @@
       </div>
     </form>
   </div>
-</div>
+</dialog>
 
 <!-- 시드 진행 모달 -->
-<div id="seed-progress-modal" class="modal" hidden>
-  <div class="modal-backdrop" data-modal-close="seed-progress-modal"></div>
+<dialog id="seed-progress-modal" class="modal">
   <div class="modal-body">
     <h3 data-i18n="seed.progress.title">🪟 로그인 세션 저장 중</h3>
     <ol class="seed-steps">
@@ -272,11 +270,10 @@
       <button type="button" id="btn-seed-done" class="primary" hidden data-i18n="seed.progress.done">닫기</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- 만료 알림 모달 (필요 시 표시 — 다시 로그인 prefill 진입점) -->
-<div id="seed-expired-modal" class="modal" hidden>
-  <div class="modal-backdrop" data-modal-close="seed-expired-modal"></div>
+<dialog id="seed-expired-modal" class="modal">
   <div class="modal-body">
     <h3 data-i18n="seed.expired.title">⚠ 로그인 만료</h3>
     <p><span data-i18n="seed.expired.body.prefix">프로파일 </span><code id="seed-expired-name">—</code><span data-i18n="seed.expired.body.suffix"> 이 만료되었습니다.</span></p>
@@ -286,11 +283,10 @@
       <button type="button" id="btn-seed-expired-reseed" class="primary" data-i18n="seed.expired.reseed">다시 로그인</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- 실행 상세 모달 (결과 [상세→]) -->
-<div id="detail-modal" class="modal modal-wide" hidden>
-  <div class="modal-backdrop" data-modal-close="detail-modal"></div>
+<dialog id="detail-modal" class="modal modal-wide">
   <div class="modal-body">
     <div class="detail-header">
       <button type="button" class="ghost" data-modal-close="detail-modal" data-i18n="detail.back">← 목록으로</button>
@@ -305,11 +301,10 @@
       </div>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- 첫 사용 가이드 wizard -->
-<div id="wizard-modal" class="modal" hidden>
-  <div class="modal-backdrop" data-modal-close="wizard-modal"></div>
+<dialog id="wizard-modal" class="modal">
   <div class="modal-body">
     <h3 data-i18n="wizard.title">🧭 첫 사용 가이드</h3>
     <ol class="wizard-steps">
@@ -322,7 +317,7 @@
       <button type="button" class="primary" data-modal-close="wizard-modal" data-i18n="wizard.start">시작하기</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <script src="/static/i18n.js"></script>
 <script src="/static/app.js"></script>

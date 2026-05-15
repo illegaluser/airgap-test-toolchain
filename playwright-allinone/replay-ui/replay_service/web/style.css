@@ -17,6 +17,16 @@
 
 * { box-sizing: border-box; }
 
+/* Keyboard focus indicator — only on keyboard navigation, not on mouse click. */
+:focus-visible {
+  outline: 2px solid #2c2c2f;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+button:focus-visible, summary:focus-visible {
+  outline-offset: 3px;
+}
+
 body {
   margin: 0;
   /* Body / forms / descriptions — proportional sans for Korean readability. */
@@ -262,27 +272,23 @@ summary::after {
 }
 details[open] > summary::after { content: "−"; }
 
-/* 모달 */
-.modal {
-  position: fixed; inset: 0; z-index: 9999;
-  display: flex; align-items: center; justify-content: center;
-}
-.modal[hidden] { display: none; }
-.modal-backdrop {
-  position: absolute; inset: 0;
-  background: rgba(0,0,0,0.45); cursor: pointer;
-}
-.modal-body {
-  position: relative;
-  background: white;
+/* 모달 — 네이티브 <dialog> 사용. ESC·focus trap·backdrop 모두 브라우저 위임. */
+dialog.modal {
+  padding: 0;
+  border: 0;
   border-radius: 8px;
-  padding: 1.5rem 2rem;
+  background: white;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+  max-height: calc(100vh - 4rem);
   width: min(540px, calc(100vw - 2rem));
+}
+dialog.modal::backdrop { background: rgba(0,0,0,0.45); }
+.modal-body {
+  padding: 1.5rem 2rem;
   max-height: calc(100vh - 4rem);
   overflow-y: auto;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
 }
-.modal-wide .modal-body { width: min(960px, calc(100vw - 2rem)); }
+.modal-wide { width: min(960px, calc(100vw - 2rem)); }
 .modal-row {
   display: grid;
   grid-template-columns: 130px 1fr;
