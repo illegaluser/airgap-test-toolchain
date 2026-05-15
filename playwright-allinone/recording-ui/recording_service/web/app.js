@@ -1304,6 +1304,31 @@ function _refreshPreviewToggle(targetId) {
 }
 
 // ── 항목 (import-script) — 사용자 .py 업로드 + 결과 화면 자동 진입 ──────
+// Play 진행 로그 — [로그 복사] / [전체 보기] 컨트롤.
+$("#btn-play-log-copy")?.addEventListener("click", async () => {
+  const pre = document.getElementById("play-progress");
+  if (!pre) return;
+  try {
+    await navigator.clipboard.writeText(pre.textContent || "");
+    const toast = document.getElementById("play-log-copy-toast");
+    if (toast) {
+      toast.hidden = false;
+      setTimeout(() => { toast.hidden = true; }, 1200);
+    }
+  } catch (err) {
+    alert(I18N.t("alert.copyFail", "복사 실패: {msg}", { msg: err.message }));
+  }
+});
+$("#btn-play-log-expand")?.addEventListener("click", () => {
+  const pre = document.getElementById("play-progress");
+  const btn = document.getElementById("btn-play-log-expand");
+  if (!pre || !btn) return;
+  const expanded = pre.classList.toggle("expanded");
+  btn.textContent = expanded
+    ? I18N.t("log.collapse", "↕ 기본 높이")
+    : I18N.t("log.expand", "↕ 전체 보기");
+});
+
 $("#btn-import-script").addEventListener("click", () => {
   $("#import-file-input").click();
 });

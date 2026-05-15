@@ -470,6 +470,13 @@
       "⚠ machine_mismatch — profile was seeded on a different machine",
     "discover.generating": "Generating...",
     "discover.tourFail": "tour-script failed: {detail}",
+    "log.copy": "📋 Copy log",
+    "log.copy.title": "Copy log content to clipboard",
+    "log.copied": "✓ Copied",
+    "log.expand": "↕ Expand",
+    "log.expand.title": "Toggle log area height limit",
+    "log.collapse": "↕ Collapse",
+
     "discover.tourGenerated":
       "tour_selected.py generated ({n} URLs) · After running, results are written next to the script as 'tour_results.jsonl' + 'tour_screenshots/'",
   };

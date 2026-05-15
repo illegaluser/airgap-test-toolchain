@@ -191,7 +191,7 @@ button.ghost {
 .run-stream {
   background: #1d1d1f;
   color: #c7c7cc;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: Consolas, "Menlo", "DejaVu Sans Mono", monospace;
   font-size: 0.85rem;
   padding: 0.75rem 1rem;
   border-radius: 6px;
@@ -200,6 +200,29 @@ button.ghost {
   white-space: pre-wrap;
   word-break: break-all;
 }
+.run-stream.expanded { max-height: none; }
+.log-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 8px 0 6px;
+}
+.log-actions button {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 3px 10px;
+  font-size: 0.82rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.log-actions button:hover { background: var(--border); }
+.log-actions .toast { font-size: 0.78rem; color: var(--muted); margin-left: 4px; }
+
+/* Hide native <details> triangle — section titles carry their own icon. */
+summary { list-style: none; cursor: pointer; }
+summary::-webkit-details-marker { display: none; }
+summary::marker { display: none; }
 
 /* 모달 */
 .modal {

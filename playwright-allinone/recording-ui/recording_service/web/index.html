@@ -439,6 +439,15 @@
       <pre id="rplus-output" class="json-preview" hidden>—</pre>
       <details id="play-progress-details" hidden>
         <summary data-i18n="rplus.progress.summary">실시간 진행 로그</summary>
+        <div class="log-actions">
+          <button id="btn-play-log-copy" type="button" data-i18n="log.copy"
+                  data-i18n-attr-title="log.copy.title"
+                  title="실행 로그를 클립보드에 복사">📋 로그 복사</button>
+          <button id="btn-play-log-expand" type="button" data-i18n="log.expand"
+                  data-i18n-attr-title="log.expand.title"
+                  title="로그 영역 높이 제한 해제 / 복원">↕ 전체 보기</button>
+          <span id="play-log-copy-toast" class="toast" hidden data-i18n="log.copied">✓ 복사됨</span>
+        </div>
         <pre id="play-progress" class="play-progress"></pre>
       </details>
       </div><!-- /#rplus-session-area -->

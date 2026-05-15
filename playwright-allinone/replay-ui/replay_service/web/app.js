@@ -704,6 +704,31 @@ $("#scripts-select-all")?.addEventListener("change", (ev) => {
   syncBulkDeleteState();
 });
 
+// Run Console 의 [로그 복사] / [전체 보기] 컨트롤.
+$("#btn-run-copy")?.addEventListener("click", async () => {
+  const pre = document.getElementById("run-stream");
+  if (!pre) return;
+  try {
+    await navigator.clipboard.writeText(pre.textContent || "");
+    const toast = document.getElementById("run-copy-toast");
+    if (toast) {
+      toast.hidden = false;
+      setTimeout(() => { toast.hidden = true; }, 1200);
+    }
+  } catch (err) {
+    alert(I18N.t("alert.copyFail", "복사 실패: {msg}", { msg: err.message }));
+  }
+});
+$("#btn-run-expand")?.addEventListener("click", () => {
+  const pre = document.getElementById("run-stream");
+  const btn = document.getElementById("btn-run-expand");
+  if (!pre || !btn) return;
+  const expanded = pre.classList.toggle("expanded");
+  btn.textContent = expanded
+    ? I18N.t("log.collapse", "↕ 기본 높이")
+    : I18N.t("log.expand", "↕ 전체 보기");
+});
+
 // 슬로모 체크박스 ↔ 숫자 입력 활성화 토글 (Recording UI 와 동일 패턴).
 (function _wireScriptSlowmoToggle() {
   const cb = document.getElementById("run-script-slowmo-enabled");

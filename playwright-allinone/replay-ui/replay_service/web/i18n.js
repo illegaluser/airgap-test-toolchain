@@ -219,6 +219,14 @@
     "run.status.failHttp": "Failed: HTTP {code} — {detail}",
     "run.status.running": "Running: {script} (run_id={id})",
     "run.status.done": "Done: {script} (run_id={id})",
+
+    "log.copy": "📋 Copy log",
+    "log.copy.title": "Copy log content to clipboard",
+    "log.copied": "✓ Copied",
+    "log.expand": "↕ Expand",
+    "log.expand.title": "Toggle log area height limit",
+    "log.collapse": "↕ Collapse",
+    "alert.copyFail": "Copy failed: {msg}",
   };
 
   const DICT = { en: EN };

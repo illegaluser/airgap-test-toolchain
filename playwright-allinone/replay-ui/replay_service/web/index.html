@@ -121,6 +121,15 @@
     <details id="run-section" open>
       <summary><h2 style="display:inline-block; margin:0;" data-i18n="run.title">▶ Run Console</h2></summary>
     <div id="run-status" class="muted" data-i18n="run.idle">— 대기 —</div>
+    <div class="log-actions">
+      <button id="btn-run-copy" type="button" data-i18n="log.copy"
+              data-i18n-attr-title="log.copy.title"
+              title="실행 로그를 클립보드에 복사">📋 로그 복사</button>
+      <button id="btn-run-expand" type="button" data-i18n="log.expand"
+              data-i18n-attr-title="log.expand.title"
+              title="로그 영역 높이 제한 해제 / 복원">↕ 전체 보기</button>
+      <span id="run-copy-toast" class="toast" hidden data-i18n="log.copied">✓ 복사됨</span>
+    </div>
     <pre id="run-stream" class="run-stream"></pre>
     </details>
   </section>
