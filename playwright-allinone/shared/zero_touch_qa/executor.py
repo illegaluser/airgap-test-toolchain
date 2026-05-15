@@ -1146,7 +1146,7 @@ class QAExecutor:
         """
         tgt_str = str(original_target or "")
         log.warning(
-            "[Step %s] resolver 0건 — target=%r (1차 시도 스킵 → 치유 체인 진입)",
+            "[Step %s] resolver returned 0 matches — target=%r (skipping initial attempt → entering healing chain)",
             step_id, tgt_str,
         )
         # role=button/link/tab 류 일 때, name 추출해 동일 name 가진 element 의
@@ -1162,7 +1162,7 @@ class QAExecutor:
                     cnt = page.get_by_role(role, name=name, exact=exact).count()
                     if cnt:
                         log.warning(
-                            "[Step %s] 진단 — role=%s, name=%r, exact=%s → %d건",
+                            "[Step %s] diagnosis — role=%s, name=%r, exact=%s → %d matches",
                             step_id, role, name, exact, cnt,
                         )
                 except Exception:  # noqa: BLE001
@@ -1171,7 +1171,7 @@ class QAExecutor:
                 txt_cnt = page.get_by_text(name, exact=exact).count()
                 if txt_cnt:
                     log.warning(
-                        "[Step %s] 진단 — text=%r, exact=%s → %d건 (role 무시)",
+                        "[Step %s] diagnosis — text=%r, exact=%s → %d matches (ignoring role)",
                         step_id, name, exact, txt_cnt,
                     )
             except Exception:  # noqa: BLE001
