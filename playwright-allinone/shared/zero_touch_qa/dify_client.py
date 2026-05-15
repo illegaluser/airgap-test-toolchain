@@ -26,11 +26,11 @@ def _format_dify_error(base_url: str, exc: requests.RequestException) -> str:
     raw = str(exc)
     if isinstance(exc, requests.ConnectionError):
         return (
-            "Dify API 연결 실패 — dscore.ttc.playwright 컨테이너가 떠 있는지, "
-            f"또는 DIFY_BASE_URL ({base_url}) 가 맞는지 확인하세요. "
-            f"원본: {raw}"
+            "Dify API connection failed — check that the dscore.ttc.playwright "
+            f"container is running, or that DIFY_BASE_URL ({base_url}) is correct. "
+            f"Original: {raw}"
         )
-    return f"Dify API 통신 실패: {raw}"
+    return f"Dify API transport failed: {raw}"
 
 
 class DifyClient:

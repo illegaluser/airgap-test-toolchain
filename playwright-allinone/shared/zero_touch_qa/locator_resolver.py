@@ -265,7 +265,20 @@ class LocatorResolver:
                 # 다중 role 에서 동시에 매칭되면 ambiguous → 기존대로 None
                 # (false-PASS 차단; healer chain 이 처리).
                 fb = self._fallback_role_match(role, name, exact)
-                return fb  # None 또는 unambiguous 매치
+                if fb is not None:
+                    return fb
+                # role-conditional 패턴 보정 — GNB / SPA 류에서 codegen 캡처
+                # 시점엔 role=button 이 박혀 있다가 replay 시점엔 부모 메뉴가
+                # :hover 가 아니라 role attribute 자체가 사라진 경우. 다른
+                # 등가 role 까지 모두 0건이지만 같은 name 의 텍스트가 DOM 에
+                # 유일하게(==1) 존재하면 그 element 를 반환한다. visibility
+                # healer 가 ancestor cascade hover 로 visible 화 + role 도
+                # 복구하여 click 이 자연스럽게 통과한다. unambiguous(==1) 조건
+                # 으로 false-PASS 차단.
+                text_fb = self._fallback_text_match(name, exact)
+                if text_fb is not None:
+                    return text_fb
+                return None
             return _prefer_visible(loc)
         # role만 있고 name이 없는 경우
         role_only = target_str.replace(_ROLE_PREFIX, "", 1).strip()
@@ -315,10 +328,31 @@ class LocatorResolver:
             return None
         role, loc = hits[0]
         log.warning(
-            "[Resolver] role 오라벨링 보정 — role=%r 0건 → role=%r 1건 채택 (name=%r)",
+            "[Resolver] role mislabel correction — role=%r 0 hits → role=%r 1 hit (name=%r)",
             original, role, name,
         )
         return _prefer_visible(loc)
+
+    def _fallback_text_match(self, name: str, exact: bool) -> Locator | None:
+        """role 폴백까지 0건일 때의 마지막 보정 — 같은 name 텍스트의 유일 매치.
+
+        호출 조건은 _resolve_role 에서 (1) original role 0건 (2) _fallback_role_match
+        도 0건 일 때만. 텍스트만으로 잡으면 false-PASS 위험이 있어 정확히 1건일
+        때만 채택. role-conditional SPA / GNB 메뉴 류에서 codegen 캡처 시점의
+        role=button 이 replay 시점엔 attribute 자체가 없는 패턴을 흡수한다.
+        """
+        try:
+            loc = self.page.get_by_text(name, exact=exact)
+        except Exception:  # noqa: BLE001
+            return None
+        if self._safe_count(loc) != 1:
+            return None
+        log.warning(
+            "[Resolver] role-conditional fallback — role=0 hits everywhere, "
+            "text=%r → 1 unique hit (visibility healer will cascade-hover if hidden)",
+            name,
+        )
+        return loc.first
 
     def _resolve_semantic_prefix(self, target_str: str) -> Locator | None:
         """text=/label=/placeholder=/testid= 접두사를 매칭하여 해당 메서드를 호출한다.
