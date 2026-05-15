@@ -511,3 +511,71 @@ def test_regression_test_falls_back_to_scenario_target_when_results_missing(
     src = Path(output).read_text(encoding="utf-8")
     assert "#fallback-btn" in src
     compile(src, output, "exec")
+
+
+def test_regression_test_bare_iframe_chain_uses_frame_locator(tmp_path: Path):
+    """Playwright codegen 의 ``locator("iframe[...] >> #child")`` 형태 (frame=
+    prefix 없음) 가 14-DSL target 으로 그대로 옮겨졌을 때, regression_generator
+    가 bare ``iframe[...]`` segment 를 자동으로 ``.frame_locator(...)`` 로
+    변환해야 한다. 변환 누락 시 회귀 .py 는 메인 DOM 에서만 child 를 찾으려
+    들어 15s timeout 으로 깨진다 (2026-05-15 portal.koreaconnect SmartEditor
+    `#keditor_body` 회귀 보고)."""
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {
+            "step": 2, "action": "click",
+            "target": 'iframe[title="에디터"] >> #keditor_body',
+            "value": "",
+        },
+    ]
+    results = [_make_pass_result(s["step"], s["action"]) for s in scenario]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+    assert ".frame_locator(" in src, (
+        "bare iframe[...] segment 가 frame_locator 로 변환되지 않음"
+    )
+    # iframe[...] selector 가 raw 로 page.locator() 인자로 그대로 들어가면 안 됨.
+    assert 'page.locator("iframe[' not in src
+    compile(src, output, "exec")
+
+
+def test_regression_test_preserves_frame_chain_when_stable_selector_present(
+    tmp_path: Path,
+):
+    """이중 iframe 안 element 에서 executor 가 stable_selector (leaf id) 만
+    캡처했을 때, regression_generator 는 원본 scenario target 의 frame chain
+    prefix 를 stable_selector 앞에 붙여 frame_locator 진입을 보존해야 한다.
+    보존 누락 시 회귀 .py 는 메인 DOM 의 `#keditor_body` 를 찾으려 들어 15s
+    timeout 으로 깨진다 (실제 회귀: 2026-05-15 portal.koreaconnect 보고)."""
+    scenario = [
+        {"step": 1, "action": "navigate", "target": "", "value": "https://example.test"},
+        {
+            "step": 2, "action": "click",
+            "target": (
+                'iframe[title="에디터 전체 영역"] >> '
+                'iframe[title="편집 모드 영역"] >> #keditor_body'
+            ),
+            "value": "",
+        },
+    ]
+    # executor 가 leaf id 만 stable_selector 로 캡처한 상황을 재현.
+    r2 = StepResult(
+        step_id=2, action="click", target="", value="",
+        description="", status="PASS", heal_stage="none",
+        stable_selector="#keditor_body",
+    )
+    results = [_make_pass_result(1, "navigate", value="https://example.test"), r2]
+
+    output = generate_regression_test(scenario, results, str(tmp_path))
+    assert output is not None
+    src = Path(output).read_text(encoding="utf-8")
+    # frame_locator 호출이 최소 2회 (이중 iframe) 등장해야 함.
+    assert src.count(".frame_locator(") >= 2, (
+        "frame chain prefix 가 stable_selector 앞에 보존되지 않음 — "
+        "회귀 .py 가 메인 DOM 에서 #keditor_body 를 찾게 됨"
+    )
+    # leaf id 자체는 emit 되어야 함.
+    assert "#keditor_body" in src
+    compile(src, output, "exec")

@@ -8,7 +8,8 @@ from .executor import StepResult
 # name=<텍스트>, exact=true 같은 후미 옵션을 분리해 ``exact=`` kwarg 로 emit 하기
 # 위해 executor 의 resolver 와 동일 헬퍼 재사용. 자체 정의하면 두 곳에서 정규식이
 # 어긋날 위험.
-from .locator_resolver import _split_name_exact
+from .locator_resolver import _IFRAME_SELECTOR_RE, _split_name_exact
+from .converter_ast import _split_iframe_chain
 
 
 class _DumpsShim:
@@ -32,6 +33,19 @@ class _DumpsShim:
 json = _DumpsShim()
 
 log = logging.getLogger(__name__)
+
+
+def _frame_chain_prefix(target) -> str:
+    """``iframe[...] >> ... >> leaf`` 형태에서 frame entry 부분만 추출.
+
+    stable_selector 가 leaf id 만 갖고 있을 때 회귀 .py 에 frame chain 진입을
+    보존하기 위해 호출. target 이 chain 이 아니거나 frame 진입이 없으면 빈
+    문자열 (caller 가 stable_selector 단독으로 사용).
+    """
+    if not isinstance(target, str) or " >> " not in target:
+        return ""
+    frames, _leaf = _split_iframe_chain(target)
+    return " >> ".join(frames)
 
 
 def generate_regression_test(
@@ -194,7 +208,16 @@ def generate_regression_test(
             # (`text=...` 등) 의 visibility filter 차이로 timeout 되는 회귀 차단.
             # 빈 값이면 healed target 으로, 그것도 없으면 원본 시나리오 target.
             stable = getattr(r, "stable_selector", "") or ""
-            target = stable or (r.target if r.target else scen_target)
+            if stable:
+                # 원본 target 이 iframe chain 으로 진입한 leaf 였다면 frame prefix
+                # 를 보존한다. stable_selector 는 leaf element 의 id/testid/role+name
+                # 만 캡처해 frame context 를 잃어버리므로, 단독 사용 시 회귀 .py 가
+                # 메인 DOM 에서 찾으려 들어 timeout 된다 (2026-05-15 portal.koreaconnect
+                # SmartEditor `#keditor_body` 회귀 보고). chain 없는 평상시는 그대로.
+                frame_prefix = _frame_chain_prefix(scen_target) or _frame_chain_prefix(r.target)
+                target = (frame_prefix + " >> " + stable) if frame_prefix else stable
+            else:
+                target = r.target if r.target else scen_target
             # scenario value 가 dict/list (mock_data) 면 보존 — StepResult.value 는
             # 항상 str 이라 직렬화 손실이 발생함.
             if isinstance(scen_value, (dict, list)):
@@ -905,6 +928,12 @@ def _chain_to_playwright_code(base_str: str, modifiers, page_var: str = "page") 
         if seg.startswith("frame="):
             sel = seg[len("frame="):].strip()
             cur = f"{cur}.frame_locator({json.dumps(sel)})"
+            continue
+        if _IFRAME_SELECTOR_RE.match(seg):
+            # Codegen ``locator("iframe[...] >> #x")`` 형태가 14-DSL target 으로
+            # 그대로 옮겨졌을 때 bare ``iframe[...]`` segment 가 들어온다.
+            # locator_resolver._descend_segment 와 동일 의미로 frame_locator 진입.
+            cur = f"{cur}.frame_locator({json.dumps(seg)})"
             continue
         if seg.startswith("shadow="):
             # Playwright 가 open shadow 자동 piercing — 일반 locator 로 충분.
