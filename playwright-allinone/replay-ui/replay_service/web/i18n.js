@@ -153,6 +153,72 @@
       "<strong>Step 4</strong> — Pick a registered alias (or anonymous) in the login profile " +
       "selector → click the row's <code>▶ Run</code>.",
     "wizard.start": "Get started",
+
+    // app.js dynamic strings
+    "profiles.empty": "No registered profiles",
+    "profiles.state.ok": "Registered",
+    "profiles.state.expired": "🔴 Re-login required",
+    "profiles.reseed": "↻ Re-login",
+    "alarm.expired": "🔴 {n} expired",
+    "confirm.deleteProfile": "Delete profile '{name}'?",
+    "alert.deleteFailHttp": "Delete failed: HTTP {code}",
+    "alert.deleteFailHttpDetail": "Delete failed: HTTP {code} — {detail}",
+    "seed.input.titleReseed": "↻ Re-login",
+    "seedFlow.waiting":
+      "⏳ Waiting for login window — close the opened browser after you see the post-login screen",
+    "seedFlow.elapsedLimit": "Elapsed 0s / limit {t}s",
+    "seedFlow.hintWaiting":
+      "When the window closes, the session is saved, the verification page is shown briefly, and the flow completes.",
+    "seedFlow.cancelClose": "Cancel (close the window yourself)",
+    "seedFlow.startFailHttp": "✗ Start failed: HTTP {code} — {detail}",
+    "seedFlow.startFail": "✗ Start failed: {msg}",
+    "common.close": "Close",
+    "seedFlow.elapsedNow": "Elapsed {e}s / limit {t}s",
+    "seedFlow.hintVerifying":
+      "Verification browser will display the target page slowly, then close automatically.",
+    "seedFlow.done": "✓ Seed done — profile \"{name}\"",
+    "seedFlow.hintDone":
+      "This profile will be reused automatically for future scenario runs.",
+    "seedFlow.fail": "✗ Failed — {kind}{err}",
+    "seedFlow.hintRetry": "Verify your inputs and try again.",
+    "seedFlow.retry": "Re-enter",
+    "runs.empty": "No run results",
+    "runs.runningCannotDelete": "In progress — cannot delete",
+    "common.anonymous": "(anonymous)",
+    "runs.detail": "Detail →",
+    "confirm.deleteRun":
+      "Delete run result '{id}'?\n(All screenshots/traces/reports will be removed.)",
+    "bulk.deleteLabel": "🗑 Delete selected",
+    "bulk.deleteLabelN": "🗑 Delete selected ({n})",
+    "bulk.moreN": " and {n} more",
+    "confirm.deleteRunsBulk":
+      "Delete the {n} selected run result(s)?\n(All screenshots/traces/reports will be removed.)\n{sample}",
+    "alert.deleteRunsFailed": "Failed to delete the following run results:\n{list}",
+    "result.systemErr": "⚠ System error",
+    "result.loginExpired": "⚠ Login expired",
+    "result.running": "… in progress",
+    "detail.meta.result": "Result",
+    "detail.meta.elapsed": "Elapsed",
+    "detail.meta.profile": "Profile",
+    "detail.meta.script": "Script",
+    "scripts.empty": "No registered scripts",
+    "scripts.run.title": "Run this single .py scenario",
+    "scripts.run.btn": "▶ Run",
+    "confirm.deleteScript": "Delete script '{name}'?",
+    "confirm.deleteScriptsBulk":
+      "Delete the {n} selected script(s)?\n{sample}",
+    "alert.deleteScriptsFailed": "Failed to delete the following scripts:\n{list}",
+    "confirm.scriptOverwrite":
+      "A script with the same name '{name}' already exists. Overwrite?",
+    "alert.uploadFailHttp": "Upload failed: HTTP {code} — {detail}",
+    "run.aliasNote.alias": "  (profile: {a})",
+    "run.aliasNote.anon": "  (anonymous)",
+    "run.headedNote": "  (headed)",
+    "run.status.starting": "Starting: {script}{aliasNote}{headedNote}{slowNote} ...",
+    "run.status.fail": "Failed: {msg}",
+    "run.status.failHttp": "Failed: HTTP {code} — {detail}",
+    "run.status.running": "Running: {script} (run_id={id})",
+    "run.status.done": "Done: {script} (run_id={id})",
   };
 
   const DICT = { en: EN };
