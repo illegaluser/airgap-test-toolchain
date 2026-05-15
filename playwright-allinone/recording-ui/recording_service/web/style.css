@@ -1167,19 +1167,13 @@ dialog textarea {
    • ≤768px  mobile              — tables stack as cards (one row = one card)
 */
 
-/* All data tables overflow horizontally if still too wide after column-hiding. */
-table.data-table, #session-table, .discover-table, .run-log-table {
-  display: block;
-  overflow-x: auto;
-  width: 100%;
-}
-table.data-table thead, table.data-table tbody,
-#session-table thead, #session-table tbody,
-.discover-table thead, .discover-table tbody,
-.run-log-table thead, .run-log-table tbody {
-  display: table;
-  width: 100%;
-  min-width: 100%;
+/* Truncate very long single-line cells so they don't hog column width and
+   squeeze siblings. Notably target_url in the session list. */
+#session-tbody td:nth-child(4) {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 1280px) {
@@ -1222,8 +1216,17 @@ table.data-table thead, table.data-table tbody,
   form > label { display: flex; flex-direction: column; align-items: stretch; }
   form > label > span { margin-bottom: 2px; }
 
+  /* Cancel desktop ellipsis on long URL — allowed to wrap inside the card cell. */
+  #session-tbody td:nth-child(4) {
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
   /* Tables → card list. Each row is a card; cells stack with pseudo-label. */
   table.data-table, #session-table, .discover-table, .run-log-table {
+    display: block;
     overflow-x: visible;
   }
   table.data-table thead, #session-table thead,
