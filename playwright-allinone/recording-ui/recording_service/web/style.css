@@ -21,8 +21,9 @@ option { background: #fff; color: var(--text); padding: 4px 8px; }
 }
 
 body {
-  font-family: Consolas, "Menlo", "DejaVu Sans Mono", "Courier New",
-    "Apple SD Gothic Neo", "Noto Sans KR", monospace;
+  /* Body / forms / descriptions — proportional sans for Korean readability. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
   background: var(--bg);
   color: var(--text);
   margin: 0;
@@ -30,6 +31,14 @@ body {
   line-height: 1.55;
   /* Render color emoji as monochrome text glyphs where supported. */
   font-variant-emoji: text;
+}
+/* Code-like content — IDs, URLs, JSON, logs — uses monospace.
+   Forms keep the body's proportional font. */
+code, pre, kbd, samp,
+.json-preview, .play-progress, .run-stream,
+.diff-pre, .stats-bucket, #active-id, .session-row-check,
+.tree code, .heal-pill, .state-pill {
+  font-family: Consolas, "Menlo", "DejaVu Sans Mono", "Courier New", monospace;
 }
 /* Belt-and-suspenders monochrome: any inline emoji span gets greyscale. */
 .icon, .emoji { filter: grayscale(1) contrast(1.1); }
@@ -411,9 +420,11 @@ code {
 }
 .state-pending { background: #e8e8ea; color: #555; }
 .state-recording { background: #e0e0e3; color: var(--err); }
-.state-converting { background: #ececef; color: var(--warn); }
-.state-done { background: #e8e8ea; color: var(--ok); }
-.state-error { background: #dcdcdf; color: var(--err); }
+/* Phase A — semantic color hint restored for PASS / HEALED / FAIL only.
+   Background stays in the monotone palette; only text gets a subtle tint. */
+.state-converting { background: #f5efe0; color: #6e4d00; }
+.state-done { background: #eaf3ec; color: #1a5928; }
+.state-error { background: #f3eaea; color: #8a2424; }
 
 table {
   width: 100%;
@@ -641,14 +652,15 @@ dialog textarea {
 .diff-pre .diff-del  { color: #1d1d1f; background: #dcdcdf; display: block; padding: 0 4px; border-left: 2px solid #1d1d1f; }
 .diff-pre .diff-ctx  { color: #1d1d1f; display: block; padding: 0 4px; }
 
-/* P2 (항목 6) — Play 진행 로그 스트리밍 */
+/* P2 (항목 6) — Play 진행 로그 스트리밍 (밝은 톤 + 본문과 같은 색조 유지) */
 .play-progress {
-  background: #1d1d1f;
-  color: #e8e8ea;
+  background: var(--code-bg);
+  color: var(--text);
   font-family: Consolas, "Menlo", "DejaVu Sans Mono", monospace;
   font-size: 0.78rem;
   line-height: 1.45;
   padding: 10px 12px;
+  border: 1px solid var(--border);
   border-radius: 6px;
   max-height: 280px;
   overflow: auto;
@@ -781,9 +793,9 @@ details[open] > summary::after { content: "−"; }
 .run-log-table .step-target { max-width: 320px; word-break: break-all; }
 
 /* status pill — run-log 행의 상태 (executor 의 PASS/FAIL/HEALED) */
-.status-pass    { background: #e8e8ea; color: var(--ok); }
-.status-healed  { background: #ececef; color: #4a4a4f; }
-.status-fail    { background: #dcdcdf; color: var(--err); }
+.status-pass    { background: #eaf3ec; color: #1a5928; }
+.status-healed  { background: #f5efe0; color: #6e4d00; }
+.status-fail    { background: #f3eaea; color: #8a2424; }
 
 /* heal_stage pill — none / local / dify / visibility */
 .heal-pill {
@@ -794,8 +806,8 @@ details[open] > summary::after { content: "−"; }
   font-weight: 500;
 }
 .heal-none        { background: #f0f0f2; color: #888; }
-.heal-local       { background: #ececef; color: #4a4a4f; }
-.heal-dify        { background: #e0e0e3; color: var(--err); }
+.heal-local       { background: #f5efe0; color: #6e4d00; }
+.heal-dify        { background: #f3eaea; color: #8a2424; }
 .heal-visibility  { background: #e0e0e3; color: #2c2c2f; }
 
 .run-log-fail { background: #f0f0f2; }
