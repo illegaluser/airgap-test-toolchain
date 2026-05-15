@@ -773,3 +773,108 @@ def test_strip_ime_noise_combined_d13ea6c9320c_pattern():
     assert [o["action"] for o in out] == ["click", "fill"]
     assert out[1]["value"] == "버스"
     assert [o["step"] for o in out] == [1, 2]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# bare iframe chain 정규화 — codegen 이 ``page.locator("iframe[...] >> ...")``
+# 한 호출 안에 frame entry 를 ``>>`` 합성 selector 로 emit 한 경우, AST
+# 변환기가 frame entry segment 를 ``frame=`` prefix 로 끌어내야 한다
+# (resolver/healer 양쪽이 frame scope 에 진입할 수 있게).
+# 2026-05-15 SmartEditor 회귀 사고의 단위 회귀.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_stabilize_iframe_title_stable_pass_through():
+    """짧고 안정적인 title 은 그대로 유지 — 약화하면 ambiguity 가 늘어난다."""
+    from zero_touch_qa.converter_ast import _stabilize_iframe_title
+    assert _stabilize_iframe_title('iframe[title="에디터 전체 영역"]') == \
+        'iframe[title="에디터 전체 영역"]'
+
+
+def test_stabilize_iframe_title_dynamic_long_to_prefix():
+    """동적 신호 (긴 길이 + ``:`` + 연속 공백) → ``[title^="<prefix>"]`` 약화."""
+    from zero_touch_qa.converter_ast import _stabilize_iframe_title
+    sel = (
+        'iframe[title="편집 모드 영역 -  - CTRL+2:첫 번째 툴바, '
+        'CTRL+3:두 번째 툴바, CTRL+4:편집 영역"]'
+    )
+    out = _stabilize_iframe_title(sel)
+    # 안정 prefix 인 "편집 모드 영역" 까지만 남기고 prefix matcher 로 약화.
+    assert out.startswith('iframe[title^=')
+    assert "편집 모드 영역" in out
+    # 동적 부분 (``CTRL+2:`` 등) 은 제거돼 있어야 한다.
+    assert "CTRL" not in out
+
+
+def test_split_iframe_chain_splits_frame_entries_and_leaf():
+    """``iframe[...] >> iframe[...] >> #leaf`` 가 frames + leaf 로 분리된다."""
+    from zero_touch_qa.converter_ast import _split_iframe_chain
+    frames, leaf = _split_iframe_chain(
+        'iframe[title="outer"] >> iframe[title="inner"] >> #child',
+    )
+    assert frames == ['iframe[title="outer"]', 'iframe[title="inner"]']
+    assert leaf == "#child"
+
+
+def test_split_iframe_chain_no_iframe_returns_empty_frames():
+    """frame entry 가 하나도 없으면 frames=[] + leaf 는 원본 그대로."""
+    from zero_touch_qa.converter_ast import _split_iframe_chain
+    frames, leaf = _split_iframe_chain("#a >> .b > c")
+    assert frames == []
+    assert leaf == "#a >> .b > c"
+
+
+def test_convert_ast_locator_chain_with_iframe_normalizes_to_frame_prefix(tmp_path):
+    """``page.locator("iframe[...] >> #card").fill(...)`` →
+    ``frame=iframe[...]`` 가 chain prefix 로 끌려나오고 leaf 가 target 의 본체.
+    """
+    src_path = tmp_path / "src.py"
+    src_path.write_text(
+        "from playwright.sync_api import sync_playwright\n"
+        "def run(playwright):\n"
+        "    browser = playwright.chromium.launch()\n"
+        "    context = browser.new_context()\n"
+        "    page = context.new_page()\n"
+        "    page.goto('https://example.com')\n"
+        "    page.locator('iframe[title=\"에디터 전체 영역\"] >> #keditor_body').click()\n"
+        "with sync_playwright() as playwright:\n"
+        "    run(playwright)\n",
+        encoding="utf-8",
+    )
+    steps = convert_via_ast(str(src_path), str(tmp_path))
+    click_step = next(s for s in steps if s.get("action") == "click")
+    target = click_step["target"]
+    assert target.startswith('frame=iframe[title="에디터 전체 영역"] >> ')
+    assert target.endswith("#keditor_body")
+
+
+def test_convert_ast_locator_chain_nested_iframes_normalize_each(tmp_path):
+    """nested iframe 두 단계 모두 ``frame=`` 으로 정규화 + 동적 title 약화."""
+    src_path = tmp_path / "src.py"
+    src_path.write_text(
+        "from playwright.sync_api import sync_playwright\n"
+        "def run(playwright):\n"
+        "    browser = playwright.chromium.launch()\n"
+        "    context = browser.new_context()\n"
+        "    page = context.new_page()\n"
+        "    page.goto('https://example.com')\n"
+        "    page.locator("
+        "'iframe[title=\"에디터 전체 영역\"] >> "
+        "iframe[title=\"편집 모드 영역 -  - CTRL+2:첫 번째 툴바\"] >> "
+        "#keditor_body').click()\n"
+        "with sync_playwright() as playwright:\n"
+        "    run(playwright)\n",
+        encoding="utf-8",
+    )
+    steps = convert_via_ast(str(src_path), str(tmp_path))
+    click_step = next(s for s in steps if s.get("action") == "click")
+    target = click_step["target"]
+    # 외곽 — 짧고 안정 → 원본 유지.
+    assert 'frame=iframe[title="에디터 전체 영역"]' in target
+    # 내부 — 동적 신호 → prefix matcher 로 약화.
+    assert 'frame=iframe[title^=' in target
+    assert "편집 모드 영역" in target
+    # 단축키 안내 등 동적 부분은 사라져야 한다.
+    assert "CTRL" not in target
+    # leaf 는 그대로.
+    assert target.endswith("#keditor_body")

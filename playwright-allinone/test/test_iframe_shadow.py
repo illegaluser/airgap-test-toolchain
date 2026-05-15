@@ -115,3 +115,75 @@ def test_closed_shadow_fails_fast(make_executor, run_scenario, fixture_url):
     ])
     assert results[0].status == "PASS"
     assert results[-1].status == "FAIL"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# bare iframe[...] chain — codegen 이 frame entry 를 ``frame=`` prefix 없이
+# ``page.locator("iframe[...] >> iframe[...] >> #leaf")`` 형태로 emit 한 경우.
+# 사용자 portal.koreaconnect.kr SmartEditor 사고 (2026-05-15) 의 회귀 검증.
+# resolver 의 _apply_chain_segment 가 bare iframe segment 도 frame_locator
+# 로 진입하는지 + 진입 직후 attached wait 으로 race 를 흡수하는지 확인.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_bare_iframe_chain_resolves_without_frame_prefix(
+    make_executor, run_scenario, fixture_url,
+):
+    """``iframe[title="..."] >> iframe[title="..."] >> #leaf`` 형태로도 안쪽
+    element 에 도달해 click + verify 가 통과해야 한다.
+
+    이 형태는 codegen 직출 .py 의 ``page.locator("...")`` 한 호출 안에 ``>>``
+    합성 selector 가 통째로 들어간 경우에 14-DSL 로 옮겨오면서 만들어진다.
+    converter_ast 가 ``frame=`` 로 정규화하기 전 형태이므로 resolver 가
+    backward-compat 로 받아내야 한다.
+    """
+    executor = make_executor()
+    page = fixture_url("iframe_codegen_chain.html")
+    results, _, _ = run_scenario(executor, [
+        navigate(page, step=1),
+        click(
+            'iframe[title="에디터 전체 영역"] >> '
+            'iframe[title="편집 모드 영역 -  - CTRL+2:첫 번째 툴바, '
+            'CTRL+3:두 번째 툴바"] >> #keditor_body',
+            step=2,
+        ),
+        verify(
+            'iframe[title="에디터 전체 영역"] >> '
+            'iframe[title="편집 모드 영역 -  - CTRL+2:첫 번째 툴바, '
+            'CTRL+3:두 번째 툴바"] >> #editor_status',
+            step=3,
+            condition="contains_text", value="focused",
+        ),
+    ])
+    statuses = [r.status for r in results]
+    assert all(s == "PASS" for s in statuses), f"실패: {statuses}"
+
+
+def test_bare_iframe_chain_with_prefix_title_matcher(
+    make_executor, run_scenario, fixture_url,
+):
+    """동적 title 의 안정 prefix 만 ``[title^="..."]`` 으로 줘도 통과.
+
+    converter_ast 의 _stabilize_iframe_title 이 emit 하는 약화된 selector
+    형태 (``iframe[title^="편집 모드 영역"]``) 를 resolver 가 처리할 수
+    있는지 확인. SmartEditor 의 단축키 안내 문구가 변동하거나 instance 명이
+    바뀌어도 prefix 만 안정적이면 frame 진입 가능한 것이 핵심.
+    """
+    executor = make_executor()
+    page = fixture_url("iframe_codegen_chain.html")
+    results, _, _ = run_scenario(executor, [
+        navigate(page, step=1),
+        click(
+            'iframe[title="에디터 전체 영역"] >> '
+            'iframe[title^="편집 모드 영역"] >> #keditor_body',
+            step=2,
+        ),
+        verify(
+            'iframe[title="에디터 전체 영역"] >> '
+            'iframe[title^="편집 모드 영역"] >> #editor_status',
+            step=3,
+            condition="contains_text", value="focused",
+        ),
+    ])
+    statuses = [r.status for r in results]
+    assert all(s == "PASS" for s in statuses), f"실패: {statuses}"

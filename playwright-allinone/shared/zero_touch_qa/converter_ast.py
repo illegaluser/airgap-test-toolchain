@@ -189,6 +189,100 @@ def _inject_post_click_waits(
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Codegen 의 `locator("iframe[...] >> iframe[...] >> #child")` 형태 정규화
+# ─────────────────────────────────────────────────────────────────────────
+
+# Playwright codegen 은 frame chain 을 두 가지 형태로 emit 한다:
+#   (A) ``page.frame_locator("iframe[...]").locator("#child").click()``
+#   (B) ``page.locator("iframe[...] >> #child").click()``
+# (A) 는 _segments_to_target 의 frame_locator 분기에서 ``frame=`` prefix 로
+# 정규화된다. (B) 는 locator() 한 호출 안에 ``>>`` 합성 selector 를 통째로
+# 넣은 형태라 그동안 14-DSL target 에 그대로 옮겨지면서 frame 진입 정보가
+# 사라졌다 (resolver 와 local_healer 가 page scope 에 머무는 비대칭 원인).
+# 본 헬퍼는 (B) 형태를 ``frame=iframe[...] >> ... >> #child`` 로 정규화한다.
+
+_IFRAME_SELECTOR_RE = re.compile(r"^iframe(?:$|[#.\[:\s>+~])", re.IGNORECASE)
+
+# iframe[title="..."] 의 title 이 동적 의심일 때 적용할 prefix matcher 정규식.
+# 동적 신호 (긴 길이 / ``:`` 포함 / 연속 공백) 가 보이면 ``[title^="<prefix>"]``
+# 로 약화해 SmartEditor 같이 단축키 안내·instance 명이 끼는 자리의 변동에도
+# 깨지지 않게 한다.
+_IFRAME_TITLE_ATTR_RE = re.compile(
+    r'^iframe\[title=(["\'])(?P<val>.*?)\1\]$', re.DOTALL,
+)
+
+# title 이 안정/동적이냐의 판단 기준값. 보수적으로 설정 — 너무 적극적으로
+# 약화하면 한 페이지에 비슷한 iframe 이 여러 개 있는 사이트에서 ambiguity 가
+# 늘어난다.
+_DYNAMIC_TITLE_MIN_LEN = 40
+_DYNAMIC_TITLE_PREFIX_MAX = 25
+
+
+def _stabilize_iframe_title(sel: str) -> str:
+    """``iframe[title="<val>"]`` 형태에서 val 이 동적 의심이면 prefix matcher 로 약화.
+
+    동적 신호 (긴 길이, ``:`` 포함, 연속 공백) 가 하나라도 있으면 title 의
+    안정 prefix 만 남기고 ``[title^="<prefix>"]`` 로 바꾼다. prefix 추출 규칙:
+      1) 첫 ``  `` (연속 공백) 또는 ``- `` 또는 ``,`` 직전까지
+      2) 그래도 25자보다 길면 25자로 자른다
+      3) 비면 원본 그대로 (안전 fallback)
+    """
+    m = _IFRAME_TITLE_ATTR_RE.match(sel)
+    if not m:
+        return sel
+    val = m.group("val")
+
+    is_dynamic = (
+        len(val) >= _DYNAMIC_TITLE_MIN_LEN
+        or ":" in val
+        or "  " in val
+    )
+    if not is_dynamic:
+        return sel
+
+    # 안정 prefix 추출 — 동적 부분이 시작되기 직전까지.
+    candidates: list[int] = []
+    for marker in ("  ", " - ", ", ", ":"):
+        idx = val.find(marker)
+        if idx > 0:
+            candidates.append(idx)
+    cut = min(candidates) if candidates else len(val)
+    if cut > _DYNAMIC_TITLE_PREFIX_MAX:
+        cut = _DYNAMIC_TITLE_PREFIX_MAX
+    prefix = val[:cut].rstrip()
+    if not prefix:
+        return sel
+    # title 값 안의 ``"`` / ``\`` 는 selector 문법 깨므로 안전한 따옴표 선택.
+    if '"' not in prefix:
+        return f'iframe[title^="{prefix}"]'
+    return f"iframe[title^='{prefix}']"
+
+
+def _split_iframe_chain(sel: str) -> tuple[list[str], str]:
+    """``iframe[...] >> ... >> #leaf`` 형태에서 frame entry segments 와 leaf 분리.
+
+    Returns:
+        ``(frame_selectors, leaf)`` — frame_selectors 는 각 iframe segment 의
+        문자열 list (이미 _stabilize_iframe_title 통과). leaf 는 frame 진입을
+        모두 빼고 남는 합성 selector. frame entry 가 하나도 없으면
+        ``([], sel)`` (그대로 통과).
+    """
+    if " >> " not in sel:
+        return [], sel
+    parts = [p.strip() for p in sel.split(" >> ") if p.strip()]
+    frame_parts: list[str] = []
+    leaf_parts: list[str] = []
+    in_leaf = False
+    for p in parts:
+        if not in_leaf and _IFRAME_SELECTOR_RE.match(p):
+            frame_parts.append(_stabilize_iframe_title(p))
+            continue
+        in_leaf = True
+        leaf_parts.append(p)
+    return frame_parts, " >> ".join(leaf_parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Post-processing — 중복 click 압축
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -996,6 +1090,17 @@ class _AstConverter(ast.NodeVisitor):
                 sel = self._literal_str(seg.args[0])
                 if sel is None:
                     return None
+                # codegen 이 frame chain 을 ``page.locator("iframe[...] >> ...")``
+                # 한 호출로 emit 한 경우, frame entry segments 를 ``frame=``
+                # prefix 로 정규화해 resolver/healer 양쪽이 frame scope 에 들어
+                # 갈 수 있게 한다. 동적 의심 title 은 prefix matcher 로 약화.
+                frames, leaf = _split_iframe_chain(sel)
+                if frames:
+                    for fsel in frames:
+                        frame_prefix_parts.append(f"frame={fsel}")
+                    if leaf:
+                        target = self._append_to_target(target, leaf)
+                    continue
                 target = self._append_to_target(target, sel)
                 continue
 

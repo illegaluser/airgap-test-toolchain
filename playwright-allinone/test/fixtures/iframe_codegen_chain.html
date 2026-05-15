@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Iframe codegen-chain fixture (SmartEditor-like)</title>
+</head>
+<body>
+  <h1>Editor host</h1>
+  <iframe id="outer-frame" title="에디터 전체 영역" width="600" height="250"></iframe>
+  <script>
+    // SmartEditor / Naver keditor 와 비슷한 2단 nested iframe 구조.
+    // inner iframe 의 title 은 의도적으로 길고 ":", 연속 공백 같은 동적 신호를
+    // 포함시킨다 — _stabilize_iframe_title 의 prefix matcher 약화 + resolver/healer
+    // 의 frame entry 진입 양쪽을 한 번에 검증한다.
+    const outerHtml = `
+      <!doctype html><html><body>
+        <iframe id="inner-frame"
+                title="편집 모드 영역 -  - CTRL+2:첫 번째 툴바, CTRL+3:두 번째 툴바"
+                width="500" height="150"></iframe>
+        <script>
+          const innerHtml = \`
+            <!doctype html><html><body>
+              <div id="keditor_body" contenteditable="true">edit me</div>
+              <span id="editor_status">idle</span>
+              <script>
+                document.getElementById("keditor_body").addEventListener("click", () => {
+                  document.getElementById("editor_status").textContent = "focused";
+                });
+              <\\/script>
+            </body></html>
+          \`;
+          document.getElementById("inner-frame").srcdoc = innerHtml;
+        <\/script>
+      </body></html>
+    `;
+    document.getElementById("outer-frame").srcdoc = outerHtml;
+  </script>
+</body>
+</html>

@@ -28,6 +28,20 @@ _SEMANTIC_PREFIX_TO_METHOD: dict[str, str] = {
 # role= "..." , name= "..." 분리 정규식 — 3개 분기 공용.
 _ROLE_NAME_RE = re.compile(r"role=(.+?),\s*name=(.+)")
 
+# Playwright codegen 이 frame chain 을 ``frame_locator()`` 호출이 아니라
+# ``locator("iframe[...] >> iframe[...] >> #child")`` 형태의 ``>>`` 합성
+# selector 로 emit 하는 경우가 있다. converter_ast 가 이를 그대로 14-DSL
+# target 으로 옮기면 ``frame=`` prefix 없이 bare ``iframe[...]`` segment 만
+# 남는다. 이 정규식은 chain segment 가 그런 frame entry 인지 식별해 resolver
+# 와 local_healer 가 둘 다 ``cur.frame_locator(seg)`` 로 진입할 수 있게 한다.
+# pattern 의 의미: 'iframe' 으로 시작 + 끝났거나 (#/./[/:/space/>/+/~) 가 뒤따름.
+_IFRAME_SELECTOR_RE = re.compile(r"^iframe(?:$|[#.\[:\s>+~])", re.IGNORECASE)
+
+# iframe contentDocument 가 mount + attach 될 때까지 짧게 기다리는 timeout.
+# SmartEditor / Naver keditor / 결제 PG iframe 같은 비동기 적재 case 의 race
+# 흡수용. 이미 attached 면 즉시 통과하므로 healthy case 의 비용은 거의 0.
+_FRAME_ATTACH_TIMEOUT_MS = 1500
+
 # name=... 끝에 붙은 ``, exact=true|false`` modifier — converter 가
 # ``get_by_role(..., exact=True)`` 를 보존하기 위해 emit. 미존재 시 False.
 _EXACT_SUFFIX_RE = re.compile(r",\s*exact=(true|false)\s*$", re.IGNORECASE)
@@ -85,6 +99,29 @@ class LocatorResolver:
             return loc.count()
         except Exception:
             return 0
+
+    @staticmethod
+    def _wait_frame_attached(fl) -> None:
+        """frame_locator 진입 직후 안쪽 document 가 attach 될 때까지 짧게 기다린다.
+
+        iframe element 가 DOM 에 mount 됐다고 해서 그 ``contentDocument`` 가
+        곧바로 사용 가능한 것은 아니다. SmartEditor / Naver keditor / 결제 PG
+        같은 비동기 적재 iframe 은 mount 후 수백 ms 가 지나야 안쪽 body 가
+        attached 된다. Playwright 의 ``count()`` 는 auto-wait 을 하지 않아 그
+        race 가 그대로 0 건으로 떨어진다.
+
+        여기서 ``frame_locator(...).locator(":root").wait_for(state="attached")``
+        를 한 번 호출해 race 를 흡수한다. 이미 attached 면 즉시 통과하므로
+        정상 case 에는 사실상 비용이 없다. 실패해도 silent — 진짜 frame 이 없는
+        경우(외부 url 차단/광고 차단 등)에는 후속 ``_safe_count == 0`` 가 잡고
+        치유 체인이 가져간다.
+        """
+        try:
+            fl.locator(":root").first.wait_for(
+                state="attached", timeout=_FRAME_ATTACH_TIMEOUT_MS,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def record_alias(self, original, healed) -> None:
         """원본 target 이 healed target 으로 복구된 사실을 기록한다.
@@ -423,9 +460,25 @@ class LocatorResolver:
             if not sel:
                 return None
             try:
-                return cur.frame_locator(sel)
+                fl = cur.frame_locator(sel)
             except Exception:
                 return None
+            LocatorResolver._wait_frame_attached(fl)
+            return fl
+
+        # Codegen 이 ``locator("iframe[...] >> iframe[...] >> #x")`` 형태로
+        # frame chain 을 emit 한 경우, converter_ast 는 ``>>`` 합성 selector 를
+        # 그대로 옮기므로 chain segment 가 bare ``iframe[...]`` 로 들어온다.
+        # ``frame=<sel>`` 명시 형태와 동일하게 frame_locator 로 진입시켜 안쪽
+        # element 까지 도달 가능하게 한다. 진입 직후 attached wait 으로 비동기
+        # 적재 race 흡수.
+        if _IFRAME_SELECTOR_RE.match(seg):
+            try:
+                fl = cur.frame_locator(seg)
+            except Exception:
+                return None
+            LocatorResolver._wait_frame_attached(fl)
+            return fl
 
         if seg.startswith("shadow="):
             # T-C (P0.2) — explicit shadow host marker. Playwright 는 open

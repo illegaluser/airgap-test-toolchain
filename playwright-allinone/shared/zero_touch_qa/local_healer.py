@@ -4,6 +4,8 @@ import logging
 
 from playwright.sync_api import Page, Locator
 
+from .locator_resolver import _IFRAME_SELECTOR_RE
+
 log = logging.getLogger(__name__)
 
 
@@ -128,6 +130,19 @@ class LocalHealer:
                     break
                 try:
                     cur = cur.frame_locator(sel)
+                except Exception:
+                    return self.page, "page"
+                consumed += 1
+                continue
+            # codegen 이 frame entry 를 ``frame=`` prefix 없이 bare
+            # ``iframe[...]`` 형태로 emit 한 chain (예: SmartEditor / Naver
+            # keditor 의 nested editor) 도 frame scope 로 진입시킨다. resolver
+            # 의 _apply_chain_segment 와 동일한 정규식을 공용 — 두 경로의
+            # frame scope 인식 기준이 어긋나면 같은 시나리오에서 resolver 는
+            # 통과하는데 healer 는 page scope 에 머무는 비대칭이 생긴다.
+            if _IFRAME_SELECTOR_RE.match(seg):
+                try:
+                    cur = cur.frame_locator(seg)
                 except Exception:
                     return self.page, "page"
                 consumed += 1
