@@ -20,6 +20,7 @@ Stop-ReplayUI.bat
 Launch-ReplayUI.command
 Stop-ReplayUI.command
 README.txt
+selftest-receive.py
 
 __pycache__/
 *.pyc

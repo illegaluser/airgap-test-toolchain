@@ -55,10 +55,14 @@ echo "[build-cache] BUILD_DIR=$BUILD_DIR"
 echo "[build-cache] PLAYWRIGHT_VERSION=$PLAYWRIGHT_VERSION"
 
 # wheels/<os>/ 채우기.
-declare -A PIP_PLATFORM=(
-  [win64]="win_amd64"
-  [macos-arm64]="macosx_11_0_arm64"
-)
+# macOS 기본 /bin/bash 는 3.2 라 associative array (`declare -A`) 미지원 → 함수 분기.
+pip_platform_for() {
+  case "$1" in
+    win64)        echo "win_amd64" ;;
+    macos-arm64)  echo "macosx_11_0_arm64" ;;
+    *) echo "알 수 없는 target: $1" >&2; return 1 ;;
+  esac
+}
 
 # uvicorn 만 — [standard] extra 는 uvloop 를 끌어오는데 uvloop 는 Windows wheel
 # 미존재. pip download --platform win_amd64 가 *현재 호스트* marker (Linux/WSL2)
@@ -81,7 +85,7 @@ for t in "${TARGETS[@]}"; do
     echo "[build-cache] pip download → $out (target=$t)"
   fi
   "$PYTHON" -m pip download \
-    --platform "${PIP_PLATFORM[$t]}" \
+    --platform "$(pip_platform_for "$t")" \
     --python-version 3.11 \
     --only-binary :all: \
     --exists-action i \

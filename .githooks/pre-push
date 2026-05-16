@@ -93,7 +93,7 @@ OS="$(uname -s)"
 PACK_OK=0
 case "$OS" in
   Darwin)
-    if bash "$BUILD_DIR/pack-macos.sh" --reuse-cache >&2; then
+    if bash "$BUILD_DIR/pack-macos.sh" --reuse-cache --no-zip >&2; then
       PACK_OK=1
     fi
     ;;
