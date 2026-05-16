@@ -211,6 +211,10 @@ foreach ($pkg in @("recording_shared", "zero_touch_qa")) {
 Copy-Item -Path (Join-Path $TemplatesDir "Launch-ReplayUI.bat") -Destination $ReplayUiDir -Force
 Copy-Item -Path (Join-Path $TemplatesDir "Stop-ReplayUI.bat")   -Destination $ReplayUiDir -Force
 Copy-Item -Path (Join-Path $TemplatesDir "README.txt")          -Destination $ReplayUiDir -Force
+# E 그룹 receiving-PC selftest — 첫 실행 시 Launch-ReplayUI 가 호출.
+# 설계 근거: ..\docs\PLAN_E2E_REWRITE.md §5 그룹 E.
+$SelftestSrc = Join-Path $AllInOneDir "e2e-test\selftest_receive\run.py"
+Copy-Item -Path $SelftestSrc -Destination (Join-Path $ReplayUiDir "selftest-receive.py") -Force
 
 # 6b. .bat 파일을 강제 CRLF 로 정규화 — .gitattributes 가 못 잡는 경로
 # (git autocrlf 비활성, 외부 편집기 LF 저장, 캐시된 worktree) 모두 보호.

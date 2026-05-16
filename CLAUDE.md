@@ -117,31 +117,30 @@ Dify 1.13 에서 Ollama 같은 model provider 는 **플러그인 기반**이다.
 
 Phase 1.5 이후 버전업이 필요해지면 `tree-sitter-languages` 를 `tree-sitter-language-pack` (신규 API 지원) 로 교체할 것.
 
-### pre-commit E2E 슈트 자동 실행
+### e2e 슈트 자동 실행 — 4슬롯 구조 (2026-05-16 전면 재작성)
 
-저장소 루트의 [.githooks/pre-commit](.githooks/pre-commit) 이 staged 변경이 특정 영역(`recording_service/`, `zero_touch_qa/{auth_profiles,executor,__main__,url_discovery}.py`, 매칭되는 test 파일)을 건드리면 다음 e2e 슈트를 **자동으로 모두 실행**한다. 회귀 시 commit 차단.
+기존 18094-18098 daemon e2e 슈트 5개 + popup/tour/journey/headed 슈트 9개는 2026-05-16 일괄 폐기됨 (들인 시간 대비 실제 회귀 가드 효과가 낮아). 새 구조 + 설계 근거 + 폐기된 슈트 진단은 [playwright-allinone/docs/PLAN_E2E_REWRITE.md](playwright-allinone/docs/PLAN_E2E_REWRITE.md) 참조.
 
-| 슈트 | 포트 | 영역 |
+| 슬롯 | 발사 | 가드 |
 |---|---|---|
-| `test/test_auth_profile_api_e2e.py` | 18094 | Auth Profile HTTP API |
-| `test/test_auth_profile_ui_e2e.py` | 18095 | Auth Profile UI |
-| `test/test_discover_api_e2e.py` | 18096 | Discover URLs API |
-| `test/test_recording_ui_layout_e2e.py` | 18097 | Recording UI Layout (Round 3+4) |
-| `test/test_recording_ui_e2e.py` | 18098 | Recording UI 회귀 (2026-05-14 이전 18093 → 18098) |
+| pre-commit | 매 commit | A 그룹 emit/generator unit (`e2e-test/unit/`, < 30s, 26 tests) |
+| pre-push | 매 push | playwright-allinone/e2e-test/ 전체 (< 5min, 33 tests) + Replay UI 휴대용 자산 stale 자동 갱신 |
+| build-time selftest | `./build.sh` 끝 | D 그룹 (`e2e-test/selftest_build/run.sh`, warn-only) — d4d957b, 0da0036 등 P0 surface |
+| receiving-PC selftest | `Launch-ReplayUI` 최초 1회 | E 그룹 (`e2e-test/selftest_receive/run.py`) — Python/Playwright/Chromium/replay_service 자가진단 |
 
-포트 충돌 감지 루프는 18094~18098 까지 본다. 18093 은 호스트 Replay UI 의 영구 포트라 감지 범위에서 제외.
+자동화 불가 잔여 (popup Stop&Convert hang, R-Plus replay, agent 자동연결, 외부 SUT 벤치) 는 [playwright-allinone/docs/RELEASE_CHECKLIST.md](playwright-allinone/docs/RELEASE_CHECKLIST.md) 의 release 직전 수동 항목.
 
 **Replay UI 의 두 실행 형태 — 다른 포트**:
 
 | 형태 | 포트 | 어디서 띄우는가 |
 |---|---|---|
-| 호스트 Replay UI | 18093 | dev/빌드 머신에서 직접 `python -m uvicorn replay_service.server:app --port 18093`. Recording UI cross-link 도 여기로. **18093 의 영구 owner 는 이 호스트 Replay UI** — e2e 슈트 전용 포트가 아니다. |
-| 휴대용 Replay UI | 18099 | 받는 PC 가 zip 풀고 `Launch-ReplayUI.{bat,command}` 더블클릭. build.sh 는 띄우지 않는다 (호스트 18093 과 분리). |
+| 호스트 Replay UI | 18093 | dev/빌드 머신에서 직접 `python -m uvicorn replay_service.server:app --port 18093`. Recording UI cross-link 도 여기로. |
+| 휴대용 Replay UI | 18099 | 받는 PC 가 zip 풀고 `Launch-ReplayUI.{bat,command}` 더블클릭. |
 | Recording UI (호스트 데몬) | 18092 | agent-setup step 6.5 가 띄움 |
 
-원래 모든 Replay UI 가 18094 였는데 18094 가 `test_auth_profile_api_e2e.py` 슈트 포트라 commit 회귀가 조용히 스킵되는 사고가 있어, 2026-05-14 사용자 결정으로 **호스트 Replay UI 는 18093, 휴대용 Replay UI 는 18099** 로 분리했다.
+원래 모든 Replay UI 가 18094 였는데 18094 가 e2e 슈트 포트라 commit 회귀가 조용히 스킵되는 사고가 있어, 2026-05-14 사용자 결정으로 **호스트 Replay UI 는 18093, 휴대용 Replay UI 는 18099** 로 분리. e2e 포트 18094-18098 은 폐기와 함께 회수됨.
 
 - 설치: `bash playwright-allinone/scripts/install-git-hooks.sh` 1회.
-- 일시 우회: `git commit --no-verify` — 사용자가 명시 요청한 경우 외 금지.
+- 일시 우회: `git commit --no-verify` / `git push --no-verify` — 사용자가 명시 요청한 경우 외 금지.
 
-**새 슈트 추가 체크리스트**: 사용 포트가 18094-18098 e2e 범위 또는 18092 (Recording UI) / 18093 (호스트 Replay UI) / 18099 (휴대용 Replay UI) 영구 데몬과 겹치지 않게 다음 번호 할당 → `.githooks/pre-commit` 의 `RELEVANT_PATTERN` 에 신규 모듈/테스트 정규식 추가 → 포트 충돌 감지 루프와 실행 루프 양쪽 모두 추가 → 헤더 코멘트의 슈트 번호/포트 표 갱신.
+**새 슈트 추가 가이드**: `playwright-allinone/e2e-test/{unit,integration,flow}/` 에 추가. 1 슈트 = 1 회귀 commit 매핑. docstring 첫 줄에 표적 commit hash. fixture 는 `e2e-test/fixtures/` 에 self-served HTML.

@@ -17,6 +17,9 @@ monitor-runtime-*.zip
 playwright-allinone/artifacts/
 artifacts/
 
+# D 그룹 build-time selftest 산출 로그.
+playwright-allinone/selftest.log
+
 # pytest cache
 .pytest_cache/
 

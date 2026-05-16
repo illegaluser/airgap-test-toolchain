@@ -16,6 +16,17 @@ export PYTHONIOENCODING="utf-8"
 # 데이터 디렉토리 사전 생성.
 mkdir -p "$ROOT/data/auth-profiles" "$ROOT/data/scenarios" "$ROOT/data/scripts" "$ROOT/data/runs"
 
+# E 그룹 receiving-PC selftest — 첫 실행 1회 (../docs/PLAN_E2E_REWRITE.md §5 E).
+# 통과 시 .selftest_done 마커 → 다음 실행에선 skip. 실패해도 launcher 는 계속.
+if [ ! -f "$ROOT/.selftest_done" ] && [ -f "$ROOT/selftest-receive.py" ]; then
+  echo "[Replay UI] First-run selftest..."
+  if "$ROOT/python/bin/python3" "$ROOT/selftest-receive.py"; then
+    touch "$ROOT/.selftest_done"
+  else
+    echo "[Replay UI] Selftest reported issues — see output above. Continuing."
+  fi
+fi
+
 # 포트 충돌 — 기존 인스턴스 우선.
 if lsof -nP -iTCP:18099 -sTCP:LISTEN >/dev/null 2>&1; then
   echo "[Replay UI] Port 18099 already in use — opening existing instance."

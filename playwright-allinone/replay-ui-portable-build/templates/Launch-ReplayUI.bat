@@ -15,6 +15,18 @@ if not exist "%ROOT%data\scenarios"     mkdir "%ROOT%data\scenarios" >nul 2>&1
 if not exist "%ROOT%data\scripts"       mkdir "%ROOT%data\scripts" >nul 2>&1
 if not exist "%ROOT%data\runs"          mkdir "%ROOT%data\runs" >nul 2>&1
 
+REM E 그룹 receiving-PC selftest — 첫 실행 1회 (../docs/PLAN_E2E_REWRITE.md §5 E).
+REM 통과 시 .selftest_done 마커 -> 다음 실행 skip. 실패해도 launcher 는 계속.
+if not exist "%ROOT%.selftest_done" if exist "%ROOT%selftest-receive.py" (
+  echo [Replay UI] First-run selftest...
+  "%ROOT%embedded-python\python.exe" "%ROOT%selftest-receive.py"
+  if not errorlevel 1 (
+    type nul > "%ROOT%.selftest_done"
+  ) else (
+    echo [Replay UI] Selftest reported issues - see output above. Continuing.
+  )
+)
+
 REM 포트 충돌 — 기존 인스턴스가 이미 18099 를 잡고 있으면 그 쪽으로 연결.
 netstat -ano | findstr ":18099 " | findstr "LISTENING" >nul
 if not errorlevel 1 (

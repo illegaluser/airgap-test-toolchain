@@ -10,9 +10,16 @@ git config core.hooksPath .githooks
 
 ## 포함된 hook
 
+### `pre-commit`
+
+`playwright-allinone/e2e-test/unit/` 슈트 발사 (A 그룹 emit/generator unit, < 30s). 회귀 시 commit 차단. 설계 근거: [`PLAN_E2E_REWRITE.md`](../playwright-allinone/docs/PLAN_E2E_REWRITE.md) §4 (4슬롯) + §5 (그룹 A).
+
 ### `pre-push`
 
-Replay UI 휴대용 자산의 stale 을 검출해 자동 갱신.
+두 가지 일을 한다 (순서 중요):
+
+1. **`playwright-allinone/e2e-test/` 슈트 발사** — 실패 시 push 차단. CI 없음 전제 (github actions 비용 0 정책), pre-commit 보다 빈도 낮은 push 시점이 e2e 자동 가드의 유일 슬롯. 시간 예산 < 5분. 설계 근거: [`PLAN_E2E_REWRITE.md`](../playwright-allinone/docs/PLAN_E2E_REWRITE.md).
+2. **Replay UI 휴대용 자산 stale 검출 + 자동 갱신** — 경고만, push 비차단.
 
 **왜 필요한가** — `playwright-allinone/replay-ui/` 폴더는 `zip -r` 한 줄로 외부 반출되는 휴대용 번들 그 자체이다. 그 안의 `embedded-python/`, `site-packages/`, `chromium/`, `recording_shared/`, `zero_touch_qa/` 같은 자산은 `.gitignore` 라 git 으로 추적되지 않는다. 출시 담당자가 `pack-windows.ps1` / `pack-macos.sh` 호출을 깜빡하면 *옛 자산이 든 zip* 이 그대로 나간다.
 

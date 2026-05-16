@@ -496,6 +496,14 @@ if [ "$REDEPLOY" = "true" ]; then
 fi
 
 log ""
+# D 그룹 build-time selftest — 빌드 산출물 정상성 사후 가드 (warn 만, 빌드 비차단).
+# 설계 근거: docs/PLAN_E2E_REWRITE.md §5 그룹 D.
+if [ -x "$SCRIPT_DIR/e2e-test/selftest_build/run.sh" ]; then
+  log ""
+  log "[selftest] D 그룹 build-time 가드 실행..."
+  bash "$SCRIPT_DIR/e2e-test/selftest_build/run.sh" || true
+fi
+log ""
 log "=========================================================================="
 log "빌드 완료 (호스트 하이브리드 이미지 — 내부 Ollama·agent 없음)"
 log ""

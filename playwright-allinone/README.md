@@ -138,6 +138,49 @@ chmod +x *.sh
 
 자세한 설치 절차 (사전 요구사항, agent 자동/수동 연결, 첫 Pipeline 실행, 첫 녹화·재생) 는 [QUICKSTART](docs/quickstart.md) 에 단계별로 있다.
 
+## 테스트 슈트 (e2e-test/)
+
+2026-05-16 전면 재작성. 기존 daemon e2e 슈트 10개 + headed walkthrough 4개는 폐기. 설계 근거 + 폐기 진단은 [docs/PLAN_E2E_REWRITE.md](docs/PLAN_E2E_REWRITE.md), 자동화 불가 잔여는 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+
+CI 0대 전제 (github actions 비용 0 정책). 슬롯 4개 — 모두 로컬:
+
+| 슬롯 | 발사 | 시간 예산 | 가드 |
+| --- | --- | --- | --- |
+| `pre-commit` | 매 commit | < 30s | `e2e-test/unit/` — emit/generator 결정론 단위 (외부 의존 0) |
+| `pre-push` | 매 push | < 5min | `e2e-test/` 전체 + Replay UI 휴대용 자산 stale 자동 갱신 |
+| build-time selftest | `./build.sh` 끝 | 환경별 | `e2e-test/selftest_build/run.sh` — D 그룹 (warn-only, 빌드 비차단) |
+| receiving-PC selftest | `Launch-ReplayUI.{bat,command}` 최초 1회 | < 1min | `e2e-test/selftest_receive/run.py` — E 그룹 (Python/Playwright/Chromium/replay_service 자가진단) |
+
+### 슈트 구조
+
+```text
+playwright-allinone/e2e-test/
+├── unit/             # pre-commit 슬롯. 1 파일 = 1 회귀 commit (docstring 첫 줄에 hash 명시).
+├── integration/      # pre-push 슬롯. Playwright + fixtures/ self-served HTML.
+├── flow/             # pre-push 슬롯. Recording UI / Replay UI daemon round-trip.
+├── fixtures/         # integration/ 과 flow/ 가 공유하는 self-served HTML (1 fixture = 1 회귀 패턴).
+├── selftest_build/   # ./build.sh 끝에 호출.
+└── selftest_receive/ # 휴대용 zip 안 첫 실행 시 호출.
+```
+
+### 설치 (개발자 PC 1회)
+
+```bash
+bash playwright-allinone/scripts/install-git-hooks.sh
+```
+
+이후 매 commit/push 마다 자동 발사. 우회: `git commit --no-verify` / `git push --no-verify` (긴급 핫픽스 외 금지).
+
+### 회귀 가드 추가하는 법
+
+새 회귀를 막는 슈트를 추가할 때는 다음 순서:
+
+1. 회귀 commit hash 확정 + 어느 슬롯에 속하는지 결정 (unit / integration / flow).
+2. `e2e-test/<slot>/test_<area>_<keyword>.py` 신설. docstring 첫 줄에 `Regression guard for <hash> — <한 줄 설명>`.
+3. fixture HTML 필요하면 `e2e-test/fixtures/<keyword>.html` 신설. 1 fixture = 1 패턴.
+4. 슬롯 시간 예산 (pre-commit < 30s, pre-push < 5min) 초과하지 않게 fixture 단순화.
+5. 통과 확인 후 commit.
+
 ## build.sh 자세히
 
 이 스크립트 한 개가 image 빌드 → 컨테이너 기동 → 데이터 초기화 → host agent 연결까지 모두 처리한다. 옵션 조합으로 "지금 무엇까지 할지" 를 선택한다.

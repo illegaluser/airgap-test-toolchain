@@ -1,0 +1,40 @@
+<!doctype html>
+<!--
+  Regression fixture for c9924c3 — SPA 라우트 / 비동기 DOM 마운트 패턴.
+
+  Step 1 트리거 후 ~1.5s 지연 (executor settle 윈도 3s+2s 의 절반 정도) 뒤에
+  Step 2 의 버튼이 DOM 에 마운트된다. Step 1 의 settle 만으로는 Step 2 의
+  resolver 가 잡지 못해 0건. 그 후 executor 의 polling-wait fallback 이 동작
+  해야 1.5s 후 등장한 버튼을 잡고 PASS 로 통과.
+
+  원본 사용자 보고는 4s 지연 (koreaconnect 포털 step 14 → step 15) 였지만
+  pre-push 슈트는 빨라야 하므로 1.5s 로 단축 — polling-wait 회로를 *통과*
+  한다는 것만 확인하면 된다 (4s vs 1.5s 둘 다 fallback 경로 동일).
+-->
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>SPA lazy-mount regression fixture</title>
+</head>
+<body>
+  <h1>SPA lazy-mount fixture</h1>
+  <p>Step 1 트리거 → 1.5초 뒤 step 2 버튼 DOM 마운트.</p>
+  <button id="btn-step1">트리거</button>
+  <div id="container"></div>
+  <p id="clicked">last click: <span id="clicked-text">(none)</span></p>
+  <script>
+    const DELAY_MS = 1500;
+    document.getElementById("btn-step1").addEventListener("click", () => {
+      setTimeout(() => {
+        const btn = document.createElement("button");
+        btn.id = "btn-step2";
+        btn.textContent = "사용종료";
+        btn.addEventListener("click", () => {
+          document.getElementById("clicked-text").textContent = "사용종료";
+        });
+        document.getElementById("container").appendChild(btn);
+      }, DELAY_MS);
+    });
+  </script>
+</body>
+</html>

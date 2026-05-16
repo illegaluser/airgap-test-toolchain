@@ -1,0 +1,21 @@
+<!doctype html>
+<!--
+  Regression fixture for b4fc0a1 — 합성된 selector 가 매치 0건/2+건 시 drop.
+
+  두 개의 link 가 동일한 accessible name ("Submit") 을 가져 ``page.get_by_role(
+  'link', name='Submit', exact=True)`` 의 count() == 2. ``_extract_stable_selector``
+  가 합성 selector 를 회귀 .py 에 박기 전 probe 단계에서 2+건 매치를 감지하고
+  빈 문자열 반환 → 자가 치유가 실제 통과시킨 selector 로 fallback.
+
+  본 fixture 는 그 ambiguous-match drop 분기를 자극.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>synthetic_selector_ambiguous</title>
+</head>
+<body>
+  <a class="dup" href="#one">Submit</a>
+  <a class="dup" href="#two">Submit</a>
+</body>
+</html>

@@ -201,6 +201,9 @@ copy_module "$SHARED_DIR/zero_touch_qa"    "zero_touch_qa"
 cp "$TEMPLATES_DIR/Launch-ReplayUI.command" "$REPLAYUI_DIR/"
 cp "$TEMPLATES_DIR/Stop-ReplayUI.command"   "$REPLAYUI_DIR/"
 cp "$TEMPLATES_DIR/README-macos.txt"         "$REPLAYUI_DIR/README.txt"
+# E 그룹 receiving-PC selftest — 첫 실행 시 Launch-ReplayUI 가 호출.
+# 설계 근거: ../docs/PLAN_E2E_REWRITE.md §5 그룹 E.
+cp "$ALLINONE_DIR/e2e-test/selftest_receive/run.py" "$REPLAYUI_DIR/selftest-receive.py"
 chmod +x "$REPLAYUI_DIR/Launch-ReplayUI.command" "$REPLAYUI_DIR/Stop-ReplayUI.command"
 
 # 6. data/ 빈 디렉토리.

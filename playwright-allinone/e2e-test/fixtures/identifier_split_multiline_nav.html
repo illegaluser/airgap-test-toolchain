@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<!--
+  Regression fixture for f1761f2 (executor 식별자 줄바꿈 정규화).
+
+  사용자 보고 (adc30a1e3fa3 step 21): multi-line nav link 가 innerText 첫 줄만
+  잡혀 "디지털융합플랫폼" 으로 잘려 emit → exact 매칭 0 건 → 30s timeout.
+  fix 는 줄바꿈/다중 공백을 단일 공백으로 정규화해 풀 네임 "디지털융합플랫폼
+  페르소나 ChatBot" 으로 식별자 보존.
+
+  이 fixture 는 그 회귀를 재현하는 multi-line nav 구조 (block-level span 으로
+  innerText 가 "A\nB\nC" 형태) 를 단일 link 로 제공한다.
+-->
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>identifier_split_multiline_nav</title>
+  <style>
+    a.multiline-nav span { display: block; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a class="multiline-nav" href="#target">
+      <span>디지털융합플랫폼</span>
+      <span>페르소나</span>
+      <span>ChatBot</span>
+    </a>
+  </nav>
+</body>
+</html>
