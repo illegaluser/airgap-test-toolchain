@@ -121,7 +121,7 @@ bash scripts/run-wsl2.sh
 
 | # | 산출물 | 대상 PC | 만드는 명령 (빌드 머신) | 받는 사람이 하는 일 |
 |---|---|---|---|---|
-| 1 | `dscore.ttc.playwright-<ts>.tar.gz` | 녹화 PC (Docker 호스트) | `bash playwright-allinone/build.sh` | `docker load` → `build.sh --redeploy` |
+| 1 | `dscore.ttc.playwright-<ts>.tar.gz` | 녹화 PC (Docker 호스트) | `bash playwright-allinone/build.sh --tarball` (또는 `bash export-airgap.sh` 가 자동) | `docker load` → `build.sh --redeploy` |
 | 2 | `DSCORE-ReplayUI-portable-{win64\|macos-arm64}-<ts>.zip` | 모니터링 PC (Replay UI) | `bash build-cache.sh` 로 캐시 채운 뒤 `pack-windows.ps1` (Windows 빌드 머신) 또는 `pack-macos.sh` (Mac 빌드 머신) | `unzip` → `Launch-ReplayUI.bat` / `Launch-ReplayUI.command` 더블클릭. **설치 없음, 인터넷·관리자권한 불요**. |
 
 녹화 + 휴대용 두 산출을 한 번에 묶고 싶으면 저장소 루트 wrapper:
@@ -135,6 +135,7 @@ bash export-airgap.sh --target macos-arm64
 ```
 
 > **빌드 머신 OS 분기**:
+>
 > - macOS arm64 빌드 머신: 양쪽 zip 산출 가능 (Windows zip 은 pwsh 7 설치 시).
 > - Windows 빌드 머신 (Git Bash / WSL2 Ubuntu): win64 zip 만 산출 (pack-macos.sh 는 macOS arm64 native 의존이라 호출 불가).
 > - Linux 네이티브: 휴대용 빌드 불가.

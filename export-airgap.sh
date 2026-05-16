@@ -65,7 +65,7 @@ echo "[export-airgap] 시작 — recording=${DO_RECORDING}, replay=${DO_REPLAY},
 if [[ "$DO_RECORDING" = "1" ]]; then
   echo
   echo "═══ [1/2] Recording PC — Docker 이미지 빌드 + tarball 산출 ═══"
-  bash "$ROOT/playwright-allinone/build.sh"
+  bash "$ROOT/playwright-allinone/build.sh" --tarball
 fi
 
 # 휴대용 Replay UI 빌드 — OS 분기 정책 (헤더 코멘트 참조).

@@ -214,14 +214,16 @@ agent 실행 로그는 `/tmp/dscore-agent.log`.
 
 | 옵션 | 역할 | 자주 쓰는 상황 |
 |---|---|---|
-| (없음) | 빌드만 — `dscore.ttc.playwright-<ts>.tar.gz` 산출 | airgap 머신으로 옮길 배포 패키지 만들 때 |
+| (없음) | 빌드만 — 이미지만 docker daemon 에 남기고 끝. tar.gz 미추출이 기본. | 일반 dev iteration |
+| `--tarball` | 빌드 + airgap 반출용 `dscore.ttc.playwright-<ts>.tar.gz` 산출 | 다른 머신으로 옮길 배포 패키지 만들 때 (`export-airgap.sh` 가 자동으로 켠다) |
+| `--no-cache` | docker buildx 레이어 캐시 무시하고 전체 레이어 재빌드 (30-90분) | Dockerfile / 베이스 이미지 / 시스템 라이브러리 의심 시 |
 | `--redeploy` | 빌드 + 기존 컨테이너 swap + **호스트 agent · Recording UI(18092) · 호스트 Replay UI(18093) 동시 자동 구동**. 데이터 볼륨은 보존. | 같은 머신에서 코드 수정 후 즉시 재기동 |
 | `--redeploy --reprovision` | 위 + provision 재실행. KB 임베딩 / Jenkins 이력 / 챗봇 대화는 보존하되 chatflow / Jenkins job 정의 / Dify provider 등록은 새 이미지 기준으로 재생성. | chatflow YAML 이나 provision 로직을 바꿨을 때 |
 | `--redeploy --fresh` | 위 + 볼륨까지 삭제 (`dscore-data` 제거). **모든 데이터 폐기**. | 처음부터 다시. 디버깅 막판. |
 | `--redeploy --no-agent` | 빌드 + 컨테이너만 재기동, agent 연결은 스킵 | CI 머신에서 컨테이너만 갱신 |
 | `-h`, `--help` | 도움말 출력 | |
 
-`--fresh` 와 `--reprovision` 동시 지정 시 `--fresh` 가 우선 (어차피 전체 wipe).
+`--fresh` 와 `--reprovision` 동시 지정 시 `--fresh` 가 우선 (어차피 전체 wipe). 구 `--skip-tarball` 은 deprecated — 이미 기본 동작이라 명시할 필요 없음 (호환을 위해 남겨둠).
 
 ### 환경변수
 
@@ -231,7 +233,7 @@ agent 실행 로그는 `/tmp/dscore-agent.log`.
 | `EMBEDDING_MODEL` | `bge-m3:latest` | Test Planning RAG KB 용 임베딩 모델. |
 | `IMAGE_TAG` | `dscore.ttc.playwright:latest` | Docker image 태그 |
 | `TARGET_PLATFORM` | `uname -m` 자동 감지 | `linux/arm64` (Apple Silicon) 또는 `linux/amd64`. 다른 아키 서버로 배포할 때만 override. |
-| `OUTPUT_TAR` | `dscore.ttc.playwright-<ts>.tar.gz` | 산출 tar 파일명 |
+| `OUTPUT_TAR` | `dscore.ttc.playwright-<ts>.tar.gz` | `--tarball` 시 산출 파일명 |
 | `FORCE_PLUGIN_DOWNLOAD` | `false` | `true` 면 `jenkins-plugins/` `dify-plugins/` 에 파일이 있어도 재다운로드. 플러그인 버전 갱신 시만. |
 | `AGENT_NAME` | OS 별 자동 (Mac=`mac-ui-tester`, 그 외=`wsl-ui-tester`) | Jenkins Node 이름 |
 | `RECORDING_HOST_ROOT` | `~/.dscore.ttc.playwright-agent/recordings` | host 의 녹화 디렉토리 (컨테이너 `/recordings` 로 bind) |
@@ -242,8 +244,8 @@ agent 실행 로그는 `/tmp/dscore-agent.log`.
 # 처음 한 번 — 빌드 + 컨테이너 + agent 까지 (15-30분 첫 빌드, 이후 3-10분)
 ./build.sh --redeploy
 
-# tar.gz 만 만들어 다른 머신으로 전달 (airgap)
-./build.sh
+# tar.gz 만 만들어 다른 머신으로 전달 (airgap). export-airgap.sh wrapper 도 가능.
+./build.sh --tarball
 
 # 코드/스크립트만 수정 → 같은 머신에서 즉시 갱신
 ./build.sh --redeploy
@@ -253,6 +255,9 @@ agent 실행 로그는 `/tmp/dscore-agent.log`.
 
 # 처음부터 다시 (모든 데이터 폐기)
 ./build.sh --redeploy --fresh
+
+# 베이스 이미지 / 시스템 라이브러리 의심 시 — 캐시 무시하고 전 레이어 재빌드 (30-90분)
+./build.sh --redeploy --no-cache
 
 # WSL2 호스트에서 qwen3.5:9b 대신 다른 모델로 강제
 OLLAMA_MODEL=qwen3-coder:30b ./build.sh --redeploy --reprovision
@@ -268,7 +273,7 @@ FORCE_PLUGIN_DOWNLOAD=true ./build.sh
 
 | 위치 | 무엇 |
 |---|---|
-| `./dscore.ttc.playwright-<timestamp>.tar.gz` | image 압축본 (airgap 배포용, ~5-7GB) |
+| `./dscore.ttc.playwright-<timestamp>.tar.gz` | image 압축본 (`--tarball` 명시 시에만 생성, airgap 배포용, ~5-7GB) |
 | `dscore.ttc.playwright:latest` (docker image) | 로컬 image |
 | `dscore.ttc.playwright` (docker container) | 실행 중인 컨테이너 (`--redeploy` 시) |
 | `dscore-data` (docker volume) | DB / Jenkins 이력 / Dify KB 데이터. `--fresh` 가 아니면 보존. |

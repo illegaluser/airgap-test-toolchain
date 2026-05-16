@@ -48,7 +48,10 @@ REDEPLOY=false
 FRESH_VOLUME=false
 REPROVISION=false
 SKIP_AGENT=false
-SKIP_TARBALL=false
+# 기본값: 타르볼 미추출. 일반 dev iteration 은 이미지만 있으면 충분.
+# 폐쇄망 반출 산출이 필요할 때만 --tarball 명시 (export-airgap.sh 가 그 진입점).
+SKIP_TARBALL=true
+NO_CACHE=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --redeploy)     REDEPLOY=true; shift ;;
@@ -56,6 +59,8 @@ while [ $# -gt 0 ]; do
     --reprovision)  REPROVISION=true; shift ;;
     --no-agent)     SKIP_AGENT=true; shift ;;
     --skip-tarball) SKIP_TARBALL=true; shift ;;
+    --tarball)      SKIP_TARBALL=false; shift ;;
+    --no-cache)     NO_CACHE=true; shift ;;
     -h|--help)
       cat <<'USAGE'
 사용법: ./build.sh [옵션]
@@ -69,6 +74,13 @@ while [ $# -gt 0 ]; do
                  Jenkins job 정의 / Dify provider 등록 같은 이미지 baked-in 정의를 새 이미지 기준으로 재생성.
                  --fresh 와 함께 쓰면 --fresh 가 우선 (전체 wipe).
   --no-agent     --redeploy 와 함께 — 컨테이너만 기동, agent 재연결은 스킵
+  --tarball      폐쇄망 반출용 tar.gz (dscore.ttc.playwright-<ts>.tar.gz) 산출.
+                 기본은 미추출 — 일반 dev iteration 은 이미지만 있으면 충분. 정식 반출은
+                 export-airgap.sh 가 이 플래그를 자동으로 켠다.
+  --skip-tarball (deprecated) tar.gz 산출 스킵. 이제 기본 동작이라 명시할 필요 없음.
+                 호환을 위해 남겨둠.
+  --no-cache     docker buildx 의 레이어 캐시를 무시하고 전체 레이어를 처음부터 다시 빌드
+                 (Dockerfile / 베이스 이미지 / 시스템 라이브러리 의심 시. 30-90분 소요)
   -h, --help     이 도움말
 
 주요 env:
@@ -290,12 +302,21 @@ fi
 log "[3/4] Docker 이미지 빌드 ($TARGET_PLATFORM)"
 log "  (이 단계는 30-90분 소요될 수 있습니다)"
 
+# macOS 기본 bash 3.2 는 set -u 환경에서 빈 배열 `"${ARR[@]}"` 를 unbound 로 본다.
+# 따라서 --no-cache 같은 옵션 인자는 배열이 아닌 단일 변수에 담아 분기.
+BUILDX_NOCACHE_ARG=""
+if [ "$NO_CACHE" = "true" ]; then
+  log "  --no-cache — buildx 레이어 캐시 무시"
+  BUILDX_NOCACHE_ARG="--no-cache"
+fi
+
 docker buildx build \
   --platform "$TARGET_PLATFORM" \
   --file "$SCRIPT_DIR/Dockerfile" \
   --tag "$IMAGE_TAG" \
   --build-arg "OLLAMA_MODEL=$OLLAMA_MODEL" \
   --load \
+  ${BUILDX_NOCACHE_ARG:+$BUILDX_NOCACHE_ARG} \
   "$BUILD_CTX" \
   || err "docker buildx build 실패"
 
@@ -304,7 +325,7 @@ docker images "$IMAGE_TAG" --format '  {{.Repository}}:{{.Tag}}  {{.Size}}'
 
 # ── 4. docker save + gzip 압축 ────────────────────────────────────────────
 if [ "$SKIP_TARBALL" = "true" ]; then
-  log "[4/4] --skip-tarball — tar.gz 산출 스킵 (이미지만 docker daemon 에 남김)"
+  log "[4/4] 타르볼 미추출 (기본) — 이미지만 docker daemon 에 남김. 반출 산출이 필요하면 --tarball"
 else
   log "[4/4] 이미지 save + 압축 → $OUTPUT_TAR"
   docker save "$IMAGE_TAG" | gzip -1 > "$SCRIPT_DIR/$OUTPUT_TAR"

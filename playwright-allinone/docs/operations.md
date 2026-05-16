@@ -35,8 +35,10 @@ cd playwright-allinone
 ```bash
 cd playwright-allinone
 chmod +x *.sh
-./build.sh
+./build.sh --tarball
 ```
+
+기본은 타르볼 미추출 (이미지만 docker daemon 에 남음). 다른 머신 반출용 산출이 필요하면 `--tarball`. `export-airgap.sh` wrapper 도 동일 플래그를 자동으로 켠다.
 
 산출물:
 
@@ -303,4 +305,5 @@ python -m monitor replay-script <scenario.py> --out <결과폴더> [--profile <a
 ```
 
 배포 산출 — **휴대용 단일 모델**:
+
 - `DSCORE-ReplayUI-portable-{win64|macos-arm64}-<ts>.zip` — `replay-ui-portable-build/pack-windows.ps1` 또는 `pack-macos.sh` 로 산출. 받는 사람은 zip 풀고 `Launch-ReplayUI.{bat,command}` 더블클릭만 (설치 없음, 인터넷·관리자권한 불요).

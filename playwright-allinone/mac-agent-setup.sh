@@ -428,7 +428,7 @@ cat > "$REC_RUN_SCRIPT" <<REC_EOF
 #!/usr/bin/env bash
 # Phase R-MVP TR.9 — recording_service 기동 (mac launchd 미사용, nohup 백그라운드)
 set -e
-export PYTHONPATH="$ROOT_DIR:\${PYTHONPATH:-}"
+export PYTHONPATH="$ROOT_DIR/recording-ui:$ROOT_DIR/shared:\${PYTHONPATH:-}"
 export RECORDING_HOST_ROOT="\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}"
 export PYTHONUNBUFFERED="\${PYTHONUNBUFFERED:-1}"
 # venv bin/ 을 PATH 앞에 둬야 codegen_runner.is_codegen_available() 가 'playwright'
