@@ -17,9 +17,11 @@
 ## 슈트 작성 규칙
 
 1. **1 슈트 = 1 회귀 commit** — 각 슈트 docstring 첫 줄에 표적 commit hash 명시.
+
    ```python
    """Regression guard for f1761f2 — executor 식별자 줄바꿈 정규화."""
    ```
+
 2. **외부 SUT/네트워크 의존 0** — pre-commit/pre-push 슬롯의 슈트는 항상 결정론. LLM 호출 0.
 3. **fixture 1개 = 1 회귀 패턴** — `fixtures/` 안의 HTML 한 파일은 한 가지 패턴만 표현. 재사용 시 docstring 으로 표적 commit 1차/2차 분리 표기.
 4. **테스트 이름** — `test_emit_*` (unit), `test_exec_*` (integration), `test_flow_*` (flow).

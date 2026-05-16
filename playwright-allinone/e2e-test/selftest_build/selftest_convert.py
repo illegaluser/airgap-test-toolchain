@@ -17,10 +17,16 @@ import sys
 
 
 def main() -> int:
+    # import probe — d4d957b 회귀: 컨테이너에서 converter_ast import 실패.
+    # importlib 사용해 lint(unused-import) 회피하면서도 import 자체가 살아있는지 확인.
     try:
-        from zero_touch_qa.converter_ast import convert_via_ast  # noqa: F401
-        from zero_touch_qa.regression_generator import generate_regression_test  # noqa: F401
-        from zero_touch_qa.executor import _extract_stable_selector  # noqa: F401
+        import importlib
+        for _mod in (
+            "zero_touch_qa.converter_ast",
+            "zero_touch_qa.regression_generator",
+            "zero_touch_qa.executor",
+        ):
+            importlib.import_module(_mod)
     except ImportError as e:
         print(f"[selftest_convert] FAIL — import: {e}", file=sys.stderr)
         return 1

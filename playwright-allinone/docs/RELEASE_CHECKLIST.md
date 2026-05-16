@@ -12,6 +12,7 @@
 자동화 불가 사유: 사용자 녹화 패턴 의존. 특정 사이트의 popup 트리거 → 닫기 흐름이 필요.
 
 수동 절차:
+
 1. Recording UI 에서 popup 을 띄우는 외부 사이트 1건 녹화 (예: 사내 포털 챗봇 popup).
 2. Stop 후 Convert 호출.
 3. 변환이 완료되어 시나리오 JSON 이 디스크에 떨어지는지 확인 (hang 회귀 없음).
@@ -22,6 +23,7 @@
 자동화 불가 사유: 호스트에서 original.py 직접 실행 (headed) 흐름 — 받는 PC 와 동일한 환경 매트릭스가 필요.
 
 수동 절차:
+
 1. 임의 시나리오의 original.py 를 host 의 Replay UI 에서 R-Plus 옵션으로 재실행.
 2. 컨테이너 system python 호출이 아닌 host venv 사용이 보장되는지 확인 (248bf40 회귀).
 
@@ -30,6 +32,7 @@
 자동화 불가 사유: WSL2 / Mac native 의 호스트-네트워크 토폴로지 차이. 단일 PC 빌드 후 검증으로 부족.
 
 수동 절차:
+
 1. `./build.sh` 직후 `docker logs dscore.ttc.playwright | grep NODE_SECRET` 로 64자 hex 시크릿 확인.
 2. `NODE_SECRET=<위 값> ./mac-agent-setup.sh` (또는 wsl-agent-setup.sh) 실행.
 3. agent 가 Jenkins 에 연결되어 Pipeline Stage 3 가 정상 동작하는지 확인 (Jenkins 18080 → 빌드 1회).

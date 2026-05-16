@@ -36,8 +36,10 @@ def _check_python() -> tuple[bool, str]:
 
 def _check_playwright_module() -> tuple[bool, str]:
     try:
-        import playwright  # noqa: F401
-        from playwright.sync_api import sync_playwright  # noqa: F401
+        # import probe — 받는 PC 의 휴대용 site-packages 에 playwright 가 살아있는지.
+        import importlib
+        importlib.import_module("playwright")
+        importlib.import_module("playwright.sync_api")
         return True, "playwright module import OK"
     except Exception as e:
         return False, f"playwright import 실패: {e}"

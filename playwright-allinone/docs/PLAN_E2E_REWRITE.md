@@ -173,7 +173,7 @@ pre-push hook 은 `.githooks/pre-push` 로 신설.
 
 새 슈트 첫 1건 (`e2e-test/unit/test_emit_identifier_split.py` — f1761f2 가드, 현재 unit gap) 이 들어오는 commit 에서 일괄 삭제:
 
-```
+```text
 playwright-allinone/test/test_auth_profile_api_e2e.py
 playwright-allinone/test/test_auth_profile_ui_e2e.py
 playwright-allinone/test/test_discover_api_e2e.py
