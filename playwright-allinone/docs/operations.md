@@ -8,21 +8,24 @@
 
 ```bash
 cd playwright-allinone
-./build.sh --redeploy
+./build.sh
 ```
+
+기본 동작 — 빌드 + 컨테이너 재배포 + reprovision (chatflow/job/provider 새 이미지 기준 재생성) + agent 재연결. 데이터 볼륨(`dscore-data`) 은 보존.
 
 자주 쓰는 옵션:
 
 | 명령 | 데이터 보존 | 이미지 정의 반영 | 용도 |
 | --- | --- | --- | --- |
-| `./build.sh --redeploy` | 보존 | 기존 provision 결과 재사용 | 일반 재배포 |
-| `./build.sh --redeploy --reprovision` | 보존 | chatflow/job/provider 재생성 | 운영 표준 재프로비저닝 |
-| `./build.sh --redeploy --fresh` | 삭제 | 전체 재생성 | 개발/초기화 |
-| `./build.sh --redeploy --no-agent` | 보존 | 기존 provision 결과 재사용 | 컨테이너만 기동하고 agent / Recording UI / Replay UI 는 수동 |
+| `./build.sh` | 보존 | chatflow/job/provider 재생성 | 운영 표준 (기본) |
+| `./build.sh --keep-provisioned` | 보존 | 기존 provision 결과 재사용 | 이미지 baked-in 정의 변경이 없을 때 빠른 재기동 |
+| `./build.sh --fresh` | 삭제 | 전체 재생성 | 개발/초기화 |
+| `./build.sh --no-agent` | 보존 | chatflow/job/provider 재생성 | 컨테이너만 기동, agent / Recording UI / Replay UI 는 수동 |
+| `./build.sh --no-redeploy` | — | — | 빌드만, 컨테이너 그대로 (CI / 폐쇄망 export) |
 
-`--no-agent` 외 모든 `--redeploy` 변형은 **컨테이너(Jenkins 18080 / Dify 18081) + 호스트 agent + Recording UI(18092) + 호스트 Replay UI(18093)** 를 동시 자동 구동한다. 호스트 Replay UI 는 agent-setup step 6.6 이 venv uvicorn 으로 띄운다. 휴대용 Replay UI(18099) 는 받는 PC 가 별도 zip 으로 띄우는 것이라 build.sh 와 무관.
+`--no-agent` 와 `--no-redeploy` 외 모든 호출은 **컨테이너(Jenkins 18080 / Dify 18081) + 호스트 agent + Recording UI(18092) + 호스트 Replay UI(18093)** 를 동시 자동 구동한다. 호스트 Replay UI 는 agent-setup step 6.6 이 venv uvicorn 으로 띄운다. 휴대용 Replay UI(18099) 는 받는 PC 가 별도 zip 으로 띄우는 것이라 build.sh 와 무관.
 
-처음 운영 환경에서 잘 모르겠으면 `./build.sh --redeploy`를 사용한다. `--fresh`는 데이터를 지우므로 개발 초기화가 필요할 때만 쓴다. `--reprovision` 전에는 `./backup-volume.sh`로 백업을 먼저 만든다.
+처음 운영 환경에서 잘 모르겠으면 `./build.sh` 만 사용한다. `--fresh`는 데이터를 지우므로 개발 초기화가 필요할 때만 쓴다. `--fresh` 전에는 `./backup-volume.sh`로 백업을 먼저 만든다.
 
 ## 2. 수동 `docker run` 배포
 
@@ -35,10 +38,10 @@ cd playwright-allinone
 ```bash
 cd playwright-allinone
 chmod +x *.sh
-./build.sh --tarball
+./build.sh --tarball --no-redeploy
 ```
 
-기본은 타르볼 미추출 (이미지만 docker daemon 에 남음). 다른 머신 반출용 산출이 필요하면 `--tarball`. `export-airgap.sh` wrapper 도 동일 플래그를 자동으로 켠다.
+기본은 타르볼 미추출 + 같은 머신 재기동. 다른 머신 반출만 필요하면 `--tarball --no-redeploy` (현재 머신 서비스는 건드리지 않음). `export-airgap.sh` wrapper 도 동일 조합을 자동으로 켠다.
 
 산출물:
 
@@ -188,17 +191,17 @@ cd playwright-allinone
 cd playwright-allinone
 
 ./backup-volume.sh
-./build.sh --redeploy --reprovision
+./build.sh
 ```
 
-그 다음 운영 환경에 맞는 agent 스크립트 하나만 실행한다.
+`./build.sh` 기본 동작이 빌드 + 재기동 + reprovision + agent 재연결까지 한 번에 한다. agent 가 자동으로 안 떴거나 별도 터미널에서 다시 붙이고 싶으면:
 
 ```bash
 ./mac-agent-setup.sh       # Mac
 ./wsl-agent-setup.sh       # WSL2
 ```
 
-`--redeploy`만 쓰면 기존 `/data/.app_provisioned` 때문에 chatflow YAML, Jenkins job 정의, provider 등록 변경이 반영되지 않을 수 있다. 이 정의들이 바뀐 릴리스라면 `--reprovision`을 사용한다.
+reprovision 이 default 이므로 chatflow YAML, Jenkins job 정의, provider 등록 변경이 자동으로 반영된다. 그 단계가 무겁고 baked-in 정의 변경이 없다면 `--keep-provisioned` 로 스킵 가능.
 
 ## 7. 모델 변경
 
@@ -213,14 +216,12 @@ ollama pull llama3.1:8b
 
 1. 호스트에 모델 pull
 2. (자동) — chatflow YAML 의 모델명은 placeholder 라 별도 수정 불필요. provision 이 import 시점에 `OLLAMA_MODEL` 값으로 치환한다.
-3. 컨테이너를 새 `OLLAMA_MODEL`로 재기동
-4. `--reprovision` 으로 재기동 (provision 이 자동 재실행)
-5. agent 재연결
+3. `OLLAMA_MODEL` 을 새 값으로 `./build.sh` 실행 — 재기동 + reprovision + agent 재연결까지 default 로 처리.
 
 간단한 개발 환경이면:
 
 ```bash
-OLLAMA_MODEL=llama3.1:8b ./build.sh --redeploy --reprovision
+OLLAMA_MODEL=llama3.1:8b ./build.sh
 ```
 
 운영 환경에서는 먼저 백업한다.

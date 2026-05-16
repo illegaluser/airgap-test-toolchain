@@ -159,7 +159,7 @@ DSCORE-ReplayUI-portable-<os>-<ts>/
 
 | 파일 | 사용자가 실행? | 역할 |
 | --- | --- | --- |
-| `build.sh` | 예 | 이미지 빌드, tarball 생성, 선택적으로 redeploy |
+| `build.sh` | 예 | 이미지 빌드 + 컨테이너 재배포 + reprovision + agent 연결 (기본). `--no-redeploy` 로 빌드만, `--tarball` 로 폐쇄망 반출 tar.gz |
 | `mac-agent-setup.sh` | 예 | macOS 호스트 agent + Recording UI 준비 |
 | `wsl-agent-setup.sh` | 예 | WSL2 호스트 agent + Recording UI 준비 |
 | `recording-ui/run-recording-ui.sh` | 예 | Recording UI 데몬 독립 운영 (18092) |

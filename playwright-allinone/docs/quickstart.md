@@ -103,7 +103,7 @@ python3 --version
 
 ```bash
 chmod +x *.sh
-./build.sh --redeploy
+./build.sh
 ```
 
 이 명령은 다음 일을 한다.
@@ -147,13 +147,13 @@ NODE_SECRET: <64자 hex>
 
 | 서비스 | URL | 기본 계정 |
 | --- | --- | --- |
-| Jenkins | http://localhost:18080 | admin / password |
-| Dify | http://localhost:18081 | admin@example.com / Admin1234! |
-| Recording UI | http://localhost:18092 | 계정 없음, 로컬 서비스 |
+| Jenkins | <http://localhost:18080> | admin / password |
+| Dify | <http://localhost:18081> | `admin@example.com` / Admin1234! |
+| Recording UI | <http://localhost:18092> | 계정 없음, 로컬 서비스 |
 
 ## 5. 호스트 agent 연결
 
-`./build.sh --redeploy`가 agent를 자동으로 띄우지 못했거나 새 터미널에서 직접 붙이고 싶으면 아래 중 하나만 실행한다.
+`./build.sh`가 agent를 자동으로 띄우지 못했거나 새 터미널에서 직접 붙이고 싶으면 아래 중 하나만 실행한다.
 
 Mac:
 

@@ -40,66 +40,76 @@ BUILD_CTX="$SCRIPT_DIR"
 cd "$SCRIPT_DIR"
 
 # ── 플래그 파싱 ────────────────────────────────────────────────────────────
-# --redeploy    : 빌드 직후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
-# --fresh       : redeploy 시 dscore-data 볼륨까지 삭제 (프로비저닝 재수행, 데이터 폐기)
-# --reprovision : redeploy 시 .app_provisioned 마커만 wipe — provision 재실행하되 데이터(KB·Jenkins 이력) 보존
-# --no-agent    : redeploy 시 agent 재연결 스킵 (컨테이너만 기동)
-REDEPLOY=false
+# 기본값 (인자 없이 ./build.sh) — 빌드 + 컨테이너 재기동 + reprovision + agent 재연결.
+# 데이터 볼륨(dscore-data) 은 보존, chatflow YAML / Jenkins job / Dify provider 등록은
+# 새 이미지 기준으로 재생성. "한 줄로 빌드부터 서비스 정상화까지" 가 의도.
+#
+# opt-out 옵션:
+#   --no-redeploy      빌드만 (컨테이너 그대로 유지). CI / 폐쇄망 export 용.
+#   --keep-provisioned redeploy 는 하되 provision 은 스킵 (기존 .app_provisioned 유지).
+#                      이미지 안 chatflow/job 정의 변경이 없을 때만 의미 있음.
+#   --no-agent         컨테이너만 기동, host agent 재연결 스킵.
+#
+# 추가 destructive 옵션 (opt-in):
+#   --fresh            dscore-data 볼륨 완전 삭제 (Jenkins 이력 / Dify KB / conversation 폐기).
+#   --no-cache         buildx 레이어 캐시 무시 (30-90분).
+#
+# 기타:
+#   --tarball          폐쇄망 반출용 tar.gz 산출 (기본 미추출).
+REDEPLOY=true
 FRESH_VOLUME=false
-REPROVISION=false
+REPROVISION=true
 SKIP_AGENT=false
-# 기본값: 타르볼 미추출. 일반 dev iteration 은 이미지만 있으면 충분.
-# 폐쇄망 반출 산출이 필요할 때만 --tarball 명시 (export-airgap.sh 가 그 진입점).
 SKIP_TARBALL=true
 NO_CACHE=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    --redeploy)     REDEPLOY=true; shift ;;
-    --fresh)        FRESH_VOLUME=true; shift ;;
-    --reprovision)  REPROVISION=true; shift ;;
-    --no-agent)     SKIP_AGENT=true; shift ;;
-    --skip-tarball) SKIP_TARBALL=true; shift ;;
-    --tarball)      SKIP_TARBALL=false; shift ;;
-    --no-cache)     NO_CACHE=true; shift ;;
+    --redeploy)         REDEPLOY=true; shift ;;            # backward-compat: 이제 default, no-op
+    --no-redeploy)      REDEPLOY=false; REPROVISION=false; shift ;;
+    --fresh)            FRESH_VOLUME=true; shift ;;
+    --reprovision)      REPROVISION=true; shift ;;         # backward-compat: 이제 default, no-op
+    --keep-provisioned) REPROVISION=false; shift ;;
+    --no-agent)         SKIP_AGENT=true; shift ;;
+    --skip-tarball)     SKIP_TARBALL=true; shift ;;
+    --tarball)          SKIP_TARBALL=false; shift ;;
+    --no-cache)         NO_CACHE=true; shift ;;
     -h|--help)
       cat <<'USAGE'
 사용법: ./build.sh [옵션]
 
-  --redeploy     빌드 후 같은 호스트에서 컨테이너 재기동 + agent 재연결까지 수행
-                 (기존 dscore.ttc.playwright 컨테이너가 있으면 rm -f, 기존 agent.jar
-                  프로세스는 agent-setup 이 정리. dscore-data 볼륨은 유지)
-  --fresh        --redeploy 와 함께 — dscore-data 볼륨도 삭제해 제로베이스 기동 (데이터 폐기)
-  --reprovision  --redeploy 와 함께 — .app_provisioned 마커만 wipe → provision 재실행.
-                 데이터(KB 임베딩·Jenkins 이력·챗봇 conversation)는 보존하면서 chatflow YAML /
-                 Jenkins job 정의 / Dify provider 등록 같은 이미지 baked-in 정의를 새 이미지 기준으로 재생성.
-                 --fresh 와 함께 쓰면 --fresh 가 우선 (전체 wipe).
-  --no-agent     --redeploy 와 함께 — 컨테이너만 기동, agent 재연결은 스킵
-  --tarball      폐쇄망 반출용 tar.gz (dscore.ttc.playwright-<ts>.tar.gz) 산출.
-                 기본은 미추출 — 일반 dev iteration 은 이미지만 있으면 충분. 정식 반출은
-                 export-airgap.sh 가 이 플래그를 자동으로 켠다.
-  --skip-tarball (deprecated) tar.gz 산출 스킵. 이제 기본 동작이라 명시할 필요 없음.
-                 호환을 위해 남겨둠.
-  --no-cache     docker buildx 의 레이어 캐시를 무시하고 전체 레이어를 처음부터 다시 빌드
-                 (Dockerfile / 베이스 이미지 / 시스템 라이브러리 의심 시. 30-90분 소요)
-  -h, --help     이 도움말
+기본 (인자 없이): 빌드 + 컨테이너 재기동 + reprovision + agent 재연결. dscore-data 보존.
+
+opt-out:
+  --no-redeploy        빌드만 (컨테이너 유지). CI / 폐쇄망 export 용. --reprovision 도 같이 OFF.
+  --keep-provisioned   redeploy 하되 provision 스킵. 이미지 baked-in 정의 변경 없을 때만 의미.
+  --no-agent           컨테이너만 기동, host agent 재연결 스킵.
+
+opt-in (destructive):
+  --fresh              dscore-data 볼륨 완전 삭제 (Jenkins 이력·Dify KB·conversation 폐기).
+  --no-cache           buildx 레이어 캐시 무시 (30-90분).
+
+기타:
+  --tarball            폐쇄망 반출용 tar.gz 산출 (기본 미추출). export-airgap.sh 가 자동.
+  --skip-tarball       (deprecated) 기본 동작이라 명시 불필요. 호환용 잔존.
+  --redeploy           (no-op) 이제 default. 호환을 위해 살려둠.
+  --reprovision        (no-op) 이제 default. 호환을 위해 살려둠.
+  -h, --help           이 도움말
 
 주요 env:
   IMAGE_TAG                dscore.ttc.playwright:latest (기본)
   TARGET_PLATFORM          uname -m 자동 감지 (Mac arm64 → linux/arm64, 그 외 → linux/amd64)
   OLLAMA_MODEL             Dify provider 에 등록될 모델 id. OS 별 기본:
-                             · macOS (Darwin)         → gemma4:26b   (Sprint 5 §10.2 기본)
-                             · WSL2 / Linux / Windows → qwen3.5:9b   (WSL2 빌드 검증 기본)
+                             · macOS (Darwin)         → gemma4:26b
+                             · WSL2 / Linux / Windows → qwen3.5:9b
   OUTPUT_TAR               dscore.ttc.playwright-<ts>.tar.gz
-  FORCE_PLUGIN_DOWNLOAD    false (기본). true 면 jenkins-plugins/ dify-plugins/ 에
-                           파일이 있어도 재다운로드 (플러그인 버전 갱신 시만 사용).
-                           기본은 기존 파일 재사용 — airgap 환경에서 네트워크 없이 빌드 가능.
+  FORCE_PLUGIN_DOWNLOAD    false (기본). true 면 jenkins-plugins/ dify-plugins/ 강제 재다운로드.
 
 예시:
-  ./build.sh                              # 빌드만 (tar.gz 산출)
-  ./build.sh --redeploy                   # 빌드 + 기존 볼륨 재사용 재기동 + agent
-  ./build.sh --redeploy --fresh           # 빌드 + 볼륨 초기화 + agent (데이터 폐기)
-  ./build.sh --redeploy --reprovision     # 빌드 + 데이터 보존 + chatflow/Jenkins job 재생성 + agent
-  ./build.sh --redeploy --no-agent        # 빌드 + 컨테이너만 재기동
+  ./build.sh                              # 빌드 + 재기동 + reprovision + agent (기본)
+  ./build.sh --no-redeploy                # 빌드만 (컨테이너 그대로)
+  ./build.sh --fresh                      # 빌드 + 볼륨 초기화 + 재기동 (⚠ 데이터 폐기)
+  ./build.sh --keep-provisioned           # 빌드 + 재기동 but provision 스킵
+  ./build.sh --no-cache --fresh           # 캐시 무시 + 볼륨 초기화 (제로베이스 풀빌드)
   FORCE_PLUGIN_DOWNLOAD=true ./build.sh   # 플러그인 강제 재다운로드
 USAGE
       exit 0
@@ -551,32 +561,38 @@ log ""
 log "  ※ 이 빌드에서 결정된 LLM 기본값: $OLLAMA_MODEL  (호스트 OS=$(uname -s) 기준)"
 log "  ※ 임베딩 기본값: ${EMBEDDING_MODEL:-bge-m3:latest}"
 log ""
-log "[이미지 로드 및 컨테이너 기동 — 호스트 플랫폼에 맞는 AGENT_NAME 주입]"
-log "  docker load -i $OUTPUT_TAR"
-log "  case \"\$(uname -s)\" in"
-log "    Darwin) AGENT_NAME=mac-ui-tester ;;"
-log "    *)      AGENT_NAME=wsl-ui-tester ;;"
-log "  esac"
-log "  HOST_RECORDINGS_DIR=\"\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}\""
-log "  mkdir -p \"\$HOST_RECORDINGS_DIR\""
-log "  docker run -d --name dscore.ttc.playwright \\"
-log "    -p 18080:18080 -p 18081:18081 -p 50001:50001 \\"
-log "    -v dscore-data:/data \\"
-log "    -v \"\$HOST_RECORDINGS_DIR\":/recordings:rw \\"
-log "    --add-host host.docker.internal:host-gateway \\"
-log "    -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \\"
-log "    -e OLLAMA_MODEL=${OLLAMA_MODEL} \\"
-log "    -e EMBEDDING_MODEL=${EMBEDDING_MODEL:-bge-m3:latest} \\"
-log "    -e AGENT_NAME=\"\$AGENT_NAME\" \\"
-log "    --restart unless-stopped \\"
-log "    $IMAGE_TAG"
-log ""
-log "[호스트 agent 연결 — 컨테이너 기동 완료 후]"
-log "  1) docker logs dscore.ttc.playwright | grep NODE_SECRET        # 64자 hex 값 확인"
-log "  2) Mac:  NODE_SECRET=<위 값> ./mac-agent-setup.sh"
-log "     WSL2: NODE_SECRET=<위 값> ./wsl-agent-setup.sh"
-log "     → JDK/venv/Chromium 설치 + agent 연결. 성공 시 호스트 화면에 headed Chromium"
-log ""
+# redeploy 가 default 라 보통 이 안내는 무의미. --no-redeploy 거나 tarball 산출
+# (다른 머신에 옮겨 docker load 할 시나리오) 일 때만 출력.
+if [ "$REDEPLOY" = "false" ] || [ "$SKIP_TARBALL" = "false" ]; then
+  log "[이미지 로드 및 컨테이너 기동 — 호스트 플랫폼에 맞는 AGENT_NAME 주입]"
+  if [ "$SKIP_TARBALL" = "false" ]; then
+    log "  docker load -i $OUTPUT_TAR"
+  fi
+  log "  case \"\$(uname -s)\" in"
+  log "    Darwin) AGENT_NAME=mac-ui-tester ;;"
+  log "    *)      AGENT_NAME=wsl-ui-tester ;;"
+  log "  esac"
+  log "  HOST_RECORDINGS_DIR=\"\${RECORDING_HOST_ROOT:-\$HOME/.dscore.ttc.playwright-agent/recordings}\""
+  log "  mkdir -p \"\$HOST_RECORDINGS_DIR\""
+  log "  docker run -d --name dscore.ttc.playwright \\"
+  log "    -p 18080:18080 -p 18081:18081 -p 50001:50001 \\"
+  log "    -v dscore-data:/data \\"
+  log "    -v \"\$HOST_RECORDINGS_DIR\":/recordings:rw \\"
+  log "    --add-host host.docker.internal:host-gateway \\"
+  log "    -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \\"
+  log "    -e OLLAMA_MODEL=${OLLAMA_MODEL} \\"
+  log "    -e EMBEDDING_MODEL=${EMBEDDING_MODEL:-bge-m3:latest} \\"
+  log "    -e AGENT_NAME=\"\$AGENT_NAME\" \\"
+  log "    --restart unless-stopped \\"
+  log "    $IMAGE_TAG"
+  log ""
+  log "[호스트 agent 연결 — 컨테이너 기동 완료 후]"
+  log "  1) docker logs dscore.ttc.playwright | grep NODE_SECRET        # 64자 hex 값 확인"
+  log "  2) Mac:  NODE_SECRET=<위 값> ./mac-agent-setup.sh"
+  log "     WSL2: NODE_SECRET=<위 값> ./wsl-agent-setup.sh"
+  log "     → JDK/venv/Chromium 설치 + agent 연결. 성공 시 호스트 화면에 headed Chromium"
+  log ""
+fi
 log "접속:"
 log "  - Jenkins:      http://localhost:18080  (admin / password)"
 log "  - Dify:         http://localhost:18081  (admin@example.com / Admin1234!)"

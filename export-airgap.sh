@@ -65,7 +65,9 @@ echo "[export-airgap] 시작 — recording=${DO_RECORDING}, replay=${DO_REPLAY},
 if [[ "$DO_RECORDING" = "1" ]]; then
   echo
   echo "═══ [1/2] Recording PC — Docker 이미지 빌드 + tarball 산출 ═══"
-  bash "$ROOT/playwright-allinone/build.sh" --tarball
+  # --no-redeploy: export 흐름에선 현재 머신 서비스 재시작 의도 없음 (build.sh 의 default 가
+  # 재기동인 만큼 명시 OFF).
+  bash "$ROOT/playwright-allinone/build.sh" --tarball --no-redeploy
 fi
 
 # 휴대용 Replay UI 빌드 — OS 분기 정책 (헤더 코멘트 참조).
@@ -160,7 +162,7 @@ cat <<'HINT'
 
   Recording PC (Docker 호스트):
     docker load < dscore.ttc.playwright-<ts>.tar.gz
-    # 이후 build.sh --redeploy 또는 동등 docker run
+    # 이후 ./build.sh (default 가 빌드 + 재기동 + reprovision + agent) 또는 동등 docker run
 
   Monitoring PC (Windows):
     DSCORE-ReplayUI-portable-win64-<ts>.zip 을 풀고 Launch-ReplayUI.bat 더블클릭.

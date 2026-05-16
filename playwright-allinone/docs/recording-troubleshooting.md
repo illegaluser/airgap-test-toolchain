@@ -77,8 +77,8 @@ PATH 가 일관. setup 스크립트 재실행으로 자동 해결.
 | 증상 | 원인 | 해결 |
 |---|---|---|
 | `docker 실행 파일을 찾을 수 없습니다` | host 에 docker CLI 미설치 | docker desktop 설치 또는 `brew install docker` |
-| `Error response from daemon: No such container: dscore.ttc.playwright` | 컨테이너 미기동 | `./build.sh --redeploy` 실행 |
-| `--mode convert --convert-only` 가 unrecognized arg | 컨테이너 이미지가 구버전 | `./build.sh --redeploy --reprovision` 또는 `--fresh` 로 이미지 재배포 |
+| `Error response from daemon: No such container: dscore.ttc.playwright` | 컨테이너 미기동 | `./build.sh` 실행 |
+| `--mode convert --convert-only` 가 unrecognized arg | 컨테이너 이미지가 구버전 | `./build.sh` (default reprovision 포함) 또는 `--fresh` 로 이미지 재배포 |
 | `_validate_scenario` 에러 | codegen 결과의 14-DSL 호환성 문제 | 원본 `original.py` 보존됨 — scenario.json 직접 편집 또는 다시 녹화 |
 | `/usr/local/bin/python: No module named zero_touch_qa` | (회귀) `converter_proxy.py` 가 default `python` + workdir 미지정으로 호출 | **2026-04-29 fix 완료** — `docker exec -w /opt ... /opt/qa-venv/bin/python -m zero_touch_qa ...` 로 호출. `recording-ui/recording_service/converter_proxy.py:83-92` 참조. recording_service 재시작 필요 |
 | `ModuleNotFoundError: No module named 'requests'` | `/usr/local/bin/python` 에는 zero_touch_qa 의존성 미설치 (의존성은 `/opt/qa-venv/bin/python` 에만 있음) | **2026-04-29 fix 완료** — 위 fix 와 묶여 있음 |
@@ -189,9 +189,9 @@ docker exec -w /opt -e ARTIFACTS_DIR=/recordings/<sid> dscore.ttc.playwright \
 
 ### 영구 반영
 
-호스트 측 converter.py 만 수정하면 다음 이미지 빌드 (`./build.sh --redeploy --fresh`)
-부터 컨테이너 baked-in. 핫패치만 한 경우 컨테이너 재기동 시 사라지므로
-주의.
+호스트 측 converter.py 만 수정하면 다음 이미지 빌드 (`./build.sh` 또는 데이터
+초기화가 필요하면 `./build.sh --fresh`) 부터 컨테이너 baked-in. 핫패치만
+한 경우 컨테이너 재기동 시 사라지므로 주의.
 
 ### 알려진 후속 이슈 (TR.x backlog) — **2026-04-29 closed (T-A 완료)**
 
@@ -259,8 +259,8 @@ Jenkins Markup Formatter 가 Plain Text 로 설정됨.
 ### 해결
 
 `jenkins-init/markup-formatter.groovy` 가 init 단계에서 Safe HTML formatter 를
-적용한다. 이미지가 구버전이면 적용 안 됐을 수 있음. `./build.sh --redeploy
---reprovision` 또는 Jenkins 관리 페이지에서 직접:
+적용한다. 이미지가 구버전이면 적용 안 됐을 수 있음. `./build.sh` (default
+reprovision 포함) 또는 Jenkins 관리 페이지에서 직접:
 
 1. <http://localhost:18080/manage/configure>
 2. **Markup Formatter** → "Safe HTML" 선택 → Save

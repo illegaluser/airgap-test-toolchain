@@ -55,19 +55,19 @@ airgap-test-toolchain/
 
 ```bash
 cd playwright-allinone
-bash build.sh --redeploy          # 빌드 + 컨테이너 재배포 + 호스트 agent 연결까지 one-shot
+bash build.sh                     # 빌드 + 컨테이너 재배포 + reprovision + agent 연결까지 (기본)
 ```
 
 - 컨테이너에는 Jenkins controller, Dify, PostgreSQL, Redis, Qdrant, nginx 가 올라갑니다.
 - 호스트에는 Ollama 와 Jenkins agent/Playwright Chromium 이 올라갑니다.
-- `--redeploy` 없이 `bash build.sh` 만 실행하면 이미지 빌드만 수행합니다.
+- 이미지만 빌드하고 컨테이너는 그대로 두려면 `bash build.sh --no-redeploy`.
 - agent 수동 연결이 필요하면 `mac-agent-setup.sh` 를 사용합니다.
 
 #### Windows 11 + WSL2
 
 ```bash
 cd playwright-allinone
-bash build.sh --redeploy
+bash build.sh
 ```
 
 - 한 번 실행으로 컨테이너(Jenkins / Dify), Jenkins agent, Recording UI(18092), 호스트 Replay UI(18093) 까지 **동시 자동 구동**됩니다. 휴대용 Replay UI(18099) 는 받는 PC 가 zip 풀고 별도로 띄우는 것이라 build.sh 가 띄우지 않습니다.
@@ -121,8 +121,8 @@ bash scripts/run-wsl2.sh
 
 | # | 산출물 | 대상 PC | 만드는 명령 (빌드 머신) | 받는 사람이 하는 일 |
 |---|---|---|---|---|
-| 1 | `dscore.ttc.playwright-<ts>.tar.gz` | 녹화 PC (Docker 호스트) | `bash playwright-allinone/build.sh --tarball` (또는 `bash export-airgap.sh` 가 자동) | `docker load` → `build.sh --redeploy` |
-| 2 | `DSCORE-ReplayUI-portable-{win64\|macos-arm64}-<ts>.zip` | 모니터링 PC (Replay UI) | `bash build-cache.sh` 로 캐시 채운 뒤 `pack-windows.ps1` (Windows 빌드 머신) 또는 `pack-macos.sh` (Mac 빌드 머신) | `unzip` → `Launch-ReplayUI.bat` / `Launch-ReplayUI.command` 더블클릭. **설치 없음, 인터넷·관리자권한 불요**. |
+| 1 | `dscore.ttc.playwright-<ts>.tar.gz` | 녹화 PC (Docker 호스트) | `bash playwright-allinone/build.sh --tarball --no-redeploy` (또는 `bash export-airgap.sh` 가 자동) | `docker load` → `bash build.sh` |
+| 2 | `DSCORE-ReplayUI-portable-{win64\|macos-arm64}-<ts>.zip` | 모니터링 PC (Replay UI) | `bash pack-macos.sh` (Mac 빌드 머신) 또는 `pack-windows.ps1` (Windows 빌드 머신) | `unzip` → `Launch-ReplayUI.bat` / `Launch-ReplayUI.command` 더블클릭. **설치 없음, 인터넷·관리자권한 불요**. |
 
 녹화 + 휴대용 두 산출을 한 번에 묶고 싶으면 저장소 루트 wrapper:
 
